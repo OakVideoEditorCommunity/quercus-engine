@@ -59,6 +59,11 @@ tooling/publish_workspace.sh
 Order: core → ffmpeg-link → undo → codec → node → otio → render → audio →
 timeline → storage → task → ofx-plugin → engine → engine-rs.
 
+## Contributing
+
+Contributions are accepted under the [Contributor License Agreement](CLA.md)
+(inbound = outbound, GPL-3.0-or-later).
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
