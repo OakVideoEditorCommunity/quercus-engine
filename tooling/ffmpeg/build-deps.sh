@@ -115,7 +115,7 @@ fetch_git() { # <name> <repo> <ref>
 # config.sub that predate aarch64-apple-darwin and cannot even guess the
 # build type on Apple Silicon. Refresh both files before configuring
 # (cached in $DEPS_SRC). git.savannah.gnu.org is flaky from CI, so the
-# primary source is the QuercusVideoEditorCommunity/freetype-mirror GitHub
+# primary source is the OakVideoEditorCommunity/freetype-mirror GitHub
 # release (snapshot taken 2026-09, timestamp='2026-05-17'); savannah is
 # the fallback.
 refresh_config_guess() { # <source dir>
@@ -124,7 +124,7 @@ refresh_config_guess() { # <source dir>
 		if [ ! -f "$DEPS_SRC/.$f" ]; then
 			curl -fSL --retry 3 --retry-delay 2 \
 				-o "$DEPS_SRC/.$f" \
-				"https://github.com/QuercusVideoEditorCommunity/freetype-mirror/releases/download/v2.13.3/$f" \
+				"https://github.com/OakVideoEditorCommunity/freetype-mirror/releases/download/v2.13.3/$f" \
 			|| curl -fSL --retry 3 --retry-delay 2 \
 				-o "$DEPS_SRC/.$f" "https://git.savannah.gnu.org/cgit/config.git/plain/$f"
 		fi
@@ -224,10 +224,10 @@ meson_build() {
 # brotli/harfbuzz would leak into freetype2.pc's Libs.private and onto
 # the final link line as a system library.
 # The tarball is mirrored from download.savannah.gnu.org (flaky from CI)
-# to a GitHub release in QuercusVideoEditorCommunity/freetype-mirror —
+# to a GitHub release in OakVideoEditorCommunity/freetype-mirror —
 # byte-identical (SHA-256 0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289).
 configure_build freetype \
-	https://github.com/QuercusVideoEditorCommunity/freetype-mirror/releases/download/v2.13.3/freetype-2.13.3.tar.xz \
+	https://github.com/OakVideoEditorCommunity/freetype-mirror/releases/download/v2.13.3/freetype-2.13.3.tar.xz \
 	--with-zlib=no --with-bzip2=no --with-png=no --with-harfbuzz=no --with-brotli=no
 
 meson_build harfbuzz \
