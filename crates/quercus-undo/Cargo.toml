@@ -1,0 +1,12 @@
+[package]
+name = "quercus-undo"
+version.workspace = true
+edition = "2021"
+description = "Quercus Video Editor undo/redo history module (Rust)"
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+thiserror = "2"

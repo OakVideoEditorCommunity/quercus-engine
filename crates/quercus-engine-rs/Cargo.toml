@@ -1,0 +1,35 @@
+[package]
+name = "quercus-engine-rs"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Safe Rust SDK for the Quercus video engine: editor sessions, semantic edits, preview, media and OFX"
+readme = "README.md"
+keywords = ["video", "editor", "media", "nle", "ffmpeg"]
+categories = ["multimedia::video", "api-bindings"]
+include = ["src/**/*.rs", "README.md", "LICENSE", "Cargo.toml"]
+
+[package.metadata.docs.rs]
+# docs.rs cannot build the native engine (static FFmpeg/OpenColorIO). The SDK
+# itself is pure Rust: its public surface is the extern declarations and
+# wrappers, which rustdoc can document without linking the dylib.
+no-default-features = true
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["engine"]
+# Builds and links the native engine. Disable only for docs-only builds.
+engine = ["dep:quercus-engine"]
+
+[dependencies]
+thiserror = "2"
+# The engine is a cdylib which the SDK links dynamically (`#[link]`) and
+# talks to only through its exported `extern "C"` symbols — no Rust API
+# of the engine is used. The dependency edge makes cargo build the dylib
+# into the dependency search path before anything links the SDK.
+quercus-engine = { version = "=0.5.2", path = "../quercus-engine", optional = true }

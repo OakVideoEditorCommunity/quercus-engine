@@ -1,0 +1,365 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<olive version="230220" url="/home/mikesolar/Projects/oak/tests/project_with_footage.ove">
+    <project>
+        <project version="1">
+            <uuid>{9f610139-af81-4c3f-a689-caeac18ffa5e}</uuid>
+            <nodes>
+                <node version="1" id="org.olivevideoeditor.Olive.folder" ptr="94432914284304">
+                    <label>Root</label>
+                    <input id="enabled_in">
+                        <primary>
+                            <keyframing>0</keyframing>
+                            <standard>
+                                <track>true</track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="child_in">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                        <subelements count="2">
+                            <element>
+                                <standard>
+                                    <track></track>
+                                </standard>
+                            </element>
+                            <element>
+                                <standard>
+                                    <track></track>
+                                </standard>
+                            </element>
+                        </subelements>
+                    </input>
+                    <connections>
+                        <connection input="child_in" element="0">
+                            <output>94432914429312</output>
+                        </connection>
+                        <connection input="child_in" element="1">
+                            <output>94432914494208</output>
+                        </connection>
+                    </connections>
+                    <caches>
+                        <audio>{0acc30ab-841e-4143-8aa5-0393dd76d4ff}</audio>
+                        <video>{4df67d75-38c7-46ef-ac3d-11fc80cfce8b}</video>
+                        <thumb>{a97d0036-322c-4e52-800b-4d97d49ccaa9}</thumb>
+                        <waveform>{fa87a9bb-5f9d-451d-be93-5ba6ee738f33}</waveform>
+                    </caches>
+                    <custom/>
+                </node>
+                <node version="1" id="org.olivevideoeditor.Olive.footage" ptr="94432914429312">
+                    <label>demo.mp4</label>
+                    <input id="file_in">
+                        <primary>
+                            <standard>
+                                <track>demo.mp4</track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="enabled_in">
+                        <primary>
+                            <keyframing>0</keyframing>
+                            <standard>
+                                <track>true</track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="video_param_in">
+                        <primary>
+                            <standard>
+                                <track>
+                                    <width>0</width>
+                                    <height>0</height>
+                                    <depth>0</depth>
+                                    <timebase>0/1</timebase>
+                                    <format>-1</format>
+                                    <channelcount>0</channelcount>
+                                    <pixelaspectratio>1/1</pixelaspectratio>
+                                    <interlacing>0</interlacing>
+                                    <divider>1</divider>
+                                    <enabled>1</enabled>
+                                    <x>0</x>
+                                    <y>0</y>
+                                    <streamindex>0</streamindex>
+                                    <videotype>0</videotype>
+                                    <framerate>0/1</framerate>
+                                    <starttime>0</starttime>
+                                    <duration>0</duration>
+                                    <premultipliedalpha>0</premultipliedalpha>
+                                    <colorspace></colorspace>
+                                    <colorrange>0</colorrange>
+                                    <colorprimaries>0</colorprimaries>
+                                    <colortransfer>0</colortransfer>
+                                </track>
+                            </standard>
+                        </primary>
+                        <subelements count="1">
+                            <element>
+                                <standard>
+                                    <track>
+                                        <width>1920</width>
+                                        <height>1080</height>
+                                        <depth>0</depth>
+                                        <timebase>1/12800</timebase>
+                                        <format>0</format>
+                                        <channelcount>4</channelcount>
+                                        <pixelaspectratio>1/1</pixelaspectratio>
+                                        <interlacing>0</interlacing>
+                                        <divider>1</divider>
+                                        <enabled>1</enabled>
+                                        <x>0</x>
+                                        <y>0</y>
+                                        <streamindex>0</streamindex>
+                                        <videotype>0</videotype>
+                                        <framerate>25/1</framerate>
+                                        <starttime>0</starttime>
+                                        <duration>217600</duration>
+                                        <premultipliedalpha>0</premultipliedalpha>
+                                        <colorspace></colorspace>
+                                        <colorrange>0</colorrange>
+                                        <colorprimaries>1</colorprimaries>
+                                        <colortransfer>1</colortransfer>
+                                    </track>
+                                </standard>
+                            </element>
+                        </subelements>
+                    </input>
+                    <input id="audio_param_in">
+                        <primary>
+                            <standard>
+                                <track>
+                                    <samplerate>0</samplerate>
+                                    <channellayout>0</channellayout>
+                                    <format></format>
+                                    <enabled>1</enabled>
+                                    <streamindex>0</streamindex>
+                                    <duration>0</duration>
+                                    <timebase>0/1</timebase>
+                                </track>
+                            </standard>
+                        </primary>
+                        <subelements count="1">
+                            <element>
+                                <standard>
+                                    <track>
+                                        <samplerate>48000</samplerate>
+                                        <channellayout>3</channellayout>
+                                        <format>f32p</format>
+                                        <enabled>1</enabled>
+                                        <streamindex>1</streamindex>
+                                        <duration>816000</duration>
+                                        <timebase>1/48000</timebase>
+                                    </track>
+                                </standard>
+                            </element>
+                        </subelements>
+                    </input>
+                    <input id="subtitle_param_in">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <caches>
+                        <audio>{248ab9c2-17e4-43f1-8731-7d4b2eaaf8c9}</audio>
+                        <video>{399f53b5-7543-470c-854d-48a4b7d68c21}</video>
+                        <thumb>{3761c26e-2564-431f-9787-9e9e104f6ece}</thumb>
+                        <waveform>{90e619c9-3a4c-40e2-9701-e6fcfb20fc9a}</waveform>
+                    </caches>
+                    <custom>
+                        <timestamp>1780763070093</timestamp>
+                        <sourcestarttime source="timecode">3600/1</sourcestarttime>
+                        <viewer>
+                            <workarea version="1">
+                                <enabled>0</enabled>
+                                <in>0/1</in>
+                                <out>0/1</out>
+                            </workarea>
+                            <markers/>
+                        </viewer>
+                    </custom>
+                </node>
+                <node version="1" id="org.olivevideoeditor.Olive.sequence" ptr="94432914494208">
+                    <label>Fixture Sequence</label>
+                    <input id="enabled_in">
+                        <primary>
+                            <keyframing>0</keyframing>
+                            <standard>
+                                <track>true</track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="video_param_in">
+                        <primary>
+                            <standard>
+                                <track>
+                                    <width>0</width>
+                                    <height>0</height>
+                                    <depth>0</depth>
+                                    <timebase>0/1</timebase>
+                                    <format>-1</format>
+                                    <channelcount>0</channelcount>
+                                    <pixelaspectratio>1/1</pixelaspectratio>
+                                    <interlacing>0</interlacing>
+                                    <divider>1</divider>
+                                    <enabled>1</enabled>
+                                    <x>0</x>
+                                    <y>0</y>
+                                    <streamindex>0</streamindex>
+                                    <videotype>0</videotype>
+                                    <framerate>0/1</framerate>
+                                    <starttime>0</starttime>
+                                    <duration>0</duration>
+                                    <premultipliedalpha>0</premultipliedalpha>
+                                    <colorspace></colorspace>
+                                    <colorrange>0</colorrange>
+                                    <colorprimaries>0</colorprimaries>
+                                    <colortransfer>0</colortransfer>
+                                </track>
+                            </standard>
+                        </primary>
+                        <subelements count="1">
+                            <element>
+                                <standard>
+                                    <track>
+                                        <width>1920</width>
+                                        <height>1080</height>
+                                        <depth>1</depth>
+                                        <timebase>1001/30000</timebase>
+                                        <format>4</format>
+                                        <channelcount>4</channelcount>
+                                        <pixelaspectratio>1/1</pixelaspectratio>
+                                        <interlacing>0</interlacing>
+                                        <divider>1</divider>
+                                        <enabled>1</enabled>
+                                        <x>0</x>
+                                        <y>0</y>
+                                        <streamindex>0</streamindex>
+                                        <videotype>0</videotype>
+                                        <framerate>30000/1001</framerate>
+                                        <starttime>0</starttime>
+                                        <duration>0</duration>
+                                        <premultipliedalpha>0</premultipliedalpha>
+                                        <colorspace></colorspace>
+                                        <colorrange>0</colorrange>
+                                        <colorprimaries>0</colorprimaries>
+                                        <colortransfer>0</colortransfer>
+                                    </track>
+                                </standard>
+                            </element>
+                        </subelements>
+                    </input>
+                    <input id="audio_param_in">
+                        <primary>
+                            <standard>
+                                <track>
+                                    <samplerate>0</samplerate>
+                                    <channellayout>0</channellayout>
+                                    <format></format>
+                                    <enabled>1</enabled>
+                                    <streamindex>0</streamindex>
+                                    <duration>0</duration>
+                                    <timebase>0/1</timebase>
+                                </track>
+                            </standard>
+                        </primary>
+                        <subelements count="1">
+                            <element>
+                                <standard>
+                                    <track>
+                                        <samplerate>48000</samplerate>
+                                        <channellayout>3</channellayout>
+                                        <format>f32p</format>
+                                        <enabled>1</enabled>
+                                        <streamindex>0</streamindex>
+                                        <duration>0</duration>
+                                        <timebase>1/48000</timebase>
+                                    </track>
+                                </standard>
+                            </element>
+                        </subelements>
+                    </input>
+                    <input id="subtitle_param_in">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="tex_in">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="samples_in">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="track_in_0">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="track_in_1">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <input id="track_in_2">
+                        <primary>
+                            <standard>
+                                <track></track>
+                            </standard>
+                        </primary>
+                    </input>
+                    <connections>
+                        <connection input="samples_in" element="-1">
+                            <output>94432914429312</output>
+                        </connection>
+                        <connection input="tex_in" element="-1">
+                            <output>94432914429312</output>
+                        </connection>
+                    </connections>
+                    <caches>
+                        <audio>{102fc5ac-7748-46ee-b0a9-6face77861da}</audio>
+                        <video>{f2b74020-3926-4c05-a62a-179301cec7d6}</video>
+                        <thumb>{efb47fba-1935-49ef-8578-c8eee2792a98}</thumb>
+                        <waveform>{faac7cd3-084d-40d6-a352-2622d65d3502}</waveform>
+                    </caches>
+                    <custom>
+                        <workarea version="1">
+                            <enabled>0</enabled>
+                            <in>0/1</in>
+                            <out>0/1</out>
+                        </workarea>
+                        <markers/>
+                    </custom>
+                </node>
+            </nodes>
+            <settings>
+                <colorreferencespace>scene_linear</colorreferencespace>
+                <defaultinputcolorspace>Rec.709 OETF</defaultinputcolorspace>
+                <root>94432914284304</root>
+            </settings>
+        </project>
+        <layout version="1">
+            <folders/>
+            <timeline/>
+            <viewers/>
+            <data/>
+            <state></state>
+        </layout>
+    </project>
+</olive>

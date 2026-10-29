@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/quercus-engine", "crates/quercus-engine-rs"]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.2"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/OakVideoEditorCommunity/quercus-engine"
+authors = ["Oak Team"]
+rust-version = "1.85"
+
+[profile.release]
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 1

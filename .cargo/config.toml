@@ -1,0 +1,2 @@
+[env]
+FFMPEG_DIR = { value = ".cache/ffmpeg", relative = true }

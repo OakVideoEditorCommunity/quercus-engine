@@ -1,0 +1,26 @@
+[package]
+name = "quercus-node"
+version.workspace = true
+edition = "2021"
+description = "Quercus Video Editor node graph engine (Rust)"
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+quercus-core = { version = "=0.5.2", path = "../quercus-core" }
+ quercus-undo = { version = "=0.5.2", path = "../quercus-undo" }
+quercus-codec = { version = "=0.5.2", path = "../quercus-codec" }
+thiserror = "2"
+
+[features]
+# Declared so tests can gate on it; nothing in this crate enables it.
+# It used to pull in the quercuscodec host-mocks, which no longer exist (the
+# single-lib unification removed the quercuscore_*/quercusrender_* C ABI calls).
+test-stubs = []
+
+[dev-dependencies]
+# quercuscodec is also a plain dependency above; the dev-dependency re-entry
+# used to enable quercuscodec's `test-stubs` host-mocks, which no longer exist
+# (single-lib unification removed the quercuscore_*/quercusrender_* C ABI calls).
