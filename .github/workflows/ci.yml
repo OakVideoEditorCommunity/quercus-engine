@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            platform: linux
+            runner: ubuntu-24.04
+            arch: x64
+          - name: macOS
+            platform: macos
+            runner: macos-26
+            arch: arm64
+          - name: Windows
+            platform: windows
+            runner: windows-2022
+            arch: x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.platform == 'windows' && 'stable-x86_64-pc-windows-msvc' || 'stable' }}
+
+      - name: Install system dependencies (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: tooling/install-deps.sh
+
+      - name: Install prebuilt FFmpeg (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $asset = "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg-prebuilt"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri "$base/checksums.sha256" -OutFile "$dir\checksums.sha256"
+          $line = Select-String -Path "$dir\checksums.sha256" -Pattern ([regex]::Escape($asset) + "\s*$") | Select-Object -First 1
+          if (-not $line) { throw "no checksum for $asset" }
+          $expected = $line.Line.Split()[0].ToLowerInvariant()
+          Invoke-WebRequest -Uri "$base/$asset" -OutFile "$dir\$asset"
+          $actual = (Get-FileHash "$dir\$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg checksum mismatch" }
+          $root = "$env:GITHUB_WORKSPACE\.cache"
+          Remove-Item "$root\ffmpeg", "$root\ffmpeg-extract" -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path "$dir\$asset" -DestinationPath "$root\ffmpeg-extract" -Force
+          $inner = Get-ChildItem "$root\ffmpeg-extract" -Directory | Select-Object -First 1
+          Move-Item $inner.FullName "$root\ffmpeg"
+
+      - name: Restore FFmpeg build (Linux/macOS)
+        if: matrix.platform != 'windows'
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('tooling/ffmpeg/build-ffmpeg.sh', 'tooling/ffmpeg/build-deps.sh', 'tooling/install-deps.sh') }}
+          restore-keys: ffmpeg-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Build FFmpeg (Linux/macOS)
+        if: matrix.platform != 'windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: tooling/ffmpeg/build-ffmpeg.sh
+
+      - name: Configure build environment
+        shell: bash
+        run: |
+          if [[ "${{ matrix.platform }}" == "windows" ]]; then
+            ffmpeg="$GITHUB_WORKSPACE/.cache/ffmpeg"
+            echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+            echo "OCIO_RS_ENABLE_REAL=1" >> "$GITHUB_ENV"
+            echo "OCIO_RS_LINK=static" >> "$GITHUB_ENV"
+            echo "$ffmpeg/bin" >> "$GITHUB_PATH"
+          else
+            ffmpeg="$PWD/.cache/ffmpeg"
+            echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+            bash tooling/ocio-env.sh >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quercus-${{ matrix.platform }}-${{ matrix.arch }}
+          cache-on-failure: true
+
+      - name: Test (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --workspace -- --test-threads=1
+
+      - name: Test (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: cargo test --workspace -- --test-threads=1
+
+      - name: Compile and build (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          cargo test --workspace --no-run
+          cargo build --workspace
+
+      - name: C ABI header and docs checks (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          python3 tooling/gen_c_header.py --check
+          cc -std=c11 -Wall -Wextra -Werror -I crates/quercus-engine/include -fsyntax-only examples/c/hello.c
+          c++ -std=c++17 -Wall -Wextra -Werror -I crates/quercus-engine/include -fsyntax-only -x c++ examples/c/hello.c
+          DOCS_RS=1 cargo doc -p quercus-engine-rs --no-default-features --no-deps
+          DOCS_RS=1 cargo doc -p quercus-engine --no-default-features --features docs-only --no-deps
