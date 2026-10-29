@@ -2,7 +2,7 @@
 name = "quercus-ofx-plugin"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor plugin module: self-contained OFX host and plugin bridge (Rust)"
+description = "Quercus Video Editor plugin module: self-contained OFX host and plugin bridge (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 # staticlib: linked into libquercusplugin by CMake (see M11 §3.3).

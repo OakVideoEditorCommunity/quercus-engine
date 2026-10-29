@@ -2,7 +2,7 @@
 name = "quercus-audio"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor audio I/O, processing, synchronization and waveform engine (Rust)"
+description = "Quercus Video Editor audio I/O, processing, synchronization and waveform engine (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]

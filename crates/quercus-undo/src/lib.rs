@@ -1,3 +1,9 @@
+//! **Internal implementation detail — do not depend on this crate directly.**
+//!
+//! It is published only for `quercus-engine`'s dependency graph. Its API is
+//! not stable and may change without notice. Use `quercus-engine-rs`, or the
+//! C ABI via `quercus-engine`, instead.
+
 // Quercus Video Editor - Non-Linear Video Editor
 // Copyright (C) 2026 Quercus Team
 //

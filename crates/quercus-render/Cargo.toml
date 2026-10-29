@@ -2,7 +2,7 @@
 name = "quercus-render"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor render engine (Rust)"
+description = "Quercus Video Editor render engine (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]

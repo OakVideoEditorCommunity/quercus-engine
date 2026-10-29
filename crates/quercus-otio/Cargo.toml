@@ -18,7 +18,7 @@
 name = "quercus-otio"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor OpenTimelineIO binding crate: pure-Rust serde model of the OTIO JSON format used by project load/save (src/task/src/project/loadotio, saveotio)"
+description = "Quercus Video Editor OpenTimelineIO binding crate: pure-Rust serde model of the OTIO JSON format used by project load/save (src/task/src/project/loadotio, saveotio) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]

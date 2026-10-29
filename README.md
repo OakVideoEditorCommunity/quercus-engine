@@ -11,6 +11,11 @@ consume this engine through the SDK.
 
 ## Workspace
 
+All crates except `quercus-engine` and `quercus-engine-rs` are **internal
+implementation details**: they are published only so Cargo can resolve the
+engine's dependency graph. Do not depend on them directly; their APIs are not
+stable. Use the SDK (or the C ABI) instead.
+
 | crate | role |
 |---|---|
 | `quercus-core` | base types, color, config, platform helpers |

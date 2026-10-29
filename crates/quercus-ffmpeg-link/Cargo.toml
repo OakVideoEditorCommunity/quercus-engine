@@ -2,7 +2,7 @@
 name = "quercus-ffmpeg-link"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor internal link helper: transitive dependencies of a static FFmpeg (Rust)"
+description = "Quercus Video Editor internal link helper: transitive dependencies of a static FFmpeg (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 # A dedicated `links` crate so the emitted link directives propagate to
 # every dependent's final link (cargo only propagates rustc-link-* from

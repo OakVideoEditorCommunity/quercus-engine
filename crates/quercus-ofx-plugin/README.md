@@ -1,3 +1,10 @@
+> **Internal crate — do not depend on it directly.**
+>
+> This crate is an implementation detail of `quercus-engine` and is
+> published only to satisfy Cargo's dependency resolution. Its API is
+> **not stable** and may change in any release without notice. Use
+> `quercus-engine-rs` (or the C ABI via `quercus-engine`) instead.
+
 # quercusplugin Rust crate（M11 第 1+2 期实现状态）
 
 > 状态：**M11 第 1、2 期已实现**（第 2 期：GL 渲染路径 +

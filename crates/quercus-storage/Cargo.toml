@@ -2,7 +2,7 @@
 name = "quercus-storage"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor project persistence (Rust)"
+description = "Quercus Video Editor project persistence (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]

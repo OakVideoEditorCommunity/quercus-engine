@@ -2,7 +2,7 @@
 name = "quercus-core"
 version.workspace = true
 edition = "2021"
-description = "Rust value types mirroring quercuscore (Rational, TimeRange, format enums)"
+description = "Rust value types mirroring quercuscore (Rational, TimeRange, format enums) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]

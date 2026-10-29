@@ -2,7 +2,7 @@
 name = "quercus-timeline"
 version.workspace = true
 edition = "2021"
-description = "Quercus Video Editor timeline edit primitives (Rust)"
+description = "Quercus Video Editor timeline edit primitives (Rust) (internal; do not depend directly)"
 license = "GPL-3.0-or-later"
 
 [lib]
