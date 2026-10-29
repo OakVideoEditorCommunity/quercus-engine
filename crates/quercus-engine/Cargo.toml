@@ -7,6 +7,7 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Quercus video engine: domain facade and the stable C ABI consumed by frontends"
+links = "quercus_engine_native"
 readme = "README.md"
 keywords = ["video", "editor", "media", "ffmpeg", "c-abi"]
 categories = ["multimedia::video", "api-bindings"]
