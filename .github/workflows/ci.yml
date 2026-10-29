@@ -43,6 +43,17 @@ jobs:
         with:
           arch: x64
 
+      - name: Configure MSVC linker (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          # Git for Windows ships /usr/bin/link.exe (a Unix tool) and it
+          # shadows MSVC's link.exe even after msvc-dev-cmd. Pin the real
+          # linker for cargo.
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "MSVC link.exe not found: $linker" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
