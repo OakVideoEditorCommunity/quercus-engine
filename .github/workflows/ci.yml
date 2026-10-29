@@ -37,6 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up MSVC (Windows)
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -91,6 +97,8 @@ jobs:
             echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
             echo "OCIO_RS_ENABLE_REAL=1" >> "$GITHUB_ENV"
             echo "OCIO_RS_LINK=static" >> "$GITHUB_ENV"
+            echo "CC=cl" >> "$GITHUB_ENV"
+            echo "CXX=cl" >> "$GITHUB_ENV"
             echo "$ffmpeg/bin" >> "$GITHUB_PATH"
           else
             ffmpeg="$PWD/.cache/ffmpeg"

@@ -38,6 +38,12 @@ fn main() {
 
 /// 编译最小测试插件为共享库（$OUT_DIR/quercus_test_plugin.{dylib,so}）。
 fn build_test_plugin() {
+	// The test plugin is only used by the Unix test suite; the MSVC
+	// command line differs and the Windows CI job only compiles the
+	// workspace, so skip it there.
+	if cfg!(target_os = "windows") {
+		return;
+	}
 	use std::process::Command;
 	let out = std::env::var("OUT_DIR").expect("OUT_DIR");
 	let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
