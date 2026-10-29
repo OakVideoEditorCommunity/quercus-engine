@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-pub mod aux;
+pub mod auxiliary;
 pub mod notify;
 pub mod proxy;
 pub mod sync;
@@ -577,34 +577,34 @@ mod tests {
 			let sequence = quercus_editor_create_sequence(session, name.as_ptr(), name.len());
 			assert!(crate::node::quercus_node_id_is_valid(sequence));
 			assert_eq!(quercus_editor_current_sequence(session), sequence);
-			assert_eq!(aux::quercus_editor_marker_count(session), 0);
-			aux::add_marker_for_test(session, "Marker");
-			assert_eq!(aux::quercus_editor_marker_count(session), 1);
-			let mut marker = aux::QuercusEditorMarker::default();
-			assert!(aux::quercus_editor_marker_at(session, 0, &mut marker));
+			assert_eq!(auxiliary::quercus_editor_marker_count(session), 0);
+			auxiliary::add_marker_for_test(session, "Marker");
+			assert_eq!(auxiliary::quercus_editor_marker_count(session), 1);
+			let mut marker = auxiliary::QuercusEditorMarker::default();
+			assert!(auxiliary::quercus_editor_marker_at(session, 0, &mut marker));
 			assert_eq!(marker.color, 3);
 			assert_eq!(marker.time.in_.num, 1);
 			assert_eq!(marker.time.out.num, 2);
 			let mut name_buf = [0u8; 16];
 			let name_len =
-				aux::quercus_editor_marker_name_at(session, 0, name_buf.as_mut_ptr(), name_buf.len());
+				auxiliary::quercus_editor_marker_name_at(session, 0, name_buf.as_mut_ptr(), name_buf.len());
 			assert_eq!(
 				std::str::from_utf8(&name_buf[..name_len as usize]).unwrap(),
 				"Marker"
 			);
-			assert!(!aux::quercus_editor_marker_at(session, 99, &mut marker));
+			assert!(!auxiliary::quercus_editor_marker_at(session, 99, &mut marker));
 			assert_eq!(
-				aux::quercus_editor_marker_name_at(session, 99, name_buf.as_mut_ptr(), 16),
+				auxiliary::quercus_editor_marker_name_at(session, 99, name_buf.as_mut_ptr(), 16),
 				-1
 			);
 			let mut range = QuercusTimeRange::default();
-			assert!(!aux::quercus_editor_workarea(session, &mut range));
+			assert!(!auxiliary::quercus_editor_workarea(session, &mut range));
 
 			let second = quercus_editor_create_sequence(session, name.as_ptr(), name.len());
 			assert!(crate::node::quercus_node_id_is_valid(second));
 			assert_eq!(quercus_editor_current_sequence(session), second);
 			assert_eq!(
-				aux::quercus_editor_marker_count(session),
+				auxiliary::quercus_editor_marker_count(session),
 				0,
 				"sequence switch resets aux state"
 			);

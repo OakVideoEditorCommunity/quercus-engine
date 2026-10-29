@@ -187,12 +187,12 @@ mod tests {
 				crate::editor::quercus_editor_current_sequence(std::ptr::null()),
 				QUERCUS_NODE_ID_INVALID
 			);
-			assert_eq!(crate::editor::aux::quercus_editor_marker_count(std::ptr::null()), 0);
+			assert_eq!(crate::editor::auxiliary::quercus_editor_marker_count(std::ptr::null()), 0);
 			assert_eq!(
-				crate::editor::aux::quercus_editor_marker_name_at(std::ptr::null(), 0, std::ptr::null_mut(), 0),
+				crate::editor::auxiliary::quercus_editor_marker_name_at(std::ptr::null(), 0, std::ptr::null_mut(), 0),
 				-1
 			);
-			assert!(!crate::editor::aux::quercus_editor_workarea(std::ptr::null(), std::ptr::null_mut()));
+			assert!(!crate::editor::auxiliary::quercus_editor_workarea(std::ptr::null(), std::ptr::null_mut()));
 			assert_eq!(
 				crate::editor::quercus_editor_save(std::ptr::null(), "x".as_ptr(), 1, 0),
 				quercus_storage::error::QUERCUSSTORAGE_E_INVALID

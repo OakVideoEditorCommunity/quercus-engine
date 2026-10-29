@@ -289,8 +289,8 @@ mod tests {
 				entry_count: 12,
 			},
 		);
-		assert_roundtrip::<crate::editor::aux::QuercusEditorMarker>(
-			&crate::editor::aux::MarkerMetadata {
+		assert_roundtrip::<crate::editor::auxiliary::QuercusEditorMarker>(
+			&crate::editor::auxiliary::MarkerMetadata {
 				time: quercus_core::TimeRange::new(
 					quercus_core::Rational::new(1, 25),
 					quercus_core::Rational::new(3, 25),
