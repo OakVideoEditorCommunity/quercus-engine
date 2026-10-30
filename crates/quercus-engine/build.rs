@@ -17,6 +17,9 @@ fn main() {
 			println!(
 				"cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libquercus_engine.dylib"
 			);
+			// The static FFmpeg closure references the system zlib as
+			// @rpath/libz.1.dylib; the dylib itself must be able to find it.
+			println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,/usr/lib");
 		}
 		Ok("linux") => {
 			println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libquercus_engine.so");

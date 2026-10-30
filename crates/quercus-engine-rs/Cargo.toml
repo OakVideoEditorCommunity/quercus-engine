@@ -1,7 +1,7 @@
 [package]
 name = "quercus-engine-rs"
 edition = "2024"
-version = "0.5.4"
+version = "0.5.5"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -32,4 +32,10 @@ thiserror = "2"
 # talks to only through its exported `extern "C"` symbols — no Rust API
 # of the engine is used. The dependency edge makes cargo build the dylib
 # into the dependency search path before anything links the SDK.
-quercus-engine = { version = "=0.5.2", path = "../quercus-engine", optional = true }
+quercus-engine = { version = "=0.5.3", path = "../quercus-engine", optional = true }
+
+[build-dependencies]
+# Build-dependency edge: forces the engine cdylib to exist before this
+# crate's build script runs (normal dependencies are not guaranteed to be
+# built before the dependent's build script). Same optional feature.
+quercus-engine = { version = "=0.5.3", path = "../quercus-engine", optional = true }
