@@ -40,6 +40,11 @@ fn main() {
 			// Also expose the dylib next to the final binaries and test
 			// binaries, so an application rpath of @loader_path/$ORIGIN
 			// works without knowing Cargo's hashed artifact path.
+			// On Windows Cargo's own cdylib output is the unhashed
+			// quercus_engine.dll in deps; copying there would collide with
+			// the engine link step. The profile copy is enough for the exe,
+			// and deps already gets the engine DLL from Cargo.
+			#[cfg(not(target_os = "windows"))]
 			publish_runtime_copy(&dir.join(canonical_name()), &profile_dir.join("deps"));
 			publish_runtime_copy(&dir.join(canonical_name()), &profile_dir);
 			dir
