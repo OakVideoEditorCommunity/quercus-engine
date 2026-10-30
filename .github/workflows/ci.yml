@@ -115,6 +115,7 @@ jobs:
             ffmpeg="$PWD/.cache/ffmpeg"
             echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
             echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+            echo "$ffmpeg/bin" >> "$GITHUB_PATH"
             bash tooling/ocio-env.sh >> "$GITHUB_ENV"
           fi
 
