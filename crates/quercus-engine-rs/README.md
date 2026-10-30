@@ -1,6 +1,8 @@
 # quercus-engine-rs
 
-Safe Rust SDK for the Quercus video engine.
+Safe Rust SDK for the Quercus video engine, extracted from
+[Oak Video Editor](https://github.com/OakVideoEditorCommunity/oak). Oak Video
+Editor is the reference consumer; other Rust applications can use the same SDK.
 
 The SDK is a thin, owned-value layer over the engine's stable C ABI: it links
 `quercus-engine` as a cdylib (`#[link(name = "quercus_engine")]`) and never uses the

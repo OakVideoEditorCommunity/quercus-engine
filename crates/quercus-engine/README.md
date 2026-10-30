@@ -1,6 +1,8 @@
 # quercus-engine
 
-The Quercus video engine: the domain implementation (project/timeline graph,
+The Quercus video engine, extracted from
+[Oak Video Editor](https://github.com/OakVideoEditorCommunity/oak): the domain
+implementation (project/timeline graph,
 codecs, audio, render workers, storage, OpenFX host, tasks) plus a stable
 `extern "C"` facade.
 

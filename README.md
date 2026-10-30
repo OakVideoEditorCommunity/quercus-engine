@@ -9,6 +9,18 @@ This repository is the publishable engine workspace. The Quercus editor
 application and its CLI/worker live in a separate application repository and
 consume this engine through the SDK.
 
+## Relationship to Oak Video Editor
+
+Quercus is the headless engine and Rust SDK extracted from
+[Oak Video Editor](https://github.com/OakVideoEditorCommunity/oak). Oak Video
+Editor is the reference application and the primary consumer: the editor, its
+CLI and its render worker depend on the published `quercus-engine-rs` crate
+instead of carrying engine sources.
+
+The split keeps the engine reusable by other frontends (C/C++ through the C
+ABI, Rust through the SDK) while Oak Video Editor remains the place where the
+end-user application, UI and packaging live.
+
 ## Workspace
 
 All crates except `quercus-engine` and `quercus-engine-rs` are **internal
