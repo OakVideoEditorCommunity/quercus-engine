@@ -35,6 +35,17 @@ stable. Use the SDK (or the C ABI) instead.
 
 ## Build
 
+> **FFmpeg is mandatory and must be the project build.**
+>
+> Do **not** point `FFMPEG_DIR` at a system, Homebrew or distro FFmpeg, and do
+> not rely on `pkg-config` picking one up. The engine is pinned to the project
+> FFmpeg 8.1 build (static, all codec dependencies in one prefix); any other
+> FFmpeg produces link errors or a binary that loads the wrong libraries.
+>
+> Run the two scripts once before the first `cargo build`. If you consume the
+> published crates from another project, clone this repository once to get the
+> scripts, then set `FFMPEG_DIR` to the generated `.cache/ffmpeg` prefix.
+
 The engine links FFmpeg statically. Run the dependency scripts once (see
 [`docs/build.md`](docs/build.md)); they install into `.cache/ffmpeg` and the
 committed `.cargo/config.toml` points `FFMPEG_DIR` there:

@@ -26,6 +26,14 @@ The engine is a C ABI cdylib. docs.rs builds it with the dependency-free
 role and links to the C header and the SDK; the full API lives in
 `include/quercus_engine.h` and the `quercus-engine-rs` docs.
 
+## Build prerequisite
+
+The engine is pinned to the project FFmpeg 8.1 static build. Do not use a
+system/Homebrew/distro FFmpeg and do not leave `FFMPEG_DIR` pointing at one:
+run `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh` from the
+repository, then build with the generated `.cache/ffmpeg` prefix. Otherwise
+the link fails or the dylib loads the wrong FFmpeg.
+
 ## C API
 
 The public C surface is `include/quercus_engine.h`, generated from the Rust SDK's

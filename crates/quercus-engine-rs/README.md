@@ -13,6 +13,24 @@ other Quercus crate.
 quercus-engine-rs = "0.5"
 ```
 
+## Before you build: FFmpeg is mandatory
+
+`quercus-engine` links the **project FFmpeg 8.1 build** statically. A system,
+Homebrew or distro FFmpeg is not supported: if one is picked up through
+`pkg-config`/`FFMPEG_DIR`, the link fails or the resulting binary loads the
+wrong libraries.
+
+1. Clone <https://github.com/OakVideoEditorCommunity/quercus-engine> once.
+2. Run `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh`.
+3. Point `FFMPEG_DIR` at the generated prefix, e.g.
+   `export FFMPEG_DIR="$PWD/.cache/ffmpeg"` (the repository's
+   `.cargo/config.toml` does this automatically when building inside the
+   checkout).
+
+There is no prebuilt FFmpeg download and no system-package fallback. Without
+this step the engine's build script fails by design; silently linking a
+different FFmpeg would be worse.
+
 ## Quick start
 
 ```rust,ignore
