@@ -16,6 +16,25 @@ if [[ ${1:-} == "--dry-run" ]]; then
     DRY_RUN=1
 fi
 
+REGISTRY_ARGS=()
+if [[ -n ${PUBLISH_REGISTRY:-} ]]; then
+    REGISTRY_ARGS=(--registry "$PUBLISH_REGISTRY")
+fi
+
+publish_one() {
+    local crate="$1" attempt
+    for attempt in 1 2 3 4 5; do
+        if (( DRY_RUN )); then
+            cargo publish -p "$crate" --dry-run "${REGISTRY_ARGS[@]}" && return 0
+        else
+            cargo publish -p "$crate" "${REGISTRY_ARGS[@]}" && return 0
+        fi
+        echo "publish $crate failed (attempt $attempt); retrying in 20s" >&2
+        sleep 20
+    done
+    return 1
+}
+
 ORDER=(
     quercus-core
     quercus-ffmpeg-link
@@ -35,9 +54,5 @@ ORDER=(
 
 for crate in "${ORDER[@]}"; do
     echo "==> $crate"
-    if (( DRY_RUN )); then
-        cargo publish -p "$crate" --dry-run
-    else
-        cargo publish -p "$crate"
-    fi
+    publish_one "$crate"
 done

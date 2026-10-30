@@ -10,7 +10,7 @@ description = "Safe Rust SDK for the Quercus video engine: editor sessions, sema
 readme = "README.md"
 keywords = ["video", "editor", "media", "nle", "ffmpeg"]
 categories = ["multimedia::video", "api-bindings"]
-include = ["src/**/*.rs", "README.md", "LICENSE", "Cargo.toml"]
+include = ["src/**/*.rs", "README.md", "LICENSE", "Cargo.toml", "build.rs"]
 
 [package.metadata.docs.rs]
 # docs.rs cannot build the native engine (static FFmpeg/OpenColorIO). The SDK
