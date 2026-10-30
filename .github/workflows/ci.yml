@@ -119,6 +119,16 @@ jobs:
             bash tooling/ocio-env.sh >> "$GITHUB_ENV"
           fi
 
+      - name: Install ffmpeg CLI (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg CLI (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: brew install ffmpeg
+
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
