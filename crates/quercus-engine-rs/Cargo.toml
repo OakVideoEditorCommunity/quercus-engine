@@ -1,7 +1,7 @@
 [package]
 name = "quercus-engine-rs"
 edition = "2024"
-version = "0.5.6"
+version = "0.5.7"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -34,8 +34,11 @@ thiserror = "2"
 # into the dependency search path before anything links the SDK.
 quercus-engine = { version = "=0.5.3", path = "../quercus-engine", optional = true }
 
-[build-dependencies]
+[target.'cfg(not(windows))'.build-dependencies]
 # Build-dependency edge: forces the engine cdylib to exist before this
 # crate's build script runs (normal dependencies are not guaranteed to be
 # built before the dependent's build script). Same optional feature.
+# Windows is excluded: Cargo already produces an unhashed
+# quercus_engine.dll in deps, and a host build of the cdylib would collide
+# with the target link (LNK1104).
 quercus-engine = { version = "=0.5.3", path = "../quercus-engine", optional = true }
