@@ -27,9 +27,10 @@
 //! app keeps a single font stack and a single `cosmic-text` in the lockfile.
 //!
 //! [`RealEngine::new`](super::real::RealEngine::new) calls [`install`] once;
-//! [`font_families`] is the other entry point, feeding the
-//! `font_family_in` combo of the text nodes (see
-//! [`super::effectchain::effect_params`]).
+//! [`font_families`] feeds the `font_family_in` combo of the text nodes (see
+//! [`super::effectchain::effect_params`]), and [`add_font_data`] /
+//! [`add_font_dir`] let a caller register bundled fonts before or after
+//! [`install`] without an app restart.
 //!
 //! # Units
 //!
@@ -68,6 +69,7 @@
 //! `Format_RGBA8888_Premultiplied` buffer (channel count 4).
 
 use std::borrow::Cow;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 
 use cosmic_text::{
@@ -240,6 +242,75 @@ pub fn render(req: &TextLayoutRequest, transform: &TextRenderTransform, target: 
 /// markup overrides it (C++ `QPalette::Text` = `Qt::white`).
 const WHITE: Color = Color::rgb(0xFF, 0xFF, 0xFF);
 
+/// Adds a font file's bytes to the process-wide font database.
+///
+/// The font is usable for layout and appears in [`font_families`] as soon as
+/// this returns, whether the text backend is already installed or not; the
+/// cached family list is invalidated, so the next call rescans the database.
+/// Empty data is rejected with `false`.
+///
+/// Malformed data cannot be reported: the underlying
+/// `Database::load_font_data` is infallible and silently skips the faces it
+/// cannot parse, so non-empty garbage returns `true` and adds nothing.
+/// Callers that need the distinction have to validate the bytes upstream.
+///
+/// Only *explicit* family selection sees the addition: the default fallback
+/// chain is resolved when the font system is built, so a newly added font
+/// does not join the fallbacks for glyphs the chosen family lacks.
+pub fn add_font_data(data: Vec<u8>) -> bool {
+	if data.is_empty() {
+		return false;
+	}
+	// The database lock is released before the family cache is touched; the
+	// two locks are never held in the opposite order (see [`font_families`]),
+	// so this cannot deadlock.
+	{
+		let mut sys = lock_system();
+		sys.font_system.db_mut().load_font_data(data);
+	}
+	clear_font_families_cache();
+	true
+}
+
+/// Adds every font file under `path` (scanned recursively) to the
+/// process-wide font database.
+///
+/// Like [`add_font_data`], the addition is visible to layout and to
+/// [`font_families`] on its next call. Returns `false` when `path` is
+/// missing or is not a directory; an existing directory that holds no font,
+/// or only malformed ones, still returns `true`, because the scan ignores
+/// whatever it cannot parse.
+pub fn add_font_dir(path: &Path) -> bool {
+	if !path.is_dir() {
+		return false;
+	}
+	{
+		let mut sys = lock_system();
+		sys.font_system.db_mut().load_fonts_dir(path);
+	}
+	clear_font_families_cache();
+	true
+}
+
+/// Drops the cached [`font_families`] list so the next call rescans the font
+/// database.
+///
+/// [`add_font_data`] and [`add_font_dir`] already do this; it is public for
+/// callers that changed the database through some other means.
+pub fn clear_font_families_cache() {
+	*lock_families() = None;
+}
+
+/// The cached family list; `None` means "rescan on the next
+/// [`font_families`] call".
+static FAMILIES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Locks the family cache, recovering from a poisoned lock like
+/// [`lock_system`].
+fn lock_families() -> MutexGuard<'static, Option<Vec<String>>> {
+	FAMILIES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The sorted, de-duplicated font families of the system font database.
 ///
 /// Feeds the text nodes' `font_family_in` combo (the `combo_option`
@@ -247,26 +318,31 @@ const WHITE: Color = Color::rgb(0xFF, 0xFF, 0xFF);
 /// English family names, so they match what a project stores; an empty
 /// database yields an empty list and the combo keeps free-form entry.
 ///
-/// The list is snapshotted on first use: `effect_params` rebuilds the
-/// inspector's parameters on every engine change, and the font database
-/// only changes when fonts are installed (an app restart).
+/// The list is cached because `effect_params` rebuilds the inspector's
+/// parameters on every engine change; [`add_font_data`] / [`add_font_dir`]
+/// invalidate it, so a caller that registers fonts after the first call
+/// still sees them.
 pub fn font_families() -> Vec<String> {
-	static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
-	FAMILIES
-		.get_or_init(|| {
-			let mut names: Vec<String> = {
-				let sys = lock_system();
-				sys.font_system
-					.db()
-					.faces()
-					.filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
-					.collect()
-			};
-			names.sort();
-			names.dedup();
-			names
-		})
-		.clone()
+	// The cache lock is held while the database is scanned, so an add landing
+	// in between cannot be lost: the add needs the (exclusive) system lock to
+	// change the database, then clears this cache afterwards, which blocks
+	// until this snapshot is stored and drops it again.
+	let mut cache = lock_families();
+	if let Some(families) = cache.as_ref() {
+		return families.clone();
+	}
+	let mut names: Vec<String> = {
+		let sys = lock_system();
+		sys.font_system
+			.db()
+			.faces()
+			.filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+			.collect()
+	};
+	names.sort();
+	names.dedup();
+	*cache = Some(names.clone());
+	names
 }
 
 /// The pixel-space clip rectangle of a render, already intersected with the
@@ -520,6 +596,86 @@ mod tests {
 	/// holds this so it cannot race a future one.
 	static HOOK_LOCK: StdMutex<()> = StdMutex::new(());
 
+	/// Serializes the tests that extend the process-wide font database or
+	/// observe its family cache: an add is only visible through the cache
+	/// transition they check between their own calls.
+	static FONT_DB_LOCK: StdMutex<()> = StdMutex::new(());
+
+	/// A unique scratch directory under the system temp dir, removed on drop.
+	struct TempDir(std::path::PathBuf);
+
+	impl TempDir {
+		fn new(tag: &str) -> Self {
+			use std::sync::atomic::{AtomicUsize, Ordering};
+			static COUNTER: AtomicUsize = AtomicUsize::new(0);
+			let path = std::env::temp_dir().join(format!(
+				"quercus-textengine-{tag}-{}-{}",
+				std::process::id(),
+				COUNTER.fetch_add(1, Ordering::Relaxed)
+			));
+			std::fs::create_dir_all(&path).expect("create the temp dir");
+			Self(path)
+		}
+
+		fn path(&self) -> &Path {
+			&self.0
+		}
+	}
+
+	impl Drop for TempDir {
+		fn drop(&mut self) {
+			let _ = std::fs::remove_dir_all(&self.0);
+		}
+	}
+
+	/// The number of faces in the process-wide font database.
+	fn face_count() -> usize {
+		lock_system().font_system.db().faces().count()
+	}
+
+	/// The first real font file under the usual system font roots, with its
+	/// bytes; `None` when this machine has no `.ttf` / `.otf` font.
+	fn system_font() -> Option<(std::path::PathBuf, Vec<u8>)> {
+		fn scan(dir: &Path, depth: usize) -> Option<std::path::PathBuf> {
+			if depth > 8 {
+				return None;
+			}
+			for entry in std::fs::read_dir(dir).ok()?.flatten() {
+				let path = entry.path();
+				if path.is_dir() {
+					if let Some(font) = scan(&path, depth + 1) {
+						return Some(font);
+					}
+					continue;
+				}
+				let extension = path
+					.extension()
+					.and_then(|e| e.to_str())
+					.map(|e| e.to_ascii_lowercase());
+				if matches!(extension.as_deref(), Some("ttf") | Some("otf")) {
+					return Some(path);
+				}
+			}
+			None
+		}
+
+		["/usr/share/fonts", "/usr/local/share/fonts"]
+			.iter()
+			.find_map(|root| {
+				let path = scan(Path::new(root), 0)?;
+				let data = std::fs::read(&path).ok()?;
+				(!data.is_empty()).then_some((path, data))
+			})
+	}
+
+	/// Asserts that `families` is sorted and free of duplicates.
+	fn assert_sorted_and_unique(families: &[String]) {
+		let mut sorted = families.to_vec();
+		sorted.sort();
+		sorted.dedup();
+		assert_eq!(families, sorted);
+	}
+
 	/// A plain-text request with the test defaults (72 pt at 3780
 	/// dots/meter, no wrap, no centering, backend default family).
 	fn plain(text: &str, font_size_pt: f64, wrap_width: f64) -> TextLayoutRequest {
@@ -669,17 +825,115 @@ mod tests {
 
 	#[test]
 	fn font_families_are_sorted_and_unique() {
+		let _guard = FONT_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 		let families = font_families();
 		assert!(
 			!families.is_empty(),
 			"the system font database has no family"
 		);
-		let mut sorted = families.clone();
-		sorted.sort();
-		sorted.dedup();
-		assert_eq!(families, sorted);
+		assert_sorted_and_unique(&families);
 		// Cached: the second call hands out the same list.
 		assert_eq!(font_families(), families);
+		// Clearing the cache only forces a rescan: the list is unchanged.
+		clear_font_families_cache();
+		assert_eq!(font_families(), families);
+	}
+
+	#[test]
+	fn add_font_data_rejects_empty() {
+		assert!(!add_font_data(Vec::new()));
+	}
+
+	#[test]
+	fn add_font_dir_rejects_bogus_paths() {
+		let _guard = FONT_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		assert!(!add_font_dir(Path::new("/nonexistent/quercus-fonts")));
+		// A path that does exist, but is a file rather than a directory.
+		let dir = TempDir::new("bogus");
+		let file = dir.path().join("font.ttf");
+		std::fs::write(&file, b"not a font").expect("write the fake font");
+		assert!(!add_font_dir(&file));
+		assert!(!add_font_dir(&dir.path().join("missing")));
+	}
+
+	#[test]
+	fn add_font_data_refreshes_families() {
+		let _guard = FONT_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some((path, bytes)) = system_font() else {
+			eprintln!("skipping add_font_data_refreshes_families: no system font found");
+			return;
+		};
+		let before = font_families();
+		assert!(!before.is_empty(), "the system font database has no family");
+		let faces_before = face_count();
+
+		// The list comes out of the cache until an add drops it.
+		assert_eq!(font_families(), before);
+		assert!(
+			add_font_data(bytes),
+			"adding {} was rejected",
+			path.display()
+		);
+
+		// The add invalidated the cache, so the next list has to be rescanned.
+		assert!(
+			lock_families().is_none(),
+			"the add did not invalidate the family cache"
+		);
+
+		// fontdb silently ignores malformed data, so a grown face count is
+		// what proves these bytes were really parsed as a font.
+		assert!(
+			face_count() > faces_before,
+			"adding {} added no face",
+			path.display()
+		);
+		let after = font_families();
+		assert!(!after.is_empty());
+		assert!(
+			after.len() >= before.len(),
+			"the family list shrank from {} to {}",
+			before.len(),
+			after.len()
+		);
+		assert_sorted_and_unique(&after);
+	}
+
+	#[test]
+	fn add_font_dir_refreshes_families() {
+		let _guard = FONT_DB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some((source, bytes)) = system_font() else {
+			eprintln!("skipping add_font_dir_refreshes_families: no system font found");
+			return;
+		};
+		let dir = TempDir::new("dir");
+		let name = source
+			.file_name()
+			.expect("the scanned font has a file name");
+		std::fs::write(dir.path().join(name), bytes).expect("copy the system font");
+		// The cache is warm before the add, like it would be after the first
+		// inspector build in the app.
+		let before = font_families();
+		let faces_before = face_count();
+
+		assert!(
+			add_font_dir(dir.path()),
+			"adding {} was rejected",
+			dir.path().display()
+		);
+		assert!(
+			lock_families().is_none(),
+			"the add did not invalidate the family cache"
+		);
+		assert!(
+			face_count() > faces_before,
+			"adding {} added no face",
+			dir.path().display()
+		);
+		let after = font_families();
+		assert!(!after.is_empty());
+		assert!(after.len() >= before.len());
+		assert_sorted_and_unique(&after);
 	}
 
 	#[test]

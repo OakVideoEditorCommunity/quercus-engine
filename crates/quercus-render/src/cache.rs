@@ -530,6 +530,9 @@ impl PlaybackCache {
 			.map_err(|e| Error::Failed(format!("write state: {e}")))?;
 		file.flush()
 			.map_err(|e| Error::Failed(format!("flush state: {e}")))?;
+		// The state file counts toward the disk-cache budget; enforce it
+		// after the write (debounced, best-effort, and lock-free).
+		crate::manager::enforce_disk_cache_quota();
 		Ok(())
 	}
 

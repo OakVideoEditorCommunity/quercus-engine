@@ -226,8 +226,12 @@ impl CodecStream {
 		!self.filename.is_empty() && self.stream >= 0
 	}
 
-	/// The file exists on disk.
+	/// The file exists: either on disk or through the installed media-I/O
+	/// provider (a custom source need not map to a local path).
 	pub fn exists(&self) -> bool {
+		if crate::mediaio::provider_handles(&self.filename) {
+			return true;
+		}
 		Path::new(&self.filename).exists()
 	}
 

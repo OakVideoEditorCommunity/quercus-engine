@@ -780,8 +780,7 @@ impl DecoderState {
 		let mut dict = Dictionary::new();
 		dict.set("analyzeduration", "5000000");
 		dict.set("probesize", "20000000");
-		let input =
-			ffmpeg::format::input_with_dictionary(&stream.filename(), dict).map_err(ffmpeg_err)?;
+		let input = crate::mediaio::open_input(stream.filename(), Some(dict)).map_err(ffmpeg_err)?;
 
 		let stream_index = stream.stream() as usize;
 		let fstream = input
@@ -2209,7 +2208,7 @@ fn probe_file(filename: &str, cancelled: Option<&CancelAtom>) -> Option<FootageD
 	let mut dict = Dictionary::new();
 	dict.set("analyzeduration", "5000000");
 	dict.set("probesize", "20000000");
-	let input = ffmpeg::format::input_with_dictionary(filename, dict).ok()?;
+	let input = crate::mediaio::open_input(filename, Some(dict)).ok()?;
 
 	let mut desc = FootageDescription::new("ffmpeg");
 	let footage_duration = input.duration();

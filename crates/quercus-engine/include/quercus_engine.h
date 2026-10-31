@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 51 POD structs, 13 enums, 690 functions. */
+/* 54 POD structs, 14 enums, 710 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -200,6 +200,13 @@ typedef enum VideoPixelFormat {
     QUERCUS_VIDEOPIXELFORMAT_F32RGBA = 0,
     QUERCUS_VIDEOPIXELFORMAT_BGRA8 = 1
 } VideoPixelFormat;
+typedef enum GpuBackend {
+    QUERCUS_GPUBACKEND_AUTO = 0,
+    QUERCUS_GPUBACKEND_METAL = 1,
+    QUERCUS_GPUBACKEND_VULKAN = 2,
+    QUERCUS_GPUBACKEND_GL = 3,
+    QUERCUS_GPUBACKEND_CPU = 4
+} GpuBackend;
 typedef enum PixelFormat {
     QUERCUS_PIXELFORMAT_INVALID = -1,
     QUERCUS_PIXELFORMAT_U8 = 0,
@@ -236,10 +243,13 @@ typedef struct ProxyParams ProxyParams;
 typedef struct QuercusClipboardClip QuercusClipboardClip;
 typedef struct QuercusCodecProxyResult QuercusCodecProxyResult;
 typedef struct QuercusCodecTaskRequest QuercusCodecTaskRequest;
+typedef struct QuercusConfigSourceVTable QuercusConfigSourceVTable;
 typedef struct QuercusTrackPlacement QuercusTrackPlacement;
 typedef struct QuercusEditParams QuercusEditParams;
 typedef struct QuercusEditResult QuercusEditResult;
 typedef struct QuercusLevelStats QuercusLevelStats;
+typedef struct QuercusMediaIoError QuercusMediaIoError;
+typedef struct QuercusMediaIoVTable QuercusMediaIoVTable;
 typedef struct QuercusOfxCurvePoint QuercusOfxCurvePoint;
 typedef struct QuercusOfxRectD QuercusOfxRectD;
 typedef struct QuercusPluginDescriptor QuercusPluginDescriptor;
@@ -453,6 +463,12 @@ struct QuercusCodecTaskRequest {
     int32_t proxy_width;
     int32_t proxy_height;
 };
+struct QuercusConfigSourceVTable {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    int32_t (* load)(void*, uint8_t*, size_t);
+    bool (* save)(void*, const uint8_t*, size_t);
+};
 struct QuercusTrackPlacement {
     int32_t kind;
     size_t index;
@@ -515,6 +531,20 @@ struct QuercusLevelStats {
     double max_peak_linear;
     double integrated_lufs;
     int32_t silence;
+};
+struct QuercusMediaIoError {
+    int32_t code;
+    uint8_t message[512];
+};
+struct QuercusMediaIoVTable {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char* name;
+    int32_t (* can_open)(void*, const uint8_t*, size_t, QuercusMediaIoError*);
+    int32_t (* open)(void*, const uint8_t*, size_t, void**, QuercusMediaIoError*);
+    int64_t (* read)(void*, void*, uint8_t*, size_t, QuercusMediaIoError*);
+    int64_t (* seek)(void*, void*, int64_t, int32_t, QuercusMediaIoError*);
+    void (* close)(void*, void*);
 };
 struct QuercusOfxCurvePoint {
     double key;
@@ -690,6 +720,11 @@ typedef void (*UndoObserverFn)(void* userdata);
 typedef bool (*ProgressFn)(const char* label, const char* message, double fraction, void* userdata);
 typedef void (*ProgressEndFn)(void* userdata);
 typedef void (*CommandFn)(const char* command_id, void* userdata);
+typedef void (*LogFn)(int32_t level, const uint8_t* message, size_t len, void* userdata);
+typedef void (*LogDropFn)(void* userdata);
+typedef int32_t (*QuercusConfigLoadFn)(void* userdata, uint8_t* buf, size_t cap);
+typedef bool (*QuercusConfigSaveFn)(void* userdata, const uint8_t* data, size_t len);
+typedef void (*QuercusConfigDropFn)(void* userdata);
 
 void quercus_audio_buffer_add_ref(const void* audio);
 size_t quercus_audio_buffer_copy_samples(const void* audio, float* dst, size_t capacity);
@@ -809,6 +844,8 @@ void quercus_codec_frame_set_timestamp(void* this_, Rational ts);
 Rational quercus_codec_frame_timestamp(const void* this_);
 int32_t quercus_codec_frame_width(const void* this_);
 void* quercus_codec_frame_with_params(VideoParams params);
+int32_t quercus_codec_mediaio_register(const QuercusMediaIoVTable* vt, void* userdata);
+bool quercus_codec_mediaio_unregister(void);
 bool quercus_codec_proxy_filename_has_audio(const uint8_t* proxy_filename, size_t len);
 int32_t quercus_codec_proxy_get_filename(const uint8_t* cache_path, size_t cache_path_len, const uint8_t* source_filename, size_t source_filename_len, int32_t stream_index, ProxyParams params, uint8_t* buf, size_t buf_len);
 QuercusCodecProxyResult quercus_codec_proxy_get_or_start(const uint8_t* cache_path, size_t cache_path_len, const uint8_t* source_filename, size_t source_filename_len, int32_t stream_index, ProxyParams params);
@@ -884,16 +921,19 @@ void* quercus_core_colortransform_new_output(const uint8_t* output, size_t outpu
 int32_t quercus_core_colortransform_output(const void* this_, uint8_t* buf, size_t buf_len);
 void quercus_core_colortransform_release(const void* this_);
 int32_t quercus_core_colortransform_view(const void* this_, uint8_t* buf, size_t buf_len);
+bool quercus_core_config_clear_source(void);
 int32_t quercus_core_config_get(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, uint8_t* buf, size_t buf_len);
 int32_t quercus_core_config_get_bool(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, int32_t fallback);
 double quercus_core_config_get_double(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, double fallback);
 int64_t quercus_core_config_get_int64(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, int64_t fallback);
+bool quercus_core_config_has_source(void);
 bool quercus_core_config_load(void);
 bool quercus_core_config_save(void);
 bool quercus_core_config_set(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, const uint8_t* value, size_t value_len);
 bool quercus_core_config_set_bool(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, int32_t value);
 bool quercus_core_config_set_double(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, double value);
 bool quercus_core_config_set_int64(const uint8_t* group, size_t group_len, const uint8_t* key, size_t key_len, int64_t value);
+bool quercus_core_config_set_source(const QuercusConfigSourceVTable* vt, void* userdata, QuercusConfigDropFn drop_cb);
 int32_t quercus_core_displayicc_system_display_icc(uint8_t* buf, size_t buf_len);
 int32_t quercus_core_displayicc_system_display_icc_for_monitor(const uint8_t* fingerprint, size_t fingerprint_len, uint8_t* buf, size_t buf_len);
 bool quercus_core_displayicc_windows_acm_active(void);
@@ -911,6 +951,10 @@ int32_t quercus_core_file_get_temp_file_path(uint8_t* buf, size_t buf_len);
 int32_t quercus_core_file_get_unique_file_identifier(const uint8_t* filename, size_t filename_len, uint8_t* buf, size_t buf_len);
 int32_t quercus_core_file_read_file_as_string(const uint8_t* filename, size_t filename_len, uint8_t* buf, size_t buf_len);
 bool quercus_core_file_rename_file_allow_overwrite(const uint8_t* from, size_t from_len, const uint8_t* to, size_t to_len);
+int32_t quercus_core_log_get_level(void);
+bool quercus_core_log_set_level(int32_t level);
+void quercus_core_log_set_sink(LogFn sink, void* userdata, LogDropFn drop_cb);
+void quercus_core_log_write(int32_t level, const uint8_t* msg, size_t len);
 bool quercus_core_lut_display_domain(float* lo, float* hi);
 uint32_t quercus_core_lut_display_edge(void);
 int32_t quercus_core_pixelformat_bytes_per_channel(int32_t format);
@@ -1244,9 +1288,18 @@ int32_t quercus_project_setting(const void* project, const uint8_t* key, size_t 
 bool quercus_project_unset_setting(const void* project, const uint8_t* key, size_t key_len);
 int32_t quercus_project_uuid(const void* project, uint8_t* buf, size_t buf_len);
 bool quercus_render_disk_cache_clear(void);
+int64_t quercus_render_disk_cache_max_bytes(void);
 int32_t quercus_render_disk_cache_path(uint8_t* buf, size_t buf_len);
+int64_t quercus_render_disk_cache_prune(void);
+bool quercus_render_disk_cache_set_max_bytes(int64_t max_bytes);
+bool quercus_render_disk_cache_set_path(const uint8_t* path, size_t path_len);
 int64_t quercus_render_disk_cache_size(void);
 int32_t quercus_render_frame_f32(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, float* dst, size_t dst_capacity);
+bool quercus_render_gpu_host_installed(void);
+bool quercus_render_gpu_install(const void* wgpu_device, const void* wgpu_queue, int32_t backend_kind);
+bool quercus_render_gpu_is_adopted(void);
+int32_t quercus_render_gpu_kind(void);
+bool quercus_render_gpu_mark_host(void);
 void quercus_render_manager_clear_graph_snapshot(void);
 bool quercus_render_manager_init(int32_t backend);
 bool quercus_render_manager_is_initialized(void);
@@ -1257,6 +1310,8 @@ bool quercus_render_manager_set_inline_project(const void* project);
 void quercus_render_manager_set_workspace_size(int32_t width, int32_t height, uint32_t fps);
 void quercus_render_manager_shutdown(void);
 bool quercus_render_swizzle_bgra8_to_rgba8(const uint8_t* src, uint8_t* dst, size_t pixel_count);
+bool quercus_render_textengine_add_font_data(const uint8_t* bytes, size_t len);
+bool quercus_render_textengine_add_font_dir(const uint8_t* path, size_t path_len);
 int32_t quercus_render_textengine_font_family_at(int32_t index, uint8_t* buf, size_t buf_len);
 int32_t quercus_render_textengine_font_family_count(void);
 void quercus_render_textengine_install(void);

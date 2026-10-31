@@ -79,9 +79,13 @@ use crate::worker::ipc::{
 /// Protocol version announced in the startup handshake.
 pub const PROTOCOL_VERSION: i32 = 1;
 
-/// Log a worker-side message to stderr (the `worker: ` prefix).
+/// Log a worker-side error through the engine log (the `worker: ` prefix,
+/// so an installed sink sees worker diagnostics alongside the engine's).
 pub fn log_error(message: &str) {
-	eprintln!("worker: {message}");
+	let _ = quercus_core::debug::log(
+		quercus_core::debug::Level::Error,
+		&format!("worker: {message}"),
+	);
 }
 
 /// Serializes unit tests that install or drive the process-global

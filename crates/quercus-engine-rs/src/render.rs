@@ -31,6 +31,10 @@ unsafe extern "C" {
 	fn quercus_render_disk_cache_path(buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_render_disk_cache_size() -> i64;
 	fn quercus_render_disk_cache_clear() -> bool;
+	fn quercus_render_disk_cache_max_bytes() -> i64;
+	fn quercus_render_disk_cache_set_max_bytes(max_bytes: i64) -> bool;
+	fn quercus_render_disk_cache_set_path(path: *const u8, path_len: usize) -> bool;
+	fn quercus_render_disk_cache_prune() -> i64;
 	fn quercus_render_manager_init(backend: i32) -> bool;
 	fn quercus_render_manager_is_initialized() -> bool;
 	fn quercus_render_manager_shutdown();
@@ -40,7 +44,18 @@ unsafe extern "C" {
 	fn quercus_render_manager_set_graph_snapshot(project: *const c_void, revision: u64) -> bool;
 	fn quercus_render_manager_resync_graph_snapshot(project: *const c_void, revision: u64) -> bool;
 	fn quercus_render_manager_clear_graph_snapshot();
+	fn quercus_render_gpu_install(
+		wgpu_device: *const c_void,
+		wgpu_queue: *const c_void,
+		backend_kind: i32,
+	) -> bool;
+	fn quercus_render_gpu_kind() -> i32;
+	fn quercus_render_gpu_is_adopted() -> bool;
+	fn quercus_render_gpu_host_installed() -> bool;
+	fn quercus_render_gpu_mark_host() -> bool;
 	fn quercus_render_textengine_install();
+	fn quercus_render_textengine_add_font_data(bytes: *const u8, len: usize) -> bool;
+	fn quercus_render_textengine_add_font_dir(path: *const u8, path_len: usize) -> bool;
 	fn quercus_render_textengine_font_family_count() -> i32;
 	fn quercus_render_textengine_font_family_at(index: i32, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_render_swizzle_bgra8_to_rgba8(src: *const u8, dst: *mut u8, pixel_count: usize) -> bool;
@@ -92,6 +107,28 @@ pub fn disk_cache_size() -> Option<i64> {
 /// Clears the disk cache.
 pub fn disk_cache_clear() -> bool {
 	unsafe { quercus_render_disk_cache_clear() }
+}
+
+/// The configured disk-cache byte budget (`0` = unlimited).
+pub fn disk_cache_max_bytes() -> i64 {
+	unsafe { quercus_render_disk_cache_max_bytes() }
+}
+
+/// Sets the disk-cache byte budget (`0` = unlimited) and prunes immediately.
+pub fn disk_cache_set_max_bytes(max_bytes: i64) -> bool {
+	unsafe { quercus_render_disk_cache_set_max_bytes(max_bytes) }
+}
+
+/// Points the disk cache at `path` (absolute; created when missing). Only
+/// caches created afterwards use it.
+pub fn disk_cache_set_path(path: &str) -> bool {
+	unsafe { quercus_render_disk_cache_set_path(path.as_ptr(), path.len()) }
+}
+
+/// Prunes the disk cache to the configured budget; returns bytes freed.
+pub fn disk_cache_prune() -> Option<i64> {
+	let freed = unsafe { quercus_render_disk_cache_prune() };
+	(freed >= 0).then_some(freed)
 }
 
 /// The render backend for [`manager_init`].
@@ -165,10 +202,123 @@ pub fn manager_clear_graph_snapshot() {
 	unsafe { quercus_render_manager_clear_graph_snapshot() }
 }
 
+// ---------------------------------------------------------------------------
+// GPU device sharing (zero-copy present)
+// ---------------------------------------------------------------------------
+
+/// The engine's wgpu backend selection (the C ABI `BackendKind` values).
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBackend {
+	/// Resolve automatically (Metal → Vulkan → GL → CPU).
+	Auto = 0,
+	/// Metal (macOS primary).
+	Metal = 1,
+	/// Vulkan.
+	Vulkan = 2,
+	/// OpenGL (legacy fallback).
+	Gl = 3,
+	/// CPU fallback (no adapter).
+	Cpu = 4,
+}
+
+impl GpuBackend {
+	/// A `GpuBackend` from its C ABI discriminant; `None` outside 0..=4.
+	pub const fn from_i32(value: i32) -> Option<Self> {
+		match value {
+			0 => Some(Self::Auto),
+			1 => Some(Self::Metal),
+			2 => Some(Self::Vulkan),
+			3 => Some(Self::Gl),
+			4 => Some(Self::Cpu),
+			_ => None,
+		}
+	}
+}
+
+/// Hands the host's wgpu device/queue to the engine so the render thread
+/// creates its textures on the presenter's device (zero-copy present).
+///
+/// `device` and `queue` must point to live `wgpu::Device` / `wgpu::Queue`
+/// values from the **same wgpu major version (29)** the engine was built
+/// with; mixing major versions is undefined behavior. Cast the
+/// references, for example:
+///
+/// ```ignore
+/// let device_ptr = (&device as *const wgpu::Device) as *const std::ffi::c_void;
+/// let queue_ptr = (&queue as *const wgpu::Queue) as *const std::ffi::c_void;
+/// let installed = unsafe { gpu_install(device_ptr, queue_ptr, GpuBackend::Vulkan) };
+/// ```
+///
+/// The engine clones the handles and takes no ownership: the host keeps
+/// the device/queue (the engine's clones keep them alive afterwards), and
+/// only has to keep the values alive for the duration of this call.
+///
+/// **Timing**: call before the first render/thumbnail. The engine refuses
+/// an install once its shared context has created GPU resources (returns
+/// `false`; presentation then falls back to a staging readback), and
+/// returns `false` for null pointers. This SDK deliberately does not
+/// depend on wgpu, so the pointers cross as `c_void`.
+///
+/// # Safety
+///
+/// Both pointers must be non-null and point to live, aligned
+/// `wgpu::Device` / `wgpu::Queue` values of the wgpu generation the
+/// engine was built with.
+pub unsafe fn gpu_install(
+	device: *const c_void,
+	queue: *const c_void,
+	backend: GpuBackend,
+) -> bool {
+	// SAFETY: the caller upholds the pointer/lifetime contract above.
+	unsafe { quercus_render_gpu_install(device, queue, backend as i32) }
+}
+
+/// The engine's active GPU backend, or `None` when no context exists.
+pub fn gpu_kind() -> Option<GpuBackend> {
+	GpuBackend::from_i32(unsafe { quercus_render_gpu_kind() })
+}
+
+/// True when the engine renders on a host-adopted device (zero-copy
+/// present); false when no context exists or the engine created its own.
+pub fn gpu_is_adopted() -> bool {
+	unsafe { quercus_render_gpu_is_adopted() }
+}
+
+/// True when the host installed or marked the shared render device.
+pub fn gpu_host_installed() -> bool {
+	unsafe { quercus_render_gpu_host_installed() }
+}
+
+/// Declares the engine-created shared context as the host's render device
+/// (macOS/Windows, where the windowing layer does not hand out its wgpu
+/// device); creates the context on first use. False without an adapter.
+pub fn gpu_mark_host() -> bool {
+	unsafe { quercus_render_gpu_mark_host() }
+}
+
 /// Installs the text measure/render backends (idempotent; text nodes
 /// render empty without them).
 pub fn textengine_install() {
 	unsafe { quercus_render_textengine_install() }
+}
+
+/// Adds a font file's bytes to the shared text backend; the next
+/// [`font_families`] call includes its families. Empty data is rejected.
+pub fn textengine_add_font_data(bytes: &[u8]) -> bool {
+	if bytes.is_empty() {
+		return false;
+	}
+	unsafe { quercus_render_textengine_add_font_data(bytes.as_ptr(), bytes.len()) }
+}
+
+/// Adds every font file under `path` (recursively) to the shared text
+/// backend. False for a missing/non-directory path.
+pub fn textengine_add_font_dir(path: &std::path::Path) -> bool {
+	let Some(path) = path.to_str() else {
+		return false;
+	};
+	unsafe { quercus_render_textengine_add_font_dir(path.as_ptr(), path.len()) }
 }
 
 /// System font families from the same backend used by render workers.

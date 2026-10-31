@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use quercus_node::id::NodeId;
 
-use crate::codec::copy_str_out;
+use crate::codec::{copy_str_out, str_arg};
 use crate::coretypes::QuercusRational;
 use crate::handle::NativeMirror;
 use crate::node::ProjectHandle;
@@ -154,15 +154,47 @@ pub extern "C" fn quercus_render_textengine_install() {
 	quercus_render::textengine::install();
 }
 
+/// Adds a font file's bytes to the shared text backend.
+///
+/// Callable before or after [`quercus_render_textengine_install`]; the next
+/// [`quercus_render_textengine_font_family_count`] sees the new families.
+/// Empty data and non-UTF-8 paths are rejected.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_render_textengine_add_font_data(
+	bytes: *const u8,
+	len: usize,
+) -> bool {
+	if bytes.is_null() || len == 0 {
+		return false;
+	}
+	let data = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+	quercus_render::textengine::add_font_data(data)
+}
+
+/// Adds every font file under `path` (recursively) to the shared text
+/// backend. False for a null/non-UTF-8/missing/non-directory path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_render_textengine_add_font_dir(
+	path: *const u8,
+	path_len: usize,
+) -> bool {
+	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
+		return false;
+	};
+	quercus_render::textengine::add_font_dir(std::path::Path::new(path))
+}
+
 /// Number of font families exposed by the shared text backend.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_render_textengine_font_family_count() -> i32 {
 	font_families().len() as i32
 }
 
-fn font_families() -> &'static [String] {
-	static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-	FAMILIES.get_or_init(quercus_render::textengine::font_families)
+fn font_families() -> Vec<String> {
+	// No extra cache here: the backend's own cache is invalidated by
+	// add_font_data/add_font_dir, so a caller that registers fonts after
+	// the first query still sees them.
+	quercus_render::textengine::font_families()
 }
 
 /// A font family name, snprintf-style; -1 when out of range.
@@ -340,6 +372,41 @@ pub extern "C" fn quercus_render_disk_cache_size() -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_render_disk_cache_clear() -> bool {
 	quercus_render::manager::disk_cache_clear().is_ok()
+}
+
+/// The configured disk-cache byte budget (`0` = unlimited).
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_max_bytes() -> i64 {
+	quercus_render::manager::disk_cache_max_bytes()
+}
+
+/// Sets the disk-cache byte budget (`0` = unlimited, negative clamps to 0)
+/// and prunes immediately. False on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_set_max_bytes(max_bytes: i64) -> bool {
+	quercus_render::manager::set_disk_cache_max_bytes(max_bytes).is_ok()
+}
+
+/// Points the disk cache at `path` (must be absolute; created when missing).
+/// New caches use it; already-constructed caches keep their old directory.
+/// False on a null/non-UTF-8/invalid path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_render_disk_cache_set_path(
+	path: *const u8,
+	path_len: usize,
+) -> bool {
+	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
+		return false;
+	};
+	quercus_render::manager::set_disk_cache_path(path).is_ok()
+}
+
+/// Prunes the disk cache down to the configured budget; returns the bytes
+/// freed, or -1 on failure. A no-op when the budget is unlimited.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_prune() -> i64 {
+	quercus_render::manager::prune_disk_cache_to(quercus_render::manager::disk_cache_max_bytes())
+		.unwrap_or(-1)
 }
 
 #[cfg(test)]

@@ -168,7 +168,7 @@ impl Default for QuercusStorageProjectInfo {
 	}
 }
 
-/// `repr(C)` mirror of `quercus_storage::foreign::QuercusStorageTransportVTable`.
+/// `repr(C)` mirror of the engine-side transport vtable.
 /// The field order is the ABI and must stay byte-identical with the engine
 /// struct.
 #[repr(C)]

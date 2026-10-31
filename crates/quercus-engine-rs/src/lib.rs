@@ -18,6 +18,7 @@ pub mod core;
 pub mod effect;
 pub mod editor;
 pub mod edit;
+pub mod mediaio;
 pub mod node;
 pub mod ofx;
 pub mod otio;

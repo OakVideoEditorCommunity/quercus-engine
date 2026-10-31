@@ -27,11 +27,13 @@ project library / write-through path. Consumers never branch on backend.
    paths are normalized to `file://`. The core resolves scheme +
    backend `can_handle` arbitration (M10 §2.3).
 2. **Two backend layers.** In-crate backends implement the Rust
-   `StorageBackend` trait (`backend.rs`) directly. Hosts register their
-   own *byte transport* through the C ABI
-   (`quercus_storage_register_transport` /
-   `quercus_storage_unregister_transport`, implemented in `foreign.rs`):
-   the transport stores opaque engine-serialized project bytes and never
+   `StorageBackend` trait (`backend.rs`) directly; this crate exposes only
+   that safe trait plus the registry. Hosts register their own *byte
+   transport* through the C ABI (`quercus_storage_register_transport` /
+   `quercus_storage_unregister_transport`); the unsafe vtable adapter that
+   marshals the caller's callbacks into the safe trait lives in
+   `quercus-engine` (`src/ext/storage_transport.rs`), not here. The
+   transport stores opaque engine-serialized project bytes and never
    sees the project graph. Version probing and schema stay in the engine.
    A transport may optionally implement the project-library capability
    (list/delete/rename/snapshot) and a write-policy hint; the engine then
@@ -70,15 +72,19 @@ src/
   session.rs      StorageProject session (open/take/uri)
   registry.rs     backend registry (register/unregister/arbitrate)
   backend.rs      StorageBackend trait + LoadResult
-  foreign.rs      C-ABI byte-transport vtable adapter (caller backends)
   backends/
     ove_xml.rs    built-in .ove XML backend (via nodeutil)
     otio.rs       built-in .otio/.fcpxml backend (via quercusotio)
     database/     built-in SQLite/PostgreSQL library backend (SeaORM)
   nodeutil.rs     quercusnode calls (project + serializer + sequence builder)
   writethrough.rs library binding, write-through and snapshot thread
-tests/            contract tests incl. the foreign-transport proofs
+tests/            contract tests for the built-in and database backends
 ```
+
+The caller-supplied C ABI transport adapter (`ForeignBackend` and the
+`QuercusStorageTransportVTable` family) lives in `quercus-engine`'s
+`ext::storage_transport` module; this crate contains no raw-callback
+adapter, only safe traits and backends.
 
 ## Build / test
 

@@ -54,6 +54,7 @@ pub mod frame;
 pub mod framemanager;
 pub mod gpuinterop;
 pub mod hwdecode;
+pub mod mediaio;
 pub mod oiio;
 pub mod oiioframebridge;
 pub mod planarfiledevice;

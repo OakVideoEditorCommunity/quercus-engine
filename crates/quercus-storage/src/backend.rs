@@ -15,8 +15,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! The backend interface. `StorageBackend` is the Rust trait shape of
-//! M10 §2.3's manual C vtable; `ffi.rs` marshals foreign (C-side)
-//! vtable registrations onto the same registry.
+//! M10 §2.3's manual C vtable; the engine's `ext::storage_transport`
+//! adapter marshals foreign (C-side) vtable registrations onto the same
+//! registry (moved out of this crate so it stays free of raw callbacks).
 
 use crate::uri::StorageUri;
 

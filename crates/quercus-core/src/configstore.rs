@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 
@@ -36,6 +36,17 @@ use crate::error::{Error, Result};
 /// (`quercus_coreConfigErrorHandler`). Called with title, message, and the
 /// registered userdata.
 pub type ErrorHandler = Option<unsafe extern "C" fn(*const c_char, *const c_char, *mut c_void)>;
+
+/// Host-provided config persistence source: safe Rust half of the C ABI
+/// adapter. The engine's `ext::config_source` implements it for a foreign
+/// vtable; `quercus-core` itself only sees this trait.
+pub trait ConfigSource: Send + Sync {
+	/// Returns the persisted TOML text, or `None` when the host cannot
+	/// provide it.
+	fn load(&self) -> Option<String>;
+	/// Hands the serialized TOML text to the host; false on rejection/error.
+	fn save(&self, toml: &str) -> bool;
+}
 
 /// Entry types (`quercus_coreConfigEntryType`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +76,8 @@ pub enum ConfigValue {
 	Bool(bool),
 }
 
-/// Process-wide singleton store. `AtomicPtr`-based error handler plus a
-/// `Mutex`-guarded key/value map.
+/// Process-wide singleton store. `AtomicPtr`-based error handler, a
+/// `Mutex`-guarded key/value map, and an optional host persistence source.
 pub struct ConfigStore {
 	/// Registered error handler (may be null).
 	error_handler: AtomicPtr<c_void>,
@@ -74,6 +85,9 @@ pub struct ConfigStore {
 	error_userdata: AtomicPtr<c_void>,
 	/// `group/key` -> typed value.
 	entries: Mutex<HashMap<String, ConfigValue>>,
+	/// Optional host persistence source; when set it replaces the
+	/// `config.toml`/`config.ini` file path in `load`/`save`.
+	source: Mutex<Option<Arc<dyn ConfigSource>>>,
 }
 
 impl ConfigStore {
@@ -89,18 +103,27 @@ impl ConfigStore {
 				error_handler: AtomicPtr::new(std::ptr::null_mut()),
 				error_userdata: AtomicPtr::new(std::ptr::null_mut()),
 				entries: Mutex::new(HashMap::new()),
+				source: Mutex::new(None),
 			};
 			store.set_defaults();
 			store
 		})
 	}
 
-	/// Reset to compiled-in defaults and load `config.toml`, falling back to
-	/// the legacy `config.ini` for migration when no TOML file exists yet (a
-	/// missing config is not an error). Mirrors `ConfigStore::load()`
+	/// Reset to compiled-in defaults and then load settings. When a host
+	/// config source is installed, its TOML text is read through
+	/// [`ConfigSource::load`] and the file paths/legacy INI are not touched.
+	/// Otherwise this loads `config.toml`, falling back to the legacy
+	/// `config.ini` for migration when no TOML file exists yet (a missing
+	/// config is not an error). Mirrors `ConfigStore::load()`
 	/// (`configstore.cpp:239`).
 	pub fn load(&self) -> Result<()> {
 		self.set_defaults();
+
+		if let Some(source) = self.source_snapshot() {
+			let content = self.load_source_text(source.as_ref())?;
+			return self.apply_toml_text(&content);
+		}
 
 		let toml_path = get_config_file_path();
 
@@ -133,9 +156,15 @@ impl ConfigStore {
 			Error::Failed("config.toml could not be read".into())
 		})?;
 
-		// A corrupt TOML file is reported and surfaced, not silently ignored:
-		// ignoring it would wipe the user's settings on the next save().
-		let parsed: toml::Value = toml::from_str(&content).map_err(|e| {
+		self.apply_toml_text(&content)
+	}
+
+	/// Parse TOML text and apply it to the store. A corrupt document is
+	/// reported and surfaced, not silently ignored: ignoring it would wipe
+	/// the user's settings on the next save. Shared by the file path and a
+	/// host [`ConfigSource`].
+	fn apply_toml_text(&self, content: &str) -> Result<()> {
+		let parsed: toml::Value = toml::from_str(content).map_err(|e| {
 			self.report_error(
 				"Error loading settings",
 				"Failed to load application settings. This session will use defaults.",
@@ -145,6 +174,25 @@ impl ConfigStore {
 
 		self.apply_toml(&parsed);
 		Ok(())
+	}
+
+	/// Read the TOML text of an installed host source through the safe
+	/// [`ConfigSource`] trait. The C adapter performs the snprintf-style
+	/// size query, buffer retry, UTF-8 validation and drop callback; core
+	/// only reports a source that cannot provide settings.
+	fn load_source_text(&self, source: &dyn ConfigSource) -> Result<String> {
+		match source.load() {
+			Some(content) => Ok(content),
+			None => {
+				self.report_error(
+					"Error loading settings",
+					"Failed to load application settings. This session will use defaults.",
+				);
+				Err(Error::Failed(
+					"config source could not provide settings".into(),
+				))
+			}
+		}
 	}
 
 	/// Legacy migration path: read an old `config.ini` (written by the C++
@@ -288,17 +336,67 @@ impl ConfigStore {
 		}
 	}
 
-	/// Write the current store to `config.toml` via temp file + rename.
+	/// Persist the current store. With a host config source installed the
+	/// TOML text goes to its [`ConfigSource::save`] and no file is touched;
+	/// otherwise it is written to `config.toml` via temp file + rename.
 	/// Mirrors `ConfigStore::save()` (`configstore.cpp:316`).
 	pub fn save(&self) -> Result<()> {
+		let out = self.to_toml_string()?;
+
+		if let Some(source) = self.source_snapshot() {
+			// The slot lock is not held here: only the cloned `Arc` keeps
+			// the source alive during the call.
+			if !source.save(&out) {
+				self.report_error(
+					"Error saving settings",
+					"Failed to save application settings: the host config source \
+					 rejected the data.",
+				);
+				return Err(Error::Failed("config source rejected the save".into()));
+			}
+			return Ok(());
+		}
+
 		let real_filename = get_config_file_path();
 		let temp_filename = format!("{}.tmp", real_filename);
 
-		// Flat keys are written as top-level TOML keys; keys containing '/'
-		// become `[group]` tables (group = everything before the last '/'),
-		// keeping the QSettings INI key shape. Values are written as native
-		// TOML int/float/bool/string; non-finite doubles have no TOML literal
-		// and are written as strings, which load() restores by declared type.
+		if std::fs::write(&temp_filename, out.as_bytes()).is_err() {
+			self.report_error(
+				"Error saving settings",
+				"Failed to save application settings. The application may lack write \
+				 permissions for this location.",
+			);
+			return Err(Error::Failed(
+				"temp config file could not be written".into(),
+			));
+		}
+
+		// CPP-PARITY: rename temp -> real; on POSIX this overwrites
+		// atomically, so the remove+retry fallback only matters on Windows,
+		// mirrored for behavioral parity (`configstore.cpp:378-390`).
+		if std::fs::rename(&temp_filename, &real_filename).is_err() {
+			let _ = std::fs::remove_file(&real_filename);
+			if std::fs::rename(&temp_filename, &real_filename).is_err() {
+				self.report_error(
+					"Error saving settings",
+					"Failed to overwrite the application settings file.",
+				);
+				return Err(Error::Failed(
+					"config.toml could not be renamed into place".into(),
+				));
+			}
+		}
+
+		Ok(())
+	}
+
+	/// Serialize the store to TOML text. Flat keys are written as top-level
+	/// TOML keys; keys containing '/' become `[group]` tables (group =
+	/// everything before the last '/'), keeping the QSettings INI key
+	/// shape. Values are written as native TOML int/float/bool/string;
+	/// non-finite doubles have no TOML literal and are written as strings,
+	/// which load() restores by declared type.
+	fn to_toml_string(&self) -> Result<String> {
 		let mut sections: BTreeMap<String, BTreeMap<String, toml::Value>> = BTreeMap::new();
 		{
 			let guard = self.entries.lock().unwrap();
@@ -330,42 +428,13 @@ impl ConfigStore {
 			root.insert(group, toml::Value::Table(subs.into_iter().collect()));
 		}
 
-		let out = toml::to_string_pretty(&toml::Value::Table(root)).map_err(|e| {
+		toml::to_string_pretty(&toml::Value::Table(root)).map_err(|e| {
 			self.report_error(
 				"Error saving settings",
 				"Failed to serialize application settings as TOML.",
 			);
 			Error::Failed(format!("config.toml could not be serialized: {}", e))
-		})?;
-
-		if std::fs::write(&temp_filename, out.as_bytes()).is_err() {
-			self.report_error(
-				"Error saving settings",
-				"Failed to save application settings. The application may lack write \
-				 permissions for this location.",
-			);
-			return Err(Error::Failed(
-				"temp config file could not be written".into(),
-			));
-		}
-
-		// CPP-PARITY: rename temp -> real; on POSIX this overwrites
-		// atomically, so the remove+retry fallback only matters on Windows,
-		// mirrored for behavioral parity (`configstore.cpp:378-390`).
-		if std::fs::rename(&temp_filename, &real_filename).is_err() {
-			let _ = std::fs::remove_file(&real_filename);
-			if std::fs::rename(&temp_filename, &real_filename).is_err() {
-				self.report_error(
-					"Error saving settings",
-					"Failed to overwrite the application settings file.",
-				);
-				return Err(Error::Failed(
-					"config.toml could not be renamed into place".into(),
-				));
-			}
-		}
-
-		Ok(())
+		})
 	}
 
 	/// Reset to compiled-in defaults (drop custom keys).
@@ -501,6 +570,52 @@ impl ConfigStore {
 		}
 	}
 
+	/// Install (or replace) the process-wide host persistence source.
+	///
+	/// The source then serves [`ConfigStore::load`] and
+	/// [`ConfigStore::save`] instead of `config.toml` and the legacy INI
+	/// migration. The previous source is swapped out under the lock and
+	/// dropped outside it (so its `Drop` may itself install a source); a
+	/// concurrent load/save may keep it alive until that call finishes.
+	fn set_source(&self, source: Option<Arc<dyn ConfigSource>>) {
+		// Swap under the lock, then drop the old entry outside it.
+		let old = {
+			let mut slot = self.source.lock().unwrap_or_else(|e| e.into_inner());
+			std::mem::replace(&mut *slot, source)
+		};
+		std::mem::drop(old);
+	}
+
+	/// Clear the process-wide host persistence source, returning true when
+	/// one was installed. Its `Drop` runs (outside the lock) exactly once,
+	/// when the last reference to it is released.
+	pub fn remove_source(&self) -> bool {
+		let old = {
+			let mut slot = self.source.lock().unwrap_or_else(|e| e.into_inner());
+			slot.take()
+		};
+		let installed = old.is_some();
+		std::mem::drop(old);
+		installed
+	}
+
+	/// Whether a host persistence source is currently installed.
+	pub fn has_source(&self) -> bool {
+		self.source
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.is_some()
+	}
+
+	/// Clone the installed source so `load`/`save` can call it without
+	/// holding the source slot lock.
+	fn source_snapshot(&self) -> Option<Arc<dyn ConfigSource>> {
+		self.source
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+	}
+
 	/// Register (or clear, with a null handler) the error handler. Mirrors
 	/// the domain half of `quercus_core_config_set_error_handler` (`config.cpp:288`).
 	pub fn set_error_handler(&self, handler: ErrorHandler, userdata: *mut c_void) -> Result<()> {
@@ -614,6 +729,25 @@ impl ConfigStore {
 		let mut guard = self.entries.lock().unwrap();
 		guard.insert(key, value);
 	}
+}
+
+/// Install, replace, or clear (`source` = `None`) the process-wide host
+/// config persistence source.
+///
+/// Once installed, [`ConfigStore::load`] reads TOML through
+/// [`ConfigSource::load`] instead of `config.toml`/`config.ini`, and
+/// [`ConfigStore::save`] hands the serialized TOML to
+/// [`ConfigSource::save`] instead of writing a file. No source installed
+/// keeps the file behavior unchanged. The previous source's `Arc` is
+/// dropped outside the internal lock, so its `Drop` (for a C adapter, the
+/// host drop callback) runs exactly once when it is replaced or cleared.
+pub fn set_config_source(source: Option<Arc<dyn ConfigSource>>) {
+	ConfigStore::instance().set_source(source);
+}
+
+/// Whether a process-wide host config persistence source is installed.
+pub fn config_source_installed() -> bool {
+	ConfigStore::instance().has_source()
 }
 
 /// Joins group and key into the stored "group/key" form. Mirrors
@@ -869,6 +1003,7 @@ mod tests {
 	use super::*;
 	use std::ffi::c_char;
 	use std::path::Path;
+	use std::sync::atomic::AtomicUsize;
 	use std::sync::Mutex as StdMutex;
 
 	/// Serializes every test that touches the process-global singleton and
@@ -891,6 +1026,52 @@ mod tests {
 		std::env::remove_var("QUERCUS_CONFIG_DIR");
 		let _ = std::fs::remove_dir_all(&dir);
 		result
+	}
+
+	// ---- Host config source ------------------------------------------------
+
+	/// In-memory safe host source used by the config-source tests.
+	///
+	/// `None` content makes `load` report failure, exactly like a host
+	/// that cannot provide settings.
+	struct MemSource(Arc<StdMutex<Option<String>>>);
+
+	/// Number of [`MemSource`] drops; tests reset it before asserting.
+	static MEM_SOURCE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+	impl ConfigSource for MemSource {
+		fn load(&self) -> Option<String> {
+			self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+		}
+
+		fn save(&self, toml: &str) -> bool {
+			*self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(toml.to_string());
+			true
+		}
+	}
+
+	impl Drop for MemSource {
+		fn drop(&mut self) {
+			MEM_SOURCE_DROPS.fetch_add(1, Ordering::SeqCst);
+		}
+	}
+
+	/// Install an in-memory source (with optional initial TOML text) and
+	/// return the buffer holding the "persisted" text.
+	fn install_memory_source(content: Option<&str>) -> Arc<StdMutex<Option<String>>> {
+		let content = Arc::new(StdMutex::new(content.map(str::to_string)));
+		set_config_source(Some(Arc::new(MemSource(content.clone()))));
+		content
+	}
+
+	/// Clears any installed source when a test ends (including on panic),
+	/// so one failing test cannot leak a source into the next.
+	struct ClearSourceOnDrop;
+
+	impl Drop for ClearSourceOnDrop {
+		fn drop(&mut self) {
+			set_config_source(None);
+		}
 	}
 
 	// ---- Pure logic: %g formatting -------------------------------------
@@ -1830,6 +2011,131 @@ FlatAfterEmptySection=ok
 			let _ = s.load();
 			s.set_error_handler(None, std::ptr::null_mut()).unwrap();
 			assert_eq!(USERDATA_HITS.lock().unwrap().as_slice(), &[0xDEADusize]);
+		});
+	}
+
+	// ---- Host config source: persistence --------------------------------
+
+	#[test]
+	fn test_config_source_save_load_roundtrip() {
+		let _g = test_lock().lock().unwrap();
+		let _cleanup = ClearSourceOnDrop;
+		let saved = install_memory_source(None);
+		assert!(config_source_installed());
+
+		let s = ConfigStore::instance();
+		s.reset_defaults().unwrap();
+		s.set(None, "HostString", "from host");
+		s.set_int(None, "DefaultSequenceWidth", 640);
+		s.save().unwrap();
+
+		// save() handed TOML to the host instead of writing a file.
+		let text = saved
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+			.expect("source received TOML");
+		assert!(
+			text.contains("HostString = \"from host\""),
+			"text: {}",
+			text
+		);
+		assert!(
+			text.contains("DefaultSequenceWidth = 640"),
+			"text: {}",
+			text
+		);
+
+		// Wipe, then reload from the same in-memory source.
+		s.reset_defaults().unwrap();
+		s.load().unwrap();
+		assert_eq!(s.get(None, "HostString").unwrap(), "from host");
+		assert_eq!(s.get_int(None, "DefaultSequenceWidth", -1), 640);
+
+		MEM_SOURCE_DROPS.store(0, Ordering::SeqCst);
+		assert!(ConfigStore::instance().remove_source());
+		assert!(!config_source_installed());
+		assert_eq!(MEM_SOURCE_DROPS.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn test_config_source_replacement_drops_old_exactly_once() {
+		let _g = test_lock().lock().unwrap();
+		let _cleanup = ClearSourceOnDrop;
+		install_memory_source(None);
+		MEM_SOURCE_DROPS.store(0, Ordering::SeqCst);
+		install_memory_source(None);
+		// Installing the second source dropped the first one once.
+		assert_eq!(MEM_SOURCE_DROPS.load(Ordering::SeqCst), 1);
+		assert!(config_source_installed());
+
+		assert!(ConfigStore::instance().remove_source());
+		assert_eq!(MEM_SOURCE_DROPS.load(Ordering::SeqCst), 2);
+		assert!(!ConfigStore::instance().remove_source());
+		assert_eq!(MEM_SOURCE_DROPS.load(Ordering::SeqCst), 2);
+	}
+
+	#[test]
+	fn test_config_source_invalid_toml_reports_error() {
+		let _g = test_lock().lock().unwrap();
+		let _cleanup = ClearSourceOnDrop;
+		install_memory_source(Some("DefaultSequenceWidth = =\n"));
+		REPORTED.lock().unwrap().clear();
+		let s = ConfigStore::instance();
+		s.set_error_handler(Some(record_handler), std::ptr::null_mut())
+			.unwrap();
+		let res = s.load();
+		s.set_error_handler(None, std::ptr::null_mut()).unwrap();
+		assert!(res.is_err());
+		assert_eq!(res.unwrap_err().code(), crate::error::QUERCUSCORE_E_FAILED);
+		let reported = REPORTED.lock().unwrap().clone();
+		assert_eq!(reported.len(), 1);
+		assert_eq!(reported[0].0, "Error loading settings");
+	}
+
+	#[test]
+	fn test_config_source_load_error_reports() {
+		let _g = test_lock().lock().unwrap();
+		let _cleanup = ClearSourceOnDrop;
+		// `None` content makes the host loader report failure.
+		install_memory_source(None);
+		REPORTED.lock().unwrap().clear();
+		let s = ConfigStore::instance();
+		s.set_error_handler(Some(record_handler), std::ptr::null_mut())
+			.unwrap();
+		let res = s.load();
+		s.set_error_handler(None, std::ptr::null_mut()).unwrap();
+		assert!(res.is_err());
+		assert_eq!(res.unwrap_err().code(), crate::error::QUERCUSCORE_E_FAILED);
+		assert_eq!(REPORTED.lock().unwrap().len(), 1);
+	}
+
+	#[test]
+	fn test_clear_config_source_restores_file_behavior() {
+		with_temp_config(|dir| {
+			let _cleanup = ClearSourceOnDrop;
+			let saved = install_memory_source(Some("DefaultSequenceWidth = 111\n"));
+			let s = ConfigStore::instance();
+			s.load().unwrap();
+			assert_eq!(s.get_int(None, "DefaultSequenceWidth", -1), 111);
+			// Saving through the source leaves the config directory untouched.
+			s.save().unwrap();
+			assert!(saved.lock().unwrap().is_some());
+			assert!(!dir.join("config.toml").exists());
+			assert!(!dir.join("config.ini").exists());
+
+			MEM_SOURCE_DROPS.store(0, Ordering::SeqCst);
+			assert!(ConfigStore::instance().remove_source());
+			assert_eq!(MEM_SOURCE_DROPS.load(Ordering::SeqCst), 1);
+
+			// With no source, save/load are back on `<config_location>/config.toml`.
+			s.reset_defaults().unwrap();
+			s.set_int(None, "DefaultSequenceWidth", 222);
+			s.save().unwrap();
+			assert!(dir.join("config.toml").is_file());
+			s.reset_defaults().unwrap();
+			s.load().unwrap();
+			assert_eq!(s.get_int(None, "DefaultSequenceWidth", -1), 222);
 		});
 	}
 

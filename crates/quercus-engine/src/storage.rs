@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use quercus_node::project::Project;
 use quercus_storage::backend::{LibraryProjectInfo, LibraryProjectStats, StorageBackend};
 use quercus_storage::error::Error;
-use quercus_storage::foreign::{ForeignBackend, QuercusStorageTransportVTable};
+use crate::ext::storage_transport::{ForeignBackend, QuercusStorageTransportVTable};
 use quercus_storage::handle::CHandle;
 use quercus_storage::nodeutil;
 use quercus_storage::registry::Registry;
@@ -256,6 +256,9 @@ fn transports() -> MutexGuard<'static, Vec<Option<Arc<ForeignBackend>>>> {
 /// duration of this call (it is copied), with valid NUL-terminated
 /// `name`/`scheme` strings. `userdata` is opaque to the engine and is
 /// passed through to the transport callbacks untouched.
+// The vtable type is deliberately crate-private: the C symbol/signature is
+// the public surface, and the Rust type only exists for the adapter itself.
+#[allow(private_interfaces)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_register_transport(
 	vt: *const QuercusStorageTransportVTable,
@@ -1166,7 +1169,7 @@ mod tests {
 
 	use std::ffi::CString;
 
-	use quercus_storage::foreign::QuercusStorageError;
+	use crate::ext::storage_transport::{QuercusStorageError, QUERCUS_STORAGE_TRANSPORT_VERSION};
 
 	/// The transport slot table is process-global; serialize these tests.
 	static TRANSPORT_SERIAL: Mutex<()> = Mutex::new(());
@@ -1200,7 +1203,7 @@ mod tests {
 	fn transport_vtable(name: &CString, scheme: &CString) -> QuercusStorageTransportVTable {
 		QuercusStorageTransportVTable {
 			struct_size: std::mem::size_of::<QuercusStorageTransportVTable>() as u32,
-			abi_version: quercus_storage::foreign::QUERCUS_STORAGE_TRANSPORT_VERSION,
+			abi_version: QUERCUS_STORAGE_TRANSPORT_VERSION,
 			name: name.as_ptr(),
 			scheme: scheme.as_ptr(),
 			write_policy: 0,

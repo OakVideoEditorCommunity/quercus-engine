@@ -33,6 +33,8 @@ pub mod effect;
 #[cfg(not(feature = "docs-only"))]
 pub mod editor;
 #[cfg(not(feature = "docs-only"))]
+mod ext;
+#[cfg(not(feature = "docs-only"))]
 pub mod editor_commands;
 #[cfg(not(feature = "docs-only"))]
 pub mod editor_dispatch;

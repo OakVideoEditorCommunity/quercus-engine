@@ -1,6 +1,6 @@
 //! C ABI for quercus-core's process-wide singletons and global state:
-//! the config store, the color pipeline settings, and display ICC
-//! queries (prefix `quercus_core_`).
+//! the config store, the color pipeline settings, display ICC queries,
+//! and the process-wide log level/sink (prefix `quercus_core_`).
 //!
 //! Strings cross as borrowed `(ptr, len)` inputs and snprintf-style
 //! output buffers (see `codec::copy_str_out`); nullable group/path
@@ -8,12 +8,79 @@
 //! NOT exported: it bridges wgpu objects, which C consumers cannot
 //! construct — it needs a separate engine-owns-the-device design.
 
+use std::ffi::c_void;
+
 use quercus_core::color;
 use quercus_core::colormath::{OutputColorSpec, WorkingColorSpace};
-use quercus_core::configstore::ConfigStore;
+use quercus_core::configstore::{self, ConfigStore};
+use quercus_core::debug::{self, Level};
 use quercus_core::displayicc;
 
 use crate::codec::{copy_str_out, str_arg};
+use crate::ext::{config_source, log_sink};
+
+// ---------------------------------------------------------------------------
+// Logging (process-wide level and sink)
+// ---------------------------------------------------------------------------
+
+pub use crate::ext::log_sink::{QuercusLogDropFn, QuercusLogFn};
+
+/// Sets the process-wide minimum log level; false when `level` is outside
+/// 0..=4.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_core_log_set_level(level: i32) -> bool {
+	match Level::from_code(level) {
+		Some(level) => {
+			debug::log_set_level(level);
+			true
+		}
+		None => false,
+	}
+}
+
+/// The process-wide minimum log level (0 = DEBUG … 4 = FATAL).
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_core_log_get_level() -> i32 {
+	debug::log_get_level() as i32
+}
+
+/// Installs, replaces, or clears (`sink` = null) the process-wide log
+/// sink. `drop_cb`, if non-null, runs with `userdata` when the installed
+/// sink is replaced or cleared. `userdata` and `drop_cb` are ignored when
+/// `sink` is null. Callbacks are `extern "C"` and must not panic.
+///
+/// # Safety
+///
+/// Everything the callbacks access through `userdata` must stay valid
+/// until `drop_cb` runs (or, when `drop_cb` is null, for the life of the
+/// process). `message` is only valid during a sink call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_core_log_set_sink(
+	sink: QuercusLogFn,
+	userdata: *mut c_void,
+	drop_cb: QuercusLogDropFn,
+) {
+	match sink {
+		Some(cb) => log_sink::install(cb, userdata, drop_cb),
+		None => log_sink::clear(),
+	}
+}
+
+/// Writes one UTF-8 message at `level` (0..=4) through the process-wide
+/// log. Out-of-range levels print with the `UNKNOWN` tag on stderr;
+/// a null pointer or invalid UTF-8 is ignored.
+///
+/// # Safety
+///
+/// `msg` must point to `len` readable bytes (or be null, which is a
+/// no-op).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_core_log_write(level: i32, msg: *const u8, len: usize) {
+	let Some(message) = (unsafe { str_arg(msg, len) }) else {
+		return;
+	};
+	let _ = debug::log_raw(level, message);
+}
 
 // ---------------------------------------------------------------------------
 // Config store
@@ -183,16 +250,67 @@ pub unsafe extern "C" fn quercus_core_config_set_double(
 	true
 }
 
-/// Loads the config store from disk; false on IO error.
+/// Loads the config store from its persistence backend (the host config
+/// source when one is installed, else `config.toml`/legacy INI); false on
+/// load error.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_config_load() -> bool {
 	ConfigStore::instance().load().is_ok()
 }
 
-/// Saves the config store to disk; false on IO error.
+/// Saves the config store to its persistence backend (the host config
+/// source when one is installed, else `config.toml`); false on save error.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_config_save() -> bool {
 	ConfigStore::instance().save().is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Config persistence source (host-provided load/save backend)
+// ---------------------------------------------------------------------------
+
+pub use crate::ext::config_source::{
+	QuercusConfigDropFn, QuercusConfigLoadFn, QuercusConfigSaveFn, QuercusConfigSourceVTable,
+};
+
+/// Installs (or replaces) the process-wide host config persistence source.
+///
+/// Once installed, `quercus_core_config_load`/`quercus_core_config_save`
+/// exchange TOML text with the host instead of using
+/// `<config_location>/config.toml` (or migrating the legacy `config.ini`).
+/// `drop_cb`, if non-null, runs with `userdata` exactly once after the
+/// source is replaced or cleared. Returns false for a null vtable, a
+/// `struct_size` smaller than the v1 layout, an unsupported
+/// `abi_version`, or a null `load`/`save` callback; nothing is installed
+/// then.
+///
+/// # Safety
+///
+/// `vtable` must point to a readable [`QuercusConfigSourceVTable`] whose
+/// declared `struct_size` covers the full v1 layout. `userdata` is opaque
+/// to the engine, owned by the caller, and must stay valid until
+/// `drop_cb` runs. All callbacks are `extern "C"` and must not unwind.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_core_config_set_source(
+	vt: *const QuercusConfigSourceVTable,
+	userdata: *mut c_void,
+	drop_cb: Option<QuercusConfigDropFn>,
+) -> bool {
+	unsafe { config_source::install(vt, userdata, drop_cb) }
+}
+
+/// Removes the process-wide host config persistence source, restoring the
+/// file behavior. Returns true when one was installed; its drop callback
+/// runs exactly once.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_core_config_clear_source() -> bool {
+	config_source::clear()
+}
+
+/// Whether a process-wide host config persistence source is installed.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_core_config_has_source() -> bool {
+	configstore::config_source_installed()
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +470,85 @@ pub extern "C" fn quercus_core_displayicc_x11_monitor_fingerprint_at(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ext::config_source::CONFIG_SOURCE_ABI_VERSION;
+	use std::sync::Mutex;
+
+	/// Serializes the log-sink test against itself (the sink is global).
+	static LOG_TEST_LOCK: Mutex<()> = Mutex::new(());
+	static LOG_CAPTURED: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+
+	/// Serializes tests that reset or replace the process-wide config store
+	/// or its host source.
+	static CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());
+	/// TOML text the test config source loads from / saves to.
+	static CONFIG_SOURCE_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+	/// Number of times the test config source's drop callback ran.
+	static CONFIG_SOURCE_DROPS: std::sync::atomic::AtomicUsize =
+		std::sync::atomic::AtomicUsize::new(0);
+
+	unsafe extern "C" fn test_config_source_load(
+		_userdata: *mut c_void,
+		buf: *mut u8,
+		cap: usize,
+	) -> i32 {
+		let data = CONFIG_SOURCE_BUF.lock().unwrap_or_else(|e| e.into_inner());
+		if !buf.is_null() && cap > 0 {
+			let n = data.len().min(cap - 1);
+			unsafe {
+				std::ptr::copy_nonoverlapping(data.as_ptr(), buf, n);
+				*buf.add(n) = 0;
+			}
+		}
+		i32::try_from(data.len()).unwrap_or(-1)
+	}
+
+	unsafe extern "C" fn test_config_source_save(
+		_userdata: *mut c_void,
+		data: *const u8,
+		len: usize,
+	) -> bool {
+		if len > 0 && data.is_null() {
+			return false;
+		}
+		let bytes = if len == 0 {
+			&[][..]
+		} else {
+			// SAFETY: the engine passes `len` readable bytes.
+			unsafe { std::slice::from_raw_parts(data, len) }
+		};
+		*CONFIG_SOURCE_BUF.lock().unwrap_or_else(|e| e.into_inner()) = bytes.to_vec();
+		true
+	}
+
+	unsafe extern "C" fn test_config_source_drop(_userdata: *mut c_void) {
+		CONFIG_SOURCE_DROPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+	}
+
+	/// A valid v1 vtable pointing at the in-memory test source.
+	fn test_config_source_vtable() -> QuercusConfigSourceVTable {
+		QuercusConfigSourceVTable {
+			struct_size: std::mem::size_of::<QuercusConfigSourceVTable>() as u32,
+			abi_version: CONFIG_SOURCE_ABI_VERSION,
+			load: Some(test_config_source_load),
+			save: Some(test_config_source_save),
+		}
+	}
+
+	unsafe extern "C" fn capture_sink(
+		level: i32,
+		message: *const u8,
+		len: usize,
+		_userdata: *mut c_void,
+	) {
+		let bytes = unsafe { std::slice::from_raw_parts(message, len) };
+		let message = std::str::from_utf8(bytes)
+			.unwrap_or("<invalid utf-8>")
+			.to_string();
+		LOG_CAPTURED
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.push((level, message));
+	}
 
 	fn cstr_arg(s: &str) -> (*const u8, usize) {
 		(s.as_ptr(), s.len())
@@ -370,7 +567,55 @@ mod tests {
 	}
 
 	#[test]
+	fn log_level_and_sink_roundtrip() {
+		let _guard = LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let saved_level = quercus_core_log_get_level();
+
+		// Out-of-range levels are rejected and leave the level unchanged.
+		assert!(!quercus_core_log_set_level(-1));
+		assert!(!quercus_core_log_set_level(5));
+		assert_eq!(quercus_core_log_get_level(), saved_level);
+		assert!(quercus_core_log_set_level(3));
+		assert_eq!(quercus_core_log_get_level(), 3);
+
+		LOG_CAPTURED
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clear();
+		unsafe {
+			quercus_core_log_set_sink(Some(capture_sink), std::ptr::null_mut(), None);
+		}
+		assert!(debug::log_is_sink_installed());
+
+		let message = "corestate sink test";
+		unsafe {
+			quercus_core_log_write(3, message.as_ptr(), message.len());
+			// Out-of-range writes take the UNKNOWN stderr path, not the sink.
+			quercus_core_log_write(5, message.as_ptr(), message.len());
+		}
+		let captured = LOG_CAPTURED
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone();
+		assert!(
+			captured
+				.iter()
+				.any(|(level, text)| *level == 3 && text == "[ERROR] corestate sink test"),
+			"captured: {captured:?}"
+		);
+		assert!(!captured.iter().any(|(level, _)| *level == 5));
+
+		unsafe {
+			quercus_core_log_set_sink(None, std::ptr::null_mut(), None);
+		}
+		assert!(!debug::log_is_sink_installed());
+		assert!(quercus_core_log_set_level(saved_level));
+		assert_eq!(quercus_core_log_get_level(), saved_level);
+	}
+
+	#[test]
 	fn config_string_and_typed_roundtrip() {
+		let _guard = CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 		let unique = format!("QuercusEngineTest/{}", std::process::id());
 		let (g, gl) = cstr_arg(&unique);
 
@@ -414,6 +659,99 @@ mod tests {
 				buf.len()
 			) >= 0);
 		}
+	}
+
+	#[test]
+	fn config_source_vtable_roundtrip_and_clear() {
+		let _guard = CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		// Clear the source (and its drop callback) on any exit path.
+		struct ClearOnDrop;
+		impl Drop for ClearOnDrop {
+			fn drop(&mut self) {
+				quercus_core_config_clear_source();
+			}
+		}
+		let _cleanup = ClearOnDrop;
+
+		// Invalid vtables are rejected without installing anything.
+		unsafe {
+			assert!(!quercus_core_config_set_source(
+				std::ptr::null(),
+				std::ptr::null_mut(),
+				None
+			));
+		}
+		let mut vt = test_config_source_vtable();
+		vt.struct_size -= 1;
+		assert!(!unsafe {
+			quercus_core_config_set_source(&vt, std::ptr::null_mut(), None)
+		});
+		vt = test_config_source_vtable();
+		vt.abi_version = CONFIG_SOURCE_ABI_VERSION + 1;
+		assert!(!unsafe {
+			quercus_core_config_set_source(&vt, std::ptr::null_mut(), None)
+		});
+		vt = test_config_source_vtable();
+		vt.load = None;
+		assert!(!unsafe {
+			quercus_core_config_set_source(&vt, std::ptr::null_mut(), None)
+		});
+		vt = test_config_source_vtable();
+		vt.save = None;
+		assert!(!unsafe {
+			quercus_core_config_set_source(&vt, std::ptr::null_mut(), None)
+		});
+		assert!(!quercus_core_config_has_source());
+
+		// Install a source backed by a static TOML buffer.
+		*CONFIG_SOURCE_BUF
+			.lock()
+			.unwrap_or_else(|e| e.into_inner()) =
+			b"DefaultSequenceWidth = 321\nHostOnly = \"yes\"\n".to_vec();
+		CONFIG_SOURCE_DROPS.store(0, std::sync::atomic::Ordering::SeqCst);
+		let vt = test_config_source_vtable();
+		assert!(unsafe {
+			quercus_core_config_set_source(
+				&vt,
+				std::ptr::null_mut(),
+				Some(test_config_source_drop),
+			)
+		});
+		assert!(quercus_core_config_has_source());
+
+		// The ABI load reads the host TOML, not a file.
+		assert!(quercus_core_config_load());
+		let store = ConfigStore::instance();
+		assert_eq!(store.get_int(None, "DefaultSequenceWidth", -1), 321);
+		assert_eq!(store.get(None, "HostOnly").unwrap(), "yes");
+
+		// The ABI save writes TOML back to the host buffer.
+		store.set_int(None, "DefaultSequenceWidth", 777);
+		assert!(quercus_core_config_save());
+		let saved = CONFIG_SOURCE_BUF
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone();
+		let text = String::from_utf8(saved).unwrap();
+		assert!(
+			text.contains("DefaultSequenceWidth = 777"),
+			"text: {}",
+			text
+		);
+		assert!(text.contains("HostOnly = \"yes\""), "text: {}", text);
+
+		// Clearing restores the file behavior and drops the source once.
+		assert!(quercus_core_config_clear_source());
+		assert!(!quercus_core_config_has_source());
+		assert_eq!(
+			CONFIG_SOURCE_DROPS.load(std::sync::atomic::Ordering::SeqCst),
+			1
+		);
+		assert!(!quercus_core_config_clear_source());
+		assert_eq!(
+			CONFIG_SOURCE_DROPS.load(std::sync::atomic::Ordering::SeqCst),
+			1
+		);
 	}
 
 	#[test]

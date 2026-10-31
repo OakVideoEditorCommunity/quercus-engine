@@ -75,6 +75,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use quercus_core::debug::{log as debug_log, Level};
+
 use crate::error::{Error, Result};
 use crate::ipc::{
 	write_message, AudioTicketSpec, BatchAcceptedMsg, BatchTicketSpec, FrameFailedMsg, FrameReadyMsg,
@@ -1239,7 +1241,10 @@ impl ProcessDispatcher {
 		if target > inner.workers.len() {
 			for i in inner.workers.len()..target {
 				if let Err(e) = self.spawn_worker(inner, i) {
-					eprintln!("procpool: pool grow spawn worker {i} failed: {e}");
+					let _ = debug_log(
+						Level::Error,
+						&format!("procpool: pool grow spawn worker {i} failed: {e}"),
+					);
 					break;
 				}
 			}
@@ -1565,7 +1570,12 @@ impl ProcessDispatcher {
 				if deadline_reached && handle.state != WorkerState::Dead {
 					let _ = child.kill();
 					let _ = child.wait();
-					eprintln!("procpool: retiring worker {i} hung past its deadline; killed last-resort");
+					let _ = debug_log(
+						Level::Warning,
+						&format!(
+							"procpool: retiring worker {i} hung past its deadline; killed last-resort"
+						),
+					);
 				}
 			}
 			handle.stdin = None;
@@ -1647,7 +1657,10 @@ impl ProcessDispatcher {
 					None => {
 						// A session-level error (e.g. load_graph or shm
 						// attach failed): recycle the worker.
-						eprintln!("procpool: worker {worker} error: {message}");
+						let _ = debug_log(
+							Level::Error,
+							&format!("procpool: worker {worker} error: {message}"),
+						);
 						if matches!(handle.state, WorkerState::Starting) {
 							handle.state = WorkerState::Dead;
 						}
@@ -1693,8 +1706,11 @@ impl ProcessDispatcher {
 		// consumer.
 		let popped = unsafe { handle.shm.pool().consume(&mut ring_slot) };
 		if !popped || ring_slot != slot as u32 {
-			eprintln!(
-				"procpool: worker {worker} ready-ring out of sync (popped {popped}, ring {ring_slot}, msg {slot})"
+			let _ = debug_log(
+				Level::Error,
+				&format!(
+					"procpool: worker {worker} ready-ring out of sync (popped {popped}, ring {ring_slot}, msg {slot})"
+				),
 			);
 		}
 		let meta = handle.shm.meta_copy(slot as u32);
@@ -1811,7 +1827,10 @@ impl ProcessDispatcher {
 			};
 			if let Some(need) = grow {
 				if let Err(e) = self.rebuild_segment(inner, worker, need) {
-					eprintln!("procpool: worker {worker} segment grow to {need} B failed: {e}");
+					let _ = debug_log(
+						Level::Error,
+						&format!("procpool: worker {worker} segment grow to {need} B failed: {e}"),
+					);
 				}
 				// Stop here: the worker is re-attaching to the new segment
 				// (hello_caps pending). Dispatch resumes on the next pump
@@ -2095,7 +2114,10 @@ impl ProcessDispatcher {
 
 		// Fresh segment + respawn (a Create unlinks any stale segment).
 		if let Err(e) = self.spawn_worker(inner, worker) {
-			eprintln!("procpool: worker {worker} respawn failed: {e}");
+			let _ = debug_log(
+				Level::Error,
+				&format!("procpool: worker {worker} respawn failed: {e}"),
+			);
 			inner.workers[worker].state = WorkerState::Dead;
 		}
 	}

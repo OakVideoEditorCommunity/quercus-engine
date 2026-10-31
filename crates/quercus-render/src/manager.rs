@@ -24,8 +24,9 @@
 //! skeleton's `&'static` reference was replaced because a resettable
 //! singleton cannot hand out stable references safely).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::autocacher::PreviewAutoCacher;
 use crate::error::{Error, Result};
@@ -490,11 +491,96 @@ impl RenderManager {
 	}
 }
 
+/// Config key naming the disk-cache directory override (read by
+/// [`quercus_core::filefunctions::default_disk_cache_path`]).
+const DISK_CACHE_PATH_KEY: &str = "DiskCachePath";
+
+/// Config key holding the disk-cache byte budget (`0` = unlimited).
+const DISK_CACHE_MAX_BYTES_KEY: &str = "DiskCacheMaxBytes";
+
+/// Minimum wall-clock gap between debounced quota sweeps (see
+/// [`enforce_disk_cache_quota`]).
+const DISK_CACHE_PRUNE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// A quota sweep is also forced every this many cache writes, so a burst of
+/// frame writes cannot outrun the budget by more than this many files.
+const DISK_CACHE_PRUNE_WRITES: u64 = 64;
+
+/// Writes observed since the last quota sweep (debounce bookkeeping).
+static DISK_CACHE_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// When the last quota sweep started (`None` = no sweep yet); guarded by a
+/// mutex only for the read/update, never held across the directory walk.
+static DISK_CACHE_LAST_PRUNE: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// The default disk cache directory (C++ `DiskManager::
 /// get_default_disk_cache_path`); shared with quercusnode via quercus_core
 /// (single-lib unification).
 pub fn disk_cache_path() -> String {
 	quercus_core::filefunctions::default_disk_cache_path()
+}
+
+/// The configured disk-cache byte budget (`DiskCacheMaxBytes`).
+///
+/// `0` (the default) means unlimited; negative values are treated as `0`.
+/// The value is parsed from the config store's textual form because the key
+/// is not registered in `ConfigStore::set_defaults`, so a value loaded from
+/// `config.toml` arrives as a string.
+pub fn disk_cache_max_bytes() -> i64 {
+	let raw = quercus_core::configstore::ConfigStore::instance()
+		.get(None, DISK_CACHE_MAX_BYTES_KEY)
+		.unwrap_or_default();
+	raw.trim().parse::<i64>().unwrap_or(0).max(0)
+}
+
+/// Set the disk-cache byte budget (`0` = unlimited; negative clamps to `0`)
+/// and immediately enforce it by pruning the default disk cache directory.
+///
+/// The value is written to the in-memory config store only; persisting it is
+/// the job of the existing config-save path (`ConfigStore::save`). Also
+/// resets the [`enforce_disk_cache_quota`] debounce so a lowered budget
+/// applies on the next enforcement step.
+pub fn set_disk_cache_max_bytes(max: i64) -> Result<()> {
+	let max = max.max(0);
+	quercus_core::configstore::ConfigStore::instance().set_int64(
+		None,
+		DISK_CACHE_MAX_BYTES_KEY,
+		max,
+	);
+	// A newly applied budget must not wait for the debounce window.
+	reset_quota_debounce();
+	if max > 0 {
+		prune_disk_cache_to(max)?;
+	}
+	Ok(())
+}
+
+/// Point the disk cache at `path` (`DiskCachePath`), creating the directory
+/// when missing.
+///
+/// `path` must be non-empty and absolute; surrounding whitespace is trimmed.
+/// Only the config key changes: **existing sessions keep their already
+/// resolved paths** — [`crate::cache::PlaybackCache`] copies `disk_dir` at
+/// construction, so caches created before this call keep writing to the old
+/// location until they are recreated.
+///
+/// Like [`set_disk_cache_max_bytes`], the value is only written to the
+/// in-memory config store; the config-save path persists it.
+pub fn set_disk_cache_path(path: &str) -> Result<()> {
+	let path = path.trim();
+	if path.is_empty() {
+		return Err(Error::Invalid);
+	}
+	let root = std::path::Path::new(path);
+	if !root.is_absolute() {
+		return Err(Error::Failed(format!(
+			"disk cache path must be absolute: {path}"
+		)));
+	}
+	std::fs::create_dir_all(root)
+		.map_err(|e| Error::Failed(format!("create disk cache dir {path}: {e}")))?;
+	quercus_core::configstore::ConfigStore::instance().set(None, DISK_CACHE_PATH_KEY, path);
+	Ok(())
 }
 
 /// Bytes consumed by the default disk cache folder (direct filesystem
@@ -524,6 +610,112 @@ pub fn disk_cache_clear() -> Result<()> {
 	std::fs::create_dir_all(root)
 		.map_err(|e| Error::Failed(format!("recreate disk cache: {e}")))?;
 	Ok(())
+}
+
+/// Prune the default disk cache directory down to `max_bytes`, deleting the
+/// oldest files (by mtime) first; returns the bytes freed.
+///
+/// `max_bytes <= 0` disables pruning and returns `0`. Missing directories are
+/// a no-op. See [`prune_dir`] for the eviction rules.
+pub fn prune_disk_cache_to(max_bytes: i64) -> Result<i64> {
+	prune_dir(std::path::Path::new(&disk_cache_path()), max_bytes)
+}
+
+/// Enforce the configured disk-cache quota after a cache write.
+///
+/// No-op when [`disk_cache_max_bytes`] is `0`. The directory walk is
+/// debounced so per-frame writes do not rescan the cache tree every time: a
+/// sweep runs at most once every [`DISK_CACHE_PRUNE_INTERVAL`] (2 s), or
+/// immediately every [`DISK_CACHE_PRUNE_WRITES`] (64) writes, so a burst of
+/// frames may overshoot the budget by at most that many files.
+///
+/// Best-effort: failures are ignored (the next sweep retries) and only the
+/// filesystem plus config are touched — no cache lock is taken, so callers
+/// may invoke this while holding one without deadlock risk.
+pub fn enforce_disk_cache_quota() {
+	let max = disk_cache_max_bytes();
+	if max <= 0 {
+		return;
+	}
+	let writes = DISK_CACHE_WRITES
+		.fetch_add(1, Ordering::AcqRel)
+		.wrapping_add(1);
+	{
+		let mut last = lock(&DISK_CACHE_LAST_PRUNE);
+		let now = Instant::now();
+		let due = match *last {
+			None => true,
+			Some(at) => now.saturating_duration_since(at) >= DISK_CACHE_PRUNE_INTERVAL,
+		};
+		if !due && writes % DISK_CACHE_PRUNE_WRITES != 0 {
+			return;
+		}
+		// Stamp before the walk and drop the lock: the sweep must not hold
+		// the debounce mutex, and stamping first keeps concurrent writers
+		// from all starting a sweep.
+		*last = Some(now);
+	}
+	let _ = prune_disk_cache_to(max);
+}
+
+/// Reset the [`enforce_disk_cache_quota`] debounce (used after the budget is
+/// changed so it takes effect immediately).
+fn reset_quota_debounce() {
+	DISK_CACHE_WRITES.store(0, Ordering::Release);
+	*lock(&DISK_CACHE_LAST_PRUNE) = None;
+}
+
+/// Prune `dir` down to `max_bytes`, deleting the oldest files (by mtime)
+/// first; returns the bytes freed.
+///
+/// `max_bytes <= 0` disables pruning and returns `0`; a missing directory is
+/// a no-op. Only files are deleted — directories are never removed and files
+/// whose metadata cannot be read (or that cannot be deleted) are skipped and
+/// left in place. A file with an unreadable mtime is treated as oldest. The
+/// newest file is always kept even when it alone exceeds the budget, so the
+/// function can return with the directory still over `max_bytes`.
+fn prune_dir(dir: &std::path::Path, max_bytes: i64) -> Result<i64> {
+	if max_bytes <= 0 || !dir.exists() {
+		return Ok(0);
+	}
+
+	// (mtime, path, size), oldest first. `walk` returns directory order,
+	// which is filesystem-dependent, so sort explicitly before evicting.
+	let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf, i64)> = Vec::new();
+	let mut total: i64 = 0;
+	for path in walk(dir) {
+		let meta = match std::fs::metadata(&path) {
+			Ok(m) => m,
+			Err(_) => continue, // unstattable: never delete blind
+		};
+		if !meta.is_file() {
+			continue;
+		}
+		let size = meta.len().min(i64::MAX as u64) as i64;
+		let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+		total = total.saturating_add(size);
+		entries.push((mtime, path, size));
+	}
+	if total <= max_bytes {
+		return Ok(0);
+	}
+	entries.sort_by_key(|(mtime, _, _)| *mtime);
+
+	// Keep the newest entry unconditionally: `entries` is non-empty here
+	// (total > max_bytes >= 0), so `take(len - 1)` leaves at least one file.
+	let mut remaining = total;
+	let mut freed: i64 = 0;
+	for (_, path, size) in entries.iter().take(entries.len() - 1) {
+		if remaining <= max_bytes {
+			break;
+		}
+		if std::fs::remove_file(path).is_err() {
+			continue; // in use / permission denied: leave it for next time
+		}
+		freed = freed.saturating_add(*size);
+		remaining = remaining.saturating_sub(*size);
+	}
+	Ok(freed)
 }
 
 /// Recursively walk a directory (files only).
@@ -652,5 +844,218 @@ mod tests {
 			RenderBackendChoice::Processes(_)
 		));
 		std::env::remove_var("QUERCUS_PIPELINE");
+	}
+
+	// ---- disk-cache quota ---------------------------------------------------
+
+	/// Serializes the quota tests, which mutate the process-wide
+	/// `DiskCachePath` / `DiskCacheMaxBytes` config entries. They also hold
+	/// [`quercus_core::commonutil::ENV_TEST_LOCK`] because the config path
+	/// depends on `QUERCUS_CONFIG_DIR`.
+	static DISK_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+	fn disk_cache_test_lock() -> MutexGuard<'static, ()> {
+		DISK_CACHE_TEST_LOCK
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+	}
+
+	/// A unique, empty temp directory for one quota test.
+	fn quota_temp_dir(tag: &str) -> std::path::PathBuf {
+		let dir =
+			std::env::temp_dir().join(format!("quercusrender-quota-{}-{tag}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		dir
+	}
+
+	/// Write `size` zero bytes and sleep briefly so the next write gets a
+	/// strictly newer mtime (`std` has no portable "set mtime").
+	fn write_with_mtime_gap(path: &std::path::Path, size: usize) {
+		std::fs::write(path, vec![0u8; size]).unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(10));
+	}
+
+	/// Sum the regular files under `dir` (mirrors [`disk_cache_size`] but
+	/// for an explicit directory).
+	fn dir_file_size(dir: &std::path::Path) -> i64 {
+		walk(dir)
+			.into_iter()
+			.filter_map(|p| std::fs::metadata(&p).ok())
+			.filter(|m| m.is_file())
+			.map(|m| m.len() as i64)
+			.sum()
+	}
+
+	fn save_disk_cache_config() -> (Option<String>, i64) {
+		let store = quercus_core::configstore::ConfigStore::instance();
+		(
+			store.get(None, DISK_CACHE_PATH_KEY).ok(),
+			disk_cache_max_bytes(),
+		)
+	}
+
+	fn restore_disk_cache_config(saved: (Option<String>, i64)) {
+		let store = quercus_core::configstore::ConfigStore::instance();
+		store.set(None, DISK_CACHE_PATH_KEY, saved.0.as_deref().unwrap_or(""));
+		store.set_int64(None, DISK_CACHE_MAX_BYTES_KEY, saved.1);
+		reset_quota_debounce();
+	}
+
+	#[test]
+	fn prune_dir_removes_oldest_files_first() {
+		let dir = quota_temp_dir("oldest");
+		for name in ["a", "b", "c", "d"] {
+			write_with_mtime_gap(&dir.join(name), 100);
+		}
+		let freed = prune_dir(&dir, 250).unwrap();
+		// 400 bytes -> evict a and b (200 bytes) -> 200 <= 250.
+		assert_eq!(freed, 200);
+		assert!(!dir.join("a").exists(), "oldest file evicted");
+		assert!(!dir.join("b").exists(), "second-oldest evicted");
+		assert!(dir.join("c").exists());
+		assert!(dir.join("d").exists(), "newest file kept");
+		assert_eq!(dir_file_size(&dir), 200);
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn prune_dir_keeps_newest_file_over_budget() {
+		let dir = quota_temp_dir("newest");
+		write_with_mtime_gap(&dir.join("old"), 100);
+		write_with_mtime_gap(&dir.join("new"), 100);
+		// Budget below a single file: evict everything but the newest.
+		assert_eq!(prune_dir(&dir, 10).unwrap(), 100);
+		assert!(!dir.join("old").exists());
+		assert!(dir.join("new").exists());
+		assert_eq!(dir_file_size(&dir), 100);
+		// With only the newest left it is retained even though over budget.
+		assert_eq!(prune_dir(&dir, 10).unwrap(), 0);
+		assert!(dir.join("new").exists());
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn prune_dir_zero_or_negative_budget_is_unlimited() {
+		let dir = quota_temp_dir("unlimited");
+		write_with_mtime_gap(&dir.join("a"), 100);
+		write_with_mtime_gap(&dir.join("b"), 100);
+		assert_eq!(prune_dir(&dir, 0).unwrap(), 0);
+		assert_eq!(prune_dir(&dir, -5).unwrap(), 0);
+		assert!(dir.join("a").exists());
+		assert!(dir.join("b").exists());
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn prune_dir_missing_directory_is_zero() {
+		let dir = quota_temp_dir("missing").join("not-there");
+		assert_eq!(prune_dir(&dir, 100).unwrap(), 0);
+		assert!(!dir.exists());
+	}
+
+	#[test]
+	fn prune_disk_cache_to_missing_configured_dir_is_zero() {
+		let _local = disk_cache_test_lock();
+		let _env = quercus_core::commonutil::ENV_TEST_LOCK
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let saved = save_disk_cache_config();
+		let dir = quota_temp_dir("configured-missing").join("not-there");
+		quercus_core::configstore::ConfigStore::instance().set(
+			None,
+			DISK_CACHE_PATH_KEY,
+			&dir.to_string_lossy(),
+		);
+		assert_eq!(prune_disk_cache_to(100).unwrap(), 0);
+		restore_disk_cache_config(saved);
+	}
+
+	#[test]
+	fn set_max_bytes_writes_config_and_enforces() {
+		let _local = disk_cache_test_lock();
+		let _env = quercus_core::commonutil::ENV_TEST_LOCK
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let saved = save_disk_cache_config();
+		let dir = quota_temp_dir("config");
+		for name in ["a", "b", "c", "d"] {
+			write_with_mtime_gap(&dir.join(name), 100);
+		}
+
+		set_disk_cache_path(&dir.to_string_lossy()).unwrap();
+		assert_eq!(
+			disk_cache_path(),
+			dir.to_string_lossy().into_owned(),
+			"DiskCachePath points at the temp dir"
+		);
+		assert_eq!(
+			disk_cache_size().unwrap(),
+			400,
+			"budget disabled before set"
+		);
+
+		// A zero budget makes enforcement a no-op even after a write event.
+		enforce_disk_cache_quota();
+		assert_eq!(disk_cache_size().unwrap(), 400);
+
+		set_disk_cache_max_bytes(250).unwrap();
+		assert_eq!(disk_cache_max_bytes(), 250);
+		assert_eq!(
+			quercus_core::configstore::ConfigStore::instance()
+				.get(None, DISK_CACHE_MAX_BYTES_KEY)
+				.unwrap(),
+			"250",
+			"config key written"
+		);
+		assert!(
+			disk_cache_size().unwrap() <= 250,
+			"setter enforced the quota immediately"
+		);
+		assert!(!dir.join("a").exists());
+		assert!(!dir.join("b").exists());
+		assert!(dir.join("c").exists());
+		assert!(dir.join("d").exists());
+
+		// Negative values clamp to 0 (unlimited) and disable pruning.
+		set_disk_cache_max_bytes(-7).unwrap();
+		assert_eq!(disk_cache_max_bytes(), 0);
+		assert_eq!(
+			quercus_core::configstore::ConfigStore::instance().get_int64(
+				None,
+				DISK_CACHE_MAX_BYTES_KEY,
+				-1
+			),
+			0
+		);
+
+		restore_disk_cache_config(saved);
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn set_disk_cache_path_validates_and_creates() {
+		let _local = disk_cache_test_lock();
+		let _env = quercus_core::commonutil::ENV_TEST_LOCK
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let saved = save_disk_cache_config();
+		let base = quota_temp_dir("path");
+		let target = base.join("nested").join("cache");
+
+		assert_eq!(
+			set_disk_cache_path("   ").unwrap_err().code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			set_disk_cache_path("relative/cache").unwrap_err().code(),
+			Error::Failed("".into()).code()
+		);
+		set_disk_cache_path(&target.to_string_lossy()).unwrap();
+		assert!(target.is_dir(), "setter creates the directory");
+		assert_eq!(disk_cache_path(), target.to_string_lossy().into_owned());
+
+		restore_disk_cache_config(saved);
+		std::fs::remove_dir_all(&base).ok();
 	}
 }

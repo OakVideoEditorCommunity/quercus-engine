@@ -151,7 +151,7 @@ typedef struct QuercusStorageProjectInfo {
 
 ### 1.3 引擎侧适配器（关键实现）
 
-新增 `crates/quercus-storage/src/foreign.rs`：把 vtable 包成内部 `StorageBackend`。
+新增 `crates/quercus-engine/src/ext/storage_transport.rs`：把 vtable 包成内部 `StorageBackend`（P1 收尾时从 storage crate 迁入 ABI crate）。
 这样**不需要改 `resolve/open/save` 的主流程**，外来回后端就是注册表里的一个普通项。
 
 ```rust
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn quercus_storage_register_transport(
 
 - 不注册任何外来后端时，行为与今天完全一致（内置优先）。
 - 新增符号是纯增量；旧客户端不受影响。
-- 若需要回滚，移除注册符号与 `foreign.rs` 即可，内置路径未改。
+- 若需要回滚，移除注册符号与 `ext/storage_transport.rs` 即可，内置路径未改。
 
 ### 1.8 测试
 
@@ -577,7 +577,7 @@ uint32_t write_policy;
 | P0-A 探测上移 | `quercus_node::serializer::{VersionProbe, probe_version}`；`.ove` 后端改为调用它，版本信息码结果不变 |
 | P0-A 字节 ABI | `quercus_project_save_to_bytes(project, buf, cap) -> i32`；`quercus_project_load_from_bytes(bytes, len, version_info, error) -> *mut ProjectHandle` |
 | P0-A 复用 | `quercus_project_save/load` 改为走字节原语；SDK 新增 `Project::to_xml_bytes` / `Project::from_xml_bytes` |
-| P0-B 适配器 | `quercus_storage::foreign`：`QuercusStorageError`、`QuercusStorageTransportVTable`、`ForeignBackend`（gate + op lock + `free_bytes` guard）、`is_reserved_scheme` |
+| P0-B 适配器 | `quercus_engine::ext::storage_transport`：`QuercusStorageError`、`QuercusStorageTransportVTable`、`ForeignBackend`（gate + op lock + `free_bytes` guard）、`is_reserved_scheme` |
 | P0-B 注册 | `quercus_storage_register_transport` / `quercus_storage_unregister_transport`，进程级 slot 表 + `Registry` 仲裁 |
 | P0-B SDK | `TransportBackend` trait、`register_transport`、`TransportRegistration`、全部 trampoline `catch_unwind` |
 | P0-C 能力层 | `StorageBackend` 新增 `LibraryProjectInfo` / `LibraryProjectStats` / `supports_library` / `library_list/delete/rename/stats/snapshot` / `write_policy`；新增 `Error::Unsupported`（`-100009`） |
@@ -587,7 +587,7 @@ uint32_t write_policy;
 | P0-C 引擎库层 | 15 个 `library_*` 全部走 trait；create/duplicate/import/export 改为通用组合；统计优先 `library_stats`，`Unsupported` 回退 load+图推导；新增 `quercus_storage_library_supported`、`quercus_editor_open_project_from_library_uri` |
 | P0-C SDK | `ProjectLibrary::new` 不再按 `"quercusdb"` 名字拒绝；`library_supported`；显式库打开；`TransportBackend` 可选库能力（POD 镜像 + 4 个 trampoline） |
 | 深拷贝修复 | `clone_entry` 对拒绝 `duplicate` 的节点（图端点等）按 `type_id` 从 factory 重建，不再落成空 `EmptyBehavior`；`SequenceBehavior::duplicate` 保留 track_lists/参数/播放头（否则副本丢轨道） |
-| 头文件 | `gen_c_header.py` 修复函数指针返回类型、`->` 的 `>` 破坏字段切分、跨行空白；header 重新生成（51 structs / 13 enums / 690 functions） |
+| 头文件 | `gen_c_header.py` 修复函数指针返回类型、`->` 的 `>` 破坏字段切分、跨行空白；header 重新生成（当前 54 structs / 14 enums / 710 functions，含 P1 扩展点） |
 
 ### 8.2 与草案的偏差
 
@@ -604,8 +604,8 @@ uint32_t write_policy;
 | 命令 | 结果 |
 |---|---|
 | `cargo test -p quercus-node --lib` | 684 passed |
-| `cargo test -p quercus-storage` | 全绿（35 lib + 13 pg + 18 database + 8 foreign_transport + 6 otio + 11 storage + 10 writethrough） |
-| `cargo test -p quercus-engine --lib -- --test-threads=1` | 280 passed |
+| `cargo test -p quercus-storage` | 全绿（22 lib + 13 pg + 18 database + 6 otio + 11 storage + 10 writethrough；transport 测试随适配器迁入 `engine::ext`） |
+| `cargo test -p quercus-engine --lib -- --test-threads=1` | 310 passed（P1 后） |
 | `cargo test -p quercus-engine-rs --lib`（`OCIO_SOURCE_DIR`=可写 0.3 源码副本） | 121 passed；0 failed（含 color 与新增跨 ABI transport-library 测试） |
 | `cargo check -p quercus-engine --tests` | 通过（仅既有 warning） |
 | `python3 tooling/gen_c_header.py --check` | 通过 |

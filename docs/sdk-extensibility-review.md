@@ -5,6 +5,8 @@
 > 明细审计记录见 `review/parts/{storage,boundary,pipeline,runtime}.md`。
 > 状态更新（2026-10-31）：**P0-A（字节 ABI）、P0-B（传输 vtable 注册）、P0-C（库/写穿走注册表）均已落地**，
 > 实现与验证记录见 [`storage-seam-p0-design.md`](storage-seam-p0-design.md) §8。
+> **P1 清单（日志 sink、字体 provider、磁盘缓存配额、媒体 I/O provider、配置持久化后端、
+> GPU 设备注入）已全部落地**，见 [`p1-extensibility.md`](p1-extensibility.md)。
 > 正文描述的是评审时的状态，符号名以实现为准（`quercus_storage_register_transport`）。
 
 ---

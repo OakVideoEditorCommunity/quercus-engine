@@ -68,6 +68,10 @@ pub fn save_cache_frame(path: &str, frame: &Frame) -> Result<()> {
 		.map_err(|e| Error::Failed(format!("frame cache write failed: {tmp}: {e}")))?;
 	std::fs::rename(&tmp, path)
 		.map_err(|e| Error::Failed(format!("frame cache rename failed: {tmp}: {e}")))?;
+	// A completed frame write may push the cache over its configured byte
+	// budget; enforcement is debounced and best-effort, so it never fails
+	// the write itself.
+	crate::manager::enforce_disk_cache_quota();
 	Ok(())
 }
 
