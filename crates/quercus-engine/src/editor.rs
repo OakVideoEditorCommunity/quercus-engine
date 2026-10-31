@@ -18,6 +18,7 @@ use quercus_node::id::NodeId;
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
 use quercus_storage::nodeutil;
+use quercus_storage::uri::StorageUri;
 use quercus_timeline::marker::TimelineMarkerList;
 use quercus_timeline::workarea::TimelineWorkArea;
 
@@ -207,12 +208,46 @@ pub unsafe extern "C" fn quercus_editor_open(
 	session
 }
 
+/// Opens a library row URI through the storage registry and wraps the
+/// loaded project in a session.
+///
+/// Session bookkeeping mirrors [`quercus_editor_open_project_from_library`]:
+/// the project starts unmodified, the error out-parameter is 0 on success
+/// and a negative `QUERCUSSTORAGE_*` code on failure, and a version-info
+/// outcome (no project) reports `E_INVALID`.
+fn open_library_row_uri(uri: &StorageUri, error: *mut i32) -> *mut EditorSessionHandle {
+	let text = uri.to_uri_string();
+	let project = unsafe { crate::storage::quercus_storage_open(text.as_ptr(), text.len(), error) };
+	if project.is_null() {
+		// A positive version-info code (too old/new/unknown) still means
+		// there is no project to open.
+		if !error.is_null() && unsafe { *error } >= 0 {
+			unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+		}
+		return std::ptr::null_mut();
+	}
+	{
+		let inner = unsafe { &*project }.project().clone();
+		inner
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.set_modified(false);
+	}
+	if !error.is_null() {
+		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_OK };
+	}
+	session_from_project_handle(project)
+}
+
 /// Opens the project identified by `uuid` from the configured default library.
 ///
 /// The library is the project's catalog and storage backend; this function does
 /// not open a library as an asset inside another project. On success it returns
 /// an editor session for the loaded project and reports `QUERCUSSTORAGE_OK` through
 /// `error` when that pointer is non-null.
+///
+/// The row URI (`<library>?project=<uuid>`) is opened through the storage
+/// registry, so any backend that claims the library can serve it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_open_project_from_library(
 	uuid: *const u8,
@@ -237,40 +272,41 @@ pub unsafe extern "C" fn quercus_editor_open_project_from_library(
 			return std::ptr::null_mut();
 		}
 	};
-	let result = match quercus_storage::backend::StorageBackend::load(
-		quercus_storage::writethrough::backend(),
-		&uri,
-	) {
-		Ok(result) => result,
-		Err(e) => {
-			if !error.is_null() {
-				unsafe { *error = e.code() };
-			}
-			return std::ptr::null_mut();
-		}
+	open_library_row_uri(&uri, error)
+}
+
+/// Opens the project `uuid` from an explicit library URI.
+///
+/// Unlike [`quercus_editor_open_project_from_library`], the library need not
+/// be the configured default: the URI is passed to the storage registry as-is
+/// and the row is opened as `<library_uri>?project=<uuid>`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_editor_open_project_from_library_uri(
+	library_uri: *const u8,
+	library_uri_len: usize,
+	uuid: *const u8,
+	uuid_len: usize,
+	error: *mut i32,
+) -> *mut EditorSessionHandle {
+	if !error.is_null() {
+		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+	}
+	let (Some(library_uri), Some(uuid)) = (
+		unsafe { str_arg(library_uri, library_uri_len) },
+		unsafe { str_arg(uuid, uuid_len) },
+	) else {
+		return std::ptr::null_mut();
 	};
-	if result.project.is_null() {
+	if uuid.is_empty() {
 		return std::ptr::null_mut();
 	}
-	let project = unsafe { nodeutil::project_arc(&result.project) };
-	nodeutil::release_project(result.project);
-	let project = match project {
-		Ok(project) => project,
-		Err(e) => {
-			if !error.is_null() {
-				unsafe { *error = e.code() };
-			}
-			return std::ptr::null_mut();
-		}
+	let Ok(base) = StorageUri::parse(library_uri) else {
+		return std::ptr::null_mut();
 	};
-	project
-		.lock()
-		.unwrap_or_else(|e| e.into_inner())
-		.set_modified(false);
-	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_OK };
-	}
-	session_from_project_handle(ProjectHandle::from_arc(project))
+	let Ok(row) = crate::storage::library_row_uri(&base, uuid) else {
+		return std::ptr::null_mut();
+	};
+	open_library_row_uri(&row, error)
 }
 
 /// Adopts one owned storage project handle without reopening or copying it.
@@ -323,7 +359,7 @@ pub unsafe extern "C" fn quercus_editor_create_library(
 		}
 	};
 	let project = Project::new();
-	{
+	let uuid = {
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 		if guard.initialize().is_err() {
 			return std::ptr::null_mut();
@@ -331,10 +367,25 @@ pub unsafe extern "C" fn quercus_editor_create_library(
 		guard
 			.settings
 			.insert("projectname".into(), name.trim().into());
-	}
-	if let Err(e) = quercus_storage::writethrough::backend().save_project(&project, &uri, 0) {
+		guard.uuid.clone()
+	};
+	let row = match crate::storage::library_row_uri(&uri, &uuid) {
+		Ok(row) => row,
+		Err(code) => {
+			if !error.is_null() {
+				unsafe { *error = code };
+			}
+			return std::ptr::null_mut();
+		}
+	};
+	let text = row.to_uri_string();
+	let handle = ProjectHandle::from_arc(project.clone());
+	let saved =
+		unsafe { crate::storage::quercus_storage_save(handle, text.as_ptr(), text.len(), 0) };
+	unsafe { crate::node::quercus_project_release(handle) };
+	if saved != quercus_storage::error::QUERCUSSTORAGE_OK {
 		if !error.is_null() {
-			unsafe { *error = e.code() };
+			unsafe { *error = saved };
 		}
 		return std::ptr::null_mut();
 	}
@@ -611,6 +662,78 @@ mod tests {
 			assert!(!quercus_editor_set_current_sequence(session, u64::MAX));
 			assert_eq!(quercus_editor_current_sequence(session), second);
 			quercus_editor_release(session);
+		}
+	}
+
+	/// The explicit-library-URI open routes through the storage registry:
+	/// a row created through the storage exports opens as a session with
+	/// its settings intact, and an unknown uuid reports an error.
+	#[test]
+	fn open_project_from_explicit_library_uri() {
+		unsafe {
+			let path = std::env::temp_dir()
+				.join(format!(
+					"quercusengine_editor_lib_uri_{}.sqlite",
+					std::process::id()
+				))
+				.to_string_lossy()
+				.into_owned();
+			let _ = std::fs::remove_file(&path);
+			let uri = format!("quercusdb+sqlite://{path}");
+			let (u, ul) = (uri.as_ptr(), uri.len());
+
+			let name = b"EditorRow";
+			let mut uuid_buf = [0u8; 128];
+			let created = crate::storage::quercus_storage_library_create(
+				u,
+				ul,
+				name.as_ptr(),
+				name.len(),
+				uuid_buf.as_mut_ptr(),
+				uuid_buf.len(),
+			);
+			assert!(created > 0, "create failed: {created}");
+			let uuid = uuid_buf[..created as usize].to_vec();
+
+			let mut error = -999i32;
+			let session = quercus_editor_open_project_from_library_uri(
+				u,
+				ul,
+				uuid.as_ptr(),
+				uuid.len(),
+				&mut error,
+			);
+			assert!(!session.is_null(), "open failed: {error}");
+			assert_eq!(error, quercus_storage::error::QUERCUSSTORAGE_OK);
+
+			let project = quercus_editor_project(session);
+			assert!(!project.is_null());
+			{
+				let inner = (&*project).project().clone();
+				let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+				assert_eq!(
+					guard.settings.get("projectname").map(String::as_str),
+					Some("EditorRow")
+				);
+			}
+			crate::node::quercus_project_release(project);
+
+			let mut missing_error = 0i32;
+			let missing = quercus_editor_open_project_from_library_uri(
+				u,
+				ul,
+				b"no-such-uuid".as_ptr(),
+				13,
+				&mut missing_error,
+			);
+			assert!(missing.is_null());
+			assert!(
+				missing_error < 0,
+				"missing row must report a negative code, got {missing_error}"
+			);
+
+			quercus_editor_release(session);
+			let _ = std::fs::remove_file(&path);
 		}
 	}
 

@@ -32,6 +32,7 @@
 pub mod backend;
 pub mod backends;
 pub mod error;
+pub mod foreign;
 pub mod handle;
 pub mod nodeutil;
 pub mod registry;

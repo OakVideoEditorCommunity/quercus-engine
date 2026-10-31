@@ -248,6 +248,13 @@ unsafe extern "C" {
 
 	fn quercus_project_save(project: *const c_void, path: *const u8, path_len: usize) -> bool;
 	fn quercus_project_load(path: *const u8, path_len: usize) -> *mut c_void;
+	fn quercus_project_save_to_bytes(project: *const c_void, buf: *mut u8, cap: usize) -> i32;
+	fn quercus_project_load_from_bytes(
+		bytes: *const u8,
+		len: usize,
+		version_info: *mut i32,
+		error: *mut i32,
+	) -> *mut c_void;
 	fn quercus_project_set_filename(project: *const c_void, path: *const u8, path_len: usize) -> bool;
 	fn quercus_project_set_working_color_space(
 		project: *const c_void,
@@ -1168,6 +1175,58 @@ impl Project {
 		}
 	}
 
+	/// Serializes the project to its XML byte representation, the same
+	/// document [`Project::save`] writes. Returns `None` on a serialization
+	/// failure. The bytes are UTF-8 project XML with no trailing NUL and do
+	/// not depend on the project's filename, so an unsaved project
+	/// round-trips too.
+	pub fn to_xml_bytes(&self) -> Option<Vec<u8>> {
+		let n = unsafe { quercus_project_save_to_bytes(self.ptr, std::ptr::null_mut(), 0) };
+		if n < 0 {
+			return None;
+		}
+		let mut buf = vec![0u8; n as usize + 1];
+		let written =
+			unsafe { quercus_project_save_to_bytes(self.ptr, buf.as_mut_ptr(), buf.len()) };
+		if written != n {
+			// The project changed between the size query and the fetch.
+			return None;
+		}
+		buf.truncate(n as usize);
+		Some(buf)
+	}
+
+	/// Parses a project from its XML byte representation (as produced by
+	/// [`Project::to_xml_bytes`] or [`Project::save`]).
+	///
+	/// On success returns `(project, version_info)`, where `version_info` is
+	/// `0` (current), `1` (too old; upgraded on load), `2` (too new) or `3`
+	/// (unknown version). For the latter two the project is `None` while
+	/// `version_info` is still meaningful — the document was intact but this
+	/// build cannot load it. A genuine failure is `Err(negative
+	/// QUERCUSSTORAGE_E_* code)`.
+	pub fn from_xml_bytes(bytes: &[u8]) -> Result<(Option<Project>, i32), i32> {
+		let mut version_info = 0i32;
+		let mut error = 0i32;
+		let ptr = unsafe {
+			quercus_project_load_from_bytes(
+				bytes.as_ptr(),
+				bytes.len(),
+				&mut version_info,
+				&mut error,
+			)
+		};
+		if error != 0 {
+			return Err(error);
+		}
+		let project = if ptr.is_null() {
+			None
+		} else {
+			Some(Project { ptr })
+		};
+		Ok((project, version_info))
+	}
+
 	/// Sets the project file path (used by save when no path is given).
 	pub fn set_filename(&self, path: &str) -> bool {
 		unsafe { quercus_project_set_filename(self.ptr, path.as_ptr(), path.len()) }
@@ -1575,6 +1634,41 @@ mod persist_tests {
 
 		assert!(Project::load("/nonexistent/quercus-sdk.ove").is_none());
 		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn xml_bytes_roundtrip_and_version_info() {
+		let _guard = UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+		let project = Project::new();
+		project
+			.create_folder(project.root(), "Bytes")
+			.expect("folder");
+		project.set_setting("byte-test", "1");
+
+		let bytes = project.to_xml_bytes().expect("serialize");
+		assert!(bytes.starts_with(b"<project"), "the bytes are project XML");
+
+		let (loaded, version_info) = Project::from_xml_bytes(&bytes).expect("parse");
+		let loaded = loaded.expect("loadable document");
+		assert_eq!(version_info, 0);
+		assert_eq!(loaded.uuid(), project.uuid());
+		assert_eq!(loaded.folder_child_count(loaded.root()), 1);
+		assert_eq!(loaded.setting("byte-test").as_deref(), Some("1"));
+		assert!(loaded.filename().is_empty(), "bytes carry no filename");
+
+		// Newer/unknown documents parse but report a version code without
+		// an error, and yield no project.
+		let (too_new, version_info) =
+			Project::from_xml_bytes(b"<olive version=\"999999\"></olive>").expect("probe");
+		assert!(too_new.is_none());
+		assert_eq!(version_info, 2);
+		let (unknown, version_info) =
+			Project::from_xml_bytes(b"<thirdparty></thirdparty>").expect("probe");
+		assert!(unknown.is_none());
+		assert_eq!(version_info, 3);
+
+		// Genuine failures surface the negative engine error code.
+		assert!(Project::from_xml_bytes(b"not xml").is_err());
 	}
 
 	#[test]

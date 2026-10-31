@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 48 POD structs, 13 enums, 684 functions. */
+/* 51 POD structs, 13 enums, 690 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -243,6 +243,9 @@ typedef struct QuercusLevelStats QuercusLevelStats;
 typedef struct QuercusOfxCurvePoint QuercusOfxCurvePoint;
 typedef struct QuercusOfxRectD QuercusOfxRectD;
 typedef struct QuercusPluginDescriptor QuercusPluginDescriptor;
+typedef struct QuercusStorageError QuercusStorageError;
+typedef struct QuercusStorageProjectInfo QuercusStorageProjectInfo;
+typedef struct QuercusStorageTransportVTable QuercusStorageTransportVTable;
 typedef struct RawMulticamState RawMulticamState;
 typedef struct RawProxyStatus RawProxyStatus;
 typedef struct RectD RectD;
@@ -531,6 +534,33 @@ struct QuercusPluginDescriptor {
     uint8_t author[256];
     uint8_t description[1024];
 };
+struct QuercusStorageError {
+    int32_t code;
+    uint8_t message[512];
+};
+struct QuercusStorageProjectInfo {
+    uint8_t uuid[40];
+    uint8_t name[256];
+    int64_t created_at;
+    int64_t modified_at;
+    int32_t schema_ver;
+    int32_t reserved;
+};
+struct QuercusStorageTransportVTable {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char* name;
+    const char* scheme;
+    uint32_t write_policy;
+    int32_t (* can_handle)(void*, const uint8_t*, size_t, QuercusStorageError*);
+    int32_t (* load)(void*, const uint8_t*, size_t, uint8_t**, size_t*, int32_t*, QuercusStorageError*);
+    void (* free_bytes)(void*, uint8_t*, size_t);
+    int32_t (* save)(void*, const uint8_t*, size_t, const uint8_t*, size_t, uint32_t, QuercusStorageError*);
+    int32_t (* library_list)(void*, const uint8_t*, size_t, QuercusStorageProjectInfo*, size_t, size_t*, QuercusStorageError*);
+    int32_t (* library_delete)(void*, const uint8_t*, size_t, const uint8_t*, size_t, QuercusStorageError*);
+    int32_t (* library_rename)(void*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, QuercusStorageError*);
+    int32_t (* library_snapshot)(void*, const uint8_t*, size_t, const uint8_t*, size_t, QuercusStorageError*);
+};
 struct RawMulticamState {
     uint64_t sequence;
     uint64_t multicam;
@@ -655,15 +685,11 @@ _Static_assert(sizeof(NodeValue) == 56, "NodeValue ABI layout");
 _Static_assert(sizeof(StorageProjectHandle) == 32, "StorageProjectHandle ABI layout");
 #endif
 
-typedef void (*TaskSubmitFn)(const QuercusCodecTaskRequest* req, void*  userdata);
+typedef int32_t (*TaskSubmitFn)(const QuercusCodecTaskRequest* req, void* userdata);
 typedef void (*UndoObserverFn)(void* userdata);
-typedef void (*ProgressFn)(const char* 
-	label, const char* 
-	message, double 
-	fraction, void* 
-	userdata);
+typedef bool (*ProgressFn)(const char* label, const char* message, double fraction, void* userdata);
 typedef void (*ProgressEndFn)(void* userdata);
-typedef void (*CommandFn)(const char* command_id, void*  userdata);
+typedef void (*CommandFn)(const char* command_id, void* userdata);
 
 void quercus_audio_buffer_add_ref(const void* audio);
 size_t quercus_audio_buffer_copy_samples(const void* audio, float* dst, size_t capacity);
@@ -954,6 +980,7 @@ bool quercus_editor_multicam_state(const void* session, uint64_t clip, RawMultic
 void* quercus_editor_new(void);
 void* quercus_editor_open(const uint8_t* uri, size_t uri_len, int32_t* version_info);
 void* quercus_editor_open_project_from_library(const uint8_t* uuid, size_t uuid_len, int32_t* error);
+void* quercus_editor_open_project_from_library_uri(const uint8_t* library_uri, size_t library_uri_len, const uint8_t* uuid, size_t uuid_len, int32_t* error);
 bool quercus_editor_params_at(const void* params, int32_t index, ParamRaw* out);
 int32_t quercus_editor_params_count(const void* params);
 int32_t quercus_editor_params_input_at(const void* params, int32_t index, uint8_t* buf, size_t len);
@@ -1196,6 +1223,7 @@ int32_t quercus_project_filename(const void* project, uint8_t* buf, size_t buf_l
 bool quercus_project_graph_endpoints(const void* project, uint64_t* input, uint64_t* output);
 StorageProjectHandle quercus_project_into_storage_handle(void* project);
 void* quercus_project_load(const uint8_t* path, size_t path_len);
+void* quercus_project_load_from_bytes(const uint8_t* bytes, size_t len, int32_t* version_info, int32_t* error);
 bool quercus_project_modified(const void* project);
 int32_t quercus_project_name(const void* project, uint8_t* buf, size_t buf_len);
 void* quercus_project_new(void);
@@ -1205,6 +1233,7 @@ int32_t quercus_project_pretty_filename(const void* project, uint8_t* buf, size_
 void quercus_project_release(const void* project);
 uint64_t quercus_project_root(const void* project);
 bool quercus_project_save(const void* project, const uint8_t* path, size_t path_len);
+int32_t quercus_project_save_to_bytes(const void* project, uint8_t* buf, size_t cap);
 void quercus_project_set_active(const void* project);
 bool quercus_project_set_cache_location(const void* project, int32_t setting, const uint8_t* path, size_t path_len);
 bool quercus_project_set_filename(const void* project, const uint8_t* path, size_t path_len);
@@ -1260,10 +1289,13 @@ int32_t quercus_storage_library_import(const uint8_t* uri, size_t uri_len, const
 int64_t quercus_storage_library_modified_at(const uint8_t* uri, size_t uri_len, int32_t index);
 int32_t quercus_storage_library_name_at(const uint8_t* uri, size_t uri_len, int32_t index, uint8_t* buf, size_t buf_len);
 int32_t quercus_storage_library_rename(const uint8_t* uri, size_t uri_len, const uint8_t* uuid, size_t uuid_len, const uint8_t* new_name, size_t new_name_len);
+bool quercus_storage_library_supported(const uint8_t* uri, size_t uri_len);
 int32_t quercus_storage_library_track_count(const uint8_t* uri, size_t uri_len, int32_t index);
 int32_t quercus_storage_library_uuid_at(const uint8_t* uri, size_t uri_len, int32_t index, uint8_t* buf, size_t buf_len);
 void* quercus_storage_open(const uint8_t* uri, size_t uri_len, int32_t* version_info);
+int32_t quercus_storage_register_transport(const QuercusStorageTransportVTable* vt, void* userdata);
 int32_t quercus_storage_save(const void* project, const uint8_t* uri, size_t uri_len, uint32_t options);
+bool quercus_storage_unregister_transport(int32_t slot);
 bool quercus_storage_uri_is_valid(const uint8_t* uri, size_t uri_len);
 uint64_t quercus_task_audio_render(const void* project, uint64_t viewer, TimeRange range, int32_t sample_rate, uint64_t channel_layout);
 void quercus_task_cancel(uint64_t id);

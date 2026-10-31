@@ -24,11 +24,15 @@
 //! the first settings access (the tests never call `ConfigStore::save`, so
 //! nothing persists).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use quercus_node::project::Project;
+use quercus_storage::backend::{LoadResult, StorageBackend, WRITE_POLICY_COALESCED};
 use quercus_storage::handle::CHandle;
-use quercus_storage::nodeutil::make_project_owned;
+use quercus_storage::nodeutil::{make_project_owned, project_arc, release_project};
+use quercus_storage::registry::Registry;
 use quercus_storage::uri::StorageUri;
 use quercus_storage::writethrough;
 
@@ -56,6 +60,9 @@ fn isolated_config() -> MutexGuard<'static, ()> {
 fn set_storage_config(backend: &str, sqlite_path: Option<&std::path::Path>, pg_url: Option<&str>) {
 	let store = quercus_core::configstore::ConfigStore::instance();
 	store.set(Some("Storage"), "Backend", backend);
+	// Every test starts from the legacy derivation unless it opts into
+	// an explicit library uri.
+	store.set(Some("Storage"), "LibraryUri", "");
 	store.set(
 		Some("Storage"),
 		"SqlitePath",
@@ -65,6 +72,12 @@ fn set_storage_config(backend: &str, sqlite_path: Option<&std::path::Path>, pg_u
 			.unwrap_or(""),
 	);
 	store.set(Some("Storage"), "PgUrl", pg_url.unwrap_or(""));
+}
+
+/// Set (or clear, with an empty string) the explicit
+/// `Storage/LibraryUri` override.
+fn set_library_uri(uri: &str) {
+	quercus_core::configstore::ConfigStore::instance().set(Some("Storage"), "LibraryUri", uri);
 }
 
 fn work_dir(tag: &str) -> std::path::PathBuf {
@@ -88,6 +101,98 @@ fn release(handle: CHandle) {
 		// SAFETY: the handle is an owned box (refcount 1) that this test
 		// created via `make_project_owned`.
 		unsafe { release(handle.ctx) };
+	}
+}
+
+// ---- mock coalesced backend -------------------------------------------
+
+/// A library backend that only counts calls: it proves the write-through
+/// path stays off the edit thread and coalesces (policy hint COALESCED).
+struct MockLibraryBackend {
+	/// Registry name (unique per test process run).
+	name: String,
+	/// URI scheme this mock claims (unique per test).
+	scheme: String,
+	/// `save` calls observed.
+	saves: AtomicUsize,
+	/// `library_snapshot` calls observed.
+	snapshots: AtomicUsize,
+}
+
+impl StorageBackend for MockLibraryBackend {
+	fn name(&self) -> &str {
+		&self.name
+	}
+
+	fn uri_scheme(&self) -> &str {
+		&self.scheme
+	}
+
+	fn can_handle(&self, uri: &StorageUri) -> bool {
+		uri.scheme == self.scheme
+	}
+
+	fn load(&self, _uri: &StorageUri) -> quercus_storage::error::Result<LoadResult> {
+		Ok(LoadResult::success(CHandle::null()))
+	}
+
+	fn save(
+		&self,
+		_project: CHandle,
+		_uri: &StorageUri,
+		_options: u32,
+	) -> quercus_storage::error::Result<()> {
+		self.saves.fetch_add(1, Ordering::SeqCst);
+		Ok(())
+	}
+
+	fn library_snapshot(
+		&self,
+		_uri: &StorageUri,
+		_uuid: &str,
+	) -> quercus_storage::error::Result<()> {
+		self.snapshots.fetch_add(1, Ordering::SeqCst);
+		Ok(())
+	}
+
+	fn write_policy(&self) -> u32 {
+		WRITE_POLICY_COALESCED
+	}
+
+	fn supports_library(&self) -> bool {
+		true
+	}
+}
+
+/// Register a fresh mock under a unique scheme/name; returns
+/// `(scheme, name, mock)`. The caller unregisters `name` at the end.
+fn register_mock(tag: &str) -> (String, String, Arc<MockLibraryBackend>) {
+	let scheme = format!("mockp0c{tag}");
+	let name = format!("mock-p0c-{tag}-{}", std::process::id());
+	let mock = Arc::new(MockLibraryBackend {
+		name: name.clone(),
+		scheme: scheme.clone(),
+		saves: AtomicUsize::new(0),
+		snapshots: AtomicUsize::new(0),
+	});
+	Registry::global()
+		.register(mock.clone())
+		.expect("register the mock library backend");
+	(scheme, name, mock)
+}
+
+/// Wait (bounded) for `cond` to hold, polling at `step`; returns whether
+/// it held before the deadline.
+fn wait_until(timeout: Duration, step: Duration, mut cond: impl FnMut() -> bool) -> bool {
+	let deadline = Instant::now() + timeout;
+	loop {
+		if cond() {
+			return true;
+		}
+		if Instant::now() >= deadline {
+			return false;
+		}
+		std::thread::sleep(step);
 	}
 }
 
@@ -175,9 +280,14 @@ fn backend_enabled_by_config_binds_and_round_trips() {
 	// ...and a fresh backend load reads the bound project's state back.
 	let uri = StorageUri::parse(&writethrough::library_uri().expect("library uri"))
 		.expect("parse library uri");
-	let loaded = writethrough::backend()
-		.load_project(&uri)
-		.expect("load the written-through project");
+	let backend = writethrough::library_backend(&uri).expect("resolve the library backend");
+	let loaded_handle = backend
+		.load(&uri)
+		.expect("load the written-through project")
+		.project;
+	// SAFETY: the backend returns an owned project handle.
+	let loaded = unsafe { project_arc(&loaded_handle) }.expect("loaded project arc");
+	release_project(loaded_handle);
 	{
 		let guard = loaded.lock().unwrap_or_else(|e| e.into_inner());
 		assert_eq!(
@@ -286,4 +396,179 @@ fn note_command_without_bindings_is_a_no_op() {
 	// dropped before they return): the notification must not panic.
 	writethrough::note_command();
 	writethrough::flush_all();
+}
+
+// ---- explicit LibraryUri + registry routing ---------------------------
+
+#[test]
+fn library_uri_overrides_legacy_config_and_off_still_disables() {
+	let _guard = isolated_config();
+	let dir = work_dir("override");
+	let legacy = dir.join("legacy.db");
+	let mock_uri = "mockp0coverride://library";
+
+	// LibraryUri wins over the legacy Backend/SqlitePath derivation.
+	set_storage_config("sqlite", Some(&legacy), None);
+	set_library_uri(mock_uri);
+	assert!(writethrough::storage_enabled());
+	assert_eq!(
+		writethrough::library_uri().as_deref(),
+		Some(mock_uri),
+		"LibraryUri overrides the legacy sqlite derivation"
+	);
+	// The value is trimmed and returned verbatim.
+	set_library_uri(&format!("  {mock_uri}  "));
+	assert_eq!(writethrough::library_uri().as_deref(), Some(mock_uri));
+
+	// An explicit unsupported Backend still disables everything, even
+	// with a LibraryUri configured.
+	set_storage_config("off", Some(&legacy), None);
+	set_library_uri(mock_uri);
+	assert!(!writethrough::storage_enabled());
+	let (handle, _project) = project_handle();
+	writethrough::bind_project(handle);
+	assert!(
+		!writethrough::is_bound(handle),
+		"Backend=off disables binding even when LibraryUri is set"
+	);
+	writethrough::unbind_project(handle);
+	release(handle);
+
+	// Legacy derivation still applies when LibraryUri is empty.
+	set_storage_config("sqlite", Some(&legacy), None);
+	assert!(writethrough::library_uri()
+		.expect("legacy sqlite uri")
+		.starts_with("quercusdb+sqlite://"));
+
+	// A LibraryUri no backend claims is not a fallback to the legacy
+	// database: the project simply stays unbound.
+	set_library_uri("mockp0cnobody://library");
+	assert!(writethrough::storage_enabled());
+	let (handle, _project) = project_handle();
+	writethrough::bind_project(handle);
+	assert!(
+		!writethrough::is_bound(handle),
+		"an unclaimed LibraryUri must not fall back to a private database"
+	);
+	writethrough::unbind_project(handle);
+	release(handle);
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- policy: COALESCED -------------------------------------------------
+
+#[test]
+fn coalesced_backend_writes_after_debounce_not_on_the_edit_thread() {
+	let _guard = isolated_config();
+	let (scheme, name, mock) = register_mock("debounce");
+	let dir = work_dir("debounce");
+	let legacy = dir.join("legacy.db");
+	let uri = format!("{scheme}://library");
+	// Prove the LibraryUri override also drives the binding: the legacy
+	// sqlite path must never be touched.
+	set_storage_config("sqlite", Some(&legacy), None);
+	set_library_uri(&uri);
+	let store = quercus_core::configstore::ConfigStore::instance();
+	store.set_int(Some("Storage"), "WriteDebounceMs", 200);
+	store.set_int(Some("Storage"), "SnapshotIntervalSec", 600);
+	assert_eq!(writethrough::library_uri().as_deref(), Some(uri.as_str()));
+
+	let (handle, _project) = project_handle();
+	writethrough::bind_project(handle);
+	assert!(writethrough::is_bound(handle));
+
+	// The edit thread must return without I/O for a coalesced backend.
+	writethrough::note_command();
+	assert_eq!(
+		mock.saves.load(Ordering::SeqCst),
+		0,
+		"COALESCED must not write on the edit thread"
+	);
+
+	// The background thread writes once the debounce elapsed.
+	assert!(
+		wait_until(Duration::from_secs(3), Duration::from_millis(20), || {
+			mock.saves.load(Ordering::SeqCst) == 1
+		}),
+		"the coalesced write must land after the debounce"
+	);
+	// No duplicate writes while the project stays quiet.
+	std::thread::sleep(Duration::from_millis(400));
+	assert_eq!(mock.saves.load(Ordering::SeqCst), 1);
+
+	// The exit flush snapshots the written head but must not re-save a
+	// clean project.
+	writethrough::flush_all();
+	assert_eq!(
+		mock.saves.load(Ordering::SeqCst),
+		1,
+		"flush must not re-save a clean binding"
+	);
+	assert_eq!(
+		mock.snapshots.load(Ordering::SeqCst),
+		1,
+		"flush snapshots the written head"
+	);
+	assert!(
+		!legacy.exists(),
+		"the legacy sqlite library must not be touched"
+	);
+
+	writethrough::unbind_project(handle);
+	assert!(!writethrough::is_bound(handle));
+	release(handle);
+	Registry::global()
+		.unregister(&name)
+		.expect("unregister mock");
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn coalesced_flush_and_unbind_force_a_save() {
+	let _guard = isolated_config();
+	let (scheme, name, mock) = register_mock("forced");
+	let dir = work_dir("forced");
+	let uri = format!("{scheme}://library");
+	set_storage_config("sqlite", Some(&dir.join("legacy.db")), None);
+	set_library_uri(&uri);
+	// Keep the background thread out of the way: this test drives the
+	// flush paths explicitly.
+	quercus_core::configstore::ConfigStore::instance().set_int(
+		Some("Storage"),
+		"WriteDebounceMs",
+		60_000,
+	);
+
+	let (handle, _project) = project_handle();
+	writethrough::bind_project(handle);
+	writethrough::note_command();
+	assert_eq!(
+		mock.saves.load(Ordering::SeqCst),
+		0,
+		"COALESCED must not write on the edit thread"
+	);
+
+	// flush_all forces the pending write, then snapshots it.
+	writethrough::flush_all();
+	assert_eq!(mock.saves.load(Ordering::SeqCst), 1);
+	assert_eq!(mock.snapshots.load(Ordering::SeqCst), 1);
+	// Flushing again is idempotent (nothing pending, nothing due).
+	writethrough::flush_all();
+	assert_eq!(mock.saves.load(Ordering::SeqCst), 1);
+	assert_eq!(mock.snapshots.load(Ordering::SeqCst), 1);
+
+	// A pending write at unbind time is flushed as well.
+	writethrough::note_command();
+	assert_eq!(mock.saves.load(Ordering::SeqCst), 1);
+	writethrough::unbind_project(handle);
+	assert_eq!(mock.saves.load(Ordering::SeqCst), 2);
+	assert_eq!(mock.snapshots.load(Ordering::SeqCst), 2);
+	assert!(!writethrough::is_bound(handle));
+
+	release(handle);
+	Registry::global()
+		.unregister(&name)
+		.expect("unregister mock");
+	let _ = std::fs::remove_dir_all(&dir);
 }

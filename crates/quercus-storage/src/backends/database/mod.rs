@@ -64,7 +64,7 @@ pub mod migration;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use sea_orm::entity::prelude::*;
@@ -75,7 +75,7 @@ use entities::{journal, project, settings, snapshot};
 use quercus_node::id::NodeId;
 use quercus_node::project::Project;
 
-use crate::backend::{LoadResult, StorageBackend};
+use crate::backend::{LibraryProjectInfo, LibraryProjectStats, LoadResult, StorageBackend};
 use crate::error::{Error, Result};
 use crate::handle::CHandle;
 use crate::nodeutil::ProjectArc;
@@ -227,78 +227,19 @@ pub struct ProjectStats {
 
 /// Derive the manager stats from a live project (plan §4).
 ///
-/// Traversal: sequences contribute their track lists' tracks and blocks;
-/// the duration is the longest sequence's end point. Footage nodes are
-/// counted directly in the graph. A clip that appears in more than one
-/// track is counted once per membership.
+/// Thin wrapper over [`crate::backend::derive_library_stats`], the
+/// backend-neutral traversal: sequences contribute their track lists'
+/// tracks and blocks; the duration is the longest sequence's end point.
+/// Footage nodes are counted directly in the graph. A clip that appears
+/// in more than one track is counted once per membership.
 pub fn derive_stats(p: &Project) -> ProjectStats {
-	use quercus_node::block::{ClipBlockBehavior, GapBlockBehavior};
-	use quercus_node::sequence::SequenceBehavior;
-	use quercus_node::track::{TrackBehavior, TrackListBehavior};
-
-	let mut stats = ProjectStats::default();
-	for id in p.graph.node_ids() {
-		let entry = match p.graph.get(id) {
-			Some(e) => e,
-			None => continue,
-		};
-		if let Some(seq) = entry
-			.behavior
-			.as_any()
-			.and_then(|a| a.downcast_ref::<SequenceBehavior>())
-		{
-			let mut seq_len = quercus_core::Rational::new(0, 1);
-			for tl_id in &seq.track_lists {
-				let tl = match p.graph.get(*tl_id).and_then(|e| {
-					e.behavior
-						.as_any()
-						.and_then(|a| a.downcast_ref::<TrackListBehavior>())
-				}) {
-					Some(t) => t,
-					None => continue,
-				};
-				stats.track_count += tl.tracks.len() as i32;
-				for t_id in &tl.tracks {
-					let t = match p.graph.get(*t_id).and_then(|e| {
-						e.behavior
-							.as_any()
-							.and_then(|a| a.downcast_ref::<TrackBehavior>())
-					}) {
-						Some(t) => t,
-						None => continue,
-					};
-					for b in &t.blocks {
-						let entry = p.graph.get(*b);
-						if let Some(c) = entry.and_then(|e| {
-							e.behavior
-								.as_any()
-								.and_then(|a| a.downcast_ref::<ClipBlockBehavior>())
-						}) {
-							stats.clip_count += 1;
-							if c.core.out() > seq_len {
-								seq_len = c.core.out();
-							}
-						} else if let Some(g) = entry.and_then(|e| {
-							e.behavior
-								.as_any()
-								.and_then(|a| a.downcast_ref::<GapBlockBehavior>())
-						}) {
-							if g.core.out() > seq_len {
-								seq_len = g.core.out();
-							}
-						}
-					}
-				}
-			}
-			let ms = (seq_len.to_f64() * 1000.0).round() as i64;
-			if ms > stats.duration_ms {
-				stats.duration_ms = ms;
-			}
-		} else if entry.behavior.type_id() == "org.olivevideoeditor.Olive.footage" {
-			stats.footage_count += 1;
-		}
+	let stats = crate::backend::derive_library_stats(p);
+	ProjectStats {
+		duration_ms: stats.duration_ms,
+		track_count: stats.track_count,
+		clip_count: stats.clip_count,
+		footage_count: stats.footage_count,
 	}
-	stats
 }
 
 /// One library entry as returned by [`DatabaseBackend::list_projects`].
@@ -320,6 +261,22 @@ pub struct ProjectInfo {
 	pub command_seq: i64,
 }
 
+impl From<ProjectInfo> for LibraryProjectInfo {
+	/// Map a database row to the backend-neutral library row: the
+	/// surrogate id and the command seq are database-internal, and the
+	/// naive row timestamps become Unix seconds (UTC, the manager's sort
+	/// key).
+	fn from(info: ProjectInfo) -> Self {
+		LibraryProjectInfo {
+			uuid: info.uuid,
+			name: info.name,
+			schema_ver: info.schema_ver,
+			created_at: info.created_at.and_utc().timestamp(),
+			modified_at: info.modified_at.and_utc().timestamp(),
+		}
+	}
+}
+
 /// The database backend (schemes `quercusdb+sqlite` / `quercusdb+pg`).
 ///
 /// Connections and the private runtime are created lazily on the first
@@ -338,6 +295,19 @@ pub struct DatabaseBackend {
 }
 
 impl DatabaseBackend {
+	/// The process-wide database backend.
+	///
+	/// Every backend instance owns its own lazily opened connection pools
+	/// and its own operation lock, so two instances can hold two SQLite
+	/// connections to the same library file. The registry's `quercusdb`
+	/// entry and engine call sites that do not need an isolated session
+	/// use this singleton; tests that deliberately want a fresh session
+	/// keep constructing [`DatabaseBackend::new`].
+	pub fn shared() -> &'static Arc<DatabaseBackend> {
+		static SHARED: OnceLock<Arc<DatabaseBackend>> = OnceLock::new();
+		SHARED.get_or_init(|| Arc::new(DatabaseBackend::new()))
+	}
+
 	/// Construct (no connection is opened until first use).
 	pub fn new() -> Self {
 		DatabaseBackend {
@@ -812,6 +782,42 @@ impl StorageBackend for DatabaseBackend {
 		// project, then run the Rust-typed save.
 		let arc = unsafe { crate::nodeutil::project_arc(&project)? };
 		self.save_project(&arc, uri, options)
+	}
+
+	fn supports_library(&self) -> bool {
+		// The database is the native project library (list/delete/rename/
+		// stats/snapshot all have a queryable backing store).
+		true
+	}
+
+	fn library_list(&self, uri: &StorageUri) -> Result<Vec<LibraryProjectInfo>> {
+		Ok(self
+			.list_projects(uri)?
+			.into_iter()
+			.map(LibraryProjectInfo::from)
+			.collect())
+	}
+
+	fn library_delete(&self, uri: &StorageUri, uuid: &str) -> Result<()> {
+		self.delete_project(uri, uuid)
+	}
+
+	fn library_rename(&self, uri: &StorageUri, uuid: &str, name: &str) -> Result<()> {
+		self.rename_project(uri, uuid, name)
+	}
+
+	fn library_stats(&self, uri: &StorageUri, uuid: &str) -> Result<LibraryProjectStats> {
+		let stats = self.project_stats(uri, uuid)?;
+		Ok(LibraryProjectStats {
+			duration_ms: stats.duration_ms,
+			track_count: stats.track_count,
+			clip_count: stats.clip_count,
+			footage_count: stats.footage_count,
+		})
+	}
+
+	fn library_snapshot(&self, uri: &StorageUri, uuid: &str) -> Result<()> {
+		self.snapshot(uri, uuid)
 	}
 }
 
@@ -1650,5 +1656,88 @@ mod tests {
 		let loaded_guard = loaded.lock().unwrap();
 		assert_eq!(loaded_guard.uuid, guard.uuid);
 		assert_eq!(loaded_guard.graph.node_count(), guard.graph.node_count());
+	}
+
+	#[test]
+	fn shared_backend_is_the_builtin_singleton() {
+		let a = DatabaseBackend::shared();
+		let b = DatabaseBackend::shared();
+		assert!(Arc::ptr_eq(a, b), "shared() must return one instance");
+		let db = crate::backends::builtins()
+			.into_iter()
+			.find(|backend| backend.name() == "quercusdb")
+			.expect("builtins must contain quercusdb");
+		assert_eq!(
+			Arc::as_ptr(&db) as *const (),
+			Arc::as_ptr(a) as *const (),
+			"the built-in quercusdb entry must be the shared singleton"
+		);
+	}
+
+	#[test]
+	fn library_trait_methods_delegate_to_the_project_manager() {
+		let dir =
+			std::env::temp_dir().join(format!("quercusstorage_library_{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let db = dir.join("lib.db");
+		let uri = uri(&format!("quercusdb+sqlite://{}", db.display()));
+
+		let backend = DatabaseBackend::shared();
+		let project = Project::new();
+		project
+			.lock()
+			.unwrap()
+			.settings
+			.insert("projectname".to_string(), "Shared Library".to_string());
+		let handle = crate::nodeutil::make_project_owned(project);
+		backend
+			.save(handle, &uri, 0)
+			.expect("save into the shared library");
+		crate::nodeutil::release_project(handle);
+
+		// The backend-neutral row keeps the manager's fields but replaces
+		// the naive row timestamps with Unix seconds.
+		let rows = backend.list_projects(&uri).expect("raw rows");
+		assert_eq!(rows.len(), 1);
+		let infos = backend.library_list(&uri).expect("library rows");
+		assert_eq!(infos.len(), 1);
+		assert_eq!(infos[0].uuid, rows[0].uuid);
+		assert_eq!(infos[0].name, "Shared Library");
+		assert_eq!(infos[0].schema_ver, rows[0].schema_ver);
+		assert_eq!(
+			infos[0].created_at,
+			rows[0].created_at.and_utc().timestamp()
+		);
+		assert_eq!(
+			infos[0].modified_at,
+			rows[0].modified_at.and_utc().timestamp()
+		);
+		assert!(infos[0].created_at > 0, "unix seconds, not a naive epoch");
+
+		let stats = backend
+			.project_stats(&uri, &infos[0].uuid)
+			.expect("raw stats");
+		let lib_stats = backend
+			.library_stats(&uri, &infos[0].uuid)
+			.expect("library stats");
+		assert_eq!(lib_stats.duration_ms, stats.duration_ms);
+		assert_eq!(lib_stats.track_count, stats.track_count);
+		assert_eq!(lib_stats.clip_count, stats.clip_count);
+		assert_eq!(lib_stats.footage_count, stats.footage_count);
+
+		backend
+			.library_rename(&uri, &infos[0].uuid, "Renamed")
+			.expect("rename");
+		assert_eq!(backend.library_list(&uri).unwrap()[0].name, "Renamed");
+
+		backend
+			.library_snapshot(&uri, &infos[0].uuid)
+			.expect("snapshot");
+
+		backend
+			.library_delete(&uri, &infos[0].uuid)
+			.expect("delete");
+		assert!(backend.library_list(&uri).unwrap().is_empty());
 	}
 }

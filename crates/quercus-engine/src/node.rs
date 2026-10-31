@@ -16,6 +16,10 @@ use quercus_node::id::NodeId;
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
 use quercus_node::track::{TrackBehavior, TrackListBehavior};
+use quercus_storage::error::{
+	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_OK,
+	QUERCUSSTORAGE_TOO_NEW, QUERCUSSTORAGE_TOO_OLD, QUERCUSSTORAGE_UNKNOWN_VERSION,
+};
 use quercus_timeline::util::GraphBlockRange;
 
 use crate::codec::{copy_str_out, str_arg};
@@ -2436,10 +2440,113 @@ mod edit_tests {
 // Batch 3: project persistence and settings
 // ---------------------------------------------------------------------------
 
+/// Serializes the project to its XML byte representation — the same
+/// document the path-based [`quercus_project_save`] writes.
+///
+/// Uses the crate's snprintf-style buffer convention: returns the full
+/// document length in bytes excluding the trailing NUL, and writes
+/// `min(len, cap - 1)` bytes plus a NUL. A null `buf` or `cap == 0` is a
+/// size query; a return value `>= cap` means the document did not fit (a
+/// `cap`-byte buffer holds at most `cap - 1` document bytes plus the
+/// NUL). Negative returns are `QUERCUSSTORAGE_E_*` codes: `E_INVALID`
+/// for a null project and `E_FORMAT` when serialization fails. The
+/// `i32` return bounds a document to `i32::MAX` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_project_save_to_bytes(
+	project: *const ProjectHandle,
+	buf: *mut u8,
+	cap: usize,
+) -> i32 {
+	let Some(project) = (unsafe { project.as_ref() }) else {
+		return QUERCUSSTORAGE_E_INVALID;
+	};
+	let guard = project
+		.inner
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	let xml = match quercus_node::serializer::save(&guard) {
+		Ok(xml) => xml,
+		Err(_) => return QUERCUSSTORAGE_E_FORMAT,
+	};
+	copy_str_out(&xml, buf, cap)
+}
+
+/// Loads a project from its XML byte representation. Returns an owned
+/// handle (reference count 1) or null. `Project::filename` stays empty:
+/// bytes carry no path, so callers that want save-as semantics set it
+/// with [`quercus_project_set_filename`].
+///
+/// `*version_info` receives one of `QUERCUSSTORAGE_OK`,
+/// `QUERCUSSTORAGE_TOO_OLD`, `QUERCUSSTORAGE_TOO_NEW` or
+/// `QUERCUSSTORAGE_UNKNOWN_VERSION`. TOO_NEW/UNKNOWN return null with
+/// `*error == 0` (the document is intact but this build cannot load it).
+/// A genuine failure returns null with a negative `QUERCUSSTORAGE_E_*`
+/// code in `*error`: `E_INVALID` for null pointers and `E_FORMAT` for
+/// non-UTF-8, unparseable XML or a serializer failure.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes (or be null). `version_info`
+/// and `error` must both be writable `i32` slots: the function fails closed
+/// (returns null) when either is null, reporting `E_INVALID` through
+/// `error` when that slot is available.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_project_load_from_bytes(
+	bytes: *const u8,
+	len: usize,
+	version_info: *mut i32,
+	error: *mut i32,
+) -> *mut ProjectHandle {
+	let Some(error) = (unsafe { error.as_mut() }) else {
+		return std::ptr::null_mut();
+	};
+	let Some(version_info) = (unsafe { version_info.as_mut() }) else {
+		*error = QUERCUSSTORAGE_E_INVALID;
+		return std::ptr::null_mut();
+	};
+	*version_info = QUERCUSSTORAGE_OK;
+	*error = 0;
+	if bytes.is_null() {
+		*error = QUERCUSSTORAGE_E_INVALID;
+		return std::ptr::null_mut();
+	}
+	let Some(xml) = (unsafe { str_arg(bytes, len) }) else {
+		*error = QUERCUSSTORAGE_E_FORMAT;
+		return std::ptr::null_mut();
+	};
+	let Some(probe) = quercus_node::serializer::probe_version(xml) else {
+		*error = QUERCUSSTORAGE_E_FORMAT;
+		return std::ptr::null_mut();
+	};
+	match probe {
+		quercus_node::serializer::VersionProbe::TooNew => {
+			*version_info = QUERCUSSTORAGE_TOO_NEW;
+			return std::ptr::null_mut();
+		}
+		quercus_node::serializer::VersionProbe::Unknown => {
+			*version_info = QUERCUSSTORAGE_UNKNOWN_VERSION;
+			return std::ptr::null_mut();
+		}
+		quercus_node::serializer::VersionProbe::Current
+		| quercus_node::serializer::VersionProbe::Old => {}
+	}
+	let project = match quercus_node::serializer::load(xml) {
+		Ok(project) => project,
+		Err(_) => {
+			*error = QUERCUSSTORAGE_E_FORMAT;
+			return std::ptr::null_mut();
+		}
+	};
+	if probe == quercus_node::serializer::VersionProbe::Old {
+		*version_info = QUERCUSSTORAGE_TOO_OLD;
+	}
+	crate::handle::into_ffi(ProjectHandle { inner: project }) as *mut ProjectHandle
+}
+
 /// Saves the project as XML to `path` (null/empty = the project's own
 /// filename; the path becomes the project's filename, save-as
 /// semantics). False when no path is available or on IO/serialize
-/// error.
+/// error. The bytes come from [`quercus_project_save_to_bytes`], so the
+/// in-memory and on-disk encodings are always the same.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_project_save(
 	project: *const ProjectHandle,
@@ -2457,33 +2564,49 @@ pub unsafe extern "C" fn quercus_project_save(
 			None => return false,
 		}
 	};
+	// Resolve the target path under the lock (save-as semantics), then
+	// serialize through the byte primitive (which takes the lock itself).
+	let target = {
+		let guard = unsafe { &*project }
+			.inner
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		match path {
+			Some(p) => p,
+			None => {
+				if guard.filename.is_empty() {
+					return false;
+				}
+				guard.filename.clone()
+			}
+		}
+	};
+	let len = unsafe { quercus_project_save_to_bytes(project, std::ptr::null_mut(), 0) };
+	if len < 0 {
+		return false;
+	}
+	let mut bytes = vec![0u8; len as usize + 1];
+	let written =
+		unsafe { quercus_project_save_to_bytes(project, bytes.as_mut_ptr(), bytes.len()) };
+	if written != len {
+		// The project changed between the size query and the write.
+		return false;
+	}
+	if std::fs::write(&target, &bytes[..len as usize]).is_err() {
+		return false;
+	}
 	let mut guard = unsafe { &*project }
 		.inner
 		.lock()
 		.unwrap_or_else(|e| e.into_inner());
-	let target = match path {
-		Some(p) => p,
-		None => {
-			if guard.filename.is_empty() {
-				return false;
-			}
-			guard.filename.clone()
-		}
-	};
-	let xml = match quercus_node::serializer::save(&guard) {
-		Ok(xml) => xml,
-		Err(_) => return false,
-	};
-	if std::fs::write(&target, xml).is_err() {
-		return false;
-	}
 	guard.filename = target;
 	guard.modified = false;
 	true
 }
 
 /// Loads a project from an XML file. Null on failure. The project is
-/// NOT made active automatically.
+/// NOT made active automatically. Delegates to
+/// [`quercus_project_load_from_bytes`] and then records the path.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_project_load(
 	path: *const u8,
@@ -2492,19 +2615,29 @@ pub unsafe extern "C" fn quercus_project_load(
 	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
 		return std::ptr::null_mut();
 	};
-	let xml = match std::fs::read_to_string(path) {
-		Ok(xml) => xml,
+	let bytes = match std::fs::read(path) {
+		Ok(bytes) => bytes,
 		Err(_) => return std::ptr::null_mut(),
 	};
-	let project = match quercus_node::serializer::load(&xml) {
-		Ok(p) => p,
-		Err(_) => return std::ptr::null_mut(),
+	let mut version_info = QUERCUSSTORAGE_OK;
+	let mut error = 0;
+	let project = unsafe {
+		quercus_project_load_from_bytes(
+			bytes.as_ptr(),
+			bytes.len(),
+			&mut version_info,
+			&mut error,
+		)
 	};
-	project
+	if project.is_null() {
+		return std::ptr::null_mut();
+	}
+	unsafe { &*project }
+		.inner
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
 		.filename = path.to_string();
-	crate::handle::into_ffi(ProjectHandle { inner: project }) as *mut ProjectHandle
+	project
 }
 
 /// Sets the project file path (used by save when no path is given).
@@ -2793,6 +2926,174 @@ mod persist_tests {
 			// Negative paths.
 			assert!(!quercus_project_save(std::ptr::null(), p, pl));
 			assert!(quercus_project_load("nope".as_ptr(), 4).is_null());
+		}
+	}
+
+	#[test]
+	fn bytes_roundtrip_and_size_query() {
+		let _guard = super::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+		unsafe {
+			let project = quercus_project_new();
+			let (n, nl) = arg("Bytes Folder");
+			let folder = quercus_folder_create(project, quercus_project_root(project), n, nl);
+			assert!(quercus_node_id_is_valid(folder));
+			let node_count = quercus_project_node_count(project);
+
+			let mut uuid_buf = [0u8; 64];
+			let uuid_len = quercus_project_uuid(project, uuid_buf.as_mut_ptr(), uuid_buf.len());
+			let uuid = std::str::from_utf8(&uuid_buf[..uuid_len as usize])
+				.unwrap()
+				.to_string();
+			let mut name_buf = [0u8; 64];
+			let name_len = quercus_project_name(project, name_buf.as_mut_ptr(), name_buf.len());
+			let name = std::str::from_utf8(&name_buf[..name_len as usize])
+				.unwrap()
+				.to_string();
+
+			// Size query: a null buffer / cap 0 returns the document length.
+			let len = quercus_project_save_to_bytes(project, std::ptr::null_mut(), 0);
+			assert!(len > 0);
+
+			// Exact fit: `len` bytes + the NUL.
+			let mut bytes = vec![0u8; len as usize + 1];
+			assert_eq!(
+				quercus_project_save_to_bytes(project, bytes.as_mut_ptr(), bytes.len()),
+				len
+			);
+			assert_eq!(bytes.pop(), Some(0), "the output is NUL-terminated");
+
+			// Too-small cap: the full length is still reported and the
+			// output is truncated + NUL-terminated.
+			let mut small = [0xAAu8; 8];
+			assert_eq!(
+				quercus_project_save_to_bytes(project, small.as_mut_ptr(), small.len()),
+				len
+			);
+			assert_eq!(&small[..7], &bytes[..7]);
+			assert_eq!(small[7], 0, "truncated output is NUL-terminated");
+
+			// Null project: invalid argument.
+			assert_eq!(
+				quercus_project_save_to_bytes(std::ptr::null(), std::ptr::null_mut(), 0),
+				QUERCUSSTORAGE_E_INVALID
+			);
+
+			// The path-based save writes exactly the in-memory bytes.
+			let path = std::env::temp_dir()
+				.join(format!("quercusengine_bytes_{}.ove", std::process::id()))
+				.to_string_lossy()
+				.into_owned();
+			let (p, pl) = arg(&path);
+			assert!(quercus_project_save(project, p, pl));
+			assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+			let mut version_info = -1;
+			let mut error = -1;
+			let loaded = quercus_project_load_from_bytes(
+				bytes.as_ptr(),
+				bytes.len(),
+				&mut version_info,
+				&mut error,
+			);
+			assert!(!loaded.is_null(), "reload the byte-saved project");
+			assert_eq!(version_info, QUERCUSSTORAGE_OK);
+			assert_eq!(error, 0);
+			assert_eq!(quercus_project_node_count(loaded), node_count);
+			let mut loaded_uuid_buf = [0u8; 64];
+			let loaded_uuid_len =
+				quercus_project_uuid(loaded, loaded_uuid_buf.as_mut_ptr(), loaded_uuid_buf.len());
+			assert_eq!(&loaded_uuid_buf[..loaded_uuid_len as usize], uuid.as_bytes());
+			let mut loaded_name_buf = [0u8; 64];
+			let loaded_name_len =
+				quercus_project_name(loaded, loaded_name_buf.as_mut_ptr(), loaded_name_buf.len());
+			assert_eq!(&loaded_name_buf[..loaded_name_len as usize], name.as_bytes());
+			let mut filename_buf = [0u8; 8];
+			assert_eq!(
+				quercus_project_filename(loaded, filename_buf.as_mut_ptr(), filename_buf.len()),
+				0,
+				"bytes carry no filename"
+			);
+
+			quercus_project_release(loaded);
+			quercus_project_release(project);
+			let _ = std::fs::remove_file(&path);
+		}
+	}
+
+	#[test]
+	fn load_from_bytes_reports_version_and_errors() {
+		unsafe {
+			let mut version_info = -1;
+			let mut error = -1;
+
+			// Newer document: null handle, TOO_NEW, no error.
+			let too_new = b"<olive version=\"999999\"></olive>";
+			assert!(quercus_project_load_from_bytes(
+				too_new.as_ptr(),
+				too_new.len(),
+				&mut version_info,
+				&mut error,
+			)
+			.is_null());
+			assert_eq!(version_info, QUERCUSSTORAGE_TOO_NEW);
+			assert_eq!(error, 0);
+
+			// Unrecognized root: null handle, UNKNOWN_VERSION, no error.
+			let unknown = b"<thirdparty></thirdparty>";
+			assert!(quercus_project_load_from_bytes(
+				unknown.as_ptr(),
+				unknown.len(),
+				&mut version_info,
+				&mut error,
+			)
+			.is_null());
+			assert_eq!(version_info, QUERCUSSTORAGE_UNKNOWN_VERSION);
+			assert_eq!(error, 0);
+
+			// Not XML: format error.
+			let not_xml = b"not xml";
+			assert!(quercus_project_load_from_bytes(
+				not_xml.as_ptr(),
+				not_xml.len(),
+				&mut version_info,
+				&mut error,
+			)
+			.is_null());
+			assert_eq!(error, QUERCUSSTORAGE_E_FORMAT);
+
+			// Non-UTF-8 bytes: format error.
+			let non_utf8 = [0xFFu8, 0xFE, 0x00];
+			assert!(quercus_project_load_from_bytes(
+				non_utf8.as_ptr(),
+				non_utf8.len(),
+				&mut version_info,
+				&mut error,
+			)
+			.is_null());
+			assert_eq!(error, QUERCUSSTORAGE_E_FORMAT);
+
+			// Null input pointer: invalid argument.
+			assert!(
+				quercus_project_load_from_bytes(
+					std::ptr::null(),
+					0,
+					&mut version_info,
+					&mut error
+				)
+				.is_null()
+			);
+			assert_eq!(error, QUERCUSSTORAGE_E_INVALID);
+
+			// Null version-info pointer: invalid argument, reported
+			// through the error slot.
+			assert!(quercus_project_load_from_bytes(
+				not_xml.as_ptr(),
+				not_xml.len(),
+				std::ptr::null_mut(),
+				&mut error,
+			)
+			.is_null());
+			assert_eq!(error, QUERCUSSTORAGE_E_INVALID);
 		}
 	}
 

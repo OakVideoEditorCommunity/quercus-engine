@@ -33,6 +33,13 @@ unsafe extern "C" {
 	fn quercus_editor_new() -> *mut c_void;
 	fn quercus_editor_open(uri: *const u8, uri_len: usize, version_info: *mut i32) -> *mut c_void;
 	fn quercus_editor_open_project_from_library(uuid: *const u8, uuid_len: usize, error: *mut i32) -> *mut c_void;
+	fn quercus_editor_open_project_from_library_uri(
+		library_uri: *const u8,
+		library_uri_len: usize,
+		uuid: *const u8,
+		uuid_len: usize,
+		error: *mut i32,
+	) -> *mut c_void;
 	fn quercus_editor_adopt_storage_project_handle(project: StorageProjectHandle) -> *mut c_void;
 	fn quercus_editor_from_project_handle(project: *mut c_void) -> *mut c_void;
 	fn quercus_editor_create_library(name: *const u8, name_len: usize, error: *mut i32) -> *mut c_void;
@@ -137,6 +144,35 @@ impl EditorSession {
 		}
 		let session = Self { ptr };
 		let _ = session.bind_project_to_library();
+		Ok(session)
+	}
+
+	/// Opens the project `uuid` from an explicit library URI (any backend
+	/// the registry can resolve, not only the configured default library).
+	pub fn open_project_from_library_uri(
+		library_uri: &str,
+		uuid: &str,
+	) -> Result<Self, StorageError> {
+		let mut error = 0;
+		let ptr = unsafe {
+			quercus_editor_open_project_from_library_uri(
+				library_uri.as_ptr(),
+				library_uri.len(),
+				uuid.as_ptr(),
+				uuid.len(),
+				&mut error,
+			)
+		};
+		if ptr.is_null() {
+			return Err(StorageError(error));
+		}
+		let session = Self { ptr };
+		// Write-through binding targets the *configured* default library;
+		// an explicitly chosen non-default library stays unbound until the
+		// caller configures it (or binds explicitly).
+		if crate::storage::default_library_uri().as_deref() == Some(library_uri) {
+			let _ = session.bind_project_to_library();
+		}
 		Ok(session)
 	}
 

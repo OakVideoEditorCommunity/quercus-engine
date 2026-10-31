@@ -201,7 +201,22 @@ impl NodeBehavior for SequenceBehavior {
 	}
 
 	fn duplicate(&self, _core: &NodeCore) -> Option<Box<dyn NodeBehavior>> {
-		Some(Box::new(SequenceBehavior::new()))
+		// A deep copy must keep the track-list/parameter state, or the
+		// sequence reloads with no tracks. The timeline handles are
+		// opaque and owned by the source project: the copy starts
+		// unbound (the facade creates fresh handles on demand), matching
+		// a freshly loaded sequence.
+		Some(Box::new(SequenceBehavior {
+			track_lists: self.track_lists.clone(),
+			markers: crate::handle::CHandle::null(),
+			workarea: crate::handle::CHandle::null(),
+			last_length: self.last_length,
+			autocache_video: self.autocache_video,
+			autocache_audio: self.autocache_audio,
+			playhead: self.playhead,
+			video_params: self.video_params.clone(),
+			audio_params: self.audio_params.clone(),
+		}))
 	}
 
 	/// Custom project save (C++ `Sequence::SaveCustom` writes the

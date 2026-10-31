@@ -460,18 +460,18 @@ pub fn library_open(uuid: &str) -> Result<ProjectRef, String> {
 	if uuid.is_empty() {
 		return Err("invalid uuid".to_string());
 	}
-	let result = quercus_storage::writethrough::backend()
-		.load(&project_uri(uuid)?)
-		.map_err(|e| e.to_string())?;
-	if result.project.is_null() {
+	let row = project_uri(uuid)?;
+	let text = row.to_uri_string();
+	let mut info = 0i32;
+	let handle =
+		unsafe { crate::storage::quercus_storage_open(text.as_ptr(), text.len(), &mut info) };
+	if handle.is_null() {
 		return Err(format!(
-			"library load of {uuid} returned no project (info code {})",
-			result.version_info
+			"library load of {uuid} returned no project (info code {info})"
 		));
 	}
-	let handle = result.project;
-	let project =
-		unsafe { quercus_storage::nodeutil::project_arc(&handle) }.map_err(|e| e.to_string())?;
+	let project = unsafe { &*handle }.project().clone();
+	unsafe { crate::node::quercus_project_release(handle) };
 	lock(&project).set_modified(false);
 	Ok(project)
 }

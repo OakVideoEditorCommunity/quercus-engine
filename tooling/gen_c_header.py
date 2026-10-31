@@ -79,16 +79,21 @@ def top_level_split(text: str, separator: str = ",") -> list[str]:
     parts: list[str] = []
     depth = 0
     current = []
+    previous = ""
     for char in text:
         if char in "([{<":
             depth += 1
         elif char in ")]}>":
-            depth -= 1
+            # `->` is a return arrow, not a generic close: the `>` must not
+            # pop the `Option<...>` depth opened by a callback field type.
+            if not (char == ">" and previous == "-") and depth > 0:
+                depth -= 1
         if char == separator and depth == 0:
             parts.append("".join(current))
             current = []
         else:
             current.append(char)
+        previous = char
     if "".join(current).strip():
         parts.append("".join(current))
     return parts
@@ -160,13 +165,29 @@ class TypeMapper:
         return f"{self.map(text)} {name}"
 
     def callback(self, inner: str, parameter: str | None) -> str:
-        match = re.search(r"fn\s*\((.*?)\)", inner)
+        # `inner` is `fn(args)`, `fn(args) -> Ret`, or the `unsafe extern "C"`
+        # spelling of either. Keep the return type: dropping it emits a
+        # `void` function pointer for a callback that really returns a value.
+        start = inner.find("(")
+        if start < 0:
+            name = f" {parameter}" if parameter else ""
+            return f"void (*{name})()" if parameter else "void (*)()"
+        end = find_matching(inner, start, "(", ")")
+        args_text = inner[start + 1 : end]
         args = ""
-        if match and match.group(1).strip():
-            mapped = [self.map(arg) for arg in top_level_split(match.group(1))]
-            args = ", ".join(mapped)
+        if args_text.strip():
+            args = ", ".join(self.map(arg) for arg in top_level_split(args_text))
+            # Rust mirror types may be written across lines; keep the emitted
+            # C declaration on one line (and free of trailing whitespace).
+            args = " ".join(args.split())
+        rest = inner[end + 1 :].strip()
+        ret = "void"
+        if rest.startswith("->"):
+            ret_rust = rest[2:].strip()
+            if ret_rust and ret_rust != "()":
+                ret = self.map(ret_rust)
         name = f" {parameter}" if parameter else ""
-        return f"void (*{name})({args})" if parameter else f"void (*)({args})"
+        return f"{ret} (*{name})({args})" if parameter else f"{ret} (*)({args})"
 
 
 def parse_structs(source: str, mapper: TypeMapper) -> list[str]:
@@ -206,7 +227,8 @@ def parse_structs(source: str, mapper: TypeMapper) -> list[str]:
                 ctype = mapper.map(array.group(1))
                 fields.append(f"    {ctype} {fname}[{array.group(2)}];")
             else:
-                fields.append(f"    {mapper.declare(ftype, fname)};")
+                declaration = " ".join(mapper.declare(ftype, fname).split())
+                fields.append(f"    {declaration};")
         definition = f"struct {name} {{\n" + "\n".join(fields) + "\n};"
         mapper.structs[name] = definition
         mapper.deps[name] = set()
@@ -268,7 +290,8 @@ def parse_enums(source: str, mapper: TypeMapper) -> list[str]:
 def parse_type_aliases(source: str, mapper: TypeMapper) -> list[str]:
     output: list[str] = []
     for match in re.finditer(
-        r"type\s+(\w+)\s*=\s*(?:Option<)?\s*unsafe extern \"C\" fn\s*\((.*?)\)",
+        r"type\s+(\w+)\s*=\s*(?:Option<)?\s*unsafe extern \"C\" fn\s*\((.*?)\)"
+        r"\s*(?:->\s*([^;]+?))?\s*;",
         source,
         re.S,
     ):
@@ -279,7 +302,10 @@ def parse_type_aliases(source: str, mapper: TypeMapper) -> list[str]:
             )(*arg.split(":", 1)) if ":" in arg else mapper.map(arg.strip())
             for arg in top_level_split(args)
         )
-        output.append(f"typedef void (*{name})({mapped});")
+        mapped = " ".join(mapped.split())
+        ret_rust = (match.group(3) or "").strip()
+        ret = mapper.map(ret_rust) if ret_rust and ret_rust != "()" else "void"
+        output.append(f"typedef {ret} (*{name})({mapped});")
     return output
 
 
@@ -346,7 +372,8 @@ def parse_functions(source: str, mapper: TypeMapper) -> list[str]:
                     continue
                 aname, atype = arg.split(":", 1)
                 args.append(mapper.declare(atype, c_ident(aname.strip())))
-            prototype = f"{mapper.map(ret)} {name}({', '.join(args) or 'void'});"
+            params = " ".join(", ".join(args).split())
+            prototype = f"{mapper.map(ret)} {name}({params or 'void'});"
             declarations.setdefault(name, prototype)
             index = ret_end + 1
     return [declarations[name] for name in sorted(declarations)]

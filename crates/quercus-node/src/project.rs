@@ -382,6 +382,16 @@ fn clone_entry(
 	let behavior = entry
 		.behavior
 		.duplicate(&core)
+		// Nodes that refuse `duplicate` (the graph endpoint pair, plugin
+		// instances) still need a real behavior: an `EmptyBehavior`
+		// placeholder has an empty type id and cannot be serialized, so a
+		// deep copy would fail to reload. Re-create the behavior by type id
+		// and keep the copied core (labels/inputs/values).
+		.or_else(|| {
+			crate::factory::Factory::global()
+				.create_any(entry.behavior.type_id())
+				.map(|(_default_core, behavior)| behavior)
+		})
 		.unwrap_or_else(|| Box::new(crate::nodes::EmptyBehavior));
 	(core, behavior)
 }

@@ -175,6 +175,49 @@ pub struct ProjectVersion(pub u32);
 /// The current (build) project version.
 pub const CURRENT_VERSION: ProjectVersion = ProjectVersion(230220);
 
+/// Detected version of a project document (the M10 §2.1 version ladder).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionProbe {
+	/// Current schema (`<project>` root, or `<olive>` at the build version).
+	Current,
+	/// Historical `<olive>` root with a known, older version.
+	Old,
+	/// Newer than this build can load.
+	TooNew,
+	/// Recognized root without a recognizable version.
+	Unknown,
+}
+
+/// Probe the root element of an XML document for the version ladder.
+///
+/// `None` means the document has no parseable root element (corrupt input;
+/// callers report a format error, not a version-info code). An `<olive>` root
+/// is compared against [`CURRENT_VERSION`]; a `<project>` root always probes
+/// as [`VersionProbe::Current`] *without* validating its `version` attribute
+/// (the serializer accepts any value there — schema version 1). That laxness
+/// is preserved deliberately; tightening it is a separate compatibility
+/// decision.
+pub fn probe_version(xml: &str) -> Option<VersionProbe> {
+	let mut reader = XmlReaderBridge::new(xml)?;
+	if !reader.next_start_element() {
+		return None;
+	}
+	let root = reader.name().to_string();
+	let version = reader
+		.attribute("version")
+		.and_then(|v| v.parse::<u32>().ok());
+	match root.as_str() {
+		"project" => Some(VersionProbe::Current),
+		"olive" => match version {
+			None => Some(VersionProbe::Unknown),
+			Some(v) if v > CURRENT_VERSION.0 => Some(VersionProbe::TooNew),
+			Some(v) if v < CURRENT_VERSION.0 => Some(VersionProbe::Old),
+			Some(_) => Some(VersionProbe::Current),
+		},
+		_ => Some(VersionProbe::Unknown),
+	}
+}
+
 /// Value text codec: [`NodeValue`] -> string for the XML `<track>`
 /// payloads. `key_track` selects the per-component form (C++
 /// `NodeValue::value_to_string`; `// CPP-PARITY: value.cpp:45`).
@@ -1203,5 +1246,68 @@ mod tests {
 		assert_eq!(declared.to_cpp_discriminant(), 0);
 		assert!(declared.is_string());
 		assert_eq!(declared.to_quercus(), crate::value::quercus::STRING);
+	}
+
+	#[test]
+	fn probe_version_matches_the_info_code_ladder() {
+		// `<olive>` roots compare the version attribute to the build.
+		assert_eq!(
+			probe_version("<olive version=\"999999\"></olive>"),
+			Some(VersionProbe::TooNew)
+		);
+		assert_eq!(
+			probe_version("<olive version=\"210528\"></olive>"),
+			Some(VersionProbe::Old)
+		);
+		assert_eq!(
+			probe_version(&format!("<olive version=\"{}\"></olive>", CURRENT_VERSION.0)),
+			Some(VersionProbe::Current)
+		);
+		assert_eq!(probe_version("<olive></olive>"), Some(VersionProbe::Unknown));
+		assert_eq!(
+			probe_version("<olive version=\"not-a-number\"></olive>"),
+			Some(VersionProbe::Unknown)
+		);
+		// Unrecognized roots are "unknown", not a parse error.
+		assert_eq!(probe_version("<thirdparty/>"), Some(VersionProbe::Unknown));
+		// `<project>` is current regardless of the attribute (documented
+		// laxness, kept for compatibility with the .ove backend).
+		assert_eq!(
+			probe_version("<project version=\"1\"></project>"),
+			Some(VersionProbe::Current)
+		);
+		assert_eq!(
+			probe_version("<project version=\"999\"></project>"),
+			Some(VersionProbe::Current)
+		);
+		// No parseable root => format error, not a version code.
+		assert_eq!(probe_version("not xml"), None);
+		assert_eq!(probe_version(""), None);
+	}
+
+	#[test]
+	fn deep_copy_with_graph_endpoints_round_trips() {
+		// The endpoint pair refuses `duplicate`; a deep copy must still
+		// carry real behaviors (not the empty placeholder) or the copy
+		// cannot be serialized and reloaded.
+		let project = crate::project::Project::new();
+		{
+			let mut guard = project.lock().unwrap();
+			guard.graph.ensure_endpoints();
+		}
+		let copy = {
+			let guard = project.lock().unwrap();
+			guard.deep_copy().expect("deep copy")
+		};
+		let xml = {
+			let guard = copy.lock().unwrap();
+			save(&guard).expect("serialize the deep copy")
+		};
+		let loaded = load(&xml).expect("reload the deep copy");
+		let guard = loaded.lock().unwrap();
+		assert!(
+			guard.graph.endpoints().is_some(),
+			"the copied document must keep its endpoint pair"
+		);
 	}
 }
