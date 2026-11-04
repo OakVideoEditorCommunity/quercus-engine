@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 
 use quercus_node::id::NodeId;
 use quercus_task::export::{EncodingParams, ExportTask};
@@ -123,7 +123,9 @@ struct TaskEntry {
 	state: AtomicI32,
 	error: Mutex<Option<String>>,
 	cancel: Arc<quercus_core::cancelatom::CancelAtom>,
-	join: Mutex<Option<std::thread::JoinHandle<()>>>,
+	/// Signals `wait`/`release` when the worker has published the final state.
+	done: Condvar,
+	done_mutex: Mutex<()>,
 	/// A load task's produced-project slot (shared with the behavior).
 	project_slot: Option<Arc<Mutex<Option<Arc<Mutex<quercus_node::project::Project>>>>>>,
 	/// Successful waveform extraction result, transferred once to the caller.
@@ -168,7 +170,8 @@ fn spawn_task(
 		state: AtomicI32::new(QUERCUS_TASK_RUNNING),
 		error: Mutex::new(None),
 		cancel: task.get_cancel_atom(),
-		join: Mutex::new(None),
+		done: Condvar::new(),
+		done_mutex: Mutex::new(()),
 		project_slot,
 		waveform_slot,
 		thumbnail_slot,
@@ -185,8 +188,17 @@ fn spawn_task(
 	task.set_behavior(behavior);
 
 	let id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
-	let thread_entry = entry.clone();
-	let join = std::thread::spawn(move || {
+	let worker_entry = entry.clone();
+	let job = Box::new(move || {
+		// A task cancelled while it was queued must not do any work. This
+		// also lets the preview window withdraw frames before the pool
+		// reaches them.
+		if worker_entry.cancel.is_cancelled() {
+			let _done = worker_entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
+			worker_entry.state.store(QUERCUS_TASK_CANCELLED, Ordering::SeqCst);
+			worker_entry.done.notify_all();
+			return;
+		}
 		let result = task.start();
 		let state = match &result {
 			Ok(()) => QUERCUS_TASK_SUCCEEDED,
@@ -194,16 +206,79 @@ fn spawn_task(
 			Err(_) => QUERCUS_TASK_FAILED,
 		};
 		if let Err(e) = &result {
-			*thread_entry.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
+			*worker_entry.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
 		}
-		thread_entry.state.store(state, Ordering::SeqCst);
+		// Publish the terminal state under the same mutex `wait_for_task`
+		// holds while checking it; otherwise a notify between the state load
+		// and the condvar wait would be lost and the waiter would hang.
+		let _done = worker_entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
+		worker_entry.state.store(state, Ordering::SeqCst);
+		worker_entry.done.notify_all();
 	});
-	*entry.join.lock().unwrap_or_else(|e| e.into_inner()) = Some(join);
+	if task_pool().tx.send(job).is_err() {
+		// The pool is gone (shutdown); do not leak a permanently RUNNING
+		// entry. The caller will observe a failure.
+		let _done = entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
+		entry.state.store(QUERCUS_TASK_FAILED, Ordering::SeqCst);
+		entry.done.notify_all();
+	}
 	tasks()
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
 		.insert(id, entry);
 	id
+}
+
+/// A small, process-global executor for engine tasks.
+///
+/// The old implementation spawned one OS thread per task. Playback preview
+/// submits a forward window of frame tasks, and each task blocks while its
+/// render ticket completes; under a slow decode this produced hundreds of
+/// live threads (each waiting on a bounded render queue), which starved the
+/// decode/present threads and looked like a deadlock. A fixed pool keeps the
+/// task count bounded regardless of how far the UI runs ahead.
+struct TaskPool {
+	tx: mpsc::Sender<Box<dyn FnOnce() + Send>>,
+}
+
+static TASK_POOL: OnceLock<TaskPool> = OnceLock::new();
+
+fn task_pool() -> &'static TaskPool {
+	TASK_POOL.get_or_init(|| {
+		let workers = std::env::var("QUERCUS_TASK_THREADS")
+			.ok()
+			.and_then(|v| v.parse::<usize>().ok())
+			.filter(|n| *n > 0)
+			.unwrap_or(8);
+		let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+		let rx = Arc::new(Mutex::new(rx));
+		for index in 0..workers {
+			let rx = rx.clone();
+			let _ = std::thread::Builder::new()
+				.name(format!("quercus-task-{index}"))
+				.spawn(move || loop {
+					let job = {
+						let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+						guard.recv()
+					};
+					match job {
+						Ok(job) => job(),
+						Err(_) => break,
+					}
+				});
+		}
+		TaskPool { tx }
+	})
+}
+
+fn wait_for_task(entry: &TaskEntry) {
+	let mut guard = entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
+	while entry.state.load(Ordering::SeqCst) == QUERCUS_TASK_RUNNING {
+		guard = entry
+			.done
+			.wait(guard)
+			.unwrap_or_else(|e| e.into_inner());
+	}
 }
 
 /// Starts one proxy transcode on the common engine task registry.
@@ -860,10 +935,7 @@ pub extern "C" fn quercus_task_wait(id: u64) -> bool {
 	let Some(entry) = task(id) else {
 		return false;
 	};
-	let join = entry.join.lock().unwrap_or_else(|e| e.into_inner()).take();
-	if let Some(join) = join {
-		let _ = join.join();
-	}
+	wait_for_task(&entry);
 	entry.state.load(Ordering::SeqCst) == QUERCUS_TASK_SUCCEEDED
 }
 
@@ -877,10 +949,7 @@ pub extern "C" fn quercus_task_release(id: u64) {
 		.remove(&id);
 	if let Some(entry) = entry {
 		entry.cancel.cancel();
-		let join = entry.join.lock().unwrap_or_else(|e| e.into_inner()).take();
-		if let Some(join) = join {
-			let _ = join.join();
-		}
+		wait_for_task(&entry);
 	}
 }
 
