@@ -556,19 +556,37 @@ mod cuda_driver {
 		pub id: i32,
 	}
 	#[repr(C)]
-	#[derive(Clone, Copy, Default)]
+	#[derive(Clone, Copy)]
 	pub struct MemAllocationProp {
 		pub type_: i32,
 		pub requested_handle_types: i32,
 		pub location: MemLocation,
 		pub win32_handle_metadata: *mut c_void,
 		pub compression_type: u8,
+		pub gpu_direct_rdma_capable: u8,
+		pub usage: u16,
+		pub reserved: [u8; 38],
+	}
+	impl Default for MemAllocationProp {
+		fn default() -> Self {
+			Self {
+				type_: 0,
+				requested_handle_types: 0,
+				location: MemLocation::default(),
+				win32_handle_metadata: std::ptr::null_mut(),
+				compression_type: 0,
+				gpu_direct_rdma_capable: 0,
+				usage: 0,
+				reserved: [0; 38],
+			}
+		}
 	}
 	#[repr(C)]
-	#[derive(Clone, Copy)]
+	#[derive(Clone, Copy, Default)]
 	pub struct MemAccessDesc {
 		pub location: MemLocation,
 		pub flags: i32,
+		pub pad: i32,
 	}
 
 	pub type CuCtxPushCurrent = unsafe extern "C" fn(*mut c_void) -> i32;
@@ -782,6 +800,9 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 		location: MemLocation { type_: 1, id: 0 }, // DEVICE
 		win32_handle_metadata: std::ptr::null_mut(),
 		compression_type: 0,
+		gpu_direct_rdma_capable: 0,
+		usage: 0,
+		reserved: [0; 38],
 	};
 	let mut device_id = 0i32;
 	unsafe {
@@ -819,6 +840,7 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 			let access = MemAccessDesc {
 				location: MemLocation { type_: 1, id: device_id },
 				flags: 3, // READWRITE
+				pad: 0,
 			};
 			let access_rc = (driver.access)(va, vmm_size, &access, 1);
 			if access_rc == 0 {
