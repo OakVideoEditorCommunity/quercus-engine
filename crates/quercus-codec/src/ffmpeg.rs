@@ -355,18 +355,47 @@ impl Decoder for FFmpegDecoder {
 		// the requested timestamp.
 		// Note: the Rust `RetrieveVideoParams` carries no cancellation atom
 		// (dropped from the C++ struct), so decoding is not cancellable here.
-		let mut decoded = state.retrieve_frame(&p.time, p.time == crate::decoder::k_any_timecode(), None);
-		if decoded.is_err() && state.hw_device.is_some() {
-			// First-frame hardware fallback: the hardware decoder opened
-			// but cannot actually decode this stream (unsupported profile
-			// / driver issue at decode time). Try the next hardware
-			// candidate (e.g. VAAPI -> NVDEC for 10-bit 4:2:2), then
-			// software, and retry once.
-			state.reopen_after_hw_failure()?;
-			decoded = state.retrieve_frame(&p.time, p.time == crate::decoder::k_any_timecode(), None);
-		}
-		let f = decoded?
-			.ok_or_else(|| fail("no video frame available at the requested time"))?;
+		let any_timecode = p.time == crate::decoder::k_any_timecode();
+		let mut decoded = state.retrieve_frame(&p.time, any_timecode, None);
+		// A hardware session is not proof that libavcodec produced hardware
+		// frames: on an unsupported profile it can silently fall back to
+		// software inside the session (no error is returned). Inspect the
+		// raw frame format and retry the next hardware candidate before
+		// paying for CPU decoding — this is what makes 10-bit 4:2:2 H.264
+		// move from VAAPI to NVDEC.
+		let mut attempts = 0;
+		let f = loop {
+			match decoded {
+				Err(err) => {
+					if state.hw_device.is_some() && attempts < 4 {
+						state.reopen_after_hw_failure()?;
+						attempts += 1;
+						decoded = state.retrieve_frame(&p.time, any_timecode, None);
+						continue;
+					}
+					return Err(err);
+				}
+				Ok(None) => {
+					return Err(fail("no video frame available at the requested time"));
+				}
+				Ok(Some(frame)) => {
+					let raw_format = unsafe {
+						std::mem::transmute::<i32, sys::AVPixelFormat>((*frame.as_ptr()).format)
+					};
+					if state.hw_device.is_some()
+						&& !crate::hwdecode::is_hw_format(raw_format)
+						&& attempts < 4
+					{
+						drop(frame);
+						state.reopen_after_hw_failure()?;
+						attempts += 1;
+						decoded = state.retrieve_frame(&p.time, any_timecode, None);
+						continue;
+					}
+					break frame;
+				}
+			}
+		};
 
 		let (w, h, bytes, color_meta) =
 			state.scale_video_to_f32(f, p.force_range, p.target_size)?;
