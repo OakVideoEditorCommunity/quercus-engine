@@ -816,7 +816,12 @@ impl GpuContext {
 		// they are only submitted with the next `Queue::submit`, and a
 		// bare `poll` does not necessarily submit them.
 		let _ = self.queue.submit(std::iter::empty());
-		let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+		// `Device::poll` panics via wgpu's fatal-error hook once the device
+		// has been lost. A plugin/host readback must fail that frame, not
+		// abort the whole editor.
+		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+		}));
 	}
 
 	/// Bounded variant of [`GpuContext::wait_idle`]. Returns false when the
@@ -824,13 +829,16 @@ impl GpuContext {
 	/// not block the render thread forever on a driver stall).
 	pub fn wait_idle_for(&self, timeout: std::time::Duration) -> bool {
 		let _ = self.queue.submit(std::iter::empty());
-		matches!(
-			self.device.poll(wgpu::PollType::Wait {
-				submission_index: None,
-				timeout: Some(timeout),
-			}),
-			Ok(wgpu::PollStatus::WaitSucceeded) | Ok(wgpu::PollStatus::QueueEmpty)
-		)
+		std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			matches!(
+				self.device.poll(wgpu::PollType::Wait {
+					submission_index: None,
+					timeout: Some(timeout),
+				}),
+				Ok(wgpu::PollStatus::WaitSucceeded) | Ok(wgpu::PollStatus::QueueEmpty)
+			)
+		}))
+		.unwrap_or(false)
 	}
 
 	/// Run `callback` once all GPU work submitted so far has completed.
@@ -2449,7 +2457,14 @@ impl GpuContext {
 			.map_async(wgpu::MapMode::Read, move |result| {
 				let _ = tx.send(result.is_ok());
 			});
-		let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+		let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+		}));
+		if poll.is_err() {
+			return Err(Error::Failed(
+				"wgpu device lost during texture download".into(),
+			));
+		}
 		if !rx.recv().unwrap_or(false) {
 			return Err(Error::Failed("texture download map failed".into()));
 		}
