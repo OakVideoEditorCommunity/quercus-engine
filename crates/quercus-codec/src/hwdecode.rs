@@ -72,6 +72,9 @@ pub static SW_AUDIO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub static HW_SURFACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Hardware frames successfully imported without a CPU transfer.
 pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `get_format` chose a software format even though a hardware device was attached.
+pub static HW_FORMAT_FALLBACKS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
 
 /// The config key of the hardware-decode switch (1 = prefer hardware,
 /// 0 = force software). Default ON by user mandate.
@@ -205,9 +208,89 @@ pub fn device_type_name(device_type: sys::AVHWDeviceType) -> &'static str {
 /// Try to open the software codec with a hardware device context of
 /// `device_type` attached — FFmpeg then engages the matching hwaccel
 /// (e.g. `h264_videotoolbox_hwaccel`) on open. Returns the opened codec
-/// context plus the device type in use, or `None` when the device is
-/// unavailable (the caller tries the next candidate, then pure
-/// software).
+/// The hardware pixel format paired with `device_type`.
+fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::AVPixelFormat> {
+	use sys::AVHWDeviceType;
+	use sys::AVPixelFormat;
+	match device_type {
+		AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX => Some(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI => Some(AVPixelFormat::AV_PIX_FMT_VAAPI),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA => Some(AVPixelFormat::AV_PIX_FMT_CUDA),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA => Some(AVPixelFormat::AV_PIX_FMT_D3D11),
+		_ => None,
+	}
+}
+
+/// `get_format` callback for a decoder opened with `hw_device_ctx`.
+///
+/// Setting `hw_device_ctx` alone is not enough on all FFmpeg/libavcodec
+/// combinations: the default `get_format` can select a software format and
+/// the decoder then runs on the CPU even though `hw_decoder_name()` reports a
+/// hardware device. Explicitly select the hardware format and initialize the
+/// frames context here; if that is not possible, fall back to the first
+/// software format so decoding remains correct.
+unsafe extern "C" fn select_hw_format(
+	avctx: *mut sys::AVCodecContext,
+	formats: *const sys::AVPixelFormat,
+) -> sys::AVPixelFormat {
+	unsafe {
+	use sys::AVPixelFormat;
+	if avctx.is_null() || formats.is_null() {
+		return AVPixelFormat::AV_PIX_FMT_NONE;
+	}
+	let mut first = AVPixelFormat::AV_PIX_FMT_NONE;
+	let mut cursor = formats;
+	while *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
+		if first == AVPixelFormat::AV_PIX_FMT_NONE {
+			first = *cursor;
+		}
+		cursor = cursor.add(1);
+	}
+	let device = (*avctx).hw_device_ctx;
+	if device.is_null() || (*device).data.is_null() {
+		return first;
+	}
+	let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
+	let Some(hw_fmt) = hw_pixel_format((*device_ctx).type_) else {
+		return first;
+	};
+	let mut offered = formats;
+	while *offered != AVPixelFormat::AV_PIX_FMT_NONE {
+		if *offered == hw_fmt {
+			let mut frames: *mut sys::AVBufferRef = std::ptr::null_mut();
+			let rc = sys::avcodec_get_hw_frames_parameters(avctx, device, hw_fmt, &mut frames);
+			if rc >= 0 && !frames.is_null() {
+				let init = sys::av_hwframe_ctx_init(frames);
+				if init >= 0 {
+					// Ownership transfers to the codec context; libavcodec
+					// unrefs it after decoding / on close.
+					(*avctx).hw_frames_ctx = frames;
+					return hw_fmt;
+				}
+				sys::av_buffer_unref(&mut frames);
+			}
+			HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+			return first;
+		}
+		offered = offered.add(1);
+	}
+	HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	first
+	}
+
+}
+
+fn attach_hw_get_format(avctx: *mut sys::AVCodecContext) {
+	unsafe {
+		(*avctx).get_format = Some(select_hw_format);
+	}
+}
+
+/// Try to open `codec` with a hardware device of `device_type`.
+///
+/// Returns the opened decoder context plus the device type in use, or `None`
+/// when the device is unavailable (the caller tries the next candidate, then
+/// pure software).
 pub fn open_hw_accel(
 	params: &ffmpeg::codec::Parameters,
 	codec: ffmpeg::Codec,
@@ -246,6 +329,7 @@ pub fn open_hw_accel(
 	// SAFETY: `hw_device_ctx` takes ownership of the reference; the codec
 	// context frees it with the context.
 	unsafe { (*context.as_mut_ptr()).hw_device_ctx = device };
+	unsafe { attach_hw_get_format(context.as_mut_ptr()); }
 	let mut opts = Dictionary::new();
 	opts.set("threads", &crate::ffmpeg::decoder_threads());
 	let opened = match context.decoder().open_as_with(codec, opts) {

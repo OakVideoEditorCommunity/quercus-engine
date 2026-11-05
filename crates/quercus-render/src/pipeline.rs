@@ -959,7 +959,7 @@ fn log_queue_sample(
 		.elapsed()
 		.as_millis();
 	eprintln!(
-		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={} hw_video={} sw_video={} sw_audio={} hw_surf={}",
+		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={} hw_video={} sw_video={} sw_audio={} hw_surf={} hw_fmt_fb={}",
 		LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
 		MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
 		RENDER_QUEUE_CAP,
@@ -982,6 +982,7 @@ fn log_queue_sample(
 		quercus_codec::hwdecode::SW_VIDEO_OPENS.load(Ordering::Relaxed),
 		quercus_codec::hwdecode::SW_AUDIO_OPENS.load(Ordering::Relaxed),
 		quercus_codec::hwdecode::HW_SURFACES.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_FORMAT_FALLBACKS.load(Ordering::Relaxed),
 	);
 }
 
