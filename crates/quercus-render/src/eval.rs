@@ -1365,12 +1365,16 @@ pub fn render_footage_frame(
     let mut result = decode(true);
     // M5: an imported hardware frame is planar YUV; resolve it to
     // working-space RGBA on the GPU before it leaves the footage path.
+    // The resolve scales straight to the caller's target size on the GPU
+    // (no CPU swscale / no native-size RGBA intermediate), which is what
+    // keeps a 4K clip on the GPU for a preview-size montage frame.
     // A resolution failure is a per-frame fallback: re-decode through the
     // CPU scaler with the import disabled (the decoder session cache makes
     // this a transfer, not a second decode).
     if let Ok(texture) = &result {
         if texture.is_planar() {
-            result = match resolve_planar_footage(texture) {
+            let target = (size.0 > 0 && size.1 > 0).then_some(size);
+            result = match resolve_planar_footage(texture, target) {
                 Ok(resolved) => Ok(resolved),
                 Err(err) => {
                     eprintln!("planar footage resolve failed, staging fallback: {err:#}");
@@ -1405,15 +1409,16 @@ pub fn render_footage_frame(
 }
 
 /// The CPU-staging decode for consumers that composite on the CPU (the
-/// montage compositor): same service/FRU semantics as
+/// worker/no-adapter montage fallback): same service/FRU semantics as
 /// [`render_footage_frame`], but the M5 zero-copy import is disabled and
-/// the result is always a CPU frame.
+/// the result is always a CPU frame. The GPU montage compositor
+/// ([`render_montage_frame`]) uses [`render_footage_frame`] instead.
 ///
-/// This is not just an optimization: the montage compositor runs on the
-/// CPU, so an imported `Texture::Gpu` would have to be downloaded again —
-/// and before this entry point existed it was silently SKIPPED (the M5
-/// audit's all-black montage bug). A planar texture must never reach a
-/// CPU consumer here.
+/// This is not just an optimization: the CPU montage compositor runs on
+/// the CPU, so an imported `Texture::Gpu` would have to be downloaded
+/// again — and before this entry point existed it was silently SKIPPED
+/// (the M5 audit's all-black montage bug). A planar texture must never
+/// reach a CPU consumer here.
 pub(crate) fn render_footage_frame_staged(
     filename: &str,
     stream_index: i32,
@@ -1470,10 +1475,11 @@ pub(crate) fn render_footage_frame_staged(
 /// The synchronous decode behind [`render_footage_frame`] (frame-LRU →
 /// decoder session → codec → F32 frame). `pub(crate)` because the decode
 /// service runs exactly this on its own thread, with the request's own
-/// `allow_import` flag (the montage requests stage on purpose, §M5 audit).
+/// `allow_import` flag (the CPU montage fallback requests staging on
+/// purpose, §M5 audit).
 ///
 /// `allow_import` false forces the CPU staging path: the resolve step's
-/// fallback re-decodes with it off, and the montage compositor never
+/// fallback re-decodes with it off, and the CPU montage compositor never
 /// wants a GPU frame.
 pub(crate) fn render_footage_frame_inner_opts(
     filename: &str,
@@ -1594,13 +1600,21 @@ pub(crate) fn render_footage_frame_inner_opts(
     Ok(texture)
 }
 
-/// Resolve an imported planar hardware frame (M5) to working-space RGBA
-/// on the GPU: the YUV→RGB pass (matrix + range from the frame's own
-/// colorimetry) followed by the source→working transform. In the legacy
-/// sRGB working space the transform is a pass-through (matching the CPU
-/// path's `convert_decoded_to_working`); otherwise it is applied as a CPU
-/// reference-baked 3D LUT, exactly like the OCIO color transforms.
-fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
+/// Resolve an imported planar frame (M5) to working-space RGBA on the
+/// GPU: the descriptor-driven planar→RGB pass (matrix/range from the
+/// frame's own colorimetry; any color model, subsampling and storage —
+/// YUV 4:2:0/4:2:2/4:4:4 and RGB/RGBA, U8/U16/F16/F32) followed by the
+/// source→working transform. `target` is the output size the caller asked
+/// for (the ticket/preview size): when it differs from the frame's
+/// visible luma size the pass scales with normalized-UV bilinear on the
+/// GPU, so a native 4K frame never needs a CPU swscale or a 4K RGBA
+/// intermediate. `None`/non-positive keeps the native visible size.
+///
+/// In the legacy sRGB working space the source→working transform is a
+/// pass-through (matching the CPU path's `convert_decoded_to_working`);
+/// otherwise it is applied as a CPU reference-baked 3D LUT, exactly like
+/// the OCIO color transforms.
+fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Result<Texture> {
     let planar = texture
         .as_planar()
         .ok_or_else(|| Error::Failed("resolve_planar_footage: not planar".into()))?;
@@ -1613,13 +1627,29 @@ fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
             "planar texture belongs to a non-wgpu context".into(),
         ));
     };
-    let (w, h) = (planar.width.max(1), planar.height.max(1));
+    // The visible luma size, not the (possibly padded) plane allocation:
+    // the matrix pass samples only this region and scales it to the
+    // target. Any target size/aspect is valid — the mapping is fill/stretch
+    // (the same behavior the CPU path gets from swscale `target_size`).
+    let src_w = planar.width.max(1);
+    let src_h = planar.height.max(1);
+    let (w, h) = match target {
+        Some((w, h)) if w > 0 && h > 0 => (w, h),
+        _ => (src_w, src_h),
+    };
     let dst = gpu
         .create_texture(w, h)
         .map_err(|e| Error::Failed(format!("planar resolve target: {e:?}")))?;
-    if let Err(e) = gpu.run_planar_yuv_to_rgb(planar.y, planar.uv, dst, &planar.transform) {
+    if let Err(e) = gpu.run_planar_matrix_to_rgb(
+        planar.plane_tokens(),
+        dst,
+        planar.descriptor,
+        &planar.transform,
+        (src_w as u32, src_h as u32),
+        (w as u32, h as u32),
+    ) {
         gpu.destroy_texture(dst);
-        return Err(Error::Failed(format!("planar YUV pass: {e:?}")));
+        return Err(Error::Failed(format!("planar matrix pass: {e:?}")));
     }
     let token = match footage_working_lut(planar.color_primaries, planar.color_trc) {
         Some((key, lut)) => match gpu.apply_color_lut(dst, &key, &lut) {
@@ -1779,10 +1809,110 @@ fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Program cache key for the scaled alpha-over pass
+/// ([`SCALED_COMP_WGSL`]).
+const SCALED_COMP_KEY: &str = "quercus/builtin/alpha-over-scaled";
+
+/// WGSL fragment for the resolution-independent alpha-over: the source is
+/// sampled at the destination pixel's normalized UV with a manual 4-tap
+/// bilinear (edge-clamped `textureLoad`s — no sampler and no
+/// `FLOAT32_FILTERABLE` requirement), so any source size/aspect maps onto
+/// any target canvas in one GPU pass: pixel-exact when the sizes match,
+/// scaled when they differ, never skipped. This keeps the timeline's
+/// existing fill/stretch behavior (the CPU path pre-scales each clip with
+/// swscale; this pass introduces no letterbox/pillarbox). `gain` is the
+/// montage clip's playback gain (`1.0` for the graph compositor).
+///
+/// Bindings follow [`GpuContext::compile_shader_pass`]'s assignment:
+/// binding 0 is the uniform, then the destination (1) and source (3)
+/// texture pairs.
+const SCALED_COMP_WGSL: &str = r#"
+struct Gain {
+    gain: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> g: Gain;
+@group(0) @binding(1) var dst_tex: texture_2d<f32>;
+@group(0) @binding(3) var src_tex: texture_2d<f32>;
+
+// Bilinear tap at normalized `uv`, clamped to the texture's edge texels.
+// Equal source/destination sizes land exactly on texel centers (f == 0),
+// so the pass is a pixel-identity then.
+fn sample_bilinear(tex: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let dims = textureDimensions(tex);
+    let size = vec2<f32>(f32(dims.x), f32(dims.y));
+    let p = uv * size - vec2<f32>(0.5, 0.5);
+    let base = floor(p);
+    let f = p - base;
+    let last = vec2<i32>(i32(dims.x), i32(dims.y)) - vec2<i32>(1, 1);
+    let c = vec2<i32>(base);
+    let c00 = clamp(c, vec2<i32>(0, 0), last);
+    let c10 = clamp(c + vec2<i32>(1, 0), vec2<i32>(0, 0), last);
+    let c01 = clamp(c + vec2<i32>(0, 1), vec2<i32>(0, 0), last);
+    let c11 = clamp(c + vec2<i32>(1, 1), vec2<i32>(0, 0), last);
+    let top = mix(textureLoad(tex, c00, 0), textureLoad(tex, c10, 0), f.x);
+    let bottom = mix(textureLoad(tex, c01, 0), textureLoad(tex, c11, 0), f.x);
+    return mix(top, bottom, f.y);
+}
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>, @location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(dst_tex);
+    let coord = clamp(
+        vec2<u32>(u32(i32(frag.x)), u32(i32(frag.y))),
+        vec2<u32>(0u, 0u),
+        dims - vec2<u32>(1u, 1u),
+    );
+    let d = textureLoad(dst_tex, coord, 0);
+    let s = sample_bilinear(src_tex, uv) * g.gain.x;
+    let a = clamp(s.a, 0.0, 1.0);
+    // RGB keeps the working-space values unclamped (HDR/WCG can exceed
+    // 1.0); only the alpha of the result is clamped to its valid range.
+    return vec4<f32>(s.rgb * a + d.rgb * (1.0 - a), clamp(a + d.a * (1.0 - a), 0.0, 1.0));
+}
+"#;
+
+/// Program cache key for the GPU Opacity pass ([`OPACITY_GPU_WGSL`]).
+const OPACITY_GPU_KEY: &str = "quercus/builtin/opacity-gpu";
+
+/// WGSL for the GPU Opacity pass (C++ `:/shaders/opacity.frag` parity):
+/// every channel, alpha included, is multiplied by `opacity_in`. Running
+/// it on the GPU keeps the montage effect stack on the GPU end to end —
+/// the built-in Opacity never forces a readback.
+const OPACITY_GPU_WGSL: &str = r#"
+struct Params {
+    factor: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var tex_in: texture_2d<f32>;
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(tex_in);
+    let coord = clamp(
+        vec2<u32>(u32(i32(frag.x)), u32(i32(frag.y))),
+        vec2<u32>(0u, 0u),
+        dims - vec2<u32>(1u, 1u),
+    );
+    return textureLoad(tex_in, coord, 0) * p.factor.x;
+}
+"#;
+
+/// Little-endian bytes of a one-lane `vec4<f32>` uniform (the opacity
+/// factor or a clip gain; the other lanes are std140 padding).
+fn scale_uniform_bytes(value: f32) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[..4].copy_from_slice(&value.to_le_bytes());
+    bytes
+}
+
 /// GPU composite of `frames` into one `(w, h)` texture: bottom (last) to
-/// top (first), alpha-over into a ping-pong accumulator pair. Frames that
-/// do not match `(w, h)` are skipped (the caller scales at decode time;
-/// mismatches are defensive).
+/// top (first), alpha-over into a ping-pong accumulator pair.
+///
+/// Frames at a resolution other than the composite target are scaled by
+/// the normalized-UV bilinear pass instead of being skipped (`(w, h)` here
+/// is the preview raster; a native 4K/portrait/any-aspect frame must still
+/// fill it). This preserves the existing fill/stretch semantics — no
+/// letterbox is introduced.
 ///
 /// GPU→GPU (M2): textures already on the context are used by token; CPU
 /// frames are uploaded into scratch textures (counted, and only when the
@@ -1798,27 +1928,48 @@ fn composite_tracks_gpu(
 		return Err(Error::Invalid);
 	}
 	let program = ctx.compile_shader_pass("quercus/builtin/alpha-over", COMP_WGSL, 2, false, false)?;
+	// Compiled lazily: only a stack that contains a size-mismatched frame
+	// needs the scaled variant (the common graph/timeline case decodes at
+	// the target size).
+	let mut scaled_program: Option<Arc<quercus_core::backend::ShaderProgram>> = None;
 	let acc = ctx.create_texture(w, h)?;
-	ctx.clear_texture(acc)?;
+	if let Err(err) = ctx.clear_texture(acc) {
+		ctx.destroy_texture(acc);
+		return Err(err);
+	}
 	let mut scratch: Vec<u64> = Vec::new();
 	let mut current = acc;
 	let mut owned_current = true;
 	let result = (|| -> Result<u64> {
-		for frame in frames.iter().rev().filter(|f| f.size() == (w, h)) {
+		for frame in frames.iter().rev() {
+			let (frame_w, frame_h) = frame.size();
+			// A dummy/zero-sized frame has nothing to composite (and no
+			// texture to create); a real frame at any resolution is scaled
+			// by the pass below instead of being skipped.
+			if frame.is_dummy() || frame_w <= 0 || frame_h <= 0 {
+				continue;
+			}
 			// Prefer the texture's own context when it is this one; a GPU
-			// texture from another context can only be read back.
+			// texture from another context can only be read back. Uploads
+			// use the frame's own size so the shader can do the sizing.
 			let src_token = match frame {
 				Texture::Gpu { token, .. } if ctx.has_texture(*token) => *token,
 				Texture::Gpu { .. } => {
 					let cpu = frame.to_frame()?;
-					let t = ctx.create_texture(w, h)?;
-					ctx.upload(t, &cpu)?;
+					let t = ctx.create_texture(cpu.width, cpu.height)?;
+					if let Err(err) = ctx.upload(t, &cpu) {
+						ctx.destroy_texture(t);
+						return Err(err);
+					}
 					scratch.push(t);
 					t
 				}
 				Texture::Cpu(f) => {
-					let t = ctx.create_texture(w, h)?;
-					ctx.upload(t, f)?;
+					let t = ctx.create_texture(f.width, f.height)?;
+					if let Err(err) = ctx.upload(t, f) {
+						ctx.destroy_texture(t);
+						return Err(err);
+					}
 					scratch.push(t);
 					t
 				}
@@ -1829,7 +1980,32 @@ fn composite_tracks_gpu(
 				}
 			};
 			let out = ctx.create_texture(w, h)?;
-			ctx.run_shader_pass(&program, &[], &[current, src_token], out)?;
+			let pass = if (frame_w, frame_h) == (w, h) {
+				ctx.run_shader_pass(&program, &[], &[current, src_token], out)
+			} else {
+				if scaled_program.is_none() {
+					scaled_program = Some(ctx.compile_shader_pass(
+						SCALED_COMP_KEY,
+						SCALED_COMP_WGSL,
+						2,
+						true,
+						false,
+					)?);
+				}
+				let scaled = scaled_program.as_ref().expect("just compiled");
+				ctx.run_shader_pass(
+					scaled,
+					&scale_uniform_bytes(1.0),
+					&[current, src_token],
+					out,
+				)
+			};
+			if let Err(err) = pass {
+				ctx.destroy_texture(out);
+				return Err(Error::Failed(format!(
+					"alpha-over pass failed: {err:?}"
+				)));
+			}
 			if owned_current {
 				ctx.destroy_texture(current);
 			}
@@ -1865,6 +2041,14 @@ fn composite_tracks_gpu(
 /// playback tick (the "picture barely updates on NVIDIA" report). After
 /// one failure the composite stays on the CPU path for the process.
 static GPU_COMPOSITE_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// GPU montage setup failures (a device that cannot create the montage
+/// pass pipeline) are remembered like [`GPU_COMPOSITE_FAILED`]: otherwise
+/// every playback tick would recompile the shader, surface a validation
+/// error and stall. Once latched, `render_montage_frame` stays on the CPU
+/// compositor for the process.
+static GPU_MONTAGE_FAILED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Composite of `frames` into one `size` texture. The GPU path is
@@ -3253,15 +3437,37 @@ fn scale_rgba_f32(
     }
 }
 
-/// Composite the montage at `time`: decode each covering clip and
-/// alpha-composite topmost-last (NLE track order: the highest-numbered
-/// track is topmost).
+/// Composite the montage at `time` for the ticket/eval path. The GPU
+/// compositor ([`render_montage_frame_gpu`]) is preferred whenever an
+/// adapter is available and the ticket asks for the canonical F32 frame —
+/// the normal playback path, where decode, effects and compositing stay
+/// on the GPU end to end. Every other case (no adapter, a non-F32 ticket,
+/// a per-frame GPU failure) falls back to the unchanged CPU compositor
+/// [`render_montage_frame_into`].
 fn render_montage_frame(
     time: Rational,
     params: &crate::ticket::VideoTicketParams,
     size: (i32, i32),
     format: PixelFormat,
 ) -> Result<Texture> {
+    if format == PixelFormat::F32
+        && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
+            match render_montage_frame_gpu(&ctx, time, params, size) {
+                Ok(texture) => return Ok(texture),
+                Err(err) => {
+                    // Log once per process; a decode failure repeats on the
+                    // CPU path below, which reports its own error.
+                    if unsupported_warned().insert("montage-gpu".to_string()) {
+                        eprintln!(
+                            "GPU montage composite failed, using the CPU compositor: {err:#}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     let mut acc = generate_frame(time, size, format)?;
     let stride = acc.linesize_bytes();
     let acc_data = &mut acc.data;
@@ -3269,11 +3475,179 @@ fn render_montage_frame(
     Ok(Texture::wrap_frame(acc))
 }
 
+/// GPU montage compositor (the playback path's replacement for the CPU
+/// loop in [`render_montage_frame_into`]).
+///
+/// Each covering clip is decoded through the M5 GPU-import decode
+/// ([`render_footage_frame`], import enabled — never
+/// [`render_footage_frame_staged`]); imported planar frames are resolved
+/// to the preview size on the GPU by [`resolve_planar_footage`]. The clip
+/// effect stack then runs (built-in Opacity on the GPU; CPU-only effects
+/// are the explicit boundary) and the result is alpha-overed into a GPU
+/// accumulator by [`composite_montage_gpu`]. Adjustment spans grade the
+/// accumulator between clips in the same order as the CPU compositor, so
+/// the layer semantics match.
+///
+/// The result is always a `Texture::Gpu` (F32). Nothing is downloaded on
+/// the normal path: the only transfers are uploads of CPU-decoded frames
+/// (software decode) and the explicit readback of a texture that belongs
+/// to a different context.
+fn render_montage_frame_gpu(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    time: Rational,
+    params: &crate::ticket::VideoTicketParams,
+    size: (i32, i32),
+) -> Result<Texture> {
+    let (w, h) = size;
+    if w <= 0 || h <= 0 {
+        return Err(Error::Invalid);
+    }
+    let program = match ctx.compile_shader_pass(SCALED_COMP_KEY, SCALED_COMP_WGSL, 2, true, false) {
+        Ok(program) => program,
+        Err(err) => {
+            // A pipeline this device cannot create fails every frame;
+            // latch it so playback stays on the CPU compositor for good
+            // instead of recompiling and stalling each tick.
+            GPU_MONTAGE_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(err);
+        }
+    };
+    let acc = ctx.create_texture(w, h)?;
+    if let Err(err) = ctx.clear_texture(acc) {
+        ctx.destroy_texture(acc);
+        return Err(err);
+    }
+    let mut current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+    let mut spans = params.adjustments.iter().peekable();
+    // Decode from the bottom clip first, composite topmost-last — the same
+    // order as the CPU compositor (the montage list is bottom-up).
+    for (index, clip) in params.montage.iter().enumerate() {
+        // Every layer whose boundary is reached by the clips composited so
+        // far grades the accumulated frame before this clip lands.
+        while spans.peek().is_some_and(|span| span.track_index <= index) {
+            let span = spans.next().expect("peeked");
+            if time >= span.in_time && time < span.out_time {
+                current = apply_effect_list(current, &span.effects, time);
+            }
+        }
+        if time < clip.in_time || time >= clip.out_time {
+            continue;
+        }
+        let media_time = clip.media_in + (time - clip.in_time);
+        // GPU import enabled: a hardware-planar frame resolves through the
+        // scaled matrix pass straight to the preview size (no CPU swscale,
+        // no native-size RGBA intermediate).
+        let decoded = render_footage_frame(
+            &clip.filename,
+            clip.stream_index,
+            media_time,
+            (w, h),
+            PixelFormat::F32,
+        )?;
+        // The clip's effect stack runs between decode and compositing
+        // (C++ semantics: the clip texture passes through the chain
+        // bottom-up, the chain top feeds the track composite).
+        let effected = apply_clip_effects(decoded, clip, time);
+        current = composite_montage_gpu(ctx, &program, &current, &effected, clip.gain, size)?;
+    }
+    // Layers above every clip (their boundary is the montage end): they
+    // grade the final composite.
+    for span in spans {
+        if time >= span.in_time && time < span.out_time {
+            current = apply_effect_list(current, &span.effects, time);
+        }
+    }
+    Ok(current)
+}
+
+/// Alpha-over `src` onto `dst` on the GPU with `gain`, each at its own
+/// resolution: the scaled pass samples `src` at the destination pixel's
+/// normalized UV, so any source size/aspect fills any preview canvas
+/// (existing fill/stretch semantics; no letterbox) and mismatched sizes
+/// are never skipped. `dst`/`src` are only borrowed; the returned texture
+/// owns the new accumulator.
+fn composite_montage_gpu(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    program: &quercus_core::backend::ShaderProgram,
+    dst: &Texture,
+    src: &Texture,
+    gain: f32,
+    size: (i32, i32),
+) -> Result<Texture> {
+    let (w, h) = size;
+    let mut scratch: Vec<u64> = Vec::new();
+    let result = (|| -> Result<Texture> {
+        let dst_token = gpu_composite_token(ctx, dst, &mut scratch)?;
+        let src_token = gpu_composite_token(ctx, src, &mut scratch)?;
+        let out = ctx.create_texture(w, h)?;
+        if let Err(err) = ctx.run_shader_pass(
+            program,
+            &scale_uniform_bytes(gain),
+            &[dst_token, src_token],
+            out,
+        ) {
+            ctx.destroy_texture(out);
+            return Err(Error::Failed(format!(
+                "montage alpha-over pass failed: {err:?}"
+            )));
+        }
+        Ok(Texture::gpu(ctx.clone(), out, w, h, PixelFormat::F32))
+    })();
+    for token in scratch {
+        ctx.destroy_texture(token);
+    }
+    result
+}
+
+/// The backend token of `texture` on `ctx`, for a GPU composite pass: a
+/// GPU texture owned by this context is bound directly; a CPU frame is
+/// uploaded at its own size (the scaled shader does the sizing); a GPU
+/// texture from another context is read back and re-uploaded (the
+/// explicit foreign-context boundary). Tokens created here are pushed to
+/// `scratch` for the caller to destroy after the pass.
+fn gpu_composite_token(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    texture: &Texture,
+    scratch: &mut Vec<u64>,
+) -> Result<u64> {
+    match texture {
+        Texture::Gpu { token, .. } if ctx.has_texture(*token) => Ok(*token),
+        Texture::Gpu { .. } => {
+            let frame = texture.to_frame()?;
+            let token = ctx.create_texture(frame.width, frame.height)?;
+            if let Err(err) = ctx.upload(token, &frame) {
+                ctx.destroy_texture(token);
+                return Err(err);
+            }
+            scratch.push(token);
+            Ok(token)
+        }
+        Texture::Cpu(frame) => {
+            let token = ctx.create_texture(frame.width, frame.height)?;
+            if let Err(err) = ctx.upload(token, frame) {
+                ctx.destroy_texture(token);
+                return Err(err);
+            }
+            scratch.push(token);
+            Ok(token)
+        }
+        Texture::Planar(_) => Err(Error::Failed(
+            "unresolved planar texture in the GPU montage composite".into(),
+        )),
+    }
+}
+
 /// Composite the montage at `time` directly into `dst` (F32 RGBA rows of
 /// `dst_stride` bytes) — the M15 worker seam: the render worker passes a
 /// shared-memory slot slice as `dst`, so the composited frame lands in
 /// the slot with no staging copy. `dst` is zeroed first (transparent
 /// black base).
+///
+/// This is the CPU compositor and stays the worker/no-adapter fallback;
+/// [`render_montage_frame`] prefers the GPU compositor
+/// ([`render_montage_frame_gpu`]) for F32 tickets and only calls this
+/// entry point when no adapter is available (or on a per-frame GPU
+/// failure). Its signature/behavior are unchanged.
 ///
 /// Adjustment layers (`params.adjustments`, M14 W3) sit between the
 /// clips: a span's effect stack runs over the frame accumulated so far
@@ -3670,9 +4044,33 @@ fn scale_channels_in_place(
     }
 }
 
-/// Apply one effect to `src` (an F32 RGBA CPU frame of the montage
-/// pipeline). `time` is the sequence time the frame is rendered at (the
-/// C++ node evaluation time).
+/// Run the GPU Opacity pass on `token`, returning the output token (the
+/// caller wraps it in a [`Texture`] whose lease owns it). `None` when the
+/// pass cannot run; the caller then passes the input through.
+fn apply_opacity_gpu(
+    gpu: &quercus_core::backend::GpuContext,
+    token: u64,
+    width: i32,
+    height: i32,
+    factor: f32,
+) -> Option<u64> {
+    let program = gpu
+        .compile_shader_pass(OPACITY_GPU_KEY, OPACITY_GPU_WGSL, 1, true, false)
+        .ok()?;
+    let out = gpu.create_texture(width, height).ok()?;
+    match gpu.run_shader_pass(&program, &scale_uniform_bytes(factor), &[token], out) {
+        Ok(()) => Some(out),
+        Err(_) => {
+            gpu.destroy_texture(out);
+            None
+        }
+    }
+}
+
+/// Apply one effect to `src` (an F32 RGBA texture of the montage
+/// pipeline — GPU-resident on the normal path, a CPU frame on the
+/// worker/no-adapter path). `time` is the sequence time the frame is
+/// rendered at (the C++ node evaluation time).
 fn apply_montage_effect(
     src: Texture,
     effect: &crate::ticket::MontageEffect,
@@ -3686,6 +4084,35 @@ fn apply_montage_effect(
         let Some(factor) = opacity_factor(effect) else {
             return src;
         };
+        // GPU texture: run the same multiply on the GPU. This is a
+        // built-in effect, so the montage compositor must not read back
+        // for it.
+        if matches!(src, Texture::Gpu { .. }) {
+            let output = match &src {
+                Texture::Gpu {
+                    token,
+                    width,
+                    height,
+                    ctx,
+                    ..
+                } => ctx
+                    .as_any()
+                    .and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>())
+                    .and_then(|gpu| apply_opacity_gpu(gpu, *token, *width, *height, factor))
+                    .map(|out| Texture::gpu(ctx.clone(), out, *width, *height, PixelFormat::F32)),
+                _ => None,
+            };
+            return match output {
+                Some(out) => out,
+                None => {
+                    warn_unsupported_once(
+                        &effect.type_id,
+                        "opacity GPU pass failed; passing the texture through",
+                    );
+                    src
+                }
+            };
+        }
         // Texture implements Drop, so scale in place through a mutable
         // borrow instead of moving the frame out.
         let mut tex = src;
@@ -3694,12 +4121,13 @@ fn apply_montage_effect(
                 let stride = frame.linesize_bytes();
                 scale_channels_in_place(&mut frame.data, stride, frame.width, frame.height, factor);
             }
-            _ => {
+            Texture::Planar(_) => {
                 warn_unsupported_once(
                     &effect.type_id,
-                    "opacity on a non-CPU texture is not supported by the montage path",
+                    "opacity on an unresolved planar texture is not supported by the montage path",
                 );
             }
+            Texture::Gpu { .. } => unreachable!("handled above"),
         }
         return tex;
     }
@@ -4304,6 +4732,190 @@ mod tests {
         let unity = clip_with_effects(vec![opacity_effect(true, 1.0)]);
         let out = apply_clip_effects(solid_texture(0.8, 0.4, 0.2, 1.0), &unity, Rational::new(0, 1));
         assert_eq!(first_pixel(&out), [0.8, 0.4, 0.2, 1.0]);
+    }
+
+    /// Upload an F32 RGBA texture of `size` (row-major `pixels`) on the
+    /// shared GPU context — the GPU side of the montage compositor tests.
+    fn gpu_test_texture(
+        ctx: &Arc<quercus_core::backend::GpuContext>,
+        size: (i32, i32),
+        pixels: &[[f32; 4]],
+    ) -> Texture {
+        let mut frame = generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
+        assert_eq!(pixels.len(), (size.0 * size.1) as usize, "pixel count");
+        for (chunk, rgba) in frame.data.chunks_exact_mut(16).zip(pixels) {
+            for (c, v) in chunk.chunks_exact_mut(4).zip(*rgba) {
+                c.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let token = ctx.create_texture(size.0, size.1).unwrap();
+        ctx.upload(token, &frame).unwrap();
+        Texture::gpu(ctx.clone(), token, size.0, size.1, PixelFormat::F32)
+    }
+
+    /// A transparent-black GPU accumulator of `size`.
+    fn gpu_accumulator(
+        ctx: &Arc<quercus_core::backend::GpuContext>,
+        size: (i32, i32),
+    ) -> Texture {
+        let token = ctx.create_texture(size.0, size.1).unwrap();
+        ctx.clear_texture(token).unwrap();
+        Texture::gpu(ctx.clone(), token, size.0, size.1, PixelFormat::F32)
+    }
+
+    /// Built-in Opacity on a GPU texture runs as a GPU pass (no readback,
+    /// full C++ `opacity.frag` parity: alpha included).
+    #[test]
+    fn montage_opacity_effect_scales_gpu_pixels_on_the_gpu() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let src = gpu_test_texture(&ctx, (2, 1), &[[0.8, 0.4, 0.2, 1.0]; 2]);
+        let clip = clip_with_effects(vec![opacity_effect(true, 0.5)]);
+        let out = apply_clip_effects(src, &clip, Rational::new(0, 1));
+        assert!(
+            matches!(out, Texture::Gpu { .. }),
+            "opacity stays on the GPU"
+        );
+        let px = first_pixel(&out);
+        for (got, want) in px.iter().zip([0.4f32, 0.2, 0.1, 0.5]) {
+            assert!((got - want).abs() < 1e-5, "opacity math: {px:?}");
+        }
+    }
+
+    /// The scaled alpha-over maps any source resolution/aspect onto the
+    /// full target canvas: existing fill/stretch semantics (the CPU path
+    /// pre-scales with swscale), so no letterbox/pillarbox bars appear and
+    /// the normalized-UV bilinear taps match the CPU sampler.
+    #[test]
+    fn gpu_montage_fills_a_mismatched_aspect_target_canvas() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let program = ctx
+            .compile_shader_pass(SCALED_COMP_KEY, SCALED_COMP_WGSL, 2, true, false)
+            .expect("scaled alpha-over program");
+        let target = (4, 2);
+
+        // A 3:2 solid source into a 2:1 canvas: every target pixel must be
+        // covered (letterboxing would leave black bars on the sides).
+        let solid = gpu_test_texture(&ctx, (3, 2), &[[1.0, 0.0, 0.0, 1.0]; 6]);
+        let acc = gpu_accumulator(&ctx, target);
+        let out = composite_montage_gpu(&ctx, &program, &acc, &solid, 1.0, target)
+            .expect("mismatched-size composite");
+        assert_eq!(out.size(), target, "the target canvas size is kept");
+        assert!(matches!(out, Texture::Gpu { .. }), "stays on the GPU");
+        for px in out.to_frame().unwrap().data.chunks_exact(16) {
+            let rgba: Vec<f32> = px
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert!(
+                rgba[0] > 0.99 && rgba[1].abs() < 1e-6 && rgba[3] > 0.99,
+                "full-canvas fill: {rgba:?}"
+            );
+        }
+
+        // A 3:1 horizontal ramp into a 4:1 canvas: the bilinear taps are
+        // the same `scale_rgba_f32` computes for the CPU path.
+        let ramp = gpu_test_texture(
+            &ctx,
+            (3, 1),
+            &[
+                [0.0, 0.0, 0.0, 1.0],
+                [0.5, 0.5, 0.5, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+        );
+        let wide = (4, 1);
+        let acc = gpu_accumulator(&ctx, wide);
+        let out =
+            composite_montage_gpu(&ctx, &program, &acc, &ramp, 1.0, wide).expect("ramp composite");
+        let got: Vec<f32> = out
+            .to_frame()
+            .unwrap()
+            .data
+            .chunks_exact(16)
+            .map(|px| f32::from_le_bytes(px[..4].try_into().unwrap()))
+            .collect();
+        let want = [0.0f32, 0.3125, 0.6875, 1.0];
+        for (got, want) in got.iter().zip(want) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "normalized-UV bilinear mapping: {got} vs {want}"
+            );
+        }
+    }
+
+    /// The graph compositor no longer black-holes a frame whose resolution
+    /// differs from the target: a native-size frame is scaled by the
+    /// bilinear pass.
+    #[test]
+    fn gpu_track_composite_scales_a_mismatched_frame() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let native = gpu_test_texture(&ctx, (2, 2), &[[0.0, 0.0, 1.0, 1.0]; 4]);
+        let out = composite_tracks_gpu(&ctx, &[native], (4, 4)).expect("scaled frame");
+        assert_eq!(out.size(), (4, 4));
+        let px = first_pixel(&out);
+        assert!(
+            (px[2] - 1.0).abs() < 5e-3 && (px[3] - 1.0).abs() < 5e-3,
+            "scaled, not skipped: {px:?}"
+        );
+    }
+
+    /// The F32 montage ticket prefers the GPU compositor (a cleared GPU
+    /// accumulator for a frame with no covering clip — no decode needed);
+    /// non-F32 tickets keep the CPU compositor.
+    #[test]
+    fn render_montage_frame_prefers_the_gpu_compositor() {
+        let Some(_ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let params = crate::ticket::VideoTicketParams {
+            viewer: 1,
+            project: String::new(),
+            time: Rational::new(0, 1),
+            force_size: Some((8, 8)),
+            force_format: Some(PixelFormat::F32),
+            cache: None,
+            cache_dir: None,
+            cache_id: None,
+            cache_timebase: None,
+            footage: None,
+            montage: vec![crate::ticket::MontageClip {
+                filename: String::new(),
+                stream_index: 0,
+                in_time: Rational::new(1, 1),
+                out_time: Rational::new(2, 1),
+                media_in: Rational::new(0, 1),
+                gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
+                effects: Vec::new(),
+                audio_effects: Vec::new(),
+            }],
+            adjustments: Vec::new(),
+        };
+        let out = render_montage_frame(Rational::new(0, 1), &params, (8, 8), PixelFormat::F32)
+            .expect("GPU montage");
+        assert!(
+            matches!(out, Texture::Gpu { .. }),
+            "the F32 montage render stays on the GPU"
+        );
+        assert!(
+            out.to_frame().unwrap().data.iter().all(|&b| b == 0),
+            "transparent accumulator"
+        );
+
+        let cpu = render_montage_frame(Rational::new(0, 1), &params, (8, 8), PixelFormat::U16)
+            .expect("CPU montage");
+        assert!(
+            matches!(cpu, Texture::Cpu(_)),
+            "non-F32 stays on the CPU path"
+        );
     }
 
     /// An OFX effect (any non-built-in type id) resolves its instance
@@ -6372,8 +6984,8 @@ mod tests {
 
     #[test]
     fn resolve_planar_footage_rejects_non_wgpu_contexts() {
-        assert!(resolve_planar_footage(&Texture::dummy()).is_err());
-        assert!(resolve_planar_footage(&planar_texture((2, 2))).is_err());
+        assert!(resolve_planar_footage(&Texture::dummy(), None).is_err());
+        assert!(resolve_planar_footage(&planar_texture((2, 2)), None).is_err());
     }
 
     #[test]
@@ -7787,7 +8399,7 @@ mod tests {
             (2, 2),
         ));
         assert!(
-            resolve_planar_footage(&planar).is_err(),
+            resolve_planar_footage(&planar, None).is_err(),
             "missing plane tokens fail the planar pass"
         );
     }
@@ -8041,6 +8653,75 @@ mod tests {
             .is_err(),
             "a missing clip file fails the montage frame"
         );
+    }
+
+    /// A single-clip montage ticket over `path` (no effects), used by the
+    /// decoded GPU-vs-CPU parity test.
+    fn montage_params_for_clip(path: &str) -> crate::ticket::VideoTicketParams {
+        crate::ticket::VideoTicketParams {
+            viewer: 1,
+            project: String::new(),
+            time: Rational::new(0, 1),
+            force_size: Some((16, 16)),
+            force_format: Some(PixelFormat::F32),
+            cache: None,
+            cache_dir: None,
+            cache_id: None,
+            cache_timebase: None,
+            footage: None,
+            montage: vec![crate::ticket::MontageClip {
+                filename: path.to_string(),
+                stream_index: 0,
+                in_time: Rational::new(0, 1),
+                out_time: Rational::new(2, 1),
+                media_in: Rational::new(0, 1),
+                gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
+                effects: Vec::new(),
+                audio_effects: Vec::new(),
+            }],
+            adjustments: Vec::new(),
+        }
+    }
+
+    /// The decoded montage GPU path composites the same picture as the CPU
+    /// compositor for a real clip: path selection (GPU for F32) plus
+    /// fill/alpha-over parity.
+    #[test]
+    fn montage_gpu_path_composites_a_decoded_clip_like_the_cpu_path() {
+        let Some(_ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let path = std::env::temp_dir().join(format!(
+            "quercusrender_montage_gpu_path_{}.mp4",
+            std::process::id()
+        ));
+        quercus_codec::testmedia::write_test_clip(&path, 16, 16, 10, 10).expect("test clip");
+        let params = montage_params_for_clip(&path.to_string_lossy());
+
+        let mut cpu = vec![0u8; 16 * 16 * 16];
+        render_montage_frame_into(Rational::new(0, 1), &params, (16, 16), &mut cpu, 256)
+            .expect("CPU montage");
+        let gpu = render_montage_frame(Rational::new(0, 1), &params, (16, 16), PixelFormat::F32)
+            .expect("GPU montage");
+        assert!(
+            matches!(gpu, Texture::Gpu { .. }),
+            "the decoded montage frame stays on the GPU"
+        );
+        let frame = gpu.to_frame().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(frame.linesize_bytes(), 256);
+        assert_eq!(frame.data.len(), cpu.len(), "same target raster");
+        for (a, b) in cpu.chunks_exact(4).zip(frame.data.chunks_exact(4)) {
+            let a = f32::from_le_bytes(a.try_into().unwrap());
+            let b = f32::from_le_bytes(b.try_into().unwrap());
+            assert!(
+                (a - b).abs() < 5e-3,
+                "GPU/CPU montage parity: {a} vs {b}"
+            );
+        }
     }
 
     /// A clip effect that hands back a GPU texture on a context whose
