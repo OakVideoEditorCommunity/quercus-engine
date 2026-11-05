@@ -1018,13 +1018,22 @@ fn render_loop(inner: Arc<PipelineInner>) {
 				log_queue_sample(&inner, executed, force, job_ms, gap_ms);
 				if queue_debug_enabled() && job_ms >= 50 {
 					eprintln!(
-						"[queues] slow-exec executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={}/{} decode_q={} lru={}",
+						"[queues] slow-exec executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={}/{} decode_q={} lru={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={} hw_video={} sw_video={} sw_audio={} hw_surf={}",
 						LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
 						MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
 						inner.depth.load(Ordering::Relaxed),
 						RENDER_QUEUE_CAP,
 						inner.decode.queue_depth(),
 						inner.decode.lru_len(),
+						quercus_codec::hwdecode::HW_DECODER_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_DECODER_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_OPEN_FAILURES.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_FALLBACKS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_IMPORTS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_VIDEO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_VIDEO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_AUDIO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_SURFACES.load(Ordering::Relaxed),
 					);
 				}
 			}
