@@ -377,16 +377,21 @@ impl DecodeService {
 	/// Blocks while the decode queue is full: that block is the backpressure
 	/// the render side propagates to submission.
 	pub fn request(&self, request: DecodeRequest) -> Option<Result<Texture>> {
+		let started = std::time::Instant::now();
 		let (reply, rx) = mpsc::sync_channel(1);
 		if !self.enqueue(DecodeCommand::Request { request, reply }, true) {
 			return None;
 		}
-		match rx.recv() {
+		let result = match rx.recv() {
 			Ok(result) => Some(result),
 			// The command was dropped (shutdown drained the queue) or the
 			// decode thread died mid-request: the caller falls back inline.
 			Err(_) => None,
-		}
+		};
+		let wait_ms = started.elapsed().as_millis() as u64;
+		LAST_DECODE_WAIT_MS.store(wait_ms, Ordering::Relaxed);
+		MAX_DECODE_WAIT_MS.fetch_max(wait_ms, Ordering::Relaxed);
+		result
 	}
 
 	/// Queue a speculative decode of `request`; `false` when the gate says
@@ -628,6 +633,11 @@ fn lru_insert(
 // ---------------------------------------------------------------------------
 
 static DECODE_SERVICE: OnceLock<Mutex<Option<Arc<DecodeService>>>> = OnceLock::new();
+
+/// Last/maximum time a render-side `DecodeService::request` waited for the
+/// decode thread (debug telemetry only).
+static LAST_DECODE_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+static MAX_DECODE_WAIT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn decode_service_slot() -> &'static Mutex<Option<Arc<DecodeService>>> {
 	DECODE_SERVICE.get_or_init(|| Mutex::new(None))
@@ -916,6 +926,8 @@ fn is_render_thread(inner: &PipelineInner) -> bool {
 	inner.render_thread.get() == Some(&std::thread::current().id())
 }
 
+static QUEUE_CLOCK: OnceLock<std::time::Instant> = OnceLock::new();
+
 fn queue_debug_enabled() -> bool {
 	static ENABLED: OnceLock<bool> = OnceLock::new();
 	*ENABLED.get_or_init(|| {
@@ -942,8 +954,14 @@ fn log_queue_sample(
 	}
 	let render_depth = inner.depth.load(Ordering::Relaxed);
 	let stats = inner.decode.stats();
+	let t_ms = QUEUE_CLOCK
+		.get_or_init(std::time::Instant::now)
+		.elapsed()
+		.as_millis();
 	eprintln!(
-		"[queues] executed={executed} job_ms={job_ms} gap_ms={gap_ms} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
+		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
+		LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
+		MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
 		RENDER_QUEUE_CAP,
 		RENDER_QUEUE_CAP.saturating_sub(render_depth),
 		inner.decode.queue_depth(),
@@ -988,6 +1006,17 @@ fn render_loop(inner: Arc<PipelineInner>) {
 				let executed = inner.executed.fetch_add(1, Ordering::Relaxed) + 1;
 				let force = inner.depth.load(Ordering::Relaxed) == 0;
 				log_queue_sample(&inner, executed, force, job_ms, gap_ms);
+				if queue_debug_enabled() && job_ms >= 50 {
+					eprintln!(
+						"[queues] slow-exec executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={}/{} decode_q={} lru={}",
+						LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
+						MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
+						inner.depth.load(Ordering::Relaxed),
+						RENDER_QUEUE_CAP,
+						inner.decode.queue_depth(),
+						inner.decode.lru_len(),
+					);
+				}
 			}
 			None => break,
 		}
