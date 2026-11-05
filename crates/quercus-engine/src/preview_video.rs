@@ -10,6 +10,22 @@ use quercus_node::sequence::SequenceBehavior;
 use quercus_render::manager::RenderManager;
 use quercus_render::ticket::{TicketPayload, VideoTicketParams};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// True when the host applies a display/output transform on the CPU. The
+/// engine then must not hand back a working-space texture as the final
+/// presentation surface; it stages the pixels so the host's LUT runs.
+static HOST_DISPLAY_TRANSFORM_REQUIRED: AtomicBool = AtomicBool::new(true);
+
+/// Tell the engine whether the host will apply a display/output transform.
+/// When true (the safe default), GPU textures are staged to CPU bytes so the
+/// host's color-managed path remains authoritative. When false, the engine
+/// keeps the final texture zero-copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_gpu_set_display_transform_required(required: bool) {
+	HOST_DISPLAY_TRANSFORM_REQUIRED.store(required, Ordering::Release);
+}
+
 use crate::handle::NativeMirror;
 use montage::{
 	clamp_render_size, preview_media, single_track_video_montage, video_montage_with_adjustments,
@@ -464,13 +480,15 @@ pub(crate) fn render_video(
 				frame_from_cpu(frame, FrameOrigin::Cpu, pixel_format)
 			}
 			Ok(TicketPayload::Video(texture)) => {
-				if let quercus_core::texture::Texture::Gpu {
-					token, width, height, ctx, ..
-				} = &texture
-				{
-					if let Some(handle) = ctx.texture_handle(*token) {
-						if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle) {
-							return Ok(frame);
+				if !HOST_DISPLAY_TRANSFORM_REQUIRED.load(Ordering::Acquire) {
+					if let quercus_core::texture::Texture::Gpu {
+						token, width, height, ctx, ..
+					} = &texture
+					{
+						if let Some(handle) = ctx.texture_handle(*token) {
+							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle) {
+								return Ok(frame);
+							}
 						}
 					}
 				}
@@ -514,13 +532,15 @@ pub(crate) fn render_video(
 			PixelFormat::F32,
 		)
 		.map_err(|error| error.to_string())?;
-		if let quercus_core::texture::Texture::Gpu {
-			token, width: tw, height: th, ctx, ..
-		} = &rendered
-		{
-			if let Some(handle) = ctx.texture_handle(*token) {
-				if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle) {
-					return Ok(frame);
+		if !HOST_DISPLAY_TRANSFORM_REQUIRED.load(Ordering::Acquire) {
+			if let quercus_core::texture::Texture::Gpu {
+				token, width: tw, height: th, ctx, ..
+			} = &rendered
+			{
+				if let Some(handle) = ctx.texture_handle(*token) {
+					if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle) {
+						return Ok(frame);
+					}
 				}
 			}
 		}
