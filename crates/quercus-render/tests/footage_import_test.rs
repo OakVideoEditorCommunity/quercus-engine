@@ -465,6 +465,7 @@ fn c0024_4k_10bit_422_gpu_scale_benchmark() {
 		)
 		.expect("C0024 decode");
 		let elapsed = started.elapsed();
+		eprintln!("C0024 frame {n}: {:?}", elapsed);
 		total += elapsed;
 		worst = worst.max(elapsed);
 		if !matches!(texture, Texture::Gpu { .. }) { transfers += 1; }
