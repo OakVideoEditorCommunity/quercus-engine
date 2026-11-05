@@ -3271,23 +3271,36 @@ fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Destination pixel center -> source luma texel coordinate.
     let y_pos = frag.xy * p.src_scale.xy - vec2<f32>(0.5);
     let y_limit = vec2<f32>(p.src_size.x, p.src_size.y) - vec2<f32>(1.0);
+    // At 1:1, use exact texel loads: bilinear on a subsampled UV plane
+    // would blend neighbouring chroma samples that the CPU/native path
+    // does not blend. Scaled output keeps the 4-tap bilinear.
+    let native = p.src_scale.x == 1.0 && p.src_scale.y == 1.0;
     if (mode >= 2) {
-        let c = sample_bilinear(plane0, y_pos, y_limit);
+        let c = select(
+            sample_bilinear(plane0, y_pos, y_limit),
+            textureLoad(plane0, vec2<i32>(frag.xy), 0),
+            native,
+        );
         if (mode == 3) {
             return vec4<f32>(c.rgb, c.a);
         }
         return vec4<f32>(c.rgb, 1.0);
     }
-    let yv = sample_bilinear(plane0, y_pos, y_limit).r;
+    let yv = select(
+        sample_bilinear(plane0, y_pos, y_limit),
+        textureLoad(plane0, vec2<i32>(frag.xy), 0),
+        native,
+    ).r;
     let c_pos = frag.xy * (p.src_scale.xy * p.uv_scale_mode.xy) - vec2<f32>(0.5);
     let c_limit = vec2<f32>(p.src_size.z, p.src_size.w) - vec2<f32>(1.0);
+    let c_native = vec2<i32>(frag.xy * p.uv_scale_mode.xy);
     var u: f32;
     var v: f32;
     if (mode == 0) {
-        u = sample_bilinear(plane1, c_pos, c_limit).r;
-        v = sample_bilinear(plane2, c_pos, c_limit).r;
+        u = select(sample_bilinear(plane1, c_pos, c_limit), textureLoad(plane1, c_native, 0), native).r;
+        v = select(sample_bilinear(plane2, c_pos, c_limit), textureLoad(plane2, c_native, 0), native).r;
     } else {
-        let uv = sample_bilinear(plane1, c_pos, c_limit);
+        let uv = select(sample_bilinear(plane1, c_pos, c_limit), textureLoad(plane1, c_native, 0), native);
         u = uv.r;
         v = uv.g;
     }

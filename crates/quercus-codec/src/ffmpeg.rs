@@ -471,14 +471,15 @@ impl Decoder for FFmpegDecoder {
 		};
 		crate::hwdecode::HW_IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		let transform = imported.transform(matrix, full_range);
-		let mut planar = quercus_core::texture::PlanarTexture::new(
+		let mut planar = quercus_core::texture::PlanarTexture::from_descriptor(
 			imported.ctx,
-			imported.format,
+			imported.descriptor,
 			(imported.width as i32, imported.height as i32),
-			(imported.y, imported.uv),
+			&imported.planes,
 			transform,
 			(primaries, trc),
-		);
+		)
+		.map_err(|e| crate::error::Error::Failed(format!("planar import: {e}")))?;
 		if let Some(guard) = imported.keep_alive {
 			planar.set_keep_alive(guard);
 		}
