@@ -346,6 +346,9 @@ pub struct GpuContext {
 	/// pipeline). A context that has never touched the GPU can still be
 	/// replaced by the UI's adopted device (`install_shared`).
 	used: AtomicBool,
+	/// Set after a fatal wgpu poll/device-lost error. Further readbacks
+	/// must fail cleanly instead of polling the lost device again.
+	device_lost: AtomicBool,
 	/// Linux/Vulkan OpenFX GL zero-copy: allocate `Rgba32Float` textures
 	/// with exportable `OPAQUE_FD` memory. Disabled by
 	/// `QUERCUS_OFX_GPU_ZEROCOPY=0`; every allocation failure falls back
@@ -734,6 +737,7 @@ impl GpuContext {
 				planar_matrix: Mutex::new(None),
 				color_luts: Mutex::new(Vec::new()),
 				used: AtomicBool::new(false),
+				device_lost: AtomicBool::new(false),
 				ofx_zerocopy: zerocopy_requested(),
 			}));
 		}
@@ -777,6 +781,7 @@ impl GpuContext {
 			planar_matrix: Mutex::new(None),
 			color_luts: Mutex::new(Vec::new()),
 			used: AtomicBool::new(false),
+			device_lost: AtomicBool::new(false),
 			ofx_zerocopy: zerocopy_requested(),
 		})
 	}
@@ -819,9 +824,13 @@ impl GpuContext {
 		// `Device::poll` panics via wgpu's fatal-error hook once the device
 		// has been lost. A plugin/host readback must fail that frame, not
 		// abort the whole editor.
-		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-		}));
+		}))
+		.is_err()
+		{
+			self.mark_device_lost();
+		}
 	}
 
 	/// Bounded variant of [`GpuContext::wait_idle`]. Returns false when the
@@ -838,7 +847,10 @@ impl GpuContext {
 				Ok(wgpu::PollStatus::WaitSucceeded) | Ok(wgpu::PollStatus::QueueEmpty)
 			)
 		}))
-		.unwrap_or(false)
+		.unwrap_or_else(|_| {
+			self.mark_device_lost();
+			false
+		})
 	}
 
 	/// Run `callback` once all GPU work submitted so far has completed.
@@ -846,6 +858,16 @@ impl GpuContext {
 	/// buffer is no longer read by the renderer.
 	pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static) {
 		self.queue.on_submitted_work_done(callback);
+	}
+
+	/// True after a fatal wgpu device-lost/poll error.
+	pub fn device_lost(&self) -> bool {
+		self.device_lost.load(std::sync::atomic::Ordering::Acquire)
+	}
+
+	fn mark_device_lost(&self) {
+		self.device_lost
+			.store(true, std::sync::atomic::Ordering::Release);
 	}
 
 	/// The backend actually in use.
@@ -2394,6 +2416,11 @@ impl GpuContext {
 	/// present target) converts half→f32. Other formats are rejected —
 	/// explicit readback boundaries only ever meet these two.
 	pub fn download(&self, token: u64) -> Result<Frame> {
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost; texture download unavailable".into(),
+			));
+		}
 		GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
 		let entry = lock(&self.textures)
 			.get(&token)
@@ -2461,6 +2488,7 @@ impl GpuContext {
 			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 		}));
 		if poll.is_err() {
+			self.mark_device_lost();
 			return Err(Error::Failed(
 				"wgpu device lost during texture download".into(),
 			));

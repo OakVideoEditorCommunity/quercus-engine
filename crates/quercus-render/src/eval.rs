@@ -2013,15 +2013,11 @@ fn composite_tracks_gpu(
 					scratch.push(t);
 					t
 				}
-				Texture::Cpu(f) => {
-					let t = ctx.create_texture(f.width, f.height)?;
-					if let Err(err) = ctx.upload(t, f) {
-						ctx.destroy_texture(t);
-						return Err(err);
-					}
-					scratch.push(t);
-					t
-				}
+							Texture::Cpu(_) => {
+				// Uploading here would use queue.write_texture on the render
+				// thread; use the CPU composite for this frame instead.
+				return Err(Error::State);
+			}
 				Texture::Planar(_) => {
 					return Err(Error::Failed(
 						"unresolved planar texture in composite".into(),
@@ -2120,6 +2116,11 @@ fn composite_tracks(frames: Vec<Texture>, size: (i32, i32)) -> Texture {
 		if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
 			match composite_tracks_gpu(&ctx, &frames, (w, h)) {
 				Ok(texture) => return texture,
+				Err(Error::State) => {
+					// CPU layer or transient capability gap: use the CPU
+					// compositor for this frame without disabling the GPU
+					// path for the whole process.
+				}
 				Err(err) => {
 					eprintln!(
 						"GPU track composite failed, using CPU (and staying there): {err:#}"
@@ -3608,6 +3609,15 @@ fn render_montage_frame_gpu(
         // (C++ semantics: the clip texture passes through the chain
         // bottom-up, the chain top feeds the track composite).
         let effected = apply_clip_effects(decoded, clip, time);
+        // CPU-decoded/CPU-effect layers would need `queue.write_texture` on
+        // the render thread, which contends with the host's wgpu queue and
+        // can freeze playback. Keep the GPU montage strictly GPU-resident;
+        // any CPU layer makes this ticket use the CPU compositor.
+        if !matches!(effected, Texture::Gpu { .. }) {
+            return Err(Error::Failed(
+                "CPU-decoded montage layer requires the CPU compositor".into(),
+            ));
+        }
         current = composite_montage_gpu(ctx, &program, &current, &effected, clip.gain, size)?;
     }
     // Layers above every clip (their boundary is the montage end): they
