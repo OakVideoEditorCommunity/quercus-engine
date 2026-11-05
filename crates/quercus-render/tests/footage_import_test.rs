@@ -443,6 +443,45 @@ fn montage_native_size_with_host_gpu_composites_the_clip() {
 /// `QUERCUS_REQUIRE_GPU=1 cargo test -p quercus-render --test footage_import_test c0024 -- --ignored --nocapture`
 #[test]
 #[ignore]
+fn c0024_4k_10bit_422_gpu_scale_benchmark() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let path = "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4";
+	if !std::path::Path::new(path).exists() { return; }
+	let Some(ctx) = common::gpu_context_for_import() else { return; };
+	quercus_core::backend::GpuContext::install_shared(Some(ctx));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let mut total = std::time::Duration::ZERO;
+	let mut worst = std::time::Duration::ZERO;
+	let mut transfers = 0;
+	for n in 0..4 {
+		let started = std::time::Instant::now();
+		let texture = quercus_render::eval::render_footage_frame(
+			path,
+			0,
+			Rational::new(n, 25),
+			(1920, 1080),
+			PixelFormat::F32,
+		)
+		.expect("C0024 decode");
+		let elapsed = started.elapsed();
+		total += elapsed;
+		worst = worst.max(elapsed);
+		if !matches!(texture, Texture::Gpu { .. }) { transfers += 1; }
+	}
+	eprintln!(
+		"C0024 GPU scale: avg={:?} worst={:?} imports={} transfers={} non_gpu={}",
+		total / 4,
+		worst,
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers
+	);
+	assert_eq!(transfers, 0, "all frames must stay GPU-resident");
+}
+
+#[test]
+#[ignore]
 fn c0024_4k_10bit_422_imports_and_scales_on_gpu() {
 	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 	pin_legacy_working_space();
