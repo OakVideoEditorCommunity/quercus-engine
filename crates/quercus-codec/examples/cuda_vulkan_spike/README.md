@@ -7,6 +7,34 @@
 
 ---
 
+## 0.1 本机实测结果（2026-11-06，RTX 5070 Ti / 615.78.08）
+
+重启后设备节点已出现；`run.sh` 的 probe 结论：
+
+```text
+cuda dma-buf supported   : NO
+dma_buf export fd        : NO
+cuMemGetHandleForAddressRange(...) -> CUDA_ERROR_NOT_SUPPORTED / INVALID_VALUE
+Vulkan H.264 decode High 4:2:2 10bit -> VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR
+Vulkan H.264 decode High10 4:2:0 10bit -> VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR
+Vulkan H.264 decode High 4:2:0 8bit   -> VK_SUCCESS
+Vulkan HEVC decode Main10 4:2:0 10bit -> VK_SUCCESS
+Vulkan HEVC decode RExt 4:2:2 10bit   -> VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR
+```
+
+因此在这台机器/驱动上：
+
+- **NVIDIA Linux CUDA 帧不能导出 DMA-BUF**，路线 A 不可用；
+- **Vulkan Video 也不支持 H.264 10-bit 4:2:2**，路线 C 不能替代；
+- 对 `C0024.MP4` 这种 4K 10-bit 4:2:2，当前驱动不存在“解码 surface 不经过 CPU 进入 wgpu”的可行接口。
+
+工程上的可行替代只有：
+1. CUDA 侧先 GPU 缩放/转换，再把**目标尺寸**读回（数据仍会在边界离开 GPU，但比 4K 全帧下载小很多）；
+2. 代理；
+3. 等 NVIDIA 驱动/Vulkan Video 暴露 4:2:2 或 DMA-BUF 能力。
+
+这与“有 GPU 就一定能零拷贝”是驱动能力问题，不是渲染器接口能绕过的。
+
 ## 0. 结论摘要（先看这个）
 
 | 路线 | 判定 | 关键条件 |
