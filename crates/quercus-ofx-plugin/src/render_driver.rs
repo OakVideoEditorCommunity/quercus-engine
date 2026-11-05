@@ -669,7 +669,7 @@ fn pixel_aspect(params: &render::VideoParams) -> f64 {
 
 /// 插件描述符是否声明 GL 渲染支持（ofxGPURender.h:397-408：
 /// "true"/"needed"）。
-fn plugin_supports_opengl(inst: &Instance) -> bool {
+pub(crate) fn plugin_supports_opengl(inst: &Instance) -> bool {
 	inst.plugin
 		.descriptor
 		.props

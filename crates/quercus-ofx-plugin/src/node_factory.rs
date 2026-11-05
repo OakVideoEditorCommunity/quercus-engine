@@ -973,6 +973,14 @@ pub fn install_render_executor() {
 	EXECUTOR_INSTALLED.get_or_init(|| {
 		quercus_render::eval::set_plugin_executor(Some(Arc::new(execute_plugin_job)));
 		quercus_render::eval::set_plugin_instance_factory(Some(Arc::new(shared_plugin_instance)));
+		quercus_render::eval::set_plugin_gpu_query(Some(Arc::new(|identifier: &str| {
+			let Some(id) = shared_plugin_instance(identifier) else {
+				return false;
+			};
+			instance_from_id(id)
+				.map(|inst| crate::render_driver::plugin_supports_opengl(&inst.value))
+				.unwrap_or(false)
+		})));
 		quercus_node::nodes::plugin::set_plugin_duplicator(Some(Arc::new(duplicate_instance)));
 	});
 }

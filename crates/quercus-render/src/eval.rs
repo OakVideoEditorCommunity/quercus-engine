@@ -263,6 +263,54 @@ pub fn plugin_instance_factory() -> Option<Arc<PluginInstanceFactory>> {
         .clone()
 }
 
+/// Whether a plugin identifier can render on the GPU/GL path. Montage
+/// tickets use this to keep CPU-only OFX plugins on the CPU compositor while
+/// GPU-capable plugins stay in the GPU montage. Implemented by
+/// quercusplugin from its descriptor registry.
+pub type PluginGpuQuery = dyn Fn(&str) -> bool + Send + Sync;
+
+static PLUGIN_GPU_QUERY: std::sync::OnceLock<std::sync::Mutex<Option<Arc<PluginGpuQuery>>>> =
+    std::sync::OnceLock::new();
+
+fn plugin_gpu_query_slot() -> &'static std::sync::Mutex<Option<Arc<PluginGpuQuery>>> {
+    PLUGIN_GPU_QUERY.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Install/clear the plugin GPU-capability query.
+pub fn set_plugin_gpu_query(query: Option<Arc<PluginGpuQuery>>) {
+    *plugin_gpu_query_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = query;
+}
+
+fn plugin_is_gpu(id: &str) -> bool {
+    plugin_gpu_query_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|query| query(id))
+}
+
+/// A montage is CPU-bound when it contains a CPU-only OFX plugin. Built-in
+/// Opacity is GPU-rendered; a GPU-capable OFX plugin stays in the GPU
+/// montage. Without a capability query (plugin subsystem not installed), a
+/// non-builtin effect is conservatively treated as CPU.
+fn montage_has_cpu_effects(params: &crate::ticket::VideoTicketParams) -> bool {
+    let cpu_effect = |effect: &crate::ticket::MontageEffect| {
+        effect.enabled
+            && effect.type_id != OPACITY_EFFECT_TYPE_ID
+            && !plugin_is_gpu(&effect.type_id)
+    };
+    params
+        .montage
+        .iter()
+        .any(|clip| clip.effects.iter().any(cpu_effect))
+        || params
+            .adjustments
+            .iter()
+            .any(|span| span.effects.iter().any(cpu_effect))
+}
+
 /// Box a resolved texture into the table's texture channel (the render
 /// seam's output is the one place a texture legitimately travels as a
 /// refcounted handle — [`quercus_node::handle::get_checked`] probes against
@@ -3459,7 +3507,13 @@ pub fn render_montage_frame(
     if format == PixelFormat::F32
         && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
     {
-        if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
+        if montage_has_cpu_effects(params) {
+            if unsupported_warned().insert("montage-cpu-effects".to_string()) {
+                eprintln!(
+                    "montage has CPU-only effects; using the CPU compositor (readback boundary)"
+                );
+            }
+        } else if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
             match render_montage_frame_gpu(&ctx, time, params, size) {
                 Ok(texture) => return Ok(texture),
                 Err(err) => {
