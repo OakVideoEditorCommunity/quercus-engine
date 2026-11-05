@@ -331,6 +331,39 @@ mod drm_fourcc {
 }
 
 
+/// The frame's software layout from its `AVHWFramesContext.sw_format`.
+#[cfg(target_os = "linux")]
+fn frame_sw_format(frame: *const sys::AVFrame) -> Option<sys::AVPixelFormat> {
+	let frames_ref = unsafe { (*frame).hw_frames_ctx };
+	if frames_ref.is_null() {
+		return None;
+	}
+	let frames = unsafe { &*((*frames_ref).data as *const HwFramesContextHead) };
+	Some(unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>(frames.sw_format) })
+}
+
+/// Map an FFmpeg software pixel format to the generic planar descriptor.
+#[cfg(target_os = "linux")]
+fn av_format_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
+	use quercus_core::texture::{PlaneStorage, Subsampling};
+	use sys::AVPixelFormat as F;
+	let semi = |ss, st| PlanarDescriptor::yuv_semi_planar(ss, st);
+	let planar = |ss, st| PlanarDescriptor::yuv_planar(ss, st);
+	Some(match sw_format {
+		F::AV_PIX_FMT_NV12 => semi(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_P010LE => semi(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_NV16 => semi(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_P210LE => semi(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV420P => planar(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV420P10LE => planar(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV422P => planar(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV422P10LE => planar(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV444P => planar(Subsampling::Cs444, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV444P10LE => planar(Subsampling::Cs444, PlaneStorage::U16),
+		_ => return None,
+	})
+}
+
 /// Map a VAAPI frame to its DRM PRIME descriptor (FFmpeg calls
 /// `vaExportSurfaceHandle` internally; no CPU download happens).
 #[cfg(target_os = "linux")]
@@ -344,40 +377,50 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 		sys::av_hwframe_map(raw, req.frame, sys::AV_HWFRAME_MAP_READ as i32)
 	};
 	if rc < 0 {
-		// The VAAPI session exists but the surface could not be exported
-		// as DRM PRIME: a real failure (the breaker bounds the retries).
 		return ImportOutcome::Failed;
 	}
 	// SAFETY: on success `data[0]` is the descriptor FFmpeg allocated for
 	// this mapping; it stays valid until `drm_frame` is unref'd.
 	let desc = unsafe { &*((*drm_frame.as_ptr()).data[0] as *const sys::AVDRMFrameDescriptor) };
-	if desc.nb_layers != 2 {
+	let (lw, lh) = req.luma_size;
+	if lw == 0 || lh == 0 {
 		return ImportOutcome::Unsupported;
 	}
-	let layer_format = |i: usize| desc.layers[i].format;
-	let (format, y_fourcc, uv_fourcc) = match (layer_format(0), layer_format(1)) {
-		(a, b) if a == drm_fourcc::R8 && (b == drm_fourcc::GR88 || b == drm_fourcc::RG88) => {
-			(PlanarFormat::Nv12, a, b)
-		}
-		(a, b) if a == drm_fourcc::R16 && b == drm_fourcc::RG1616 => {
-			(PlanarFormat::P010, a, b)
-		}
-		_ => return ImportOutcome::Unsupported,
+	// Prefer the real software layout; fall back to the two-layer legacy
+	// formats only when the hwframe metadata is unavailable.
+	let descriptor = frame_sw_format(req.frame)
+		.and_then(av_format_descriptor)
+		.or_else(|| match desc.nb_layers {
+			2 => {
+				let a = desc.layers[0].format;
+				let b = desc.layers[1].format;
+				if a == drm_fourcc::R8 && (b == drm_fourcc::GR88 || b == drm_fourcc::RG88) {
+					Some(PlanarFormat::Nv12.descriptor())
+				} else if a == drm_fourcc::R16 && b == drm_fourcc::RG1616 {
+					Some(PlanarFormat::P010.descriptor())
+				} else {
+					None
+				}
+			}
+			_ => None,
+		});
+	let Some(descriptor) = descriptor else {
+		return ImportOutcome::Unsupported;
 	};
-	let _ = (y_fourcc, uv_fourcc);
+	if desc.nb_layers as usize != descriptor.plane_count() {
+		return ImportOutcome::Unsupported;
+	}
 	if std::env::var_os("OAK_DEBUG_HW").is_some() {
-		eprintln!("[vaapi-import] format={format:?} descriptor={:?} luma={:?} layers={}", format.descriptor(), req.luma_size, desc.nb_layers);
+		eprintln!(
+			"[vaapi-import] descriptor={descriptor:?} luma={lw}x{lh} layers={}",
+			desc.nb_layers
+		);
 	}
 	for layer in &desc.layers[..desc.nb_layers as usize] {
 		if layer.nb_planes != 1 {
 			return ImportOutcome::Unsupported;
 		}
 	}
-	let (lw, lh) = req.luma_size;
-	if lw == 0 || lh == 0 {
-		return ImportOutcome::Unsupported;
-	}
-	let (cw, ch) = (lw.div_ceil(2), lh.div_ceil(2));
 	let plane = |layer: usize| {
 		let l = &desc.layers[layer];
 		let p = &l.planes[0];
@@ -390,31 +433,53 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 		}
 	};
 	// Shared keep-alive: the source frame pins the VAAPI surface until
-	// the last plane texture is destroyed (the dmabuf fds Vulkan imported
-	// keep the buffer itself alive even after the mapping drops).
+	// the last plane texture is destroyed.
 	let Some(keep) = crate::ffmpeg::RefFrame::clone_raw(req.frame) else {
 		return ImportOutcome::Failed;
 	};
 	let keep = Arc::new(keep);
-	let y_guard = keep.clone();
-	let y = match ctx.import_dmabuf_plane(lw, lh, format.y_format(), plane(0), guard(y_guard)) {
-		Ok(y) => y,
-		Err(quercus_core::error::Error::State) | Err(quercus_core::error::Error::Invalid) => {
-			return ImportOutcome::Unsupported
+	let mut planes = Vec::with_capacity(descriptor.plane_count());
+	for index in 0..descriptor.plane_count() {
+		let Some((pw, ph)) = descriptor.plane_size(index, lw as i32, lh as i32) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		let Some(format) = descriptor.plane_texture_format(index) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		match ctx.import_dmabuf_plane(
+			pw as u32,
+			ph as u32,
+			format,
+			plane(index),
+			guard(keep.clone()),
+		) {
+			Ok(token) => planes.push(token),
+			Err(err) => {
+				let unsupported = matches!(
+					err,
+					quercus_core::error::Error::State | quercus_core::error::Error::Invalid
+				);
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return if unsupported {
+					ImportOutcome::Unsupported
+				} else {
+					ImportOutcome::Failed
+				};
+			}
 		}
-		Err(_) => return ImportOutcome::Failed,
-	};
-	let uv_guard = keep.clone();
-	match ctx.import_dmabuf_plane(cw, ch, format.uv_format(), plane(1), guard(uv_guard)) {
-		Ok(uv) => ImportOutcome::Imported {
-			planes: vec![y, uv],
-			descriptor: format.descriptor(),
-			keep_alive: None,
-		},
-		Err(_) => {
-			ctx.destroy_texture(y);
-			ImportOutcome::Failed
-		}
+	}
+	ImportOutcome::Imported {
+		planes,
+		descriptor,
+		keep_alive: None,
 	}
 }
 
