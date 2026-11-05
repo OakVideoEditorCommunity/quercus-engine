@@ -471,17 +471,34 @@ impl Decoder for FFmpegDecoder {
 		};
 		crate::hwdecode::HW_IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		let transform = imported.transform(matrix, full_range);
-		let mut planar = quercus_core::texture::PlanarTexture::from_descriptor(
-			imported.ctx,
-			imported.descriptor,
-			(imported.width as i32, imported.height as i32),
-			&imported.planes,
-			transform,
-			(primaries, trc),
-		)
+		let mut planar = if imported.borrowed_planes {
+			let Some(guard) = imported.keep_alive.clone() else {
+				return Ok(None);
+			};
+			quercus_core::texture::PlanarTexture::from_descriptor_borrowed(
+				imported.ctx,
+				imported.descriptor,
+				(imported.width as i32, imported.height as i32),
+				&imported.planes,
+				transform,
+				(primaries, trc),
+				guard,
+			)
+		} else {
+			quercus_core::texture::PlanarTexture::from_descriptor(
+				imported.ctx,
+				imported.descriptor,
+				(imported.width as i32, imported.height as i32),
+				&imported.planes,
+				transform,
+				(primaries, trc),
+			)
+		}
 		.map_err(|e| crate::error::Error::Failed(format!("planar import: {e}")))?;
-		if let Some(guard) = imported.keep_alive {
-			planar.set_keep_alive(guard);
+		if !imported.borrowed_planes {
+			if let Some(guard) = imported.keep_alive {
+				planar.set_keep_alive(guard);
+			}
 		}
 		Ok(Some(quercus_core::texture::Texture::wrap_planar(planar)))
 	}

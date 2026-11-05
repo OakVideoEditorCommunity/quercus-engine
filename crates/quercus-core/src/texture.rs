@@ -179,12 +179,23 @@ impl Frame {
 pub struct GpuLease {
 	token: u64,
 	ctx: Arc<dyn GpuContextLike>,
+	/// False for a borrowed view: the token's lifetime is owned by another
+	/// holder (the CUDA VMM slot pool), so dropping this lease must not
+	/// destroy the registry entry.
+	owned: bool,
 }
 
 impl GpuLease {
 	/// A lease for `token` on `ctx`.
 	pub fn new(ctx: Arc<dyn GpuContextLike>, token: u64) -> Arc<Self> {
-		Arc::new(Self { token, ctx })
+		Arc::new(Self { token, ctx, owned: true })
+	}
+
+	/// A non-owning lease for a token whose lifetime is managed elsewhere
+	/// (e.g. a reusable CUDA VMM slot that keeps its imported textures for
+	/// many frames).
+	pub fn borrowed(ctx: Arc<dyn GpuContextLike>, token: u64) -> Arc<Self> {
+		Arc::new(Self { token, ctx, owned: false })
 	}
 
 	/// The leased token.
@@ -195,7 +206,9 @@ impl GpuLease {
 
 impl Drop for GpuLease {
 	fn drop(&mut self) {
-		self.ctx.destroy_texture(self.token);
+		if self.owned {
+			self.ctx.destroy_texture(self.token);
+		}
 	}
 }
 
@@ -744,6 +757,54 @@ impl PlanarTexture {
 			return Err(Error::Invalid);
 		}
 		Self::build(ctx, descriptor, size, planes.to_vec(), transform, color)
+	}
+
+	/// Borrowed-descriptor twin of [`PlanarTexture::from_descriptor`]: the
+	/// plane tokens stay owned by the caller (a reusable CUDA VMM slot), so
+	/// dropping this texture does not destroy them. `keep_alive` must keep
+	/// the owner alive.
+	pub fn from_descriptor_borrowed(
+		ctx: Arc<dyn GpuContextLike>,
+		descriptor: PlanarDescriptor,
+		size: (i32, i32),
+		planes: &[u64],
+		transform: YuvTransform,
+		color: (i32, i32),
+		keep_alive: Arc<dyn std::any::Any + Send + Sync>,
+	) -> Result<Self> {
+		if planes.len() != descriptor.plane_count() || planes.is_empty() || planes.len() > 3 {
+			return Err(Error::Invalid);
+		}
+		if size.0 <= 0 || size.1 <= 0 {
+			return Err(Error::Invalid);
+		}
+		let (width, height) = size;
+		let (color_primaries, color_trc) = color;
+		let count = planes.len();
+		let mut tokens = [0u64; 3];
+		tokens[..count].copy_from_slice(planes);
+		let y_lease = GpuLease::borrowed(ctx.clone(), tokens[0]);
+		let uv_lease = (count > 1).then(|| GpuLease::borrowed(ctx.clone(), tokens[1]));
+		let v_lease = (count > 2).then(|| GpuLease::borrowed(ctx.clone(), tokens[2]));
+		let y = tokens[0];
+		let uv = if count > 1 { tokens[1] } else { tokens[0] };
+		Ok(Self {
+			planes: tokens,
+			plane_count: count,
+			descriptor,
+			y,
+			uv,
+			width,
+			height,
+			transform,
+			color_primaries,
+			color_trc,
+			y_lease,
+			uv_lease,
+			v_lease,
+			keep_alive: Some(keep_alive),
+			ctx,
+		})
 	}
 
 	/// Shared constructor: `planes` must be exactly `descriptor`'s plane

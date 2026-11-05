@@ -155,8 +155,11 @@ pub struct ImportedHwFrame {
 	/// The GPU device that owns the planes.
 	pub ctx: Arc<GpuContext>,
 	/// Extra lifetime guard for platforms whose GPU texture types cannot
-	/// carry a drop callback (macOS): the decoder's pixel buffer.
+	/// carry a drop callback (macOS) or for a reusable VMM slot.
 	pub keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
+	/// True when the plane tokens are owned by `keep_alive` (a reusable
+	/// CUDA VMM slot), so the PlanarTexture must use only borrowed leases.
+	pub borrowed_planes: bool,
 }
 
 impl ImportedHwFrame {
@@ -200,6 +203,7 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 			planes,
 			descriptor,
 			keep_alive,
+			borrowed_planes,
 		} => {
 			CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
 			HW_IMPORTS.fetch_add(1, Ordering::Relaxed);
@@ -210,6 +214,7 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 				height: req.luma_size.1,
 				ctx,
 				keep_alive,
+				borrowed_planes,
 			})
 		}
 		ImportOutcome::Unsupported => {
@@ -230,6 +235,7 @@ enum ImportOutcome {
 		planes: Vec<u64>,
 		descriptor: PlanarDescriptor,
 		keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
+		borrowed_planes: bool,
 	},
 	/// No import path exists for this device/machine/configuration (the
 	/// frame takes the staging path without being a failure).
@@ -480,6 +486,7 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 		planes,
 		descriptor,
 		keep_alive: None,
+		borrowed_planes: false,
 	}
 }
 
@@ -895,6 +902,7 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 		planes,
 		descriptor,
 		keep_alive: Some(slot),
+		borrowed_planes: false,
 	}
 }
 
@@ -1052,6 +1060,7 @@ fn videotoolbox_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> Impo
 		planes: vec![y, uv],
 		descriptor: format.descriptor(),
 		keep_alive: Some(Arc::new(keep)),
+		borrowed_planes: false,
 	}
 }
 
