@@ -69,11 +69,11 @@ Vulkan HEVC decode RExt 4:2:2 10bit   -> VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPO
 | 路线 | 判定 | 关键条件 |
 |---|---|---|
 | **A. 直接导出 FFmpeg 现有 CUDA 帧为 DMA-BUF，再导入 wgpu 的 Vulkan 设备** | **NO-GO（已实测）** | GPU 会话实测 `CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED = 0`（该驱动/显卡不支持把 `cuMemAlloc` 区间导出为 dma-buf），`cuMemGetHandleForAddressRange(DMA_BUF_FD)` 因此不可用；本报告 §2/§3.1 的分析保留作为记录，但**此路线在本机作废** |
-| **B. 自建可导出的 CUDA VMM 帧池，喂给 FFmpeg** | **GO（同进程；NVDEC 直写待 §0.5 确认；跨进程未证明）** | `cuMemCreate(requestedHandleTypes=POSIX_FD)` + `cuMemAddressReserve` + `cuMemMap` + `cuMemSetAccess` 建池；FFmpeg 允许用户预置 `AVHWFramesContext.pool`（`hwcontext.h:169-181`，`hwcontext.c:373-374`），NVDEC→帧的既有 `cuMemcpy2DAsync` 直接落进该池；池分配时 `cuMemExportToShareableHandle(POSIX_FD)` 拿 fd，按 fd 类型走 Vulkan `OPAQUE_FD`（`VK_EXT_external_memory_fd`）或 `DMA_BUF` 导入。关键待测：attr `103`（POSIX_FD 导出）、fd 的真实类型（`/proc/self/fd` → dma-buf 还是驱动私有）、NVIDIA Vulkan 能否导入该 fd |
+| **B. CUDA VMM POSIX_FD + DtoD 拷贝 + OPAQUE_FD 导入** | **GO（GPU 内部拷贝，已实测）** | 默认 CUDA 池解码 → `cuMemCreate(POSIX_FD)`+`cuMemAddressReserve`+`cuMemMap`+`cuMemSetAccess` 分配 VMM slot → **`cuMemcpyDtoD`** 逐平面拷贝（luma/chroma，pitch 一致时足够；`cuMemcpy2D`/`Async` 仍拒绝上下文，但不是必需）→ `cuMemExportToShareableHandle(POSIX_FD)`（fd=`/dev/nvidiactl`）→ Vulkan `OPAQUE_FD`+`LINEAR` 导入（`external.rs::import_opaque_fd_plane`）。已实测：640x360 NV12 MATCH、C0024 4K 10-bit P210 非零、生产路径 `imports=4 transfers=0 non_gpu=0`；**剩余问题**是 per-frame VMM 分配/导出/导入开销与 8 帧 wgpu 资源（slot 池化优化，Lead 单独做），以及跨进程 fd 未验证 |
 | **C. Vulkan Video 解码（`-hwaccel vulkan`）** | **当前构建 NO-GO；重编后仅 4:2:0 可用（已实测）** | 项目构建 `CONFIG_VULKAN=0`（`.cache/ffmpeg-src/config.h:658`、`824`），`libavcodec.a` 里 `h264_vulkan`/`hevc_vulkan` 字符串为 0，`libavutil.a` 无 `hwcontext_vulkan`；需 `--enable-vulkan` 重编。FFmpeg 8.1 中 Vulkan 解码是 **hwaccel**（`configure:3392-3393`、`3410-3411`），不是 `h264_vulkan` decoder（§4.1）。GPU 实测（§0.1/0.2）：H.264 High 4:2:0 8-bit、HEVC Main10 4:2:0 可用；H.264 High10、H.264 High422、HEVC RExt 4:2:2 均 `VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR` → **不能覆盖 4:2:2/10-bit 源** |
 | **D. Vulkan Video 编码（`h264_vulkan`/`hevc_vulkan`）做 10-bit 4:2:2 导出** | **NO-GO** | FFmpeg 8.1 的 H.264 profile 映射**没有 High10 / High422** 分支（`vulkan_video.c:260-269`），编码器候选表止于 High10 且经映射→`INVALID`（`vulkan_encode_h264.c:701-704,719`）；且驱动侧 Vulkan Video 本就不支持 4:2:2（§0.1 实测）。硬件 NVENC 在 Blackwell GeForce 上支持 H.264/HEVC 4:2:2（NVIDIA 厂商表），但那是 `h264_nvenc`/`hevc_nvenc`（需要 CUDA 帧），wgpu→CUDA 的帧交接正是 route B 要验证的互操作，不能算 Vulkan Video 路线 |
 
-**一句话**：route A 已被实测否掉（CUDA dma-buf 不可用）；**route B（VMM + POSIX_FD 导出 + Vulkan OPAQUE_FD/LINEAR 导入）已实测走通（同进程），是 NVIDIA Linux 上唯一剩下的 CUDA 解码零拷贝路线**——但 fd 是 `/dev/nvidiactl` 驱动私有句柄，**跨进程（process-pool worker）尚未证明**，且需在 `external.rs` 新增 OPAQUE_FD 导入、在 `hwdecode`/`ffmpeg` 预置自定义池（见 §0.4.2/§5）；Vulkan Video 实测只覆盖 4:2:0。
+**一句话**：route A（CUDA dma-buf）实测 dead；**route B 已实测 GO**（默认池解码 → VMM POSIX_FD slot → `cuMemcpyDtoD` → 导出 OPAQUE_FD → Vulkan LINEAR 导入），生产实现已落地（`imports=4 transfers=0 non_gpu=0`），是 NVIDIA Linux 上 CUDA/NVDEC 进入 wgpu 的可行通路；剩余是 per-frame VMM 分配/导入开销与 8 帧 wgpu 资源的优化（slot 池化，Lead 单独做）及跨进程 fd 未验证。Vulkan Video 实测只覆盖 4:2:0（H.264 仅 8-bit），4:2:2 不可用。
 
 ## 0.4 route B 实测结果（Lead GPU 会话）与两处修正
 
@@ -132,26 +132,21 @@ GPU 会话跑旧版 route B probe 的关键输出：
 4. `cuCtxSynchronize` 后导出 slot fd，Vulkan `OPAQUE_FD`+`LINEAR` 导入，读回 luma 前 64 字节；
 5. NV12 输入与软件解码第一帧 luma 比较前 16 字节。
 
-> **当前状态**：route A 实测 dead；Vulkan Video 4:2:2/10-bit 实测不支持（仅 4:2:0，H.264 仅 8-bit）；route B 机制已实测走通（VMM POSIX_FD 导出 + fd `/dev/nvidiactl` + Vulkan OPAQUE_FD/LINEAR 导入成功，同进程），`external.rs::import_opaque_fd_plane` 已落地。DtoD 首次实测 `INVALID_CONTEXT` 经 Lead 定位为**探针符号查找问题**（legacy 基础符号优先），已改为优先 `_v2`；**最后一次重跑 `[control]` 若通过，route B 判定为 GO**，否则按 `[control]`/`[copy]` 结果 final verdict。
+> **当前状态**：**route B GO**（`_v2` 符号修复后，control+DtoD 全 SUCCESS；640x360 NV12 readback MATCH，C0024 4K 10-bit P210 readback 非零）。生产实现已落地（commit 84692c7，C0024：imports=4 transfers=0 non_gpu=0）；剩余 per-frame VMM 分配/导出/导入的开销与 8 帧 wgpu 资源问题由 Lead 单独做 slot 池化优化。route A dead；Vulkan Video 仅 4:2:0、4:2:2 不可用。
 
-**DtoD 实测（Lead GPU 会话）**：
-- 640x360 NV12：slot YES，`cuMemcpy2DAsync` / `cuMemcpy2D` / `cuMemcpyDtoD` **全部 `CUDA_ERROR_INVALID_CONTEXT`**，readback 0，reference MISMATCH，`[verdict] FAIL`；
-- C0024 4K 10-bit 4:2:2（`sw_format=p210le`）：slot YES（`requested=33177600 rounded=33554432 fd=105`），同样三个 API 全 `INVALID_CONTEXT`，readback 0，`FAIL`。
+**DtoD 实测（最终，Lead GPU 会话，_v2 符号修复后）**：
 
-但这个失败可疑：同一会话里最小 standalone `cuCtxCreate + cuMemAlloc + cuMemcpyHtoD` 是可用的。因此探针新增**对照诊断**（不是改结论，而是定位"探针/上下文处理"还是"VMM/context 关联"）：
-- `[cuda] syms:` 打印所有 dlsym 到的 CUDA 函数指针（确认 API 装载没错）；
-- `[ctx] ... get_current=... current=... expected=... (MATCH/MISMATCH)` 打印 `cuCtxGetCurrent` 与 FFmpeg `AVCUDADeviceContext.cuda_ctx` 的对比；
-- `[pool] cuMemSetAccess(...) -> ...` 与 `[pool] cuMemGetAddressRange(va) -> base/size` 确认 VMM 映射/访问是否被 CUDA 认可；
-- `[control] cuMemAlloc+cuMemcpyHtoD`：同一 `ctx_enter` 后对**普通设备内存**做 host→device 写；
-- `[control] cuMemcpyHtoD(VMM slot va=...)`：同一上下文对 **VMM slot** 做 host→device 写。
+- `[control] cuMemAlloc+cuMemcpyHtoD` → **SUCCESS**（证明探针上下文/API 正常，前次 INVALID_CONTEXT 是 legacy 基础符号查找的 artifact）；
+- `cuMemcpyDtoD`（luma/chroma）→ **SUCCESS**；`cuMemcpy2D`/`cuMemcpy2DAsync` 仍 `INVALID_CONTEXT`（这两个 API 没有 `_v2` 变体），但 DtoD 足够——本路径 pitch 一致，逐平面连续拷贝即可；
+- 640x360 NV12：slot YES、DtoD 成功、readback **MATCH**（与软件解码 luma 一致）；
+- C0024 4K 10-bit 4:2:2（`sw_format=p210le`）：slot YES、DtoD 成功、readback 非零（P210 luma 验证通过）；
+- 结论：**route B GO（GPU 内部拷贝）**——不需要自定义 FFmpeg pool，也不需要 host 回读。
 
-**根因（Lead 定位，已修）**：探针的 `sym()` 先查 legacy 基础符号（`cuMemAlloc`/`cuMemFree`/`cuMemcpyHtoD`/`cuMemcpyDtoD`/`cuCtxPushCurrent`/`cuCtxPopCurrent`），而 64 位驱动上这些 legacy 符号可能拒绝当前上下文（最小 C 测试用 `_v2` 正常）。三个探针已统一改为**优先 `_v2`**、legacy 作 fallback：
-`cuMemAlloc_v2`、`cuMemFree_v2`、`cuMemcpyHtoD_v2`、`cuMemcpyDtoD_v2`、`cuCtxPushCurrent_v2`、`cuCtxPopCurrent_v2`、`cuCtxCreate_v2`、`cuMemsetD8_v2`。
-因此之前 DtoD 的 `INVALID_CONTEXT` 很可能是**探针 artifact，不是驱动 verdict**；重跑后若 `[control] cuMemAlloc+cuMemcpyHtoD` 通过，则 route B 可能为 GO。
+**生产实现（Lead，提交 84692c7）**：`gpuinterop` 的 CUDA 导入路径现在按 `VMM POSIX_FD 分配 → cuMemcpyDtoD 逐平面拷贝解码帧 → 导出 OPAQUE_FD → 每平面 external.rs::import_opaque_fd_plane` 工作；C0024 实测 `imports=4 transfers=0 non_gpu=0`（4 个平面全部 GPU 内部完成，无 CPU 回读）。
 
-判据补充：
-- `[control] cuMemAlloc+cuMemcpyHtoD` 也失败 → 探针的上下文/API 处理坏了（不是驱动结论），修探针；
-- control 成功但 `[control] ... (VMM slot)` 或 DtoD 失败 → **VMM allocation 与 context 的关联是 blocker**，按原判据 route B dead（记下 `cuMemSetAccess`/`cuMemGetAddressRange` 的结果作为根因）。
+**已知性能/健壮性问题（Lead 后续单独优化）**：per-frame 的 VMM 分配/导出/导入开销导致 4K 帧耗时抖动（frame0 286ms、frame1 10ms、frame2 7ms、frame3 4.3s），连续 8 帧会触发 wgpu invalid-buffer/resource；根因是每帧新建 slot/fd/VkImage，需要 slot 池化/缓存。这是实现优化项，不改变 route B 的 GO 判定。
+
+> **Final verdict（2026-11-06）**：NVIDIA Linux 上 CUDA/NVDEC 帧可以只经 GPU 内部拷贝进入 wgpu/Vulkan：**route B GO**（VMM POSIX_FD + `cuMemcpyDtoD` + OPAQUE_FD/LINEAR 导入），route A（DMA-BUF）dead，Vulkan Video 仅 4:2:0（H.264 仅 8-bit），Vulkan Video 编码 4:2:2 不可用。
 
 判读（`[verdict]` 行）：
 - `[vmm] cuMemGetAllocationGranularity` 打印 granularity（本机 2097152），`[slot] requested=… rounded=…` 显示已取整；
@@ -362,9 +357,11 @@ FFmpeg 8.1 里 **没有** 名为 `h264_vulkan`/`hevc_vulkan` 的**解码器**；
 
 ---
 
-## 5. 引擎侧落地设计（route B；**未实施**，需 Lead 扩写权限）
+## 5. 引擎侧落地设计（route B；**生产实现已由 Lead 落地，提交 84692c7 / b15ec75 / 024aeba**）
 
 > 现状：`gpuinterop.rs`/`external.rs` 属本 spike 写权限；`hwdecode.rs`/`ffmpeg.rs` 不在，落地时需要扩 scope（见 5.1）。
+>
+> **最终落地的形状**：默认 FFmpeg CUDA 池解码（不预置自定义 `AVHWFramesContext.pool`——实测 NVDEC 会忽略它）→ 分配 VMM POSIX_FD slot → `cuMemcpyDtoD` 逐平面拷贝 → 导出 OPAQUE_FD → `external.rs::import_opaque_fd_plane` 导入。下面 5.1 的自定义池方案保留作记录（已证否），5.2 的 OPAQUE_FD 导入即最终实现。
 
 ### 5.1 `hwdecode.rs` / `ffmpeg.rs`：预置"可导出池"的 CUDA hwframes 上下文
 
@@ -482,7 +479,9 @@ ffmpeg_pool_probe 同样优雅降级（项目 libavutil 60.26.102 静态链接�
 
 ---
 
-## 8. 为什么没有直接改生产代码
+## 8. 为什么本 spike 没有直接改生产代码
+
+> 注：最终生产实现由 Lead 在提交 `84692c7`（VMM DtoD + OPAQUE_FD 导入）及 `b15ec75`/`024aeba`（benchmark/timings）落地；本节只解释 spike 阶段为何先用外部探针验证。
 
 1. 三条 GO 条件都只能在真实 GPU 上判定（attribute 124、page 对齐语义、驱动是否接受 LINEAR dma-buf / 多平面显式 layout）。本会话没有 `/dev/nvidia*`、`/dev/dri`，`cuInit` 直接 `NO_DEVICE`；在未验证的情况下改 `gpuinterop.rs`/`external.rs` 等于交付一段无人能跑的代码，违反任务"只在安全原型被证明后改生产代码"的约束。
 2. 现有 M5 导入路径对 VAAPI/D3D11/VideoToolbox 是**已验收**的；CUDA 分支一旦判断错误会把"每帧回落"的语义搞坏（`HW_IMPORT_UNSUPPORTED` 与 `Failed` 的分流、连续失败熔断）。先用 probe 把硬件事实钉死，再按 §5 落地是风险最低的顺序。
@@ -495,7 +494,7 @@ ffmpeg_pool_probe 同样优雅降级（项目 libavutil 60.26.102 静态链接�
 | # | 未决项 | 影响 | 判定方式 |
 |---|---|---|---|
 | 1 | **OPAQUE_FD 跨进程**：fd 是 `/dev/nvidiactl` 驱动私有句柄 | process-pool worker 架构能否用 route B；若不兼容，只有 Threads/Pipeline 后端可零拷贝 | 已内置：`cuda_vulkan_probe` 的 `[routeB] cross-process OPAQUE_FD import: GO/FAIL`（fork+exec + SCM_RIGHTS） |
-| 2 | 探针 legacy CUDA 符号导致 `INVALID_CONTEXT`（`cuMemAlloc`/`cuMemcpyHtoD` 等基础名在 64 位驱动上拒绝上下文；`_v2` 正常） | 之前 DtoD FAIL 可能是探针 artifact，不是驱动 verdict | 三个探针已改为优先 `_v2`；重跑 `[control]`/`[copy]` 即可定论 |
+| 2 | **per-frame VMM 分配/导出/导入开销**：4K 帧耗时抖动（286ms/10ms/7ms/4.3s），连续 8 帧触发 wgpu invalid-buffer/resource | 性能与长序列稳定性；route B 判定本身已是 GO | slot 池化/缓存（每 slot 只导出/导入一次，帧轮转复用）；Lead 单独优化 |
 | 3 | FFmpeg 是否正确使用调用方池（旧探针误报） | route B 与解码器集成 | 新探针全 slot 匹配 + 双帧保留 |
 | 4 | 线性 tiling 采样过滤（可能无 FILTER_LINEAR） | 渲染质量/性能 | `vkGetPhysicalDeviceFormatProperties` + GPU 测试；必要时 nearest 或 blit |
 | 5 | FFmpeg `tex_alignment` 私有（按 4096 计算池大小） | 池 buffer 是否足够 | `av_hwframe_ctx_init`/`get_buffer` 成功即够 |
