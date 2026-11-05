@@ -525,10 +525,14 @@ fn try_render_gl_zerocopy(
 	// Output tracker starts UNINITIALIZED; a wgpu clear moves it to
 	// COLOR_TARGET/COLOR_ATTACHMENT_OPTIMAL before GL writes, so the later
 	// sample transition does not discard the plugin's pixels.
-	gpu.wait_idle();
+	if !gpu.wait_idle_for(std::time::Duration::from_secs(2)) {
+		return Ok(false);
+	}
 	gpu.clear_texture(*token)
 		.map_err(|e| Error::Failed(format!("zero-copy output clear failed: {e}")))?;
-	gpu.wait_idle();
+	if !gpu.wait_idle_for(std::time::Duration::from_secs(2)) {
+		return Ok(false);
+	}
 
 	let _guard = crate::gl_bridge::acquire()?;
 	let (wpx, hpx) = (w as i32, h as i32);
@@ -618,7 +622,11 @@ fn try_render_gl_zerocopy(
 	}
 	crate::gl_bridge::delete_fbo(fbo);
 	crate::gl_bridge::delete_memory_texture(&dst_gl);
-	gpu.wait_idle();
+	if !gpu.wait_idle_for(std::time::Duration::from_secs(2)) {
+		return Err(Error::Failed(
+			"zero-copy GL render: GPU did not finish within 2s".into(),
+		));
+	}
 	render_res.map_err(|e| Error::Failed(format!("zerocopy GL render: {e}")))?;
 	Ok(true)
 }

@@ -814,6 +814,20 @@ impl GpuContext {
 		let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 	}
 
+	/// Bounded variant of [`GpuContext::wait_idle`]. Returns false when the
+	/// GPU did not finish within `timeout` (external-memory/OFX paths must
+	/// not block the render thread forever on a driver stall).
+	pub fn wait_idle_for(&self, timeout: std::time::Duration) -> bool {
+		let _ = self.queue.submit(std::iter::empty());
+		matches!(
+			self.device.poll(wgpu::PollType::Wait {
+				submission_index: None,
+				timeout: Some(timeout),
+			}),
+			Ok(wgpu::PollStatus::WaitSucceeded) | Ok(wgpu::PollStatus::QueueEmpty)
+		)
+	}
+
 	/// Run `callback` once all GPU work submitted so far has completed.
 	/// External-memory producers use this to know when a reusable VMM
 	/// buffer is no longer read by the renderer.
