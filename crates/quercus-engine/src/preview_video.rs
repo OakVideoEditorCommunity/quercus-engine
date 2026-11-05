@@ -298,6 +298,22 @@ fn frame_from_cpu(
 	)
 }
 
+/// True when a Gpu frame's texture lives on a host-adopted device. A
+/// texture from the engine's own device cannot be sampled by the Oak viewer;
+/// handing it over produces invalid surface bind groups instead of a frame.
+fn adopted_texture(
+	ctx: &std::sync::Arc<dyn quercus_core::backend::GpuContextLike>,
+	token: u64,
+) -> Option<std::sync::Arc<quercus_core::wgpu::Texture>> {
+	let gpu = ctx
+		.as_any()
+		.and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>())?;
+	if !gpu.is_adopted() {
+		return None;
+	}
+	gpu.texture_handle(token)
+}
+
 fn frame_from_gpu_texture(
 	width: i32,
 	height: i32,
@@ -485,7 +501,7 @@ pub(crate) fn render_video(
 						token, width, height, ctx, ..
 					} = &texture
 					{
-						if let Some(handle) = ctx.texture_handle(*token) {
+						if let Some(handle) = adopted_texture(ctx, *token) {
 							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle) {
 								return Ok(frame);
 							}
@@ -537,7 +553,7 @@ pub(crate) fn render_video(
 				token, width: tw, height: th, ctx, ..
 			} = &rendered
 			{
-				if let Some(handle) = ctx.texture_handle(*token) {
+				if let Some(handle) = adopted_texture(ctx, *token) {
 					if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle) {
 						return Ok(frame);
 					}
