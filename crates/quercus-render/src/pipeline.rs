@@ -437,6 +437,11 @@ impl DecodeService {
 		self.inner.lru_len.load(Ordering::Relaxed)
 	}
 
+	/// Commands waiting on the decode thread (debug/telemetry).
+	pub fn queue_depth(&self) -> usize {
+		lock(&self.shared.queue).pending.len()
+	}
+
 	/// Stop the decode thread and wait for it to exit. Idempotent; a
 	/// request arriving after this (or racing it) reports `None` and the
 	/// caller decodes inline. Queued commands are drained first (bounded
@@ -906,6 +911,42 @@ fn is_render_thread(inner: &PipelineInner) -> bool {
 	inner.render_thread.get() == Some(&std::thread::current().id())
 }
 
+fn queue_debug_enabled() -> bool {
+	static ENABLED: OnceLock<bool> = OnceLock::new();
+	*ENABLED.get_or_init(|| {
+		std::env::var_os("OAK_DEBUG_QUEUES").is_some()
+			|| std::env::var_os("QUERCUS_DEBUG_QUEUES").is_some()
+	})
+}
+
+/// Print one pipeline sample. Called only from the render thread, so it does
+/// not perturb the UI submit path; the decode-queue lock is taken only when
+/// the debug switch is on.
+fn log_queue_sample(inner: &PipelineInner, executed: u64, force: bool) {
+	if !queue_debug_enabled() {
+		return;
+	}
+	if !force && executed % 10 != 0 {
+		return;
+	}
+	let render_depth = inner.depth.load(Ordering::Relaxed);
+	let stats = inner.decode.stats();
+	eprintln!(
+		"[queues] executed={executed} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
+		RENDER_QUEUE_CAP,
+		RENDER_QUEUE_CAP.saturating_sub(render_depth),
+		inner.decode.queue_depth(),
+		inner.decode.lru_len(),
+		stats.requests,
+		stats.lru_hits,
+		stats.decodes,
+		stats.prefetches,
+		stats.prefetch_refused,
+		stats.evictions,
+		quercus_codec::hwdecode::HW_TRANSFERS.load(Ordering::Relaxed),
+	);
+}
+
 /// The render thread body: take a job, run it, repeat. Exits when the
 /// queue is empty *and* shutdown has been requested.
 fn render_loop(inner: Arc<PipelineInner>) {
@@ -928,7 +969,9 @@ fn render_loop(inner: Arc<PipelineInner>) {
 		match job {
 			Some(job) => {
 				execute_job(job);
-				inner.executed.fetch_add(1, Ordering::Relaxed);
+				let executed = inner.executed.fetch_add(1, Ordering::Relaxed) + 1;
+				let force = inner.depth.load(Ordering::Relaxed) == 0;
+				log_queue_sample(&inner, executed, force);
 			}
 			None => break,
 		}
