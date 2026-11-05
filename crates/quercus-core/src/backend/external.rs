@@ -445,6 +445,158 @@ impl GpuContext {
 		)
 	}
 
+	/// Import one plane of an opaque Linux FD (CUDA VMM / driver-private
+	/// handle) as a linear Vulkan image. The FD is duplicated and owned by
+	/// Vulkan after a successful allocation; the image is registered like
+	/// the DMA-BUF path. `pitch` is retained for layout diagnostics; linear
+	/// image addressing is driven by the image extents.
+	#[cfg(target_os = "linux")]
+	pub fn import_opaque_fd_plane(
+		&self,
+		width: u32,
+		height: u32,
+		format: wgpu::TextureFormat,
+		fd: i32,
+		offset: u64,
+		_pitch: u64,
+		keep_alive: Option<ImportGuard>,
+	) -> Result<u64> {
+		use ash::vk;
+		use wgpu::hal;
+
+		if self.kind != BackendKind::Vulkan || width == 0 || height == 0 {
+			return Err(Error::State);
+		}
+		let Some(vk_format) = import_vk_format(format) else {
+			return Err(Error::Invalid);
+		};
+		let guard = unsafe { self.device.as_hal::<hal::api::Vulkan>() }.ok_or(Error::State)?;
+		let hal_device: &hal::vulkan::Device = &guard;
+		let raw = hal_device.raw_device().clone();
+		let _ = hal_device.raw_physical_device();
+
+		let mut external = vk::ExternalMemoryImageCreateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+		let info = vk::ImageCreateInfo::default()
+			.image_type(vk::ImageType::TYPE_2D)
+			.format(vk_format)
+			.extent(vk::Extent3D {
+				width,
+				height,
+				depth: 1,
+			})
+			.mip_levels(1)
+			.array_layers(1)
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::LINEAR)
+			.usage(vk::ImageUsageFlags::SAMPLED)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED)
+			.push_next(&mut external);
+		let image = unsafe { raw.create_image(&info, None) }
+			.map_err(|e| Error::Failed(format!("vkCreateImage(dmabuf): {e:?}")))?;
+
+		let req = unsafe { raw.get_image_memory_requirements(image) };
+
+		// Duplicate the fd: Vulkan takes ownership of the imported fd on a
+		// successful `vkAllocateMemory` and closes it when the memory is
+		// freed; the decoder keeps its own.
+		let dup_fd = unsafe { libc::dup(fd) };
+		if dup_fd < 0 {
+			unsafe { raw.destroy_image(image, None) };
+			return Err(Error::Failed("dup(dmabuf fd) failed".into()));
+		}
+		// Pick the memory type by trying the compatible ones in order —
+		// `vkGetPhysicalDeviceMemoryProperties` is instance-level and
+		// wgpu-hal keeps its raw instance private. The compatible set is
+		// usually tiny (often one DEVICE_LOCAL type on discrete GPUs).
+		let mut import = vk::ImportMemoryFdInfoKHR::default()
+			.handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+			.fd(dup_fd);
+		let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+		let mut last_err = None;
+		let mut memory = None;
+		for type_index in 0..32u32 {
+			if req.memory_type_bits & (1 << type_index) == 0 {
+				continue;
+			}
+			let alloc = vk::MemoryAllocateInfo::default()
+				.allocation_size(req.size)
+				.memory_type_index(type_index)
+				.push_next(&mut dedicated)
+				.push_next(&mut import);
+			match unsafe { raw.allocate_memory(&alloc, None) } {
+				Ok(m) => {
+					memory = Some(m);
+					break;
+				}
+				Err(e) => last_err = Some((type_index, e)),
+			}
+		}
+		let Some(memory) = memory else {
+			unsafe {
+				libc::close(dup_fd);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!(
+				"vkAllocateMemory(import) failed for every compatible type: {last_err:?}"
+			)));
+		};
+		if let Err(e) = unsafe { raw.bind_image_memory(image, memory, offset) } {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!("vkBindImageMemory: {e:?}")));
+		}
+
+		let hal_desc = hal::TextureDescriptor {
+			label: Some("quercusrender-imported-dmabuf"),
+			size: wgpu::Extent3d {
+				width,
+				height,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage: wgpu_types::TextureUses::RESOURCE,
+			memory_flags: hal::MemoryFlags::empty(),
+			view_formats: Vec::new(),
+		};
+		// wgpu-hal does not destroy external images (it cannot know how);
+		// the drop guard owns both the image and the imported memory, and
+		// carries the decoder's frame-keep-alive with it.
+		let raw_guard = raw.clone();
+		let drop_guard: hal::DropCallback = Box::new(move || unsafe {
+			if let Some(keep) = keep_alive {
+				keep();
+			}
+			raw_guard.destroy_image(image, None);
+			raw_guard.free_memory(memory, None);
+		});
+		let hal_texture = unsafe {
+			hal_device.texture_from_raw(
+				image,
+				&hal_desc,
+				Some(drop_guard),
+				hal::vulkan::TextureMemory::External,
+			)
+		};
+		self.register_imported_texture::<hal::api::Vulkan>(
+			hal_texture,
+			ImportedTextureDesc {
+				width,
+				height,
+				array_layers: 1,
+				format,
+				aspect: wgpu::TextureAspect::All,
+				layer: None,
+			},
+		)
+	}
+
 	/// Import one slice of a D3D11VA texture array shared as an NT handle
 	/// (Windows/Vulkan): one multi-planar image (`NV12`/`P010`) with
 	/// `array_size` layers, registered twice (planes 0/1) for `slice`.
