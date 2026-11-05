@@ -96,15 +96,14 @@ pub const RENDER_QUEUE_CAP: usize = 8;
 /// path to the media, but still small enough to bound latency.
 pub const DECODE_QUEUE_CAP: usize = 16;
 
-/// Decoded-frame LRU capacity, in frames (~33 MB each at 1080p F32, so a
-/// small hand-off buffer, not a cache of record). The eval-side
-/// `decoded_frames` LRU (24 frames) is the cache of record; this one only
-/// bridges the decode thread and the render request. Keeping it at the
-/// read-ahead window bounds the double-cache overhead: at 1080p F32 the
-/// service copy stays ~2 frames instead of 8 (~200 MB saved). A request
-/// the hand-off missed is served from the eval cache without a decode —
-/// only the deep copy is paid again.
-pub const DECODE_LRU_CAP: usize = 2;
+/// Decoded-frame LRU capacity, in frames (one 1080p F32 frame is ~33 MB).
+/// This buffer bridges the decode thread and the render request. It must be
+/// at least the number of prefetched frames the render queue can hold ahead
+/// of the consumer, otherwise every prefetch is evicted before the matching
+/// request arrives and the frame is decoded twice. The render queue is
+/// bounded at [`RENDER_QUEUE_CAP`] (8), so keep two slots of headroom for a
+/// priority reorder / in-flight request.
+pub const DECODE_LRU_CAP: usize = 10;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
