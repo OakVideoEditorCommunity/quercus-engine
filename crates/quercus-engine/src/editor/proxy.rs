@@ -187,7 +187,12 @@ pub unsafe extern "C" fn quercus_editor_proxy_status(
 		state: proxy_state as i32,
 		enabled: footage_behavior.proxy_enabled,
 		has_custom_params: footage_behavior.has_custom_proxy_params(),
-		can_generate: footage_behavior.valid
+		// Generation only needs a media file and a video stream; `valid` is
+		// the C++ probe flag and can be false for a project loaded without a
+		// probe (or while a deleted proxy is being reset). The generate ABI
+		// checks exactly these two facts, so gating the menu on `valid` made
+		// Generate permanently gray for otherwise usable footage.
+		can_generate: !footage_behavior.filename.is_empty()
 			&& footage_behavior
 				.streams
 				.iter()
