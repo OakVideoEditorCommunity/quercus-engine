@@ -132,13 +132,15 @@ GPU 会话跑旧版 route B probe 的关键输出：
 4. `cuCtxSynchronize` 后导出 slot fd，Vulkan `OPAQUE_FD`+`LINEAR` 导入，读回 luma 前 64 字节；
 5. NV12 输入与软件解码第一帧 luma 比较前 16 字节。
 
+> **当前状态**：route A（cuMemAlloc→DMA-BUF）实测 dead；Vulkan Video 4:2:2/10-bit 实测不支持（仅 4:2:0，H.264 仅 8-bit）；route B 的**机制**已实测走通（VMM POSIX_FD 导出 + fd kind=`/dev/nvidiactl` + Vulkan OPAQUE_FD/LINEAR 导入成功，同进程），`external.rs::import_opaque_fd_plane` 已落地；**唯一待跑的是 DtoD 数据验证**（`[copy]/[readback]/[reference]/[verdict]`），在 GPU 会话运行 `run.sh` 即可定论。
+
 判读（`[verdict]` 行）：
 - `[vmm] cuMemGetAllocationGranularity` 打印 granularity（本机 2097152），`[slot] requested=… rounded=…` 显示已取整；
 - `[copy]` 成功 + `[readback]` 非零 + `[reference] MATCH` → **route B GO（GPU 侧拷贝）**：引擎可实现为 "解码 CUDA 帧 → DtoD 拷进 VMM slot → OPAQUE_FD 导入"，不需要自定义 FFmpeg pool。
 - `[copy]` 返回 `CUDA_ERROR_INVALID_CONTEXT` 且两个回退也失败 → 该驱动连 DtoD/2D 拷贝都不接受 VMM，**route B dead**（附精确错误）。
 - copy 成功但 readback 全零/参考不匹配 → 导入的 fd 与 VMM slot 不是同一内存或布局错误（需检查 pitch/offset）。
 
-wgpu-hal：raw `OPAQUE_FD`+`LINEAR` 导入已成功，`wgpu_hal::vulkan::Device::texture_from_raw(..., TextureMemory::External)` 与 VAAPI 同一路径；**生产改动只需在 `external.rs` 新增 OPAQUE_FD 变体**（不需要 DMA_BUF），外加 `gpuinterop.rs` 的 VMM 分配/拷贝与解码后 DtoD 逻辑（不再需要自定义 `AVHWFramesContext.pool`）。注：工作树里已有另一个并行任务在 `external.rs` 增加 `import_opaque_fd_plane`（未提交，非本 spike 改动），落地时可与其对齐。
+wgpu-hal：raw `OPAQUE_FD`+`LINEAR` 导入已成功，`wgpu_hal::vulkan::Device::texture_from_raw(..., TextureMemory::External)` 与 VAAPI 同一路径。**`external.rs::import_opaque_fd_plane` 已随提交 `fd2e163` 落地**（OPAQUE_FD + `VK_IMAGE_TILING_LINEAR`、fd dup、按 `offset` bind、`register_imported_texture`），与本探针的导入形状一致；引擎剩余工作只有：VMM 分配（granularity 取整）+ 解码后 DtoD 拷贝 + 调用该函数注册纹理（不再需要自定义 `AVHWFramesContext.pool`）。
 
 ---
 
