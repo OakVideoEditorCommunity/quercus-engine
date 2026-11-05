@@ -3438,25 +3438,6 @@ fn scale_rgba_f32(
     }
 }
 
-/// The GPU montage evaluator only knows the built-in Opacity effect. Any
-/// other effect id is a CPU/OFX evaluator; running it on the GPU montage path
-/// can stall the render thread (OFX plugins have their own GL/CPU context and
-/// progress protocol), so those tickets use the CPU compositor. This is the
-/// documented CPU-effect boundary, not a silent GPU fallback.
-fn montage_has_cpu_effects(params: &crate::ticket::VideoTicketParams) -> bool {
-	let non_opacity = |effect: &crate::ticket::MontageEffect| {
-		effect.enabled && effect.type_id != OPACITY_EFFECT_TYPE_ID
-	};
-	params
-		.montage
-		.iter()
-		.any(|clip| clip.effects.iter().any(non_opacity))
-		|| params
-			.adjustments
-			.iter()
-			.any(|span| span.effects.iter().any(non_opacity))
-}
-
 /// Composite the montage at `time` for the ticket/eval path. The GPU
 /// compositor ([`render_montage_frame_gpu`]) is preferred whenever an
 /// adapter is available and the ticket asks for the canonical F32 frame —
@@ -3478,13 +3459,7 @@ pub fn render_montage_frame(
     if format == PixelFormat::F32
         && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
     {
-        if montage_has_cpu_effects(params) {
-            if unsupported_warned().insert("montage-cpu-effects".to_string()) {
-                eprintln!(
-                    "montage has CPU/OFX effects; using the CPU compositor (readback boundary)"
-                );
-            }
-        } else if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
+        if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
             match render_montage_frame_gpu(&ctx, time, params, size) {
                 Ok(texture) => return Ok(texture),
                 Err(err) => {
@@ -4899,35 +4874,6 @@ mod tests {
     /// The F32 montage ticket prefers the GPU compositor (a cleared GPU
     /// accumulator for a frame with no covering clip — no decode needed);
     /// non-F32 tickets keep the CPU compositor.
-    #[test]
-    fn montage_with_a_non_builtin_effect_takes_the_cpu_boundary() {
-        let params = crate::ticket::VideoTicketParams {
-            viewer: 1,
-            project: String::new(),
-            time: Rational::new(0, 1),
-            force_size: Some((8, 8)),
-            force_format: Some(PixelFormat::F32),
-            cache: None,
-            cache_dir: None,
-            cache_id: None,
-            cache_timebase: None,
-            footage: None,
-            montage: Vec::new(),
-            adjustments: vec![crate::ticket::AdjustmentSpan {
-                in_time: Rational::new(0, 1),
-                out_time: Rational::new(1, 1),
-                track_index: 0,
-                effects: vec![crate::ticket::MontageEffect {
-                    type_id: "org.example.ofx.filter".into(),
-                    enabled: true,
-                    effect_input_id: None,
-                    params: Vec::new(),
-                }],
-            }],
-        };
-        assert!(montage_has_cpu_effects(&params));
-    }
-
     #[test]
     fn render_montage_frame_prefers_the_gpu_compositor() {
         let Some(_ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
