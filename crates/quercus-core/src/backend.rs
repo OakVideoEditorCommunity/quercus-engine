@@ -1908,13 +1908,12 @@ impl GpuContext {
 		let uniform_size = (uniform_bytes.len() as u64).next_multiple_of(16).max(16);
 		uniform_bytes.resize(uniform_size as usize, 0);
 		let params_label = format!("{label}-params");
-		let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some(&params_label),
-			size: uniform_size,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-			mapped_at_creation: false,
-		});
-		self.queue.write_buffer(&uniform, 0, &uniform_bytes);
+		let uniform = uniform_buffer_from_bytes(
+			&self.device,
+			&params_label,
+			&uniform_bytes,
+			uniform_size,
+		);
 		let dst_view = dst_tex
 			.texture
 			.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2992,15 +2991,12 @@ impl GpuContext {
 
 		let uniform_buffer = if program.has_uniforms {
 			let size = uniforms.len().max(16) as u64;
-			let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-				label: Some("quercusrender-fx-uniforms"),
+			let buffer = uniform_buffer_from_bytes(
+				&self.device,
+				"quercusrender-fx-uniforms",
+				uniforms,
 				size,
-				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-				mapped_at_creation: false,
-			});
-			if !uniforms.is_empty() {
-				self.queue.write_buffer(&buffer, 0, uniforms);
-			}
+			);
 			Some(buffer)
 		} else {
 			None
@@ -3210,6 +3206,31 @@ impl YuvTransform {
 }
 
 /// Pack an f32 slice as little-endian bytes for `write_buffer`.
+/// Create a small uniform buffer already populated from CPU bytes. Unlike
+/// `queue.write_buffer`, this does not take wgpu's `PendingWrites` lock — a
+/// render thread must not block behind a host/UI queue write (observed as a
+/// playback freeze on the CUDA/OpenFX path).
+fn uniform_buffer_from_bytes(
+	device: &wgpu::Device,
+	label: &str,
+	data: &[u8],
+	size: u64,
+) -> wgpu::Buffer {
+	let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+		label: Some(label),
+		size,
+		usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+		mapped_at_creation: true,
+	});
+	{
+		let mut view = buffer.slice(..).get_mapped_range_mut();
+		let n = data.len().min(view.len());
+		view.slice(..n).copy_from_slice(&data[..n]);
+	}
+	buffer.unmap();
+	buffer
+}
+
 fn f32_uniform_bytes(values: &[f32]) -> Vec<u8> {
 	let mut out = Vec::with_capacity(values.len() * 4);
 	for v in values {
