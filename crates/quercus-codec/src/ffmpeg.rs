@@ -830,10 +830,21 @@ impl DecoderState {
 		}
 
 		let opened = match hw_opened {
-			Some(opened) => opened,
+			Some(opened) => {
+				crate::hwdecode::HW_VIDEO_OPENS
+					.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				opened
+			}
 			None => {
 				crate::hwdecode::SW_DECODER_OPENS
 					.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				if matches!(medium, MediaType::Video) {
+					crate::hwdecode::SW_VIDEO_OPENS
+						.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				} else {
+					crate::hwdecode::SW_AUDIO_OPENS
+						.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				}
 				let codec = ffmpeg::decoder::find(codec_id)
 					.ok_or_else(|| fail(format!("no decoder for codec {codec_id:?}")))?;
 				let mut open_opts = Dictionary::new();
@@ -1258,6 +1269,7 @@ impl DecoderState {
 		let f = if crate::hwdecode::is_hw_format(unsafe {
 			std::mem::transmute::<i32, sys::AVPixelFormat>((*f.as_ptr()).format)
 		}) {
+			crate::hwdecode::HW_SURFACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 			crate::hwdecode::transfer_to_cpu(&f)?
 		} else {
 			f

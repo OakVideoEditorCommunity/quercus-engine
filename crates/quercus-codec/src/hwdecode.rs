@@ -62,6 +62,14 @@ pub static SW_DECODER_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 pub static HW_OPEN_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Hardware sessions that failed at the first frame and were reopened as software.
 pub static HW_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Video decoder sessions opened with a hardware device.
+pub static HW_VIDEO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Video decoder sessions opened in software.
+pub static SW_VIDEO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Audio decoder sessions (always software).
+pub static SW_AUDIO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Frames delivered as hardware surfaces (before transfer/import).
+pub static HW_SURFACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Hardware frames successfully imported without a CPU transfer.
 pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
