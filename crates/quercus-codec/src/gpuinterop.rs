@@ -349,7 +349,7 @@ fn frame_sw_format(frame: *const sys::AVFrame) -> Option<sys::AVPixelFormat> {
 }
 
 /// Map an FFmpeg software pixel format to the generic planar descriptor.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn av_format_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 	use quercus_core::texture::{PlaneStorage, Subsampling};
 	use sys::AVPixelFormat as F;
@@ -1080,35 +1080,55 @@ fn videotoolbox_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> Impo
 	// SAFETY: `hw_frames_ctx` is an AVHWFramesContext for this frame.
 	let hw_frames = unsafe { (*frames).data as *const sys::AVHWFramesContext };
 	let sw_format = unsafe { (*hw_frames).sw_format };
-	let format = match sw_format {
-		sys::AVPixelFormat::AV_PIX_FMT_NV12 => PlanarFormat::Nv12,
-		sys::AVPixelFormat::AV_PIX_FMT_P010LE | sys::AVPixelFormat::AV_PIX_FMT_P010BE => {
-			PlanarFormat::P010
-		}
-		_ => return ImportOutcome::Unsupported,
+	let Some(descriptor) = av_format_descriptor(sw_format) else {
+		return ImportOutcome::Unsupported;
 	};
 	let (w, h) = req.luma_size;
-	let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-	// SAFETY: `surface` is the CVPixelBuffer's IOSurface and the decoder
-	// frame reference is kept alive by the import guard (planar texture).
-	let Ok(y) = (unsafe { ctx.import_iosurface_plane(surface, 0, w, h, format.y_format()) }) else {
-		return ImportOutcome::Failed;
-	};
-	let uv = match unsafe { ctx.import_iosurface_plane(surface, 1, cw, ch, format.uv_format()) } {
-		Ok(uv) => uv,
-		Err(_) => {
-			ctx.destroy_texture(y);
-			return ImportOutcome::Failed;
+	if w == 0 || h == 0 {
+		return ImportOutcome::Unsupported;
+	}
+	let mut planes = Vec::with_capacity(descriptor.plane_count());
+	for plane in 0..descriptor.plane_count() {
+		let Some((pw, ph)) = descriptor.plane_size(plane, w as i32, h as i32) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		let Some(format) = descriptor.plane_texture_format(plane) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		// SAFETY: `surface` is the CVPixelBuffer's IOSurface; plane slots
+		// follow the YUV plane order of the descriptor.
+		match unsafe { ctx.import_iosurface_plane(surface, plane as usize, pw as u32, ph as u32, format) } {
+			Ok(token) => planes.push(token),
+			Err(quercus_core::error::Error::State)
+			| Err(quercus_core::error::Error::Invalid) => {
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return ImportOutcome::Unsupported;
+			}
+			Err(_) => {
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return ImportOutcome::Failed;
+			}
 		}
-	};
+	}
 	let Some(keep) = crate::ffmpeg::RefFrame::clone_raw(req.frame) else {
-		ctx.destroy_texture(y);
-		ctx.destroy_texture(uv);
+		for token in planes.drain(..) {
+			ctx.destroy_texture(token);
+		}
 		return ImportOutcome::Failed;
 	};
 	ImportOutcome::Imported {
-		planes: vec![y, uv],
-		descriptor: format.descriptor(),
+		planes,
+		descriptor,
 		keep_alive: Some(Arc::new(keep)),
 		borrowed_planes: false,
 	}
