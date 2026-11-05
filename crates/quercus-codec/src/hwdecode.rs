@@ -221,6 +221,31 @@ fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::AVPixelForma
 	}
 }
 
+/// First non-hardware format in an offered list; `AV_PIX_FMT_NONE` when the
+/// list contains only hardware formats.
+fn first_software_format(formats: *const sys::AVPixelFormat) -> sys::AVPixelFormat {
+	use sys::AVPixelFormat;
+	unsafe {
+		let mut cursor = formats;
+		while !cursor.is_null() && *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
+			if matches!(
+				*cursor,
+				AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX
+					| AVPixelFormat::AV_PIX_FMT_VAAPI
+					| AVPixelFormat::AV_PIX_FMT_CUDA
+					| AVPixelFormat::AV_PIX_FMT_D3D11VA_VLD
+					| AVPixelFormat::AV_PIX_FMT_D3D11
+					| AVPixelFormat::AV_PIX_FMT_VDPAU
+			) {
+				cursor = cursor.add(1);
+				continue;
+			}
+			return *cursor;
+		}
+		AVPixelFormat::AV_PIX_FMT_NONE
+	}
+}
+
 /// `get_format` callback for a decoder opened with `hw_device_ctx`.
 ///
 /// Setting `hw_device_ctx` alone is not enough on all FFmpeg/libavcodec
@@ -248,12 +273,12 @@ unsafe extern "C" fn select_hw_format(
 	}
 	let device = (*avctx).hw_device_ctx;
 	if device.is_null() || (*device).data.is_null() {
-		return first;
+		return first_software_format(formats);
 	}
 	let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
 	let ctx_type = (*device_ctx).type_;
 	let Some(hw_fmt) = hw_pixel_format(ctx_type) else {
-		return first;
+		return first_software_format(formats);
 	};
 	if std::env::var_os("OAK_DEBUG_HW").is_some() {
 		eprintln!("[hwfmt] ctx_type={ctx_type:?} hw_fmt={hw_fmt:?} first={first:?}");
@@ -280,12 +305,24 @@ unsafe extern "C" fn select_hw_format(
 				sys::av_buffer_unref(&mut frames);
 			}
 			HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-			return first;
+			// Do NOT return `first`: it may be another hardware format
+			// (commonly CUDA offered before VAAPI) while `hw_device_ctx`
+			// is VAAPI. Returning it makes libavcodec abort with
+			// "format cuda does not match the device context". Returning
+			// NONE forces the first-frame hardware fallback, which can
+			// retry the next device type before settling on software.
+			return AVPixelFormat::AV_PIX_FMT_NONE;
 		}
 		offered = offered.add(1);
 	}
+	// The device is attached but the decoder does not offer its hardware
+	// pixel format for this stream (e.g. VAAPI has no 10-bit 4:2:2 H.264
+	// config. Returning software here would silently keep the hardware
+	// session but decode on the CPU. Force the first-frame fallback instead;
+	// it marks this device unavailable and retries the next candidate
+	// (NVDEC/CUDA), finally settling on software only if none works.
 	HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-	first
+	AVPixelFormat::AV_PIX_FMT_NONE
 	}
 
 }

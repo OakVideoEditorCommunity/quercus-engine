@@ -359,10 +359,10 @@ impl Decoder for FFmpegDecoder {
 		if decoded.is_err() && state.hw_device.is_some() {
 			// First-frame hardware fallback: the hardware decoder opened
 			// but cannot actually decode this stream (unsupported profile
-			// / driver issue at decode time). Reopen as software and retry
-			// once — this is the automatic fallback path; the config
-			// switch is the manual one.
-			state.reopen_software()?;
+			// / driver issue at decode time). Try the next hardware
+			// candidate (e.g. VAAPI -> NVDEC for 10-bit 4:2:2), then
+			// software, and retry once.
+			state.reopen_after_hw_failure()?;
 			decoded = state.retrieve_frame(&p.time, p.time == crate::decoder::k_any_timecode(), None);
 		}
 		let f = decoded?
@@ -405,7 +405,7 @@ impl Decoder for FFmpegDecoder {
 		// path: an import attempt and its fallback share one decode.
 		let mut decoded = state.retrieve_frame(&p.time, p.time == crate::decoder::k_any_timecode(), None);
 		if decoded.is_err() && state.hw_device.is_some() {
-			state.reopen_software()?;
+			state.reopen_after_hw_failure()?;
 			decoded = state.retrieve_frame(&p.time, p.time == crate::decoder::k_any_timecode(), None);
 		}
 		let Some(f) = decoded? else {
@@ -919,11 +919,27 @@ impl DecoderState {
 		})
 	}
 
-	/// Reopen the session as a pure software decode (the hardware decoder
-	/// opened but cannot decode this stream). Swaps the state in place;
-	/// the retry re-seeks to the requested frame on the fresh session.
-	fn reopen_software(&mut self) -> crate::error::Result<()> {
+	/// Reopen after a hardware decoder failed on this stream. Retry the
+	/// remaining hardware candidates first (a 10-bit 4:2:2 H.264 can fail on
+	/// VAAPI while NVDEC/CUDA decodes it), then fall back to software. The
+	/// failed device type is marked unavailable so the candidate scan does
+	/// not select it again.
+	fn reopen_after_hw_failure(&mut self) -> crate::error::Result<()> {
 		crate::hwdecode::HW_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		if let Some(failed) = self.hw_device {
+			crate::hwdecode::mark_device_unavailable(failed);
+		}
+		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
+		let mut fresh = Self::open_impl(&stream, true)
+			.or_else(|_| Self::open_impl(&stream, false))?;
+		std::mem::swap(self, &mut fresh);
+		Ok(())
+	}
+
+	/// Reopen the session as a pure software decode. Kept as the explicit
+	/// software escape hatch (tests and callers that already decided).
+	#[allow(dead_code)]
+	fn reopen_software(&mut self) -> crate::error::Result<()> {
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
 		let mut fresh = Self::open_impl(&stream, false)?;
 		std::mem::swap(self, &mut fresh);
