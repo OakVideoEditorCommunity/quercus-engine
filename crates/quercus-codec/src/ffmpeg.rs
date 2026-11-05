@@ -443,6 +443,7 @@ impl Decoder for FFmpegDecoder {
 		let Some(imported) = crate::gpuinterop::try_import_hw_frame(&req) else {
 			return Ok(None);
 		};
+		crate::hwdecode::HW_IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		let transform = imported.transform(matrix, full_range);
 		let mut planar = quercus_core::texture::PlanarTexture::new(
 			imported.ctx,
@@ -831,6 +832,8 @@ impl DecoderState {
 		let opened = match hw_opened {
 			Some(opened) => opened,
 			None => {
+				crate::hwdecode::SW_DECODER_OPENS
+					.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 				let codec = ffmpeg::decoder::find(codec_id)
 					.ok_or_else(|| fail(format!("no decoder for codec {codec_id:?}")))?;
 				let mut open_opts = Dictionary::new();
@@ -909,6 +912,7 @@ impl DecoderState {
 	/// opened but cannot decode this stream). Swaps the state in place;
 	/// the retry re-seeks to the requested frame on the fresh session.
 	fn reopen_software(&mut self) -> crate::error::Result<()> {
+		crate::hwdecode::HW_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
 		let mut fresh = Self::open_impl(&stream, false)?;
 		std::mem::swap(self, &mut fresh);

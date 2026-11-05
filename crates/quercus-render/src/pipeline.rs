@@ -959,7 +959,7 @@ fn log_queue_sample(
 		.elapsed()
 		.as_millis();
 	eprintln!(
-		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
+		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={}",
 		LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
 		MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
 		RENDER_QUEUE_CAP,
@@ -973,6 +973,11 @@ fn log_queue_sample(
 		stats.prefetch_refused,
 		stats.evictions,
 		quercus_codec::hwdecode::HW_TRANSFERS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_DECODER_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::SW_DECODER_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_OPEN_FAILURES.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_FALLBACKS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_IMPORTS.load(Ordering::Relaxed),
 	);
 }
 

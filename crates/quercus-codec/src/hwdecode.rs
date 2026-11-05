@@ -54,6 +54,17 @@ use crate::error::{Error, Result};
 /// the hwaccel really engaged rather than silently staying software.
 pub static HW_TRANSFERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Decoder sessions opened with a hardware device attached.
+pub static HW_DECODER_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Decoder sessions opened in software mode.
+pub static SW_DECODER_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware device/decoder creation attempts that failed.
+pub static HW_OPEN_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware sessions that failed at the first frame and were reopened as software.
+pub static HW_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware frames successfully imported without a CPU transfer.
+pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The config key of the hardware-decode switch (1 = prefer hardware,
 /// 0 = force software). Default ON by user mandate.
 pub const CONFIG_KEY_HARDWARE_DECODING: &str = "HardwareDecoding";
@@ -220,6 +231,7 @@ pub fn open_hw_accel(
 	if rc < 0 || device.is_null() {
 		// The device is unavailable (missing driver / no hardware): mark
 		// it so later opens skip the attempt and its log noise.
+		HW_OPEN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		mark_device_unavailable(device_type);
 		return None;
 	}
@@ -231,6 +243,7 @@ pub fn open_hw_accel(
 	let opened = match context.decoder().open_as_with(codec, opts) {
 		Ok(opened) => opened,
 		Err(_) => {
+			HW_OPEN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 			// The device context was created but the hardware DECODER
 			// could not be created for this stream (e.g. NVDEC
 			// `cuvidCreateDecoder` out-of-memory at 4K — 4K surface pools
@@ -244,6 +257,7 @@ pub fn open_hw_accel(
 			return None;
 		}
 	};
+	HW_DECODER_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	Some((opened, device_type))
 }
 
