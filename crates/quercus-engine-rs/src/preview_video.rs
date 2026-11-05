@@ -12,6 +12,11 @@ unsafe extern "C" {
 	fn quercus_video_buffer_release(frame: *const c_void);
 	fn quercus_video_buffer_info(frame: *const c_void, out: *mut VideoFrameInfo) -> bool;
 	fn quercus_video_buffer_copy_bytes(frame: *const c_void, dst: *mut u8, capacity: usize) -> usize;
+	fn quercus_video_buffer_take_texture(
+		frame: *mut c_void,
+		width: *mut i32,
+		height: *mut i32,
+	) -> *const c_void;
 }
 
 /// Original producer of an owned frame's bytes.
@@ -101,6 +106,20 @@ impl VideoFrame {
 		} else {
 			Vec::new()
 		}
+	}
+
+	/// Takes the optional zero-copy presentation texture. The returned
+	/// pointer is an `Arc<wgpu::Texture>` raw pointer; the caller owns it and
+	/// must wrap it with `Arc::from_raw` (using the same wgpu 29 generation).
+	/// Returns `None` when the engine produced CPU pixels or the texture was
+	/// already taken.
+	pub fn take_gpu_texture(&self) -> Option<(*const c_void, i32, i32)> {
+		let mut width = 0i32;
+		let mut height = 0i32;
+		let ptr = unsafe {
+			quercus_video_buffer_take_texture(self.ptr as *mut c_void, &mut width, &mut height)
+		};
+		(!ptr.is_null()).then_some((ptr, width, height))
 	}
 
 	/// Converts either representation into tightly packed F32 RGBA samples.

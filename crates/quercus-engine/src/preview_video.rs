@@ -41,6 +41,10 @@ pub struct VideoBufferData {
 	pub origin: FrameOrigin,
 	pub pixel_format: VideoPixelFormat,
 	pub bytes: Vec<u8>,
+	/// Optional zero-copy presentation texture. When present the bytes are
+	/// empty and the host should sample this texture directly instead of
+	/// copying pixels.
+	pub gpu_texture: Option<std::sync::Arc<quercus_core::wgpu::Texture>>,
 }
 
 /// Video metadata without the variable-length byte buffer.
@@ -174,6 +178,34 @@ pub unsafe extern "C" fn quercus_video_buffer_copy_bytes(
 	frame.data.bytes.len()
 }
 
+/// Transfers the optional zero-copy presentation texture out of the frame.
+///
+/// The returned pointer is an `Arc<wgpu::Texture>` raw pointer owned by the
+/// caller (the host wraps it with `Arc::from_raw`). Returns null when the frame
+/// has no GPU texture or it was already taken. The engine device must have been
+/// adopted by the host (`quercus_render_gpu_install`) for the texture to be
+/// sampleable by the host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_video_buffer_take_texture(
+	frame: *mut VideoBufferHandle,
+	width: *mut i32,
+	height: *mut i32,
+) -> *const std::ffi::c_void {
+	let Some(frame) = (unsafe { frame.as_mut() }) else {
+		return std::ptr::null();
+	};
+	let Some(texture) = frame.data.gpu_texture.take() else {
+		return std::ptr::null();
+	};
+	if !width.is_null() {
+		unsafe { *width = frame.data.width };
+	}
+	if !height.is_null() {
+		unsafe { *height = frame.data.height };
+	}
+	std::sync::Arc::into_raw(texture) as *const std::ffi::c_void
+}
+
 fn f32_to_bgra8(samples: &[f32]) -> Vec<u8> {
 	samples
 		.chunks_exact(4)
@@ -230,6 +262,7 @@ fn pack_f32_bytes(
 		origin,
 		pixel_format,
 		bytes,
+		gpu_texture: None,
 	})
 }
 
@@ -247,6 +280,25 @@ fn frame_from_cpu(
 		origin,
 		pixel_format,
 	)
+}
+
+fn frame_from_gpu_texture(
+	width: i32,
+	height: i32,
+	texture: std::sync::Arc<quercus_core::wgpu::Texture>,
+) -> Result<VideoBufferData, String> {
+	if width <= 0 || height <= 0 {
+		return Err("GPU frame has invalid geometry".into());
+	}
+	Ok(VideoBufferData {
+		width,
+		height,
+		linesize: width * 16,
+		origin: FrameOrigin::Gpu,
+		pixel_format: VideoPixelFormat::F32Rgba,
+		bytes: Vec::new(),
+		gpu_texture: Some(texture),
+	})
 }
 
 fn frame_from_shared(
@@ -287,6 +339,7 @@ fn frame_from_shared(
 			origin: FrameOrigin::SharedMemory,
 			pixel_format,
 			bytes: packed,
+			gpu_texture: None,
 		})
 	} else {
 		let mut converted = Vec::with_capacity(meta.width as usize * meta.height as usize * 16);
@@ -411,6 +464,16 @@ pub(crate) fn render_video(
 				frame_from_cpu(frame, FrameOrigin::Cpu, pixel_format)
 			}
 			Ok(TicketPayload::Video(texture)) => {
+				if let quercus_core::texture::Texture::Gpu {
+					token, width, height, ctx, ..
+				} = &texture
+				{
+					if let Some(handle) = ctx.texture_handle(*token) {
+						if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle) {
+							return Ok(frame);
+						}
+					}
+				}
 				let frame = texture.to_frame().map_err(|e| e.to_string())?;
 				frame_from_cpu(frame, FrameOrigin::Gpu, pixel_format)
 			}
@@ -451,6 +514,16 @@ pub(crate) fn render_video(
 			PixelFormat::F32,
 		)
 		.map_err(|error| error.to_string())?;
+		if let quercus_core::texture::Texture::Gpu {
+			token, width: tw, height: th, ctx, ..
+		} = &rendered
+		{
+			if let Some(handle) = ctx.texture_handle(*token) {
+				if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle) {
+					return Ok(frame);
+				}
+			}
+		}
 		let frame = match rendered {
 			quercus_core::texture::Texture::Cpu(frame) => frame,
 			texture @ quercus_core::texture::Texture::Gpu { .. } => {
