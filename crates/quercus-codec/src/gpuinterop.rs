@@ -851,6 +851,16 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 				slot.free.store(false, std::sync::atomic::Ordering::Release);
 				Some(slot)
 			}
+			None if pool.len() >= 8 => {
+				// If queue-completion callbacks stop advancing, do not grow
+				// VMM allocations without bound (each 4K P210 slot is 32 MiB).
+				// Fall back to staging for this frame instead of freezing or
+				// exhausting GPU memory.
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[cuda-import] slot pool exhausted; staging fallback");
+				}
+				None
+			}
 			None => {
 				let mut handle = 0u64;
 				let mut va = 0u64;
