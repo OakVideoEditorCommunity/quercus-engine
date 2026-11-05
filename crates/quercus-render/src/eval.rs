@@ -1541,9 +1541,10 @@ pub(crate) fn render_footage_frame_inner_opts(
     // re-decodes).
     if allow_import {
         if let Ok(Some(imported)) = decoder.retrieve_video_frame_gpu(&params) {
-            let mut cache = decoded_frames();
-            let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            insert_cached_frame(&mut cache, cache_key, imported.clone(), tick);
+            // Imported planar frames are transient: the render layer resolves
+            // them immediately and returns the GPU result. Do not cache the
+            // planar texture here — its VMM slot must be released (after the
+            // GPU pass completes) so the slot can be reused next frame.
             return Ok(imported);
         }
     }

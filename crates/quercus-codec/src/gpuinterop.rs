@@ -667,12 +667,26 @@ mod cuda_driver {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CudaPlaneLayout {
+	offset: usize,
+	pitch: usize,
+	tex_w: usize,
+	ph: usize,
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) struct CudaVmmSlot {
 	driver: cuda_driver::Driver,
 	ctx: *mut std::ffi::c_void,
 	va: u64,
 	size: usize,
 	handle: u64,
+	fd: i32,
+	descriptor: PlanarDescriptor,
+	layouts: Vec<CudaPlaneLayout>,
+	gpu: Arc<GpuContext>,
+	free: std::sync::atomic::AtomicBool,
 }
 #[cfg(target_os = "linux")]
 unsafe impl Send for CudaVmmSlot {}
@@ -681,15 +695,41 @@ unsafe impl Sync for CudaVmmSlot {}
 #[cfg(target_os = "linux")]
 impl Drop for CudaVmmSlot {
 	fn drop(&mut self) {
+		if self.fd >= 0 {
+			close_fd(self.fd);
+		}
 		unsafe {
 			(self.driver.push)(self.ctx);
 			let _ = (self.driver.unmap)(self.va, self.size);
 			let _ = (self.driver.address_free)(self.va, self.size);
 			let _ = (self.driver.release)(self.handle);
-			let _ = (self.driver.pop)(std::ptr::null_mut());
+			_ = (self.driver.pop)(std::ptr::null_mut());
 		}
 	}
 }
+
+#[cfg(target_os = "linux")]
+struct CudaSlotLease(Arc<CudaVmmSlot>);
+#[cfg(target_os = "linux")]
+impl Drop for CudaSlotLease {
+	fn drop(&mut self) {
+		let slot = self.0.clone();
+		let gpu = slot.gpu.clone();
+		gpu.on_submitted_work_done(move || {
+			slot.free
+				.store(true, std::sync::atomic::Ordering::Release);
+		});
+	}
+}
+
+#[cfg(target_os = "linux")]
+static CUDA_SLOTS: std::sync::OnceLock<std::sync::Mutex<Vec<Arc<CudaVmmSlot>>>> =
+	std::sync::OnceLock::new();
+#[cfg(target_os = "linux")]
+fn cuda_slots() -> &'static std::sync::Mutex<Vec<Arc<CudaVmmSlot>>> {
+	CUDA_SLOTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
 
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
@@ -730,15 +770,9 @@ fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 #[cfg(target_os = "linux")]
 fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
 	use cuda_driver::{MemAccessDesc, MemAllocationProp, MemLocation};
-	use std::ffi::c_void;
 	let driver = match cuda_driver::load() {
 		Some(driver) => driver,
-		None => {
-			if std::env::var_os("OAK_DEBUG_HW").is_some() {
-				eprintln!("[cuda-import] driver load failed");
-			}
-			return ImportOutcome::Unsupported;
-		}
+		None => return ImportOutcome::Unsupported,
 	};
 	let frames_ref = unsafe { (*req.frame).hw_frames_ctx };
 	if frames_ref.is_null() {
@@ -748,20 +782,11 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 	let device = unsafe { &*frames.device_ctx };
 	let sw_format = unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>(frames.sw_format) };
 	let Some(descriptor) = cuda_descriptor(sw_format) else {
-		if std::env::var_os("OAK_DEBUG_HW").is_some() {
-			eprintln!("[cuda-import] no descriptor for {sw_format:?}");
-		}
 		return ImportOutcome::Unsupported;
 	};
 	let cuda_ctx = unsafe { (*(device.hwctx as *const CudaDeviceContext)).cuda_ctx };
 	if cuda_ctx.is_null() {
-		if std::env::var_os("OAK_DEBUG_HW").is_some() {
-			eprintln!("[cuda-import] null cuda ctx");
-		}
 		return ImportOutcome::Unsupported;
-	}
-	if std::env::var_os("OAK_DEBUG_HW").is_some() {
-		eprintln!("[cuda-import] sw={sw_format:?} desc={descriptor:?} ctx={cuda_ctx:?}");
 	}
 	let (w, h) = req.luma_size;
 	if w == 0 || h == 0 {
@@ -783,126 +808,132 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 			return ImportOutcome::Unsupported;
 		}
 		let texel = (components * bytes as usize).max(1);
-		// Import the padded hardware row as a wider linear texture and let
-		// the matrix pass sample only the visible region. This keeps the
-		// DMA/OPAQUE row pitch identical to the decoder's.
 		let tex_w = ((pitch as usize) / texel).max(pw as usize);
-		let offset = total;
+		layouts.push(CudaPlaneLayout {
+			offset: total,
+			pitch: pitch as usize,
+			tex_w,
+			ph: ph as usize,
+		});
 		total = total.saturating_add((pitch as usize).saturating_mul(ph as usize));
-		layouts.push((offset, pitch as usize, tex_w, ph as usize, pw as usize));
 	}
 	if total == 0 {
 		return ImportOutcome::Unsupported;
 	}
-	let mut prop = MemAllocationProp {
-		type_: 1, // CU_MEM_ALLOCATION_TYPE_PINNED
-		requested_handle_types: 1, // POSIX_FD
-		location: MemLocation { type_: 1, id: 0 }, // DEVICE
+	let mut device_id = 0i32;
+	unsafe {
+		(driver.push)(cuda_ctx);
+		_ = (driver.get_device)(&mut device_id);
+	}
+	let mut granularity = 2 * 1024 * 1024usize;
+	let prop = MemAllocationProp {
+		type_: 1,
+		requested_handle_types: 1,
+		location: MemLocation { type_: 1, id: device_id },
 		win32_handle_metadata: std::ptr::null_mut(),
 		compression_type: 0,
 		gpu_direct_rdma_capable: 0,
 		usage: 0,
 		reserved: [0; 38],
 	};
-	let mut device_id = 0i32;
-	unsafe {
-		(driver.push)(cuda_ctx);
-		let _ = (driver.get_device)(&mut device_id);
-	}
-	prop.location.id = device_id;
-	let mut granularity = 2 * 1024 * 1024usize;
-	let mut handle = 0u64;
-	let mut va = 0u64;
-	let vmm_size;
-	let mut allocated = false;
-	unsafe {
-		let _ = (driver.granularity)(
-			&mut granularity,
-			&prop,
-			0, // CU_MEM_ALLOC_GRANULARITY_MINIMUM
-		);
-		if granularity == 0 {
-			granularity = 2 * 1024 * 1024;
-		}
-		vmm_size = total.div_ceil(granularity) * granularity;
-		let create_rc = (driver.create)(&mut handle, vmm_size, &prop, 0);
-		let reserve_rc = if create_rc == 0 {
-			(driver.reserve)(&mut va, vmm_size, 0, 0, 0)
-		} else {
-			-1
-		};
-		let map_rc = if reserve_rc == 0 {
-			(driver.map)(va, vmm_size, 0, handle, 0)
-		} else {
-			-1
-		};
-		if map_rc == 0 {
-			let access = MemAccessDesc {
-				location: MemLocation { type_: 1, id: device_id },
-				flags: 3, // READWRITE
-				pad: 0,
-			};
-			let access_rc = (driver.access)(va, vmm_size, &access, 1);
-			if access_rc == 0 {
-				allocated = true;
-			} else if std::env::var_os("OAK_DEBUG_HW").is_some() {
-				eprintln!("[cuda-import] access failed rc={access_rc}");
+	unsafe { _ = (driver.granularity)(&mut granularity, &prop, 0) };
+	if granularity == 0 { granularity = 2 * 1024 * 1024; }
+	let slot = {
+		let mut pool = cuda_slots().lock().unwrap_or_else(|e| e.into_inner());
+		let found = pool.iter().position(|slot| {
+			slot.free.load(std::sync::atomic::Ordering::Acquire)
+				&& slot.descriptor == descriptor
+				&& slot.layouts.as_slice() == layouts.as_slice()
+		});
+		match found {
+			Some(index) => {
+				let slot = pool[index].clone();
+				slot.free.store(false, std::sync::atomic::Ordering::Release);
+				Some(slot)
 			}
-		} else if std::env::var_os("OAK_DEBUG_HW").is_some() {
-			eprintln!("[cuda-import] create={create_rc} reserve={reserve_rc} map={map_rc}");
+			None => {
+				let mut handle = 0u64;
+				let mut va = 0u64;
+				let size = total.div_ceil(granularity) * granularity;
+				let mut ok = unsafe {
+					(driver.create)(&mut handle, size, &prop, 0) == 0
+						&& (driver.reserve)(&mut va, size, 0, 0, 0) == 0
+						&& (driver.map)(va, size, 0, handle, 0) == 0
+				};
+				if ok {
+					let access = MemAccessDesc {
+						location: MemLocation { type_: 1, id: device_id },
+						flags: 3,
+						pad: 0,
+					};
+					ok = unsafe { (driver.access)(va, size, &access, 1) == 0 };
+				}
+				let mut fd = -1i32;
+				if ok {
+					ok = unsafe { (driver.export)(&mut fd, handle, 1, 0) == 0 && fd >= 0 };
+				}
+				if ok {
+					let slot = Arc::new(CudaVmmSlot {
+						driver,
+						ctx: cuda_ctx,
+						va,
+						size,
+						handle,
+						fd,
+						descriptor,
+						layouts: layouts.clone(),
+						gpu: ctx.clone(),
+						free: std::sync::atomic::AtomicBool::new(false),
+					});
+					pool.push(slot.clone());
+					Some(slot)
+				} else {
+					unsafe {
+						if va != 0 {
+							_ = (driver.unmap)(va, size);
+							_ = (driver.address_free)(va, size);
+						}
+						if handle != 0 { _ = (driver.release)(handle); }
+						if fd >= 0 { close_fd(fd); }
+					}
+					None
+				}
+			}
 		}
-	}
-	if !allocated {
-		if std::env::var_os("OAK_DEBUG_HW").is_some() {
-			eprintln!("[cuda-import] VMM alloc/map/access failed size={vmm_size}");
-		}
-		unsafe { (driver.pop)(std::ptr::null_mut()) };
+	};
+	let Some(slot) = slot else {
+		unsafe { _ = (driver.pop)(std::ptr::null_mut()) };
 		return ImportOutcome::Unsupported;
-	}
-	let slot = Arc::new(CudaVmmSlot {
-		driver,
-		ctx: cuda_ctx,
-		va,
-		size: vmm_size,
-		handle,
-	});
-	let mut fd = -1i32;
+	};
 	let mut copied = true;
 	unsafe {
-		for (plane, (offset, pitch, _tex_w, ph, _pw)) in layouts.iter().enumerate() {
+		for (plane, layout) in layouts.iter().enumerate() {
 			let src = frame.data[plane] as u64;
-			let dst = va + *offset as u64;
-			if (driver.copy_dtod)(dst, src, pitch * ph) != 0 {
+			let dst = slot.va + layout.offset as u64;
+			if (driver.copy_dtod)(dst, src, layout.pitch * layout.ph) != 0 {
 				copied = false;
 				break;
 			}
 		}
-		let _ = (driver.sync)();
-		if copied && (driver.export)(&mut fd, handle, 1, 0) != 0 {
-			copied = false;
-		}
-		(driver.pop)(std::ptr::null_mut());
+		_ = (driver.sync)();
+		_ = (driver.pop)(std::ptr::null_mut());
 	}
-	if !copied || fd < 0 {
-		if std::env::var_os("OAK_DEBUG_HW").is_some() {
-			eprintln!("[cuda-import] copy/export failed copied={copied} fd={fd}");
-		}
-		drop(slot);
+	if !copied {
 		return ImportOutcome::Unsupported;
 	}
 	let mut planes = Vec::with_capacity(descriptor.plane_count());
-	for (plane, (offset, pitch, tex_w, ph, _pw)) in layouts.iter().enumerate() {
+	for (plane, layout) in layouts.iter().enumerate() {
 		let Some(format) = descriptor.plane_texture_format(plane) else {
 			copied = false;
 			break;
 		};
 		match ctx.import_opaque_fd_plane(
-			*tex_w as u32,
-			*ph as u32,
+			layout.tex_w as u32,
+			layout.ph as u32,
 			format,
-			fd,
-			*offset as u64,
-			*pitch as u64,
+			slot.fd,
+			layout.offset as u64,
+			layout.pitch as u64,
 			None,
 		) {
 			Ok(token) => planes.push(token),
@@ -912,22 +943,19 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 			}
 		}
 	}
-	close_fd(fd);
 	if !copied {
 		for token in planes.drain(..) {
 			ctx.destroy_texture(token);
 		}
-		drop(slot);
 		return ImportOutcome::Failed;
 	}
 	ImportOutcome::Imported {
 		planes,
 		descriptor,
-		keep_alive: Some(slot),
+		keep_alive: Some(Arc::new(CudaSlotLease(slot))),
 		borrowed_planes: false,
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Windows: D3D11VA texture -> shared NT handle -> Vulkan import

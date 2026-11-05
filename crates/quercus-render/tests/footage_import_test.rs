@@ -454,7 +454,7 @@ fn c0024_4k_10bit_422_gpu_scale_benchmark() {
 	let mut total = std::time::Duration::ZERO;
 	let mut worst = std::time::Duration::ZERO;
 	let mut transfers = 0;
-	for n in 0..4 {
+	for n in 0..30 {
 		let started = std::time::Instant::now();
 		let texture = quercus_render::eval::render_footage_frame(
 			path,
@@ -472,7 +472,7 @@ fn c0024_4k_10bit_422_gpu_scale_benchmark() {
 	}
 	eprintln!(
 		"C0024 GPU scale: avg={:?} worst={:?} imports={} transfers={} non_gpu={}",
-		total / 4,
+		total / 30,
 		worst,
 		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
 		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),

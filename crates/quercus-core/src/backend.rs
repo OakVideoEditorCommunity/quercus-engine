@@ -814,6 +814,13 @@ impl GpuContext {
 		let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
 	}
 
+	/// Run `callback` once all GPU work submitted so far has completed.
+	/// External-memory producers use this to know when a reusable VMM
+	/// buffer is no longer read by the renderer.
+	pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static) {
+		self.queue.on_submitted_work_done(callback);
+	}
+
 	/// The backend actually in use.
 	pub fn kind(&self) -> BackendKind {
 		self.kind
