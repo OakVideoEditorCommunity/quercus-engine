@@ -317,6 +317,9 @@ pub struct GpuContext {
 	textures: Mutex<HashMap<u64, GpuTexture>>,
 	next_token: AtomicU64,
 	blit: Mutex<Option<wgpu::RenderPipeline>>,
+	/// Copy pipeline targeting `Rgba16Float` (the gpui surface pipeline is
+	/// filterable and expects half-float, not `Rgba32Float`).
+	blit16: Mutex<Option<wgpu::RenderPipeline>>,
 	/// FLOAT32_FILTERABLE was available (linear sampling on F32 textures).
 	filterable: bool,
 	/// Compiled effect pipelines, keyed by the shaderfx cache key.
@@ -720,6 +723,7 @@ impl GpuContext {
 				textures: Mutex::new(HashMap::new()),
 				next_token: AtomicU64::new(1),
 				blit: Mutex::new(None),
+				blit16: Mutex::new(None),
 				filterable,
 				programs: Mutex::new(HashMap::new()),
 				placeholder: Mutex::new(None),
@@ -762,6 +766,7 @@ impl GpuContext {
 			textures: Mutex::new(HashMap::new()),
 			next_token: AtomicU64::new(1),
 			blit: Mutex::new(None),
+			blit16: Mutex::new(None),
 			filterable,
 			programs: Mutex::new(HashMap::new()),
 			placeholder: Mutex::new(None),
@@ -943,6 +948,12 @@ impl GpuContext {
 	/// soon as the returned `Arc` is stored elsewhere.
 	pub fn texture_handle(&self, token: u64) -> Option<Arc<wgpu::Texture>> {
 		lock(&self.textures).get(&token).map(|t| t.texture.clone())
+	}
+
+	/// Remove a token from the registry and return its texture. Used for
+	/// transient conversion/presentation textures handed to the host.
+	pub fn take_texture_handle(&self, token: u64) -> Option<Arc<wgpu::Texture>> {
+		lock(&self.textures).remove(&token).map(|t| t.texture)
 	}
 
 	/// The texture's format (tests/plane uploads).
@@ -2559,6 +2570,115 @@ impl GpuContext {
 					count: None,
 				}],
 			})
+	}
+
+	/// GPU->GPU copy of `src` into a new `Rgba16Float` texture. The host
+	/// presenter's surface pipeline samples with a filterable layout, which
+	/// `Rgba32Float` does not satisfy on devices without FLOAT32_FILTERABLE;
+	/// half-float is also the 10-bit display format. Returns the new token.
+	pub fn convert_to_rgba16f(&self, src: u64) -> Result<u64> {
+		let (src_tex, width, height) = {
+			let reg = lock(&self.textures);
+			let entry = reg.get(&src).ok_or(Error::NotFound)?;
+			(entry.texture.clone(), entry.width, entry.height)
+		};
+		let dst = self.create_texture_format(
+			width as i32,
+			height as i32,
+			1,
+			wgpu::TextureFormat::Rgba16Float,
+			wgpu::TextureUsages::TEXTURE_BINDING
+				| wgpu::TextureUsages::RENDER_ATTACHMENT
+				| wgpu::TextureUsages::COPY_DST
+				| wgpu::TextureUsages::COPY_SRC,
+		)?;
+		let dst_tex = {
+			let reg = lock(&self.textures);
+			reg.get(&dst).map(|e| e.texture.clone()).ok_or(Error::NotFound)?
+		};
+		let pipeline = {
+			let mut cache = lock(&self.blit16);
+			if cache.is_none() {
+				*cache = Some(self.create_blit_pipeline16()?);
+			}
+			cache.clone().unwrap()
+		};
+		let src_view = src_tex.create_view(&wgpu::TextureViewDescriptor::default());
+		let dst_view = dst_tex.create_view(&wgpu::TextureViewDescriptor::default());
+		let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("quercusrender-blit16-bg"),
+			layout: &self.blit_bind_group_layout(),
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: wgpu::BindingResource::TextureView(&src_view),
+			}],
+		});
+		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+			label: Some("quercusrender-blit16"),
+		});
+		{
+			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: Some("quercusrender-blit16-pass"),
+				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+					view: &dst_view,
+					depth_slice: None,
+					resolve_target: None,
+					ops: wgpu::Operations {
+						load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+						store: wgpu::StoreOp::Store,
+					},
+				})],
+				depth_stencil_attachment: None,
+				timestamp_writes: None,
+				occlusion_query_set: None,
+				multiview_mask: None,
+			});
+			pass.set_pipeline(&pipeline);
+			pass.set_bind_group(0, &bind_group, &[]);
+			pass.draw(0..3, 0..1);
+		}
+		self.queue.submit(Some(encoder.finish()));
+		Ok(dst)
+	}
+
+	fn create_blit_pipeline16(&self) -> Result<wgpu::RenderPipeline> {
+		// Recreate with the half-float target; the layout/vertex/fragment
+		// modules are identical to the Rgba32 blit.
+		let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("quercusrender-blit16-shader"),
+			source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(BLIT_WGSL)),
+		});
+		let layout = self.blit_bind_group_layout();
+		let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("quercusrender-blit16-layout"),
+			bind_group_layouts: &[Some(&layout)],
+			immediate_size: 0,
+		});
+		Ok(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+				label: Some("quercusrender-blit16"),
+				layout: Some(&pipeline_layout),
+				vertex: wgpu::VertexState {
+					module: &shader,
+					entry_point: Some("vs_main"),
+					compilation_options: Default::default(),
+					buffers: &[],
+				},
+				primitive: wgpu::PrimitiveState::default(),
+				depth_stencil: None,
+				multisample: wgpu::MultisampleState::default(),
+				fragment: Some(wgpu::FragmentState {
+					module: &shader,
+					entry_point: Some("fs_main"),
+					compilation_options: Default::default(),
+					targets: &[Some(wgpu::ColorTargetState {
+						format: wgpu::TextureFormat::Rgba16Float,
+						blend: None,
+						write_mask: wgpu::ColorWrites::ALL,
+					})],
+				}),
+				multiview_mask: None,
+				cache: None,
+			}))
 	}
 
 	fn create_blit_pipeline(&self) -> Result<wgpu::RenderPipeline> {

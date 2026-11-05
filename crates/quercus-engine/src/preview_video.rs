@@ -311,7 +311,15 @@ fn adopted_texture(
 	if !gpu.is_adopted() {
 		return None;
 	}
-	gpu.texture_handle(token)
+	let texture = gpu.texture_handle(token)?;
+	if texture.format() == quercus_core::wgpu::TextureFormat::Rgba16Float {
+		return Some(texture);
+	}
+	// gpui's surface bind group samples with a filterable layout; the
+	// engine's Rgba32Float working texture is not necessarily filterable.
+	// Convert once on the GPU to the 10-bit display format.
+	let converted = gpu.convert_to_rgba16f(token).ok()?;
+	gpu.take_texture_handle(converted)
 }
 
 fn frame_from_gpu_texture(
