@@ -441,23 +441,26 @@ pub(crate) fn render_video(
 			montage,
 			adjustments: Vec::new(),
 		};
-		let mut bytes = vec![0; width as usize * height as usize * 16];
-		quercus_render::eval::render_montage_frame_into(
+		// GPU montage compositor: the normal F32 path keeps decode, scale
+		// and composition on the GPU; the owned-buffer ABI below is a CPU
+		// boundary, so only this final handoff reads back.
+		let rendered = quercus_render::eval::render_montage_frame(
 			time,
 			&params,
 			(width, height),
-			&mut bytes,
-			width * 16,
+			PixelFormat::F32,
 		)
 		.map_err(|error| error.to_string())?;
-		return pack_f32_bytes(
-			width,
-			height,
-			width * 16,
-			&bytes,
-			FrameOrigin::Cpu,
-			pixel_format,
-		);
+		let frame = match rendered {
+			quercus_core::texture::Texture::Cpu(frame) => frame,
+			texture @ quercus_core::texture::Texture::Gpu { .. } => {
+				texture.to_frame().map_err(|error| error.to_string())?
+			}
+			quercus_core::texture::Texture::Planar(_) => {
+				return Err("unresolved planar montage texture".to_string())
+			}
+		};
+		return frame_from_cpu(frame, FrameOrigin::Gpu, pixel_format);
 	}
 	let samples = crate::render::render_frame_f32_data(project, viewer, time, width, height)?;
 	let bytes: Vec<u8> = samples

@@ -3444,7 +3444,12 @@ fn scale_rgba_f32(
 /// on the GPU end to end. Every other case (no adapter, a non-F32 ticket,
 /// a per-frame GPU failure) falls back to the unchanged CPU compositor
 /// [`render_montage_frame_into`].
-fn render_montage_frame(
+///
+/// Public so the engine's preview/worker path can request the GPU-resident
+/// montage texture instead of re-running the CPU compositor. The worker's
+/// shared-memory wire format still reads the texture back at its boundary;
+/// that is the protocol boundary, not a decode/scale readback.
+pub fn render_montage_frame(
     time: Rational,
     params: &crate::ticket::VideoTicketParams,
     size: (i32, i32),

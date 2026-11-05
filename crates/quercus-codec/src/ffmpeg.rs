@@ -448,15 +448,12 @@ impl Decoder for FFmpegDecoder {
 		if !crate::hwdecode::is_hw_format(format) {
 			return Ok(None);
 		}
-		// Zero-copy cannot resize or deliver a non-F32 format: only a
-		// native-size request takes the import path (proxy playback keeps
-		// the staging path, design §3.6).
+		// Import the native hardware surface even when the caller asked
+		// for a preview size: the render layer's descriptor-driven planar
+		// matrix pass scales YUV->Rgba32Float on the GPU (arbitrary
+		// source/target sizes), which is the whole point of the zero-copy
+		// path. Only the staging fallback resizes with swscale.
 		let native = (f.width(), f.height());
-		if let Some(target) = p.target_size {
-			if target != native {
-				return Ok(None);
-			}
-		}
 		let (primaries, trc, space, full_range) = frame_colorimetry(f.as_ptr(), p.force_range);
 		let matrix = yuv_matrix_for(space, f.width(), f.height());
 		let req = crate::gpuinterop::HwImportRequest {

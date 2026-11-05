@@ -1354,8 +1354,33 @@ fn render_f32_into(
 		}
 	}
 	if !params.montage.is_empty() {
-		return eval::render_montage_frame_into(time, params, (w, h), dst, stride)
-			.map_err(|e| format!("montage render: {e}"));
+		// Prefer the GPU montage compositor: decode/import, GPU scale and
+		// composite stay on the GPU; only the worker's shared-memory wire
+		// format requires the final readback into `dst`.
+		let rendered = eval::render_montage_frame(time, params, (w, h), PixelFormat::F32)
+			.map_err(|e| format!("montage render: {e}"))?;
+		let frame = match rendered {
+			quercus_core::texture::Texture::Cpu(frame) => frame,
+			texture @ quercus_core::texture::Texture::Gpu { .. } => texture
+				.to_frame()
+				.map_err(|e| format!("montage readback: {e}"))?,
+			quercus_core::texture::Texture::Planar(_) => {
+				return Err("unresolved planar montage texture".to_string())
+			}
+		};
+		let src_stride = frame.linesize_bytes();
+		let row_bytes = (w as usize) * 16;
+		if frame.data.len() < src_stride * (h as usize)
+			|| dst.len() < row_bytes * (h as usize)
+			|| stride < row_bytes as i32
+		{
+			return Err("montage frame geometry mismatch".to_string());
+		}
+		for y in 0..h as usize {
+			dst[y * stride as usize..y * stride as usize + row_bytes]
+				.copy_from_slice(&frame.data[y * src_stride..y * src_stride + row_bytes]);
+		}
+		return Ok(());
 	}
 	if !spec.footage_file.is_empty() {
 		let decoded = eval::render_footage_frame(
