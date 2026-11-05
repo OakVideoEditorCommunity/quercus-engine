@@ -441,6 +441,71 @@ fn montage_native_size_with_host_gpu_composites_the_clip() {
 /// verify the native hardware frame is imported and GPU-scaled to 1080p
 /// without a CPU download. Run with:
 /// `QUERCUS_REQUIRE_GPU=1 cargo test -p quercus-render --test footage_import_test c0024 -- --ignored --nocapture`
+/// End-to-end timeline montage on the same 4K 10-bit 4:2:2 clip:
+/// hardware decode -> GPU VMM slot -> GPU scale -> GPU composite, with no
+/// CPU transfer on the normal path.
+#[test]
+#[ignore]
+fn c0024_4k_10bit_422_gpu_montage_benchmark() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let path = "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4";
+	if !std::path::Path::new(path).exists() { return; }
+	let Some(ctx) = common::gpu_context_for_import() else { return; };
+	quercus_core::backend::GpuContext::install_shared(Some(ctx));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let params = quercus_render::ticket::VideoTicketParams {
+		viewer: 1,
+		project: String::new(),
+		time: Rational::new(0, 1),
+		force_size: Some((1920, 1080)),
+		force_format: Some(PixelFormat::F32),
+		cache: None,
+		cache_dir: None,
+		cache_id: None,
+		cache_timebase: None,
+		footage: None,
+		montage: vec![quercus_render::ticket::MontageClip {
+			filename: path.to_string(),
+			stream_index: 0,
+			in_time: Rational::new(0, 1),
+			out_time: Rational::new(30, 25),
+			media_in: Rational::new(0, 1),
+			gain: 1.0,
+			pan: 0.0,
+			fade_in: Rational::new(0, 1),
+			fade_out: Rational::new(0, 1),
+			effects: Vec::new(),
+			audio_effects: Vec::new(),
+		}],
+		adjustments: Vec::new(),
+	};
+	let mut total = std::time::Duration::ZERO;
+	let mut worst = std::time::Duration::ZERO;
+	let mut transfers = 0;
+	for n in 0..30 {
+		let started = std::time::Instant::now();
+		let texture = quercus_render::eval::render_produced_frame(
+			Rational::new(n, 25),
+			&params,
+		)
+		.expect("montage render");
+		let elapsed = started.elapsed();
+		total += elapsed;
+		worst = worst.max(elapsed);
+		if !matches!(texture, Texture::Gpu { .. }) { transfers += 1; }
+	}
+	eprintln!(
+		"C0024 GPU montage: avg={:?} worst={:?} imports={} transfers={} non_gpu={}",
+		total / 30,
+		worst,
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers
+	);
+	assert_eq!(transfers, 0, "montage frames must stay GPU-resident");
+}
+
 #[test]
 #[ignore]
 fn c0024_4k_10bit_422_gpu_scale_benchmark() {
