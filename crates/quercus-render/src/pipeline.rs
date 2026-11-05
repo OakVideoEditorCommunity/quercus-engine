@@ -927,7 +927,13 @@ fn queue_debug_enabled() -> bool {
 /// Print one pipeline sample. Called only from the render thread, so it does
 /// not perturb the UI submit path; the decode-queue lock is taken only when
 /// the debug switch is on.
-fn log_queue_sample(inner: &PipelineInner, executed: u64, force: bool) {
+fn log_queue_sample(
+	inner: &PipelineInner,
+	executed: u64,
+	force: bool,
+	job_ms: u128,
+	gap_ms: u128,
+) {
 	if !queue_debug_enabled() {
 		return;
 	}
@@ -937,7 +943,7 @@ fn log_queue_sample(inner: &PipelineInner, executed: u64, force: bool) {
 	let render_depth = inner.depth.load(Ordering::Relaxed);
 	let stats = inner.decode.stats();
 	eprintln!(
-		"[queues] executed={executed} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
+		"[queues] executed={executed} job_ms={job_ms} gap_ms={gap_ms} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={}",
 		RENDER_QUEUE_CAP,
 		RENDER_QUEUE_CAP.saturating_sub(render_depth),
 		inner.decode.queue_depth(),
@@ -956,6 +962,7 @@ fn log_queue_sample(inner: &PipelineInner, executed: u64, force: bool) {
 /// queue is empty *and* shutdown has been requested.
 fn render_loop(inner: Arc<PipelineInner>) {
 	let _ = inner.render_thread.set(std::thread::current().id());
+	let mut last_start = std::time::Instant::now();
 	loop {
 		let job = {
 			let mut queue = lock(&inner.queue);
@@ -973,10 +980,14 @@ fn render_loop(inner: Arc<PipelineInner>) {
 		};
 		match job {
 			Some(job) => {
+				let gap_ms = last_start.elapsed().as_millis();
+				let started = std::time::Instant::now();
 				execute_job(job);
+				let job_ms = started.elapsed().as_millis();
+				last_start = started;
 				let executed = inner.executed.fetch_add(1, Ordering::Relaxed) + 1;
 				let force = inner.depth.load(Ordering::Relaxed) == 0;
-				log_queue_sample(&inner, executed, force);
+				log_queue_sample(&inner, executed, force, job_ms, gap_ms);
 			}
 			None => break,
 		}
