@@ -725,6 +725,12 @@ impl PipelineBackend {
 			.map_err(|e| Error::Failed(format!("render thread spawn: {e}")))?;
 		*lock(&backend.inner.handle) = Some(handle);
 		install_decode_service(Some(decode));
+		if queue_debug_enabled() {
+			eprintln!(
+				"[queues] telemetry enabled: render_cap={} decode_cap={} lru_cap={}",
+				RENDER_QUEUE_CAP, DECODE_QUEUE_CAP, DECODE_LRU_CAP
+			);
+		}
 		Ok(backend)
 	}
 
