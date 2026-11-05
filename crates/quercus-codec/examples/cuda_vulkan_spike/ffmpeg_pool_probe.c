@@ -158,8 +158,8 @@ static int cuda_load(void)
 		fprintf(stderr, "[cuda] cannot load libcuda: %s\n", dlerror());
 		return 0;
 	}
-	cu.push = (PFN_cuCtxPushCurrent)sym("cuCtxPushCurrent", "cuCtxPushCurrent_v2");
-	cu.pop = (PFN_cuCtxPopCurrent)sym("cuCtxPopCurrent", "cuCtxPopCurrent_v2");
+	cu.push = (PFN_cuCtxPushCurrent)sym("cuCtxPushCurrent_v2", "cuCtxPushCurrent");
+	cu.pop = (PFN_cuCtxPopCurrent)sym("cuCtxPopCurrent_v2", "cuCtxPopCurrent");
 	cu.set_current = (PFN_cuCtxSetCurrent)sym("cuCtxSetCurrent", NULL);
 	cu.get_device = (PFN_cuCtxGetDevice)sym("cuCtxGetDevice", NULL);
 	cu.gran = (PFN_cuMemGetAllocationGranularity)sym(
@@ -175,7 +175,7 @@ static int cuda_load(void)
 		"cuMemExportToShareableHandle", NULL);
 	cu.range = (PFN_cuMemGetHandleForAddressRange)sym(
 		"cuMemGetHandleForAddressRange", NULL);
-	cu.memcpy_htod = (PFN_cuMemcpyHtoD)sym("cuMemcpyHtoD", "cuMemcpyHtoD_v2");
+	cu.memcpy_htod = (PFN_cuMemcpyHtoD)sym("cuMemcpyHtoD_v2", "cuMemcpyHtoD");
 	cu.sync = (PFN_cuCtxSynchronize)sym("cuCtxSynchronize", NULL);
 	cu.err_name = (PFN_cuGetErrorName)sym("cuGetErrorName", NULL);
 	cu.err_string = (PFN_cuGetErrorString)sym("cuGetErrorString", NULL);

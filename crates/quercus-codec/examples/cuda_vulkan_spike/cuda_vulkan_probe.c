@@ -215,15 +215,15 @@ static int cuda_load(struct cuda_api *cu)
 	cu->device_attr =
 		(PFN_cuDeviceGetAttribute)cuda_sym(cu, "cuDeviceGetAttribute", NULL);
 	cu->device_name = (PFN_cuDeviceGetName)cuda_sym(cu, "cuDeviceGetName", NULL);
-	cu->ctx_create = (PFN_cuCtxCreate)cuda_sym(cu, "cuCtxCreate", "cuCtxCreate_v2");
+	cu->ctx_create = (PFN_cuCtxCreate)cuda_sym(cu, "cuCtxCreate_v2", "cuCtxCreate");
 	cu->ctx_destroy =
 		(PFN_cuCtxDestroy)cuda_sym(cu, "cuCtxDestroy", "cuCtxDestroy_v2");
-	cu->ctx_push = (PFN_cuCtxPushCurrent)cuda_sym(cu, "cuCtxPushCurrent",
-	                                              "cuCtxPushCurrent_v2");
-	cu->ctx_pop = (PFN_cuCtxPopCurrent)cuda_sym(cu, "cuCtxPopCurrent",
-	                                            "cuCtxPopCurrent_v2");
-	cu->mem_alloc = (PFN_cuMemAlloc)cuda_sym(cu, "cuMemAlloc", "cuMemAlloc_v2");
-	cu->mem_free = (PFN_cuMemFree)cuda_sym(cu, "cuMemFree", "cuMemFree_v2");
+	cu->ctx_push = (PFN_cuCtxPushCurrent)cuda_sym(cu, "cuCtxPushCurrent_v2",
+	                                              "cuCtxPushCurrent");
+	cu->ctx_pop = (PFN_cuCtxPopCurrent)cuda_sym(cu, "cuCtxPopCurrent_v2",
+	                                            "cuCtxPopCurrent");
+	cu->mem_alloc = (PFN_cuMemAlloc)cuda_sym(cu, "cuMemAlloc_v2", "cuMemAlloc");
+	cu->mem_free = (PFN_cuMemFree)cuda_sym(cu, "cuMemFree_v2", "cuMemFree");
 	cu->mem_handle_range = (PFN_cuMemGetHandleForAddressRange)cuda_sym(
 		cu, "cuMemGetHandleForAddressRange", NULL);
 	cu->err_name = (PFN_cuGetErrorName)cuda_sym(cu, "cuGetErrorName", NULL);
@@ -252,7 +252,7 @@ static int cuda_load(struct cuda_api *cu)
 	cu->ctx_get_device =
 		(PFN_cuCtxGetDevice)cuda_sym(cu, "cuCtxGetDevice", NULL);
 	cu->memcpy_htod =
-		(PFN_cuMemcpyHtoD)cuda_sym(cu, "cuMemcpyHtoD", "cuMemcpyHtoD_v2");
+		(PFN_cuMemcpyHtoD)cuda_sym(cu, "cuMemcpyHtoD_v2", "cuMemcpyHtoD");
 	cu->ctx_sync = (PFN_cuCtxSynchronize)cuda_sym(cu, "cuCtxSynchronize", NULL);
 	cu->alloc_props = (PFN_cuMemGetAllocationPropertiesFromHandle)cuda_sym(
 		cu, "cuMemGetAllocationPropertiesFromHandle", NULL);

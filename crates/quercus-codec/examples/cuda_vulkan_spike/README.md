@@ -132,7 +132,26 @@ GPU 会话跑旧版 route B probe 的关键输出：
 4. `cuCtxSynchronize` 后导出 slot fd，Vulkan `OPAQUE_FD`+`LINEAR` 导入，读回 luma 前 64 字节；
 5. NV12 输入与软件解码第一帧 luma 比较前 16 字节。
 
-> **当前状态**：route A（cuMemAlloc→DMA-BUF）实测 dead；Vulkan Video 4:2:2/10-bit 实测不支持（仅 4:2:0，H.264 仅 8-bit）；route B 的**机制**已实测走通（VMM POSIX_FD 导出 + fd kind=`/dev/nvidiactl` + Vulkan OPAQUE_FD/LINEAR 导入成功，同进程），`external.rs::import_opaque_fd_plane` 已落地；**唯一待跑的是 DtoD 数据验证**（`[copy]/[readback]/[reference]/[verdict]`），在 GPU 会话运行 `run.sh` 即可定论。
+> **当前状态**：route A 实测 dead；Vulkan Video 4:2:2/10-bit 实测不支持（仅 4:2:0，H.264 仅 8-bit）；route B 机制已实测走通（VMM POSIX_FD 导出 + fd `/dev/nvidiactl` + Vulkan OPAQUE_FD/LINEAR 导入成功，同进程），`external.rs::import_opaque_fd_plane` 已落地。DtoD 首次实测 `INVALID_CONTEXT` 经 Lead 定位为**探针符号查找问题**（legacy 基础符号优先），已改为优先 `_v2`；**最后一次重跑 `[control]` 若通过，route B 判定为 GO**，否则按 `[control]`/`[copy]` 结果 final verdict。
+
+**DtoD 实测（Lead GPU 会话）**：
+- 640x360 NV12：slot YES，`cuMemcpy2DAsync` / `cuMemcpy2D` / `cuMemcpyDtoD` **全部 `CUDA_ERROR_INVALID_CONTEXT`**，readback 0，reference MISMATCH，`[verdict] FAIL`；
+- C0024 4K 10-bit 4:2:2（`sw_format=p210le`）：slot YES（`requested=33177600 rounded=33554432 fd=105`），同样三个 API 全 `INVALID_CONTEXT`，readback 0，`FAIL`。
+
+但这个失败可疑：同一会话里最小 standalone `cuCtxCreate + cuMemAlloc + cuMemcpyHtoD` 是可用的。因此探针新增**对照诊断**（不是改结论，而是定位"探针/上下文处理"还是"VMM/context 关联"）：
+- `[cuda] syms:` 打印所有 dlsym 到的 CUDA 函数指针（确认 API 装载没错）；
+- `[ctx] ... get_current=... current=... expected=... (MATCH/MISMATCH)` 打印 `cuCtxGetCurrent` 与 FFmpeg `AVCUDADeviceContext.cuda_ctx` 的对比；
+- `[pool] cuMemSetAccess(...) -> ...` 与 `[pool] cuMemGetAddressRange(va) -> base/size` 确认 VMM 映射/访问是否被 CUDA 认可；
+- `[control] cuMemAlloc+cuMemcpyHtoD`：同一 `ctx_enter` 后对**普通设备内存**做 host→device 写；
+- `[control] cuMemcpyHtoD(VMM slot va=...)`：同一上下文对 **VMM slot** 做 host→device 写。
+
+**根因（Lead 定位，已修）**：探针的 `sym()` 先查 legacy 基础符号（`cuMemAlloc`/`cuMemFree`/`cuMemcpyHtoD`/`cuMemcpyDtoD`/`cuCtxPushCurrent`/`cuCtxPopCurrent`），而 64 位驱动上这些 legacy 符号可能拒绝当前上下文（最小 C 测试用 `_v2` 正常）。三个探针已统一改为**优先 `_v2`**、legacy 作 fallback：
+`cuMemAlloc_v2`、`cuMemFree_v2`、`cuMemcpyHtoD_v2`、`cuMemcpyDtoD_v2`、`cuCtxPushCurrent_v2`、`cuCtxPopCurrent_v2`、`cuCtxCreate_v2`、`cuMemsetD8_v2`。
+因此之前 DtoD 的 `INVALID_CONTEXT` 很可能是**探针 artifact，不是驱动 verdict**；重跑后若 `[control] cuMemAlloc+cuMemcpyHtoD` 通过，则 route B 可能为 GO。
+
+判据补充：
+- `[control] cuMemAlloc+cuMemcpyHtoD` 也失败 → 探针的上下文/API 处理坏了（不是驱动结论），修探针；
+- control 成功但 `[control] ... (VMM slot)` 或 DtoD 失败 → **VMM allocation 与 context 的关联是 blocker**，按原判据 route B dead（记下 `cuMemSetAccess`/`cuMemGetAddressRange` 的结果作为根因）。
 
 判读（`[verdict]` 行）：
 - `[vmm] cuMemGetAllocationGranularity` 打印 granularity（本机 2097152），`[slot] requested=… rounded=…` 显示已取整；
@@ -476,7 +495,7 @@ ffmpeg_pool_probe 同样优雅降级（项目 libavutil 60.26.102 静态链接�
 | # | 未决项 | 影响 | 判定方式 |
 |---|---|---|---|
 | 1 | **OPAQUE_FD 跨进程**：fd 是 `/dev/nvidiactl` 驱动私有句柄 | process-pool worker 架构能否用 route B；若不兼容，只有 Threads/Pipeline 后端可零拷贝 | 已内置：`cuda_vulkan_probe` 的 `[routeB] cross-process OPAQUE_FD import: GO/FAIL`（fork+exec + SCM_RIGHTS） |
-| 2 | **NVDEC 能否写自定义 VMM 池**（host `cuMemcpyHtoD` 已被 CUDA 以 `INVALID_CONTEXT` 拒绝，不作为判据） | route B 成立与否的决定性一步 | `nvdec_pool_probe.c`：解码帧落 slot + luma 非零 + 软件参考 MATCH |
+| 2 | 探针 legacy CUDA 符号导致 `INVALID_CONTEXT`（`cuMemAlloc`/`cuMemcpyHtoD` 等基础名在 64 位驱动上拒绝上下文；`_v2` 正常） | 之前 DtoD FAIL 可能是探针 artifact，不是驱动 verdict | 三个探针已改为优先 `_v2`；重跑 `[control]`/`[copy]` 即可定论 |
 | 3 | FFmpeg 是否正确使用调用方池（旧探针误报） | route B 与解码器集成 | 新探针全 slot 匹配 + 双帧保留 |
 | 4 | 线性 tiling 采样过滤（可能无 FILTER_LINEAR） | 渲染质量/性能 | `vkGetPhysicalDeviceFormatProperties` + GPU 测试；必要时 nearest 或 blit |
 | 5 | FFmpeg `tex_alignment` 私有（按 4096 计算池大小） | 池 buffer 是否足够 | `av_hwframe_ctx_init`/`get_buffer` 成功即够 |

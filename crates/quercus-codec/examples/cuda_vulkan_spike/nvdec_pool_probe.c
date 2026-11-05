@@ -115,6 +115,10 @@ struct cu_mem_access_desc {
 typedef CUresult (*PFN_cuCtxPushCurrent)(CUcontext);
 typedef CUresult (*PFN_cuCtxPopCurrent)(CUcontext *);
 typedef CUresult (*PFN_cuCtxSetCurrent)(CUcontext);
+typedef CUresult (*PFN_cuCtxGetCurrent)(CUcontext *);
+typedef CUresult (*PFN_cuMemAlloc)(CUdeviceptr *, size_t);
+typedef CUresult (*PFN_cuMemFree)(CUdeviceptr);
+typedef CUresult (*PFN_cuMemGetAddressRange)(CUdeviceptr *, size_t *, CUdeviceptr);
 typedef CUresult (*PFN_cuCtxGetDevice)(int *);
 typedef CUresult (*PFN_cuMemGetAllocationGranularity)(
 	size_t *, const struct cu_mem_alloc_prop *, CUmemAllocationGranularity_flags);
@@ -148,6 +152,10 @@ static struct {
 	PFN_cuCtxPushCurrent push;
 	PFN_cuCtxPopCurrent pop;
 	PFN_cuCtxSetCurrent set_current;
+	PFN_cuCtxGetCurrent get_current;
+	PFN_cuMemAlloc mem_alloc;
+	PFN_cuMemFree mem_free;
+	PFN_cuMemGetAddressRange addr_range;
 	PFN_cuCtxGetDevice get_device;
 	PFN_cuMemGetAllocationGranularity gran;
 	PFN_cuMemCreate create;
@@ -188,9 +196,13 @@ static int cuda_load(void)
 		fprintf(stderr, "[cuda] cannot load libcuda: %s\n", dlerror());
 		return 0;
 	}
-	cu.push = (PFN_cuCtxPushCurrent)sym("cuCtxPushCurrent", "cuCtxPushCurrent_v2");
-	cu.pop = (PFN_cuCtxPopCurrent)sym("cuCtxPopCurrent", "cuCtxPopCurrent_v2");
+	cu.push = (PFN_cuCtxPushCurrent)sym("cuCtxPushCurrent_v2", "cuCtxPushCurrent");
+	cu.pop = (PFN_cuCtxPopCurrent)sym("cuCtxPopCurrent_v2", "cuCtxPopCurrent");
 	cu.set_current = (PFN_cuCtxSetCurrent)sym("cuCtxSetCurrent", NULL);
+	cu.get_current = (PFN_cuCtxGetCurrent)sym("cuCtxGetCurrent", NULL);
+	cu.mem_alloc = (PFN_cuMemAlloc)sym("cuMemAlloc_v2", "cuMemAlloc");
+	cu.mem_free = (PFN_cuMemFree)sym("cuMemFree_v2", "cuMemFree");
+	cu.addr_range = (PFN_cuMemGetAddressRange)sym("cuMemGetAddressRange", NULL);
 	cu.get_device = (PFN_cuCtxGetDevice)sym("cuCtxGetDevice", NULL);
 	cu.gran = (PFN_cuMemGetAllocationGranularity)sym(
 		"cuMemGetAllocationGranularity", NULL);
@@ -205,10 +217,10 @@ static int cuda_load(void)
 		"cuMemExportToShareableHandle", NULL);
 	cu.range = (PFN_cuMemGetHandleForAddressRange)sym(
 		"cuMemGetHandleForAddressRange", NULL);
-	cu.memcpy_htod = (PFN_cuMemcpyHtoD)sym("cuMemcpyHtoD", "cuMemcpyHtoD_v2");
+	cu.memcpy_htod = (PFN_cuMemcpyHtoD)sym("cuMemcpyHtoD_v2", "cuMemcpyHtoD");
 	cu.memcpy2d_async = (PFN_cuMemcpy2DAsync)sym("cuMemcpy2DAsync", NULL);
 	cu.memcpy2d = (PFN_cuMemcpy2D)sym("cuMemcpy2D", NULL);
-	cu.memcpy_dtod = (PFN_cuMemcpyDtoD)sym("cuMemcpyDtoD", "cuMemcpyDtoD_v2");
+	cu.memcpy_dtod = (PFN_cuMemcpyDtoD)sym("cuMemcpyDtoD_v2", "cuMemcpyDtoD");
 	cu.sync = (PFN_cuCtxSynchronize)sym("cuCtxSynchronize", NULL);
 	cu.err_name = (PFN_cuGetErrorName)sym("cuGetErrorName", NULL);
 	cu.err_string = (PFN_cuGetErrorString)sym("cuGetErrorString", NULL);
@@ -249,8 +261,13 @@ static int ctx_enter(const char *why)
 	CUresult s = cu.set_current ? cu.set_current(g_cuda_ctx) : CUDA_SUCCESS;
 	int d = -1;
 	CUresult g = cu.get_device ? cu.get_device(&d) : CUDA_SUCCESS;
-	printf("[ctx] %s: push=%s set_current=%s get_device=%s device=%d\n", why,
-	       err(p), err(s), err(g), d);
+	void *cur = NULL;
+	CUresult cg = cu.get_current ? cu.get_current((CUcontext *)&cur)
+	                             : CUDA_SUCCESS;
+	printf("[ctx] %s: push=%s set_current=%s get_device=%s device=%d "
+	       "get_current=%s current=%p expected=%p %s\n", why, err(p), err(s),
+	       err(g), d, cg == CUDA_SUCCESS ? err(cg) : err(cg), cur, g_cuda_ctx,
+	       cur == g_cuda_ctx ? "(MATCH)" : "(MISMATCH)");
 	if (d >= 0)
 		g_device = d;
 	return p == CUDA_SUCCESS;
@@ -376,9 +393,16 @@ static AVBufferRef *pool_alloc(void *opaque, size_t size)
 	a.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 	a.location_id = g_device;
 	r = cu.access(s->va, rounded, &a, 1);
-	if (r != CUDA_SUCCESS)
-		printf("[pool] cuMemSetAccess(device=%d) -> %s (%s)\n", g_device, err(r),
-		       errs(r));
+	printf("[pool] cuMemSetAccess(device=%d, va=0x%llx, size=%zu) -> %s (%s)\n",
+	       g_device, (unsigned long long)s->va, rounded, err(r), errs(r));
+	if (cu.addr_range) {
+		CUdeviceptr base = 0;
+		size_t rsize = 0;
+		CUresult ar = cu.addr_range(&base, &rsize, s->va);
+		printf("[pool] cuMemGetAddressRange(va) -> %s (%s), base=0x%llx "
+		       "size=%zu\n", err(ar), errs(ar), (unsigned long long)base,
+		       rsize);
+	}
 
 	int fd = -1;
 	r = cu.export(&fd, s->handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
@@ -943,6 +967,12 @@ int main(int argc, char **argv)
 		return 1;
 	ProbeAVCUDADeviceContext *cudactx = ((AVHWDeviceContext *)dev_ref->data)->hwctx;
 	g_cuda_ctx = cudactx->cuda_ctx;
+	printf("[cuda] syms: push=%p set_current=%p get_current=%p get_device=%p "
+	       "mem_alloc=%p memcpy_htod=%p memcpy2d_async=%p memcpy2d=%p "
+	       "memcpy_dtod=%p addr_range=%p\n", (void *)cu.push,
+	       (void *)cu.set_current, (void *)cu.get_current, (void *)cu.get_device,
+	       (void *)cu.mem_alloc, (void *)cu.memcpy_htod, (void *)cu.memcpy2d_async,
+	       (void *)cu.memcpy2d, (void *)cu.memcpy_dtod, (void *)cu.addr_range);
 	CUstream stream = cudactx->stream; /* FFmpeg leaves this NULL (default) */
 	int p0 = ctx_enter("hwdevice");
 	ctx_leave(p0);
@@ -1039,6 +1069,34 @@ int main(int argc, char **argv)
 
 	/* 3) GPU-side device-to-device copy, plane by plane. */
 	int pushed = ctx_enter("DtoD copy");
+
+	/* Control: with the same ctx_enter, does a plain cuMemAlloc +
+	 * cuMemcpyHtoD work? If not, the probe's context/API handling is
+	 * broken, not the driver. If it works but the VMM copy below fails,
+	 * the VMM allocation/context association is the blocker. */
+	unsigned char ctrl_pattern[256];
+	memset(ctrl_pattern, 0xAB, sizeof(ctrl_pattern));
+	if (cu.mem_alloc && cu.memcpy_htod) {
+		CUdeviceptr ctrl = 0;
+		CUresult cr = cu.mem_alloc(&ctrl, sizeof(ctrl_pattern));
+		CUresult wr = cr == CUDA_SUCCESS
+			? cu.memcpy_htod(ctrl, ctrl_pattern, sizeof(ctrl_pattern))
+			: cr;
+		CUresult sr = cu.sync ? cu.sync() : CUDA_SUCCESS;
+		printf("[control] cuMemAlloc+cuMemcpyHtoD -> alloc=%s (%s) copy=%s (%s) "
+		       "sync=%s (%s)\n", err(cr), errs(cr), err(wr), errs(wr), err(sr),
+		       errs(sr));
+		if (cr == CUDA_SUCCESS && cu.mem_free)
+			cu.mem_free(ctrl);
+	}
+	CUresult vw = cu.memcpy_htod
+		? cu.memcpy_htod(slot->va, ctrl_pattern, sizeof(ctrl_pattern))
+		: (CUresult)-1;
+	CUresult vs = cu.sync ? cu.sync() : CUDA_SUCCESS;
+	printf("[control] cuMemcpyHtoD(VMM slot va=0x%llx) -> %s (%s) sync=%s "
+	       "(%s)\n", (unsigned long long)slot->va, err(vw), errs(vw), err(vs),
+	       errs(vs));
+
 	CUDA_MEMCPY2D cpy0;
 	memset(&cpy0, 0, sizeof(cpy0));
 	cpy0.srcMemoryType = CU_MEMORYTYPE_DEVICE;
