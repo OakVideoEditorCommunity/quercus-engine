@@ -251,9 +251,13 @@ unsafe extern "C" fn select_hw_format(
 		return first;
 	}
 	let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
-	let Some(hw_fmt) = hw_pixel_format((*device_ctx).type_) else {
+	let ctx_type = (*device_ctx).type_;
+	let Some(hw_fmt) = hw_pixel_format(ctx_type) else {
 		return first;
 	};
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!("[hwfmt] ctx_type={ctx_type:?} hw_fmt={hw_fmt:?} first={first:?}");
+	}
 	let mut offered = formats;
 	while *offered != AVPixelFormat::AV_PIX_FMT_NONE {
 		if *offered == hw_fmt {
@@ -265,7 +269,13 @@ unsafe extern "C" fn select_hw_format(
 					// Ownership transfers to the codec context; libavcodec
 					// unrefs it after decoding / on close.
 					(*avctx).hw_frames_ctx = frames;
+					if std::env::var_os("OAK_DEBUG_HW").is_some() {
+						eprintln!("[hwfmt] selected {hw_fmt:?}");
+					}
 					return hw_fmt;
+				}
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[hwfmt] frames init failed rc={init} for {hw_fmt:?}");
 				}
 				sys::av_buffer_unref(&mut frames);
 			}
