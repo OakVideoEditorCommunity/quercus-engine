@@ -13,9 +13,9 @@
 //! The app-side TaskManager (the task panel's job list) is host
 //! infrastructure and intentionally not exported.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use quercus_node::id::NodeId;
 use quercus_task::export::{EncodingParams, ExportTask};
@@ -215,13 +215,7 @@ fn spawn_task(
 		worker_entry.state.store(state, Ordering::SeqCst);
 		worker_entry.done.notify_all();
 	});
-	if task_pool().tx.send(job).is_err() {
-		// The pool is gone (shutdown); do not leak a permanently RUNNING
-		// entry. The caller will observe a failure.
-		let _done = entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
-		entry.state.store(QUERCUS_TASK_FAILED, Ordering::SeqCst);
-		entry.done.notify_all();
-	}
+	task_pool().push(job);
 	tasks()
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
@@ -237,8 +231,21 @@ fn spawn_task(
 /// live threads (each waiting on a bounded render queue), which starved the
 /// decode/present threads and looked like a deadlock. A fixed pool keeps the
 /// task count bounded regardless of how far the UI runs ahead.
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Work queue shared by the fixed task pool. A condvar queue (rather than
+/// `mpsc::Receiver` behind a mutex) avoids holding the receive lock while a
+/// worker blocks, which made every other worker wait on that one lock.
 struct TaskPool {
-	tx: mpsc::Sender<Box<dyn FnOnce() + Send>>,
+	queue: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
+}
+
+impl TaskPool {
+	fn push(&self, job: Job) {
+		let (lock, cv) = &*self.queue;
+		lock.lock().unwrap_or_else(|e| e.into_inner()).push_back(job);
+		cv.notify_one();
+	}
 }
 
 static TASK_POOL: OnceLock<TaskPool> = OnceLock::new();
@@ -250,24 +257,26 @@ fn task_pool() -> &'static TaskPool {
 			.and_then(|v| v.parse::<usize>().ok())
 			.filter(|n| *n > 0)
 			.unwrap_or(8);
-		let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
-		let rx = Arc::new(Mutex::new(rx));
+		let queue = Arc::new((Mutex::new(VecDeque::<Job>::new()), Condvar::new()));
 		for index in 0..workers {
-			let rx = rx.clone();
+			let queue = queue.clone();
 			let _ = std::thread::Builder::new()
 				.name(format!("quercus-task-{index}"))
 				.spawn(move || loop {
 					let job = {
-						let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
-						guard.recv()
+						let (lock, cv) = &*queue;
+						let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+						while guard.is_empty() {
+							guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+						}
+						guard.pop_front()
 					};
-					match job {
-						Ok(job) => job(),
-						Err(_) => break,
+					if let Some(job) = job {
+						job();
 					}
 				});
 		}
-		TaskPool { tx }
+		TaskPool { queue }
 	})
 }
 
