@@ -2013,10 +2013,14 @@ fn composite_tracks_gpu(
 					scratch.push(t);
 					t
 				}
-							Texture::Cpu(_) => {
-				// Uploading here would use queue.write_texture on the render
-				// thread; use the CPU composite for this frame instead.
-				return Err(Error::State);
+							Texture::Cpu(f) => {
+				let t = ctx.create_texture(f.width, f.height)?;
+				if let Err(err) = ctx.upload(t, f) {
+					ctx.destroy_texture(t);
+					return Err(err);
+				}
+				scratch.push(t);
+				t
 			}
 				Texture::Planar(_) => {
 					return Err(Error::Failed(
@@ -2116,11 +2120,6 @@ fn composite_tracks(frames: Vec<Texture>, size: (i32, i32)) -> Texture {
 		if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
 			match composite_tracks_gpu(&ctx, &frames, (w, h)) {
 				Ok(texture) => return texture,
-				Err(Error::State) => {
-					// CPU layer or transient capability gap: use the CPU
-					// compositor for this frame without disabling the GPU
-					// path for the whole process.
-				}
 				Err(err) => {
 					eprintln!(
 						"GPU track composite failed, using CPU (and staying there): {err:#}"
@@ -3553,6 +3552,25 @@ pub fn render_montage_frame(
 /// the normal path: the only transfers are uploads of CPU-decoded frames
 /// (software decode) and the explicit readback of a texture that belongs
 /// to a different context.
+/// 1×1 transparent GPU base for the first montage layer. Using this as the
+/// first alpha-over destination avoids a separate `clear_texture` submit
+/// per frame (the first pass writes a full-size opaque/alpha result).
+fn transparent_gpu_base(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+) -> Result<Texture> {
+    let token = ctx.placeholder_texture()?;
+    let lease = quercus_core::texture::GpuLease::borrowed(ctx.clone(), token);
+    Ok(Texture::Gpu {
+        token,
+        backend: ctx.kind(),
+        width: 1,
+        height: 1,
+        format: PixelFormat::F32,
+        ctx: ctx.clone(),
+        lease,
+    })
+}
+
 fn render_montage_frame_gpu(
     ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
     time: Rational,
@@ -3574,11 +3592,9 @@ fn render_montage_frame_gpu(
         }
     };
     let acc = ctx.create_texture(w, h)?;
-    if let Err(err) = ctx.clear_texture(acc) {
-        ctx.destroy_texture(acc);
-        return Err(err);
-    }
-    let mut current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+    let mut acc_owned = true;
+    let mut initialized = false;
+    let mut current = transparent_gpu_base(ctx)?;
     let mut spans = params.adjustments.iter().peekable();
     // Decode from the bottom clip first, composite topmost-last — the same
     // order as the CPU compositor (the montage list is bottom-up).
@@ -3588,6 +3604,15 @@ fn render_montage_frame_gpu(
         while spans.peek().is_some_and(|span| span.track_index <= index) {
             let span = spans.next().expect("peeked");
             if time >= span.in_time && time < span.out_time {
+                if !initialized {
+                    if let Err(err) = ctx.clear_texture(acc) {
+                        ctx.destroy_texture(acc);
+                        return Err(err);
+                    }
+                    current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+                    acc_owned = false;
+                    initialized = true;
+                }
                 current = apply_effect_list(current, &span.effects, time);
             }
         }
@@ -3609,23 +3634,35 @@ fn render_montage_frame_gpu(
         // (C++ semantics: the clip texture passes through the chain
         // bottom-up, the chain top feeds the track composite).
         let effected = apply_clip_effects(decoded, clip, time);
-        // CPU-decoded/CPU-effect layers would need `queue.write_texture` on
-        // the render thread, which contends with the host's wgpu queue and
-        // can freeze playback. Keep the GPU montage strictly GPU-resident;
-        // any CPU layer makes this ticket use the CPU compositor.
-        if !matches!(effected, Texture::Gpu { .. }) {
-            return Err(Error::Failed(
-                "CPU-decoded montage layer requires the CPU compositor".into(),
-            ));
-        }
         current = composite_montage_gpu(ctx, &program, &current, &effected, clip.gain, size)?;
+        initialized = true;
     }
     // Layers above every clip (their boundary is the montage end): they
     // grade the final composite.
     for span in spans {
         if time >= span.in_time && time < span.out_time {
+            if !initialized {
+                if let Err(err) = ctx.clear_texture(acc) {
+                    ctx.destroy_texture(acc);
+                    return Err(err);
+                }
+                current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+                acc_owned = false;
+                initialized = true;
+            }
             current = apply_effect_list(current, &span.effects, time);
         }
+    }
+    if !initialized {
+        if let Err(err) = ctx.clear_texture(acc) {
+            ctx.destroy_texture(acc);
+            return Err(err);
+        }
+        current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+        acc_owned = false;
+    }
+    if acc_owned {
+        ctx.destroy_texture(acc);
     }
     Ok(current)
 }
