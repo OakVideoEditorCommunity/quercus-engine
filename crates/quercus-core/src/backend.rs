@@ -356,6 +356,8 @@ pub struct GpuContext {
 	/// Set after a fatal wgpu poll/device-lost error. Further readbacks
 	/// must fail cleanly instead of polling the lost device again.
 	device_lost: AtomicBool,
+	/// Serializes CUDA external-memory import with asynchronous readback.
+	external_lock: Arc<Mutex<()>>,
 	/// Linux/Vulkan OpenFX GL zero-copy: allocate `Rgba32Float` textures
 	/// with exportable `OPAQUE_FD` memory. Disabled by
 	/// `QUERCUS_OFX_GPU_ZEROCOPY=0`; every allocation failure falls back
@@ -653,6 +655,7 @@ struct ReadbackJob {
 	format: wgpu::TextureFormat,
 	width: u32,
 	height: u32,
+	external_lock: Arc<Mutex<()>>,
 	tx: std::sync::mpsc::Sender<Result<Frame>>,
 }
 
@@ -664,6 +667,10 @@ fn readback_worker() -> &'static std::sync::mpsc::Sender<ReadbackJob> {
 			.name("quercus-readback".into())
 			.spawn(move || {
 				while let Ok(job) = rx.recv() {
+					let _external = job
+						.external_lock
+						.lock()
+						.unwrap_or_else(|e| e.into_inner());
 					let result = download_texture(
 						&job.device,
 						&job.queue,
@@ -911,6 +918,7 @@ impl GpuContext {
 				color_luts: Mutex::new(Vec::new()),
 				used: AtomicBool::new(false),
 				device_lost: AtomicBool::new(false),
+				external_lock: Arc::new(Mutex::new(())),
 				ofx_zerocopy: zerocopy_requested(),
 			}));
 		}
@@ -955,6 +963,7 @@ impl GpuContext {
 			color_luts: Mutex::new(Vec::new()),
 			used: AtomicBool::new(false),
 			device_lost: AtomicBool::new(false),
+			external_lock: Arc::new(Mutex::new(())),
 			ofx_zerocopy: zerocopy_requested(),
 		})
 	}
@@ -1029,6 +1038,13 @@ impl GpuContext {
 	/// Run `callback` once all GPU work submitted so far has completed.
 	/// External-memory producers use this to know when a reusable VMM
 	/// buffer is no longer read by the renderer.
+	/// Lock shared with the CUDA import path: CUDA writes into exported
+	/// Vulkan memory must not run concurrently with a readback using that
+	/// device.
+	pub fn external_lifecycle_lock(&self) -> Arc<Mutex<()>> {
+		self.external_lock.clone()
+	}
+
 	pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static) {
 		self.queue.on_submitted_work_done(callback);
 	}
@@ -2644,6 +2660,7 @@ impl GpuContext {
 				format: entry.format,
 				width: entry.width,
 				height: entry.height,
+				external_lock: self.external_lock.clone(),
 				tx,
 			})
 			.map_err(|_| Error::Failed("readback worker stopped".into()))?;

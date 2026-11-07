@@ -774,6 +774,11 @@ fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 #[cfg(target_os = "linux")]
 fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
 	use cuda_driver::{MemAccessDesc, MemAllocationProp, MemLocation};
+	// Serialize the CUDA copy/export with async readback using the same
+	// Vulkan device. Concurrent cuMemcpyDtoD + mapped readback loses the
+	// device on NVIDIA.
+	let external_lock = ctx.external_lifecycle_lock();
+	let _external = external_lock.lock().unwrap_or_else(|e| e.into_inner());
 	let driver = match cuda_driver::load() {
 		Some(driver) => driver,
 		None => return ImportOutcome::Unsupported,

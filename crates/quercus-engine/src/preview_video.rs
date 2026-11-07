@@ -516,7 +516,14 @@ pub(crate) fn render_video(
 						}
 					}
 				}
-				let frame = texture.to_frame().map_err(|e| e.to_string())?;
+				let frame = match &texture {
+					quercus_core::texture::Texture::Gpu { .. } => texture
+						.to_frame_async()
+						.map_err(|e| e.to_string())?
+						.wait()
+						.map_err(|e| e.to_string())?,
+					_ => texture.to_frame().map_err(|e| e.to_string())?,
+				};
 				frame_from_cpu(frame, FrameOrigin::Gpu, pixel_format)
 			}
 			Ok(TicketPayload::ShmFrame(frame)) => {
@@ -571,7 +578,14 @@ pub(crate) fn render_video(
 		let frame = match rendered {
 			quercus_core::texture::Texture::Cpu(frame) => frame,
 			texture @ quercus_core::texture::Texture::Gpu { .. } => {
-				texture.to_frame().map_err(|error| error.to_string())?
+				match &texture {
+					quercus_core::texture::Texture::Gpu { .. } => texture
+						.to_frame_async()
+						.map_err(|error| error.to_string())?
+						.wait()
+						.map_err(|error| error.to_string())?,
+					_ => texture.to_frame().map_err(|error| error.to_string())?,
+				}
 			}
 			quercus_core::texture::Texture::Planar(_) => {
 				return Err("unresolved planar montage texture".to_string())
