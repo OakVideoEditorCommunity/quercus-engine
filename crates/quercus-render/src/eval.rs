@@ -2020,14 +2020,12 @@ fn composite_tracks_gpu(
 					scratch.push(t);
 					t
 				}
-							Texture::Cpu(f) => {
-				let t = ctx.create_texture(f.width, f.height)?;
-				if let Err(err) = ctx.upload(t, f) {
-					ctx.destroy_texture(t);
-					return Err(err);
-				}
-				scratch.push(t);
-				t
+			Texture::Cpu(_) => {
+				// The CPU image comes from a CPU-only OFX/effect node. Let
+				// the graph use its CPU compositor for this frame instead of
+				// uploading on the render thread; the upload path is the one
+				// that has been losing the Vulkan device with OFX.
+				return Err(Error::State);
 			}
 				Texture::Planar(_) => {
 					return Err(Error::Failed(
@@ -2127,6 +2125,9 @@ fn composite_tracks(frames: Vec<Texture>, size: (i32, i32)) -> Texture {
 		if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
 			match composite_tracks_gpu(&ctx, &frames, (w, h)) {
 				Ok(texture) => return texture,
+				Err(Error::State) => {
+					// CPU layer: use the CPU compositor for this frame only.
+				}
 				Err(err) => {
 					eprintln!(
 						"GPU track composite failed, using CPU (and staying there): {err:#}"
