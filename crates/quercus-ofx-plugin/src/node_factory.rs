@@ -899,7 +899,14 @@ fn execute_plugin_job(
 				.as_any()
 				.and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>());
 			match gpu {
-				Some(gpu) if gpu.supports_gl_zerocopy() => match gpu.create_texture(w, h) {
+				// CPU-only OFX renders must not target a GPU texture: the
+				// CPU image would be uploaded and then downloaded again,
+				// which has been losing the Vulkan device on the graph path.
+				Some(gpu)
+					if gpu.supports_gl_zerocopy()
+						&& std::env::var_os("QUERCUS_OFX_GL").is_some() =>
+				{
+					match gpu.create_texture(w, h) {
 					Ok(token) => quercus_core::texture::Texture::gpu(
 						ctx.clone(),
 						token,
@@ -917,6 +924,7 @@ fn execute_plugin_job(
 							)?,
 						)
 					}
+				}
 				},
 				_ => quercus_core::texture::Texture::wrap_frame(
 					quercus_render::eval::generate_frame(
