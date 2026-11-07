@@ -198,17 +198,14 @@ pub fn device_type_candidates() -> &'static [sys::AVHWDeviceType] {
 	}
 	#[cfg(all(unix, not(target_os = "macos")))]
 	{
-		// VAAPI first: it is the DMA-BUF path the M5 zero-copy import
-		// consumes (`VK_EXT_external_memory_dma_buf`), and on NVIDIA boxes
-		// with the VA-API driver it is just as reachable as NVDEC — while
-		// a CUDA (NVDEC) surface has no public handle export, so frames
-		// decoded through it can only take the staging fallback. CUDA
-		// stays as the fallback for machines without libva; it also
-		// sidesteps VAAPI's default render node pointing at a device with
-		// no VA driver (CUDA device creation fails fast without libcuda).
+		// CUDA/NVDEC first: the VMM export path (`cuMemExportToShareableHandle`
+		// -> Vulkan OPAQUE_FD) is the import that is continuously verified on
+		// NVIDIA. VAAPI import is opt-in because some drivers block inside
+		// `vkCreateImage`/`vkAllocateMemory` for DMA-BUF; it stays as the
+		// fallback on machines without libcuda.
 		&[
-			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
 			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
 		]
 	}
 }
