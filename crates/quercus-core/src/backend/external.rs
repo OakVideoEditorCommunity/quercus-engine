@@ -864,6 +864,7 @@ impl GpuContext {
 				layer: None,
 				#[cfg(any(target_os = "linux", target_os = "windows"))]
 				external: None,
+			keep_alive: None,
 			},
 		)
 	}
@@ -931,6 +932,7 @@ impl GpuContext {
 				layer: desc.layer,
 				#[cfg(any(target_os = "linux", target_os = "windows"))]
 				external: None,
+			keep_alive: None,
 			},
 		);
 		token
@@ -1158,6 +1160,7 @@ impl GpuContext {
 					height: height as u32,
 					format,
 				})),
+				keep_alive: None,
 			},
 		);
 		Ok(token)
@@ -1380,6 +1383,7 @@ impl GpuContext {
 					height: height as u32,
 					format,
 				})),
+				keep_alive: None,
 			},
 		);
 		Ok(token)

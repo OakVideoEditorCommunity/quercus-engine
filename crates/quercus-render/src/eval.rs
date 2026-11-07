@@ -1713,6 +1713,13 @@ fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Resu
         },
         None => dst,
     };
+    // Hold the VMM/decode-surface guard on the resolved token until the
+    // token (including any async readback) is destroyed. Without this the
+    // source slot can be reused while the GPU still reads the resolved
+    // frame in the async pipeline.
+    if let Some(guard) = planar.keep_alive.clone() {
+        gpu.set_texture_keep_alive(token, guard);
+    }
     Ok(Texture::gpu(planar.ctx.clone(), token, w, h, PixelFormat::F32))
 }
 

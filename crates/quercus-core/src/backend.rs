@@ -244,6 +244,9 @@ struct GpuTexture {
 	/// plugin's GL context can import the very same allocation.
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
 	external: Option<Arc<external::ExternalTexture>>,
+	/// Optional lifetime guard (CUDA VMM slot): held until the token is
+	/// destroyed, so a resolved texture cannot outlive its source surface.
+	keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -629,6 +632,9 @@ fn expand_rgb_to_rgba(
 /// dedicated readback thread performs the GPU wait/map.
 pub struct FrameReadback {
 	rx: std::sync::mpsc::Receiver<Result<Frame>>,
+	/// Source lifetime guard (CUDA VMM slot): held until the asynchronous
+	/// readback completes, not just until the original Texture drops.
+	_guard: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl FrameReadback {
@@ -1117,6 +1123,7 @@ impl GpuContext {
 				layer: None,
 				#[cfg(any(target_os = "linux", target_os = "windows"))]
 				external: None,
+				keep_alive: None,
 			},
 		);
 		Ok(token)
@@ -1125,6 +1132,18 @@ impl GpuContext {
 	/// Destroy a texture token (idempotent).
 	pub fn destroy_texture(&self, token: u64) {
 		lock(&self.textures).remove(&token);
+	}
+
+	/// Attach a lifetime guard to a token (e.g. the CUDA VMM slot backing an
+	/// imported frame). Dropped when the token is destroyed.
+	pub fn set_texture_keep_alive(
+		&self,
+		token: u64,
+		guard: Arc<dyn std::any::Any + Send + Sync>,
+	) {
+		if let Some(entry) = lock(&self.textures).get_mut(&token) {
+			entry.keep_alive = Some(guard);
+		}
 	}
 
 	/// Look up a texture's (width, height).
@@ -2615,6 +2634,7 @@ impl GpuContext {
 			.get(&token)
 			.cloned()
 			.ok_or(Error::NotFound)?;
+		let guard = entry.keep_alive.clone();
 		let (tx, rx) = std::sync::mpsc::channel();
 		readback_worker()
 			.send(ReadbackJob {
@@ -2627,7 +2647,7 @@ impl GpuContext {
 				tx,
 			})
 			.map_err(|_| Error::Failed("readback worker stopped".into()))?;
-		Ok(FrameReadback { rx })
+		Ok(FrameReadback { rx, _guard: guard })
 	}
 
 	/// Blit texture → texture. `processor` selects the color-managed path,
