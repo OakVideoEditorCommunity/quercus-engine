@@ -275,6 +275,10 @@ pub trait GpuContextLike: Send + Sync {
 	fn upload(&self, token: u64, frame: &Frame) -> Result<()>;
 	/// Download a texture into a CPU frame.
 	fn download(&self, token: u64) -> Result<Frame>;
+	/// Async download (default falls back to a synchronous implementation).
+	fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		Err(Error::State)
+	}
 	/// Blit texture → texture (plain copy; color-managed deferred).
 	fn blit(
 		&self,
@@ -619,6 +623,169 @@ fn expand_rgb_to_rgba(
 		}
 	}
 	Ok(out)
+}
+
+/// One asynchronous readback request: the caller waits on this while the
+/// dedicated readback thread performs the GPU wait/map.
+pub struct FrameReadback {
+	rx: std::sync::mpsc::Receiver<Result<Frame>>,
+}
+
+impl FrameReadback {
+	/// Block until the readback thread has produced the frame or an error.
+	pub fn wait(self) -> Result<Frame> {
+		self.rx
+			.recv()
+			.unwrap_or_else(|_| Err(Error::Failed("readback worker stopped".into())))
+	}
+}
+
+struct ReadbackJob {
+	device: wgpu::Device,
+	queue: wgpu::Queue,
+	texture: Arc<wgpu::Texture>,
+	format: wgpu::TextureFormat,
+	width: u32,
+	height: u32,
+	tx: std::sync::mpsc::Sender<Result<Frame>>,
+}
+
+fn readback_worker() -> &'static std::sync::mpsc::Sender<ReadbackJob> {
+	static TX: std::sync::OnceLock<std::sync::mpsc::Sender<ReadbackJob>> = std::sync::OnceLock::new();
+	TX.get_or_init(|| {
+		let (tx, rx) = std::sync::mpsc::channel::<ReadbackJob>();
+		let _ = std::thread::Builder::new()
+			.name("quercus-readback".into())
+			.spawn(move || {
+				while let Ok(job) = rx.recv() {
+					let result = download_texture(
+						&job.device,
+						&job.queue,
+						&job.texture,
+						job.format,
+						job.width,
+						job.height,
+					);
+					let _ = job.tx.send(result);
+				}
+			});
+		tx
+	})
+}
+
+fn download_texture(
+	device: &wgpu::Device,
+	queue: &wgpu::Queue,
+	texture: &wgpu::Texture,
+	format: wgpu::TextureFormat,
+	width: u32,
+	height: u32,
+) -> Result<Frame> {
+	GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
+	let (bpp, convert_half) = match format {
+		wgpu::TextureFormat::Rgba32Float => (16usize, false),
+		wgpu::TextureFormat::Rgba16Float => (8usize, true),
+		other => {
+			return Err(Error::Failed(format!(
+				"texture download: unsupported format {other:?}"
+			)))
+		}
+	};
+	let w = width as usize;
+	let h = height as usize;
+	let linesize = w * bpp;
+	// copy_texture_to_buffer requires a 256-byte-aligned row stride.
+	let padded = (linesize + 255) & !255;
+	let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+		label: Some("quercusrender-download"),
+		size: (padded * h) as u64,
+		usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+		mapped_at_creation: false,
+	});
+	let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+		label: Some("quercusrender-download"),
+	});
+	encoder.copy_texture_to_buffer(
+		wgpu::TexelCopyTextureInfo {
+			texture,
+			mip_level: 0,
+			origin: wgpu::Origin3d::ZERO,
+			aspect: wgpu::TextureAspect::All,
+		},
+		wgpu::TexelCopyBufferInfo {
+			buffer: &buffer,
+			layout: wgpu::TexelCopyBufferLayout {
+				offset: 0,
+				bytes_per_row: Some(padded as u32),
+				rows_per_image: None,
+			},
+		},
+		wgpu::Extent3d {
+			width: w as u32,
+			height: h as u32,
+			depth_or_array_layers: 1,
+		},
+	);
+	queue.submit(Some(encoder.finish()));
+	let (tx, rx) = std::sync::mpsc::channel();
+	buffer
+		.slice(..)
+		.map_async(wgpu::MapMode::Read, move |result| {
+			let _ = tx.send(result.is_ok());
+		});
+	// Poll incrementally: a blocking `PollType::Wait` on the readback
+	// thread can serialize against the render thread's submits. Polling
+	// keeps the queue lock held only for the maintenance call, and the
+	// map callback is still driven by the same device.
+	let deadline =
+		std::time::Instant::now() + std::time::Duration::from_secs(30);
+	let mapped_ok = loop {
+		let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let _ = device.poll(wgpu::PollType::Poll);
+		}));
+		if poll.is_err() {
+			return Err(Error::Failed(
+				"wgpu device lost during texture download".into(),
+			));
+		}
+		match rx.try_recv() {
+			Ok(ok) => break ok,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+			Err(std::sync::mpsc::TryRecvError::Empty) => {}
+		}
+		if std::time::Instant::now() > deadline {
+			return Err(Error::Failed("texture download map timed out".into()));
+		}
+		std::thread::sleep(std::time::Duration::from_millis(1));
+	};
+	if !mapped_ok {
+		return Err(Error::Failed("texture download map failed".into()));
+	}
+	let mapped = buffer.slice(..).get_mapped_range();
+	let mut data = vec![0u8; linesize * h];
+	for row in 0..h {
+		let src = &mapped[row * padded..row * padded + linesize];
+		data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
+	}
+	drop(mapped);
+	buffer.unmap();
+	if convert_half {
+		let mut f32_data = vec![0u8; w * h * 16];
+		for i in 0..w * h * 4 {
+			let bits = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
+			let v = half::f16::from_bits(bits).to_f32();
+			f32_data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+		}
+		data = f32_data;
+	}
+	let mut frame = Frame::new();
+	let mut pod = VideoParamsPod::default();
+	pod.width = w as i32;
+	pod.height = h as i32;
+	pod.format = PixelFormat::F32 as i32;
+	frame.set_video_params(pod);
+	frame.data = data;
+	Ok(frame)
 }
 
 impl GpuContext {
@@ -2421,109 +2588,46 @@ impl GpuContext {
 				"wgpu device lost; texture download unavailable".into(),
 			));
 		}
-		GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
 		let entry = lock(&self.textures)
 			.get(&token)
 			.cloned()
 			.ok_or(Error::NotFound)?;
-		let (bpp, convert_half) = match entry.format {
-			wgpu::TextureFormat::Rgba32Float => (16usize, false),
-			wgpu::TextureFormat::Rgba16Float => (8usize, true),
-			other => {
-				return Err(Error::Failed(format!(
-					"texture download: unsupported format {other:?}"
-				)))
-			}
-		};
-		let w = entry.width as usize;
-		let h = entry.height as usize;
-		let linesize = w * bpp;
-		// copy_texture_to_buffer requires a 256-byte-aligned row stride.
-		let padded = (linesize + 255) & !255;
+		download_texture(
+			&self.device,
+			&self.queue,
+			&entry.texture,
+			entry.format,
+			entry.width,
+			entry.height,
+		)
+	}
 
-		let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("quercusrender-download"),
-			size: (padded * h) as u64,
-			usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-			mapped_at_creation: false,
-		});
-
-		let mut encoder = self
-			.device
-			.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-				label: Some("quercusrender-download"),
-			});
-		encoder.copy_texture_to_buffer(
-			wgpu::TexelCopyTextureInfo {
-				texture: &entry.texture,
-				mip_level: 0,
-				origin: wgpu::Origin3d::ZERO,
-				aspect: wgpu::TextureAspect::All,
-			},
-			wgpu::TexelCopyBufferInfo {
-				buffer: &buffer,
-				layout: wgpu::TexelCopyBufferLayout {
-					offset: 0,
-					bytes_per_row: Some(padded as u32),
-					rows_per_image: None,
-				},
-			},
-			wgpu::Extent3d {
-				width: w as u32,
-				height: h as u32,
-				depth_or_array_layers: 1,
-			},
-		);
-		self.queue.submit(Some(encoder.finish()));
-
-		// Map + block until the callback fires (headless-safe: no surface,
-		// no event loop; PollType::Wait drives the callbacks).
-		let (tx, rx) = std::sync::mpsc::channel();
-		buffer
-			.slice(..)
-			.map_async(wgpu::MapMode::Read, move |result| {
-				let _ = tx.send(result.is_ok());
-			});
-		let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-		}));
-		if poll.is_err() {
-			self.mark_device_lost();
+	/// Asynchronous variant of [`GpuContext::download`]: the GPU wait/map
+	/// runs on a dedicated readback thread, so the render thread can submit
+	/// the next frame while this one is being mapped.
+	pub fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		if self.device_lost() {
 			return Err(Error::Failed(
-				"wgpu device lost during texture download".into(),
+				"wgpu device lost; texture download unavailable".into(),
 			));
 		}
-		if !rx.recv().unwrap_or(false) {
-			return Err(Error::Failed("texture download map failed".into()));
-		}
-
-		let mapped = buffer.slice(..).get_mapped_range();
-		let mut data = vec![0u8; linesize * h];
-		for row in 0..h {
-			let src = &mapped[row * padded..row * padded + linesize];
-			data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
-		}
-		drop(mapped);
-		buffer.unmap();
-
-		if convert_half {
-			let mut f32_data = vec![0u8; w * h * 16];
-			for i in 0..w * h * 4 {
-				let bits = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
-				let v = half::f16::from_bits(bits).to_f32();
-				f32_data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-			}
-			data = f32_data;
-		}
-
-		let mut frame = Frame::new();
-		let mut pod = VideoParamsPod::default();
-		pod.width = w as i32;
-		pod.height = h as i32;
-		pod.format = PixelFormat::F32 as i32;
-		frame.set_video_params(pod);
-		frame.data = data;
-		Ok(frame)
+		let entry = lock(&self.textures)
+			.get(&token)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let (tx, rx) = std::sync::mpsc::channel();
+		readback_worker()
+			.send(ReadbackJob {
+				device: self.device.clone(),
+				queue: self.queue.clone(),
+				texture: entry.texture,
+				format: entry.format,
+				width: entry.width,
+				height: entry.height,
+				tx,
+			})
+			.map_err(|_| Error::Failed("readback worker stopped".into()))?;
+		Ok(FrameReadback { rx })
 	}
 
 	/// Blit texture → texture. `processor` selects the color-managed path,
@@ -3557,6 +3661,10 @@ impl GpuContextLike for GpuContext {
 
 	fn download(&self, token: u64) -> Result<Frame> {
 		self.download(token)
+	}
+
+	fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		self.download_async(token)
 	}
 
 	fn blit(

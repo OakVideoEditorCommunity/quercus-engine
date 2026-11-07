@@ -187,13 +187,12 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 		return None;
 	}
 	let device_type = req.device_type?;
-	// Only a host-installed device (the app's UI/render context) may take
-	// the frame: a lazily created worker/CLI context must keep decoding on
-	// the CPU path. Checked before touching the frame so the common
-	// "no import here" case costs nothing.
-	if !GpuContext::host_gpu_installed() {
-		return None;
-	}
+	// A host-adopted context and the engine's own isolated context are
+	// both valid import targets. The old host-only gate assumed the engine
+	// always shared the UI device; with queue isolation the engine's local
+	// Vulkan context is the one that renders, so requiring a host install
+	// forced every hardware frame through CPU staging (the 4K render
+	// hotspot).
 	if !crate::hwdecode::is_hw_format(frame_format(req.frame)) {
 		return None;
 	}

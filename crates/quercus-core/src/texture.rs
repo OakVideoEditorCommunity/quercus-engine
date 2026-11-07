@@ -1025,6 +1025,17 @@ impl Texture {
 		}
 	}
 
+	/// Async form of [`Texture::to_frame`]: the GPU readback runs on the
+	/// dedicated readback thread, so a render thread can submit the next
+	/// frame before this one is mapped. CPU textures return immediately.
+	pub fn to_frame_async(&self) -> Result<crate::backend::FrameReadback> {
+		match self {
+			Texture::Gpu { token, ctx, .. } => ctx.download_async(*token),
+			Texture::Cpu(_) => Err(Error::State),
+			Texture::Planar(_) => Err(Error::State),
+		}
+	}
+
 	/// Dimensions (0x0 for dummy).
 	pub fn size(&self) -> (i32, i32) {
 		match self {
