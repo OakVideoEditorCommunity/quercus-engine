@@ -775,11 +775,17 @@ fn download_texture(
 		return Err(Error::Failed("texture download map failed".into()));
 	}
 	let mapped = buffer.slice(..).get_mapped_range();
-	let mut data = vec![0u8; linesize * h];
-	for row in 0..h {
-		let src = &mapped[row * padded..row * padded + linesize];
-		data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
-	}
+	let mut data = if padded == linesize {
+		// Tight rows: one bulk copy instead of `height` per-row memcpys.
+		mapped.to_vec()
+	} else {
+		let mut data = vec![0u8; linesize * h];
+		for row in 0..h {
+			let src = &mapped[row * padded..row * padded + linesize];
+			data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
+		}
+		data
+	};
 	drop(mapped);
 	buffer.unmap();
 	if convert_half {
