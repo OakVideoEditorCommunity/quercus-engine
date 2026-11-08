@@ -115,8 +115,12 @@ impl ConformManager {
 		Ok(ConformState::Generating)
 	}
 
-	/// Number of conform (pcm) files for the given stream/params — one per
-	/// channel; 0 on invalid arguments.
+	/// Number of conform (pcm) files a stream/parameter set produces.
+	///
+	/// One file per channel, so the count is the number of set bits in
+	/// `channel_layout` (an FFmpeg-style mask); a layout of 0 yields 0. The
+	/// other parameters only affect the file *names*, not the count, and are
+	/// ignored here. Pairs with [`Self::get_conform_filename`].
 	pub fn get_conform_filename_count(
 		&self,
 		_cache_path: &str,
@@ -129,7 +133,20 @@ impl ConformManager {
 		channel_layout.count_ones() as usize
 	}
 
-	/// The `index`-th conform filename.
+	/// The `index`-th conform (pcm) filename for the given stream and
+	/// parameters.
+	///
+	/// `cache_path` is the directory holding the conform files, `source_filename`
+	/// the media path (hashed into a stable identifier), and
+	/// `stream_index`/`sample_rate`/`sample_format`/`channel_layout` select the
+	/// name. `index` is the 0-based channel index and must be below
+	/// [`Self::get_conform_filename_count`]. Naming is
+	/// `<identifier>-<stream>.<rate>.<format>.<layout>.<index>.pcm` (see
+	/// [`conform_filenames`]).
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` when `index` is at or beyond the channel count.
 	pub fn get_conform_filename(
 		&self,
 		cache_path: &str,
@@ -191,7 +208,11 @@ fn unique_file_identifier(filename: &str) -> String {
 		.unwrap_or_default()
 }
 
-/// True when every conform filename already exists on disk.
+/// True when every path in `filenames` exists on disk.
+///
+/// Used by `ConformManager` to decide `ConformState::Exists`; an empty slice
+/// is vacuously true. Only existence is checked — size and readability are not
+/// verified, so a truncated or locked file still counts.
 fn all_conforms_exist(filenames: &[String]) -> bool {
 	filenames.iter().all(|f| Path::new(f).exists())
 }
@@ -204,7 +225,12 @@ pub(crate) mod test_util {
 	/// Serializes every test that mutates the task-submit registry.
 	pub static REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-	/// A task-submit callback that accepts every request (no-op).
+	/// Task-submit callback that accepts every request by returning `Ok(())`.
+	///
+	/// `_req` is the submitted task request and `_ud` the user data registered
+	/// with `task::set_task_submit_cb`; both are ignored. Test-only support
+	/// installed by [`register_accept_cb`] so conform calls behave as if a
+	/// worker accepted the job immediately.
 	fn accept_cb(
 		_req: &crate::task::TaskRequest,
 		_ud: *mut std::ffi::c_void,

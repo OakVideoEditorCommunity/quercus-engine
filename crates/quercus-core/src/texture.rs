@@ -186,7 +186,13 @@ pub struct GpuLease {
 }
 
 impl GpuLease {
-	/// A lease for `token` on `ctx`.
+	/// Create an owning lease for registry texture `token` on `ctx`, returned in
+	/// an `Arc` shared by every clone of the texture.
+	///
+	/// Dropping the last `Arc` calls `ctx.destroy_texture(token)`, so callers
+	/// must not destroy the token themselves and must keep using the lease for
+	/// as long as the texture lives. Use [`GpuLease::borrowed`] for tokens whose
+	/// lifetime another holder (e.g. a CUDA VMM slot pool) manages.
 	pub fn new(ctx: Arc<dyn GpuContextLike>, token: u64) -> Arc<Self> {
 		Arc::new(Self { token, ctx, owned: true })
 	}
@@ -198,7 +204,12 @@ impl GpuLease {
 		Arc::new(Self { token, ctx, owned: false })
 	}
 
-	/// The leased token.
+	/// The backend token this lease covers — a key in `ctx`'s texture registry,
+	/// as passed to [`GpuLease::new`]/[`GpuLease::borrowed`].
+	///
+	/// Consumers store it in `Texture::Gpu`/`PlanarTexture` and hand it back to
+	/// upload/download/destroy calls; the lease only decides when the token is
+	/// destroyed.
 	pub fn token(&self) -> u64 {
 		self.token
 	}
@@ -276,10 +287,16 @@ impl Subsampling {
 		}
 	}
 
-	/// Infer the subsampling from actual chroma/luma texture dimensions.
+	/// Infer the subsampling from actual chroma and luma texture dimensions:
+	/// the option whose [`Subsampling::chroma_size`] reproduces
+	/// `(uv_width, uv_height)` for a `width`×`height` luma plane.
 	///
-	/// Ambiguous 1-pixel frames resolve to the larger (less subsampled)
-	/// option; that is harmless because such a plane has one texel.
+	/// `uv_width`/`uv_height` are the chroma plane dimensions in pixels,
+	/// `width`/`height` the luma dimensions; candidates are tried as 4:4:4,
+	/// 4:2:2, then 4:2:0. Returns `None` when none matches (the chroma size
+	/// follows no supported ratio) or the luma size is not positive. Ambiguous
+	/// 1-pixel frames resolve to the larger (less subsampled) option, which is
+	/// harmless because such a plane has one texel.
 	pub fn from_chroma_size(
 		uv_width: i32,
 		uv_height: i32,
@@ -316,7 +333,11 @@ pub enum PlaneStorage {
 }
 
 impl PlaneStorage {
-	/// Storage bytes per component.
+	/// Storage bytes per component at this depth: 1 for `U8`, 2 for `U16`/`F16`
+	/// and 4 for `F32`.
+	///
+	/// Used to size CPU frames, staging rows and GPU texel counts; callers
+	/// multiply it by the component count and pixel count to get a byte size.
 	pub fn bytes_per_component(self) -> usize {
 		match self {
 			PlaneStorage::U8 => 1,
@@ -407,22 +428,43 @@ impl PlanarDescriptor {
 		}
 	}
 
-	/// Planar YUV (`[Y, U, V]`).
+	/// Planar YUV descriptor: `[Y, U, V]`, three single-channel planes (I420 /
+	/// YUV420P, YUV422P, YUV444P and their 10/16-bit variants).
+	///
+	/// `subsampling` selects the chroma dimensions (4:2:0 halves both axes,
+	/// 4:2:2 only the width, 4:4:4 keeps full resolution); `storage` is the
+	/// per-component depth shared by all three planes.
 	pub const fn yuv_planar(subsampling: Subsampling, storage: PlaneStorage) -> Self {
 		Self::new(ColorModel::YuvPlanar, subsampling, storage)
 	}
 
-	/// Semi-planar YUV (`[Y, UV]`).
+	/// Semi-planar YUV descriptor: `[Y, UV]` — one single-channel luma plane
+	/// plus one interleaved two-channel chroma plane (NV12/P010, NV16/P216
+	/// style).
+	///
+	/// `subsampling` sets the chroma dimensions
+	/// ([`Subsampling::Cs420`] halves both axes, [`Subsampling::Cs422`] only
+	/// the width); `storage` is the depth shared by both planes, with U16
+	/// carrying 10-bit-in-16 samples.
 	pub const fn yuv_semi_planar(subsampling: Subsampling, storage: PlaneStorage) -> Self {
 		Self::new(ColorModel::YuvSemiPlanar, subsampling, storage)
 	}
 
-	/// Interleaved RGB stored in an RGBA texture.
+	/// Interleaved RGB descriptor: one plane of three source components stored
+	/// in a 4-channel RGBA texture, because `wgpu` has no 3-channel format.
+	///
+	/// The upload API fills alpha with 1.0. Subsampling is pinned to
+	/// [`Subsampling::Cs444`] (ignored for this model); `storage` selects the
+	/// per-component depth.
 	pub const fn rgb(storage: PlaneStorage) -> Self {
 		Self::new(ColorModel::Rgb, Subsampling::Cs444, storage)
 	}
 
-	/// Interleaved RGBA.
+	/// Interleaved RGBA descriptor: one 4-channel plane with all four source
+	/// components and alpha preserved.
+	///
+	/// Subsampling is pinned to [`Subsampling::Cs444`] because the interleaved
+	/// models ignore it; `storage` selects the per-component depth.
 	pub const fn rgba(storage: PlaneStorage) -> Self {
 		Self::new(ColorModel::Rgba, Subsampling::Cs444, storage)
 	}
@@ -463,7 +505,13 @@ impl PlanarDescriptor {
 		}
 	}
 
-	/// The `wgpu` texture format of `plane`.
+	/// The `wgpu` texture format of this plane, or `None` when `plane` is out
+	/// of range.
+	///
+	/// Combines the plane's texture component count
+	/// ([`Self::plane_texture_components`], so RGB yields 4) with the shared
+	/// [`PlaneStorage`]. Used by the plane texture allocator and by the legacy
+	/// [`PlanarFormat`] luma/chroma accessors.
 	pub fn plane_texture_format(self, plane: usize) -> Option<wgpu::TextureFormat> {
 		let components = self.plane_texture_components(plane)?;
 		Some(texture_format_for(self.storage, components))
@@ -552,7 +600,17 @@ impl PlanarDescriptor {
 	}
 }
 
-/// The texture format for a `components`-channel plane of `storage`.
+/// The `wgpu` texture format for a `components`-channel plane of `storage`:
+/// one normalized/float format each for 1, 2 and 4 channels.
+///
+/// Private helper behind [`PlanarDescriptor::plane_texture_format`] (and the
+/// legacy [`PlanarFormat`] accessors); RGB is expanded to 4 channels
+/// upstream, so `components == 3` is never requested.
+///
+/// # Panics
+///
+/// Panics (`unreachable!`) when `components` is not 1, 2 or 4 — the only
+/// values [`PlanarDescriptor::plane_texture_components`] can produce.
 fn texture_format_for(storage: PlaneStorage, components: usize) -> wgpu::TextureFormat {
 	use wgpu::TextureFormat as F;
 	match (components, storage) {
@@ -641,7 +699,11 @@ impl PlanarFormat {
 		self.descriptor().storage.bytes_per_component()
 	}
 
-	/// Chroma plane dimensions for a luma `width`×`height` frame.
+	/// Chroma plane dimensions for a luma `width`×`height` frame, delegated to
+	/// this layout's [`PlanarDescriptor`].
+	///
+	/// The legacy layouts are all 4:2:0 or 4:2:2, so odd luma dimensions round
+	/// the chroma size up (at least 1×1); non-positive input yields `(0, 0)`.
 	pub fn chroma_size(self, width: i32, height: i32) -> (i32, i32) {
 		self.descriptor().chroma_size(width, height)
 	}
@@ -807,8 +869,21 @@ impl PlanarTexture {
 		})
 	}
 
-	/// Shared constructor: `planes` must be exactly `descriptor`'s plane
-	/// count.
+	/// Shared constructor behind [`PlanarTexture::new`],
+	/// [`PlanarTexture::from_descriptor`] and the borrowed twin: copies the
+	/// plane tokens into the fixed array, creates one owning [`GpuLease`] per
+	/// plane and fills the alias fields.
+	///
+	/// `planes` must hold exactly [`PlanarDescriptor::plane_count`] tokens (1,
+	/// 2 or 3) in descriptor order; `size` is the luma resolution in pixels and
+	/// `color` the `(primaries, transfer)` pair kept for the source→working
+	/// transform. `size` is not validated here — `from_descriptor` checks it,
+	/// while [`PlanarTexture::new`] relies on the caller.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `planes` is empty or its length disagrees with the
+	/// descriptor's plane count.
 	fn build(
 		ctx: Arc<dyn GpuContextLike>,
 		descriptor: PlanarDescriptor,
@@ -990,12 +1065,22 @@ impl Texture {
 		}
 	}
 
-	/// Wrap a CPU frame (no copy).
+	/// Wrap a CPU `frame` as [`Texture::Cpu`] without copying pixel data.
+	///
+	/// The frame's pixels are moved into the texture and uploaded lazily by
+	/// the backend on first use; [`Texture::size`]/[`Texture::format`] report
+	/// the frame's own values.
 	pub fn wrap_frame(frame: Frame) -> Self {
 		Texture::Cpu(frame)
 	}
 
-	/// Wrap an imported hardware YUV frame (M5).
+	/// Wrap an imported hardware YUV frame (M5) as [`Texture::Planar`].
+	///
+	/// The result is transient: the footage path resolves it to
+	/// `Texture::Gpu` before any consumer samples it, and
+	/// [`Texture::to_frame`] on it returns `Error::State` until then.
+	/// `planar` keeps the plane leases, so dropping the wrapper releases
+	/// the plane tokens.
 	pub fn wrap_planar(planar: PlanarTexture) -> Self {
 		Texture::Planar(planar)
 	}

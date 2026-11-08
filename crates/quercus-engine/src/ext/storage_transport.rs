@@ -858,6 +858,19 @@ struct FreeBytesGuard {
 }
 
 impl FreeBytesGuard {
+	/// Wraps a `load` buffer so it is released exactly once, on every exit path.
+	///
+	/// `free_bytes` is the backend's release callback, `userdata` its opaque
+	/// pointer and `bytes`/`len` the buffer it handed to `load`. Keeping the
+	/// guard alive makes the release happen on early returns too (transport
+	/// errors, invalid UTF-8, parse failures), not just on success.
+	///
+	/// # Safety
+	///
+	/// `bytes`/`len` must be exactly the allocation the backend produced for this
+	/// `userdata`, and `free_bytes` must be the matching release function; the
+	/// buffer must not be released anywhere else. A failed load may return a null
+	/// buffer, which `free_bytes` is contractually required to tolerate.
 	fn new(
 		free_bytes: unsafe extern "C" fn(*mut c_void, *mut u8, usize),
 		userdata: *mut c_void,

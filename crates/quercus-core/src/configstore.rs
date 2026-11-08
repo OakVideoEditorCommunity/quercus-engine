@@ -301,6 +301,11 @@ impl ConfigStore {
 	}
 
 	/// Flatten a TOML table into `prefix`-joined store keys.
+	///
+	/// `prefix` is the table path accumulated so far (empty at the root) and
+	/// `table` the TOML table to walk: nested tables recurse with an extended
+	/// prefix, while leaf values go to [`Self::apply_toml_entry`]. Because the
+	/// separator is `/`, `[group] key = 1` becomes the flat key `group/key`.
 	fn flatten_toml(&self, prefix: &str, table: &toml::map::Map<String, toml::Value>) {
 		for (key, value) in table {
 			let full_key = if prefix.is_empty() {
@@ -316,6 +321,12 @@ impl ConfigStore {
 	}
 
 	/// Apply a single (already flattened) key/value to the store.
+	///
+	/// `full_key` is the `group/key`-joined name and `value` the parsed TOML
+	/// value. A known key keeps its declared type (via [`to_entry_type`]) and an
+	/// unconvertible value leaves the existing entry — normally the compiled-in
+	/// default — untouched; an unknown key is stored as a string, matching the
+	/// legacy INI loader.
 	fn apply_toml_entry(&self, full_key: &str, value: &toml::Value) {
 		match self.get_entry(full_key) {
 			Some(existing) => {
@@ -468,6 +479,16 @@ impl ConfigStore {
 	/// Read an entry as a string (two-stage getter semantics: formatted
 	/// for numeric/bool entries). Mirrors `quercus_core_config_get`
 	/// (`config.cpp:134`).
+	///
+	/// `group`/`key` identify the entry; the group is optional and is joined into
+	/// the lookup key as `group/key`.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::Invalid`] for an empty `key` and [`Error::NotFound`] when
+	/// no entry exists. Numeric, bool and double values are formatted rather than
+	/// rejected (`%g` for doubles, `true`/`false` for bools), so the result is
+	/// always a string.
 	pub fn get(&self, group: Option<&str>, key: &str) -> Result<String> {
 		if key.is_empty() {
 			return Err(Error::Invalid);
@@ -501,6 +522,11 @@ impl ConfigStore {
 	}
 
 	/// Set an INT entry.
+	///
+	/// `group`/`key` name the entry (an empty `key` is a no-op) and `v` is the
+	/// 32-bit value, widened and stored through [`Self::set_int64`].
+	/// [`Self::get_int`] narrows it back with `as i32`, so values outside the
+	/// `i32` range only arise via [`Self::set_int64`].
 	pub fn set_int(&self, group: Option<&str>, key: &str, v: i32) {
 		self.set_int64(group, key, v as i64);
 	}
@@ -517,6 +543,11 @@ impl ConfigStore {
 	}
 
 	/// Set an INT entry as i64.
+	///
+	/// `group`/`key` name the entry (an empty `key` is a no-op) and `v` is
+	/// stored as a 64-bit `Int`, wide enough for frame counts and millisecond
+	/// intervals. [`Self::get_int64`] returns it unchanged; [`Self::set_int`]
+	/// forwards here for 32-bit values.
 	pub fn set_int64(&self, group: Option<&str>, key: &str, v: i64) {
 		if key.is_empty() {
 			return;
@@ -543,6 +574,11 @@ impl ConfigStore {
 	}
 
 	/// Set a BOOL entry.
+	///
+	/// `group`/`key` name the entry (an empty `key` is a no-op) and `v` is an
+	/// int because the C ABI passes booleans as ints: any non-zero value stores
+	/// `true`, zero stores `false`. [`Self::get_bool`] reads it back as 0/1 and
+	/// [`Self::get`] as `"true"`/`"false"`.
 	pub fn set_bool(&self, group: Option<&str>, key: &str, v: i32) {
 		if key.is_empty() {
 			return;
@@ -551,6 +587,12 @@ impl ConfigStore {
 	}
 
 	/// Set a DOUBLE entry.
+	///
+	/// `group` is the optional group prefix (the stored key becomes
+	/// `group/key`), `key` the entry name — an empty key is a no-op — and `v` the
+	/// value, stored as-is (no clamping or validation; NaN and infinities are
+	/// preserved). Read it back with [`Self::get_double`], or via [`Self::get`],
+	/// which formats it with `%g`.
 	pub fn set_double(&self, group: Option<&str>, key: &str, v: f64) {
 		if key.is_empty() {
 			return;
@@ -628,6 +670,12 @@ impl ConfigStore {
 	/// Report a user-visible error through the registered handler, or to
 	/// stderr when none is registered. Mirrors `ConfigStore::report_error`
 	/// (`configstore.cpp:51`).
+	///
+	/// `title` is the short dialog title and `message` the full text; both are
+	/// handed to the handler as NUL-terminated C strings (a string containing an
+	/// interior NUL degrades to an empty string) together with the userdata given
+	/// to [`Self::set_error_handler`]. Reporting never fails: with no handler the
+	/// pair is printed to stderr as `title: message`.
 	fn report_error(&self, title: &str, message: &str) {
 		let handler = self.error_handler.load(Ordering::Acquire);
 		if handler.is_null() {
@@ -648,6 +696,15 @@ impl ConfigStore {
 
 	/// Reset to compiled-in defaults (drop custom keys). Mirrors
 	/// `ConfigStore::set_defaults()` (`configstore.cpp:76`).
+	///
+	/// Clears the whole entry map and re-inserts the compiled-in keys the de-Qt
+	/// engine modules read: timeline thumbnail/waveform modes, the default
+	/// sequence format (1920x1080, 1001/30000, stereo 48 kHz), the offline pixel
+	/// format, split-clips/GL-finish flags, proxy and disk-cache settings, and
+	/// the marker/category colors. App-layer keys of the old Qt config are not
+	/// registered here. Called by the singleton constructor, [`Self::load`]
+	/// (before applying the file) and [`Self::reset_defaults`]. Panics if the
+	/// entries lock is poisoned.
 	fn set_defaults(&self) {
 		let mut guard = self.entries.lock().unwrap();
 		guard.clear();
@@ -725,6 +782,13 @@ impl ConfigStore {
 	}
 
 	/// Insert (or replace) an entry.
+	///
+	/// `key` is the already-joined store key (`group/key` form, no re-joining
+	/// here) and `value` the typed entry; an existing key is silently
+	/// overwritten. Takes the entries lock, so it is safe from any thread, but
+	/// it does not persist anything by itself — callers use
+	/// [`ConfigStore::save`] for that. Panics if another holder of the lock
+	/// panicked while holding it.
 	fn set_entry(&self, key: String, value: ConfigValue) {
 		let mut guard = self.entries.lock().unwrap();
 		guard.insert(key, value);
@@ -884,6 +948,11 @@ fn string_to_value(text: &str, ty: EntryType) -> Option<ConfigValue> {
 }
 
 /// Maps a value back to its entry type.
+///
+/// `value` is an existing store entry; its variant decides the `EntryType`
+/// (`String` / `Int` / `Double` / `Bool`). The loaders use this to coerce
+/// incoming text without changing a known key's declared type. Total — it never
+/// returns `EntryType::None` (that only means "no type" for a missing key).
 fn to_entry_type(value: &ConfigValue) -> EntryType {
 	match value {
 		ConfigValue::String(_) => EntryType::String,
@@ -906,6 +975,10 @@ fn trim(s: &str) -> String {
 /// `FileFunctions::get_configuration_location() / "config.ini"`), so the
 /// `QUERCUS_CONFIG_DIR` override, portable mode, the macOS Application Support
 /// default, and the `<root>/quercus` suffix all match.
+///
+/// Falls back to the system temp directory when `FileFunctions` reports an
+/// error, so the returned path is always usable (the store then simply lives
+/// somewhere writable rather than under the user's home).
 fn configuration_location() -> String {
 	crate::filefunctions::FileFunctions::new()
 		.get_configuration_location()

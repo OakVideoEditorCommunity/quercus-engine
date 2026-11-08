@@ -196,7 +196,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(DilateNode))
 }
 
-/// Register this node type.
+/// Registers the Dilate filter (`org.olivevideoeditor.Olive.dilate`) in
+/// the node factory under the `Filter` category.
+///
+/// The entry's `create` wires a texture input plus a Radius float input
+/// (`0.0..=MAX_RADIUS`, default `1.0`) and marks the node as a video
+/// effect with `Input` as its effect input. Call once during node
+/// registration; the function does not deduplicate.
+///
+/// # Arguments
+///
+/// * `meta` - factory metadata registry to append the entry to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.dilate",

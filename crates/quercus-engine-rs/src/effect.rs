@@ -111,6 +111,10 @@ pub enum NodeCategory {
 }
 
 impl NodeCategory {
+	/// Convert an integer node-category ordinal to [`NodeCategory`].
+	///
+	/// `ordinal` is the `NODE_CATEGORY_*` value (`0..=11`); returns `None` for any
+	/// other value. Counterpart of the enum's `as i32` mapping used by the C ABI.
 	fn from_ordinal(ordinal: i32) -> Option<Self> {
 		Some(match ordinal {
 			0 => Self::Output,
@@ -258,12 +262,19 @@ impl Project {
 		unsafe { quercus_effect_chain_move(self.as_raw(), host.raw(), effect.raw(), new_index) }
 	}
 
-	/// Undoable enable toggle ("Toggle Effect") of an effect node.
+	/// Enable or disable effect node `effect` as one undoable command.
+	///
+	/// `effect` is the effect node id on this host; `enabled` is the new flag.
+	/// Returns `true` when the edit was applied, `false` if the host or effect is
+	/// invalid. The edit is titled "Toggle Effect" and can be undone.
 	pub fn effect_set_enabled(&self, effect: NodeId, enabled: bool) -> bool {
 		unsafe { quercus_effect_set_enabled(self.as_raw(), effect.raw(), enabled) }
 	}
 
-	/// Whether the effect node is enabled.
+	/// Whether effect node `effect` is currently enabled.
+	///
+	/// `effect` is the effect node id on this host. Returns `false` for an invalid
+	/// host or effect. Counterpart of [`Self::effect_set_enabled`].
 	pub fn effect_is_enabled(&self, effect: NodeId) -> bool {
 		unsafe { quercus_effect_is_enabled(self.as_raw(), effect.raw()) }
 	}

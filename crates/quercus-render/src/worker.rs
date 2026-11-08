@@ -164,6 +164,19 @@ pub trait JobDispatch: Send + Sync {
 	/// Cancel one pre-render window frame by scheduler key (pending or in
 	/// flight; the completion fires `Error::State`). Default no-op: only
 	/// the process backend schedules.
+	///
+	/// The key is `(sequence, frame, version)`, so `version` selects one
+	/// parameter generation of the frame: a stale version must not cancel a
+	/// newer request for the same frame. Cancellation is exactly-once (the
+	/// `Error::State` completion replaces any in-flight result), and a key that
+	/// is no longer scheduled is ignored.
+	///
+	/// # Arguments
+	///
+	/// * `_sequence` - sequence identity the frame belongs to.
+	/// * `_frame` - frame number within the sequence.
+	/// * `_version` - parameter version (graph/proxy tier/resolution tier/color)
+	///   the request was issued for.
 	fn cancel_preview_frame(&self, _sequence: u64, _frame: i64, _version: u64) {}
 
 	/// Set (or clear) the graph snapshot path sent to workers via
@@ -451,6 +464,16 @@ impl GraphSnapshotStore {
 
 	/// Mark a snapshot as already uploaded to all live children
 	/// (C++ set_graph_path_cached).
+	///
+	/// Stores the flag on the entry only: an unknown path is ignored, and the
+	/// snapshot file and its reference count are untouched. Nothing in the render
+	/// paths reads the flag yet, so it is bookkeeping parity with the C++ store,
+	/// exercised through `is_cached` in tests.
+	///
+	/// # Arguments
+	///
+	/// * `path` - snapshot path exactly as returned by `acquire`.
+	/// * `cached` - the new flag value.
 	pub fn mark_cached(&self, path: &str, cached: bool) {
 		if let Some(entry) = lock(&self.entries).get_mut(path) {
 			entry.cached = cached;
@@ -458,6 +481,15 @@ impl GraphSnapshotStore {
 	}
 
 	/// Whether the snapshot is marked cached (tests).
+	///
+	/// `false` for an unknown path or for an entry that dropped to zero refs (the
+	/// entry is removed then). The flag is pure bookkeeping in the store: no
+	/// render path consults it, so it never affects whether a snapshot is
+	/// re-uploaded.
+	///
+	/// # Arguments
+	///
+	/// * `path` - snapshot path exactly as returned by `acquire`.
 	pub fn is_cached(&self, path: &str) -> bool {
 		lock(&self.entries)
 			.get(path)
@@ -466,6 +498,14 @@ impl GraphSnapshotStore {
 	}
 
 	/// Current reference count for a path (tests).
+	///
+	/// Returns 0 for an unknown path, which is also what a fully released path
+	/// returns since the entry is removed at zero refs. It does not touch the
+	/// filesystem, so a deleted snapshot file still reports its count.
+	///
+	/// # Arguments
+	///
+	/// * `path` - snapshot path exactly as returned by `acquire`.
 	pub fn refs(&self, path: &str) -> u64 {
 		lock(&self.entries).get(path).map(|e| e.refs).unwrap_or(0)
 	}

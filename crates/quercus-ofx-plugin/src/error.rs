@@ -14,49 +14,56 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 错误码。与 `include/*/error.h` 逐字对应；项目统一 -MMCCCC 方案
-//! （模块号注册表见 include/common/error.h），跨模块透传不翻译。
+//! Error codes. These mirror `include/*/error.h` verbatim; the project
+//! uses the unified -MMCCCC scheme (module-number registry in
+//! include/common/error.h) and forwards codes across modules without
+//! translating them.
 
 use thiserror::Error;
 
-/// 成功。
+/// Success.
 pub const QUERCUSPLUGIN_OK: i32 = 0;
-/// 空句柄或非法参数。
+/// Null handle or invalid argument.
 pub const QUERCUSPLUGIN_E_INVALID: i32 = -90001;
-/// 当前状态不允许该调用（如未扫描就创建实例）。
+/// The call is not allowed in the current state (e.g. creating an
+/// instance before scanning).
 pub const QUERCUSPLUGIN_E_STATE: i32 = -90002;
-/// 底层操作失败（OFX action 返回非 kOfxStatOK、插件入口拒绝等）。
+/// The underlying operation failed (an OFX action returned
+/// non-`kOfxStatOK`, the plugin entry point refused, etc.).
 pub const QUERCUSPLUGIN_E_FAILED: i32 = -90003;
-/// 索引越界 / 指定标识的插件不存在。
+/// Index out of range / no plugin with the given identifier.
 pub const QUERCUSPLUGIN_E_NOT_FOUND: i32 = -90004;
-/// 分配失败。
+/// Allocation failed.
 pub const QUERCUSPLUGIN_E_NOMEM: i32 = -90005;
 
-/// crate 内部统一的结果类型；FFI 层把它映射为上述 i32 码。
+/// The crate-wide result type; the FFI layer maps it to the i32 codes
+/// above.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// crate 内部错误。`code()` 给出对外错误码。
+/// A crate-internal error. `code()` returns the externally visible
+/// error code.
 #[derive(Debug, Error)]
 pub enum Error {
-	/// 空句柄或非法参数。
+	/// Null handle or invalid argument.
 	#[error("plugin: invalid argument")]
 	Invalid,
-	/// 状态不允许。
+	/// Not allowed in the current state.
 	#[error("plugin: call not valid in the current state")]
 	State,
-	/// 底层失败，附人类可读上下文（仅日志，不出界）。
+	/// Underlying failure with human-readable context (logged only; never
+	/// crosses the ABI).
 	#[error("plugin: operation failed: {0}")]
 	Failed(String),
-	/// 未找到。
+	/// Not found.
 	#[error("plugin: not found")]
 	NotFound,
-	/// 分配失败。
+	/// Allocation failed.
 	#[error("plugin: out of memory")]
 	NoMem,
 }
 
 impl Error {
-	/// 映射为 `include/plugin/error.h` 的错误码。
+	/// Maps to the error code in `include/plugin/error.h`.
 	pub fn code(&self) -> i32 {
 		match self {
 			Error::Invalid => QUERCUSPLUGIN_E_INVALID,

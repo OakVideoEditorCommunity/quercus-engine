@@ -203,6 +203,19 @@ impl Drop for SnapshotHandle {
 }
 
 impl GraphSnapshot {
+	/// Read a complete snapshot out of a raw graph-snapshot handle.
+	///
+	/// Pulls the revision, every node (with its input ports) and every edge
+	/// through the C ABI, copying all strings into owned `String`s. The handle is
+	/// taken by value, so it is released at the end of the call and the result
+	/// owns no foreign memory. Nodes or ports whose ABI read fails are skipped
+	/// (the node list becomes empty rather than partial in that case).
+	///
+	/// # Safety
+	///
+	/// `handle` must own a live pointer returned by
+	/// `quercus_editor_graph_snapshot` that has not been released yet; it must not
+	/// be used again after this call.
 	unsafe fn from_handle(handle: SnapshotHandle) -> Self {
 		let revision = unsafe { quercus_editor_graph_revision(handle.0) };
 		let nodes = (0..unsafe { quercus_editor_graph_node_count(handle.0) }.max(0))
@@ -311,8 +324,16 @@ impl EditorSession {
 		Some(unsafe { GraphSnapshot::from_handle(SnapshotHandle(ptr)) })
 	}
 
-	/// Validates a proposed stream connection against the current live graph.
-	/// This never mutates the project or creates an undo entry.
+	/// Validate a proposed stream connection against the current live graph.
+	///
+	/// `from` is the source node, `to` the destination and `input_id` one of
+	/// `to`'s input ports; `element` is the input's array element (`-1` for scalar
+	/// inputs) and is used for the "already connected" check. Returns `false` when
+	/// the session is null, either id is unknown, `from == to`, `input_id` is
+	/// empty, that element is already connected, or the input does not accept
+	/// stream values (texture or samples).
+	///
+	/// Pure query: it never mutates the project and creates no undo entry.
 	pub fn can_connect(&self, from: NodeId, to: NodeId, input_id: &str, element: i32) -> bool {
 		unsafe {
 			quercus_editor_graph_can_connect(

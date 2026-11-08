@@ -24,16 +24,24 @@ pub fn multicam_nodes(g: &Graph) -> Vec<NodeId> {
 		.collect()
 }
 
-/// The sequence's video format `(width, height, rate)` from its first
-/// video stream.
+/// The sequence's video format `(width, height, frame rate)`.
+///
+/// `g` is the graph and `seq` the sequence node. Returns the format of the
+/// first entry in the sequence's `video_params` list (the primary video
+/// stream), with the frame rate as a rational, or `None` when the node is not a
+/// sequence or declares no video stream.
 pub fn sequence_video_params(g: &Graph, seq: NodeId) -> Option<(i32, i32, Rational)> {
 	let v = sequence_behavior(g, seq)?.video_params.first()?;
 	Some((v.width, v.height, v.frame_rate))
 }
 
-/// The sequence's frame duration as a `(num, den)` timebase pair (the
-/// frame rate flipped; the facade's `seq_time_base`). `None` when the
-/// sequence has no valid frame rate.
+/// The sequence's frame duration as a reduced `(num, den)` pair.
+///
+/// Derived by flipping the frame rate from [`sequence_video_params`], so one
+/// timestamp unit is `num/den` seconds (convert with
+/// [`rational_to_ts`]/[`ts_to_rational`]). Returns `None` when the sequence is
+/// unknown or its rate is non-positive; callers then treat frame timestamps as
+/// unavailable.
 pub fn sequence_time_base(g: &Graph, seq: NodeId) -> Option<(i64, i64)> {
 	let (_, _, rate) = sequence_video_params(g, seq)?;
 	let num = rate.numerator();
@@ -44,8 +52,13 @@ pub fn sequence_time_base(g: &Graph, seq: NodeId) -> Option<(i64, i64)> {
 	Some((den, num))
 }
 
-/// The sequence content length (rational seconds): the longest track out
-/// point across every track list (the module's `verify_length` overall).
+/// The sequence's content length in rational seconds.
+///
+/// `g` is the graph and `seq` the sequence node. Scans every track list, its
+/// tracks, and each block's out-point, returning the maximum. Returns
+/// `Rational::new(0, 1)` when the sequence is unknown or has no block. This is
+/// the module's `verify_length` overall length, not the duration of one
+/// selected clip.
 pub fn sequence_length(g: &Graph, seq: NodeId) -> Rational {
 	let mut best = Rational::new(0, 1);
 	let Some(s) = sequence_behavior(g, seq) else {
@@ -92,7 +105,14 @@ pub(crate) fn block_core(entry: &quercus_node::graph::NodeEntry) -> Option<&Bloc
 		.map(|a| &a.core)
 }
 
-/// Borrow a block's core mutably (any block kind).
+/// Borrow a block's core mutably, whatever the concrete block kind.
+///
+/// Matches clip, gap, transition and adjustment-layer behaviors and returns
+/// their `core`; returns `None` for any other node or when the behavior has no
+/// `as_any_mut`. The immutable counterpart is [`block_core`], and
+/// [`with_block_core_mut`] wraps this with the graph lookup and a closure. Each
+/// downcast is guarded by an `is` check, so the `expect` calls cannot fire for
+/// a matched kind.
 pub(crate) fn block_core_mut(entry: &mut quercus_node::graph::NodeEntry) -> Option<&mut BlockCore> {
 	let any = entry.behavior.as_any_mut()?;
 	if any.is::<ClipBlockBehavior>() {
@@ -129,6 +149,11 @@ pub(crate) fn block_core_mut(entry: &mut quercus_node::graph::NodeEntry) -> Opti
 }
 
 /// Borrow the block core at `node` (any block kind).
+///
+/// `g` is the graph, `node` the block to look up. Returns the clip, gap,
+/// transition or adjustment-layer core, or `None` when the id is unknown or the
+/// node is not a block. The mutable counterpart is [`with_block_core_mut`],
+/// which reports the same condition as `false`.
 pub fn block_core_of(g: &Graph, node: NodeId) -> Option<&BlockCore> {
 	block_core(g.get(node)?)
 }
@@ -158,14 +183,23 @@ pub(crate) fn is_timeline_clip(g: &Graph, node: NodeId) -> bool {
 	any.is::<ClipBlockBehavior>() || any.is::<AdjustmentBlockBehavior>()
 }
 
-/// The sequence playhead (rational seconds).
+/// The sequence playhead position in rational seconds.
+///
+/// `g` is the graph and `seq` the sequence node. Returns the stored playhead,
+/// or zero (`0/1`) when `seq` is not a sequence, so callers do not need to
+/// special-case stale ids. Pairs with [`sequence_set_playhead`].
 pub fn sequence_playhead(g: &Graph, seq: NodeId) -> Rational {
 	sequence_behavior(g, seq)
 		.map(|s| s.playhead)
 		.unwrap_or(Rational::new(0, 1))
 }
 
-/// Move the sequence playhead (rational seconds).
+/// Move the sequence playhead to `time`.
+///
+/// Acquires the project lock `p`, then writes `time` (rational seconds) into
+/// the sequence found at `seq`; silently does nothing when `seq` is not a
+/// sequence node. The value is not clamped to the sequence length. Pairs with
+/// [`sequence_playhead`].
 pub fn sequence_set_playhead(p: &ProjectRef, seq: NodeId, time: Rational) {
 	let mut guard = lock(p);
 	if let Some(s) = guard
@@ -197,8 +231,12 @@ pub(crate) fn gcd(a: i64, b: i64) -> i64 {
 	}
 }
 
-/// Rational seconds -> timestamp in timebase units, rounding half away
-/// from zero (the facade's `rational_to_ts`, `Timecode::k_round`).
+/// Convert rational seconds to integer timebase units.
+///
+/// `r` is the value in seconds and `tb` the frame duration as `(num, den)`.
+/// Rounding is half away from zero (the facade's `rational_to_ts`,
+/// `Timecode::k_round`). Returns `0` for a zero denominator or an empty
+/// timebase, so callers cannot distinguish "zero" from "invalid".
 pub fn rational_to_ts(r: Rational, tb: (i64, i64)) -> i64 {
 	let (num, den) = (r.numerator(), r.denominator());
 	if den == 0 || tb.0 == 0 || tb.1 == 0 {
@@ -217,7 +255,15 @@ pub fn rational_to_ts(r: Rational, tb: (i64, i64)) -> i64 {
 	}
 }
 
-/// Timestamp -> reduced rational seconds (`time = ts * tb`).
+/// Convert integer timebase units to reduced rational seconds.
+///
+/// `ts` is a frame/timestamp count and `tb` the frame duration as `(num, den)`;
+/// the result is `ts * tb`, reduced by the GCD. Pairs with [`rational_to_ts`].
+///
+/// # Panics
+///
+/// Panics when `tb.1` is zero (the reduction computes an integer remainder by
+/// it). Pass a valid timebase such as the one from [`sequence_time_base`].
 pub fn ts_to_rational(ts: i64, tb: (i64, i64)) -> Rational {
 	let num = ts as i128 * tb.0 as i128;
 	let den = tb.1 as i128;
@@ -230,6 +276,11 @@ pub fn ts_to_rational(ts: i64, tb: (i64, i64)) -> Rational {
 // ---------------------------------------------------------------------------
 
 /// The sequence's track list of `kind`, when it exists.
+///
+/// `g` is the graph, `seq` the sequence node (not the list) and `kind` selects
+/// the video/audio/subtitle list. Returns `None` when the sequence is unknown
+/// or owns no list of that kind. The create-on-demand variant is
+/// [`find_or_create_track_list`].
 pub fn track_list_of(g: &Graph, seq: NodeId, kind: TrackType) -> Option<NodeId> {
 	sequence_behavior(g, seq)?
 		.track_lists
@@ -276,6 +327,11 @@ pub fn find_or_create_track_list(p: &ProjectRef, seq: NodeId, kind: TrackType) -
 }
 
 /// The tracks of the sequence's `kind` list, in stack order.
+///
+/// `g` is the graph, `seq` the sequence node and `kind` the track type. Returns
+/// a copy of the list's track ids (bottom-to-top order as stored), or an empty
+/// vector when the sequence or its list is missing. Pairs with
+/// [`track_list_of`] and [`clip_ids`].
 pub fn track_ids(g: &Graph, seq: NodeId, kind: TrackType) -> Vec<NodeId> {
 	track_list_of(g, seq, kind)
 		.and_then(|list| track_list_behavior(g, list).map(|l| l.tracks.clone()))
@@ -296,13 +352,21 @@ pub fn clip_ids(g: &Graph, track: NodeId) -> Vec<NodeId> {
 		.unwrap_or_default()
 }
 
-/// A block's timeline range and media in-point (rational seconds).
+/// A block's timeline range and media in-point.
+///
+/// `clip` is any block node. Returns `(in, out, media_in)`, all in rational
+/// seconds: `in`/`out` are the timeline range and `media_in` the offset into
+/// the source media. Returns `None` when `clip` is unknown or is not a block.
 pub fn clip_range(g: &Graph, clip: NodeId) -> Option<(Rational, Rational, Rational)> {
 	let c = block_core_of(g, clip)?;
 	Some((c.in_(), c.out(), c.media_in))
 }
 
-/// The block's owning track.
+/// The track that owns a block.
+///
+/// `clip` is any block node (clip, gap, transition or adjustment layer).
+/// Returns the id of its track, or `None` when the node is unknown, is not a
+/// block, or has no track recorded. Pairs with [`clip_range`].
 pub fn clip_track(g: &Graph, clip: NodeId) -> Option<NodeId> {
 	block_core_of(g, clip)?.track
 }
@@ -342,7 +406,12 @@ pub fn clip_media_filename(g: &Graph, clip: NodeId) -> Option<String> {
 // Footage
 // ---------------------------------------------------------------------------
 
-/// The footage's probed duration in seconds (`None` when unprobed).
+/// The footage's probed duration in seconds.
+///
+/// `g` is the graph and `id` the footage node. Returns `None` when the node is
+/// not footage, has no probed duration, or the duration is non-positive;
+/// otherwise the duration as a float (`num / den`). Callers that need exact
+/// time should keep the rational value.
 pub fn footage_duration_seconds(g: &Graph, id: NodeId) -> Option<f64> {
 	let d = footage_behavior(g, id)?.duration();
 	let den = d.denominator();

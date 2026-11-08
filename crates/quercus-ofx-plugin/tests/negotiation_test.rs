@@ -14,16 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 协商语义专项：clip 偏好协商矩阵、RoD/RoI、isIdentity、field
-//! 透传。当年调试重灾区，每条对照 HostSupport 行为（注释标行号）。
+//! Negotiation semantics: the clip-preference negotiation matrix, RoD/RoI, isIdentity and
+//! field passthrough. This was historically the worst debugging area; each case is matched against HostSupport behavior (line numbers noted in comments).
 //!
-//! 最小测试插件固定声明 RGBA/F32、实现 RoD（1920×1080）与 RoI
-//! （回写 region）、isIdentity 恒非透传、无 field——需要插件变体
-//! 的矩阵案（回退链、身份透传、field）标记 `// TODO(plugin)`，
-//! 随 M11 §2.4 测试插件的变体落地。
+//! The minimal test plugin always declares RGBA/F32, implements RoD (1920×1080) and RoI
+//! (writing the region back), isIdentity always non-passthrough, no field — the matrix cases that need plugin variants
+//! (fallback chain, identity passthrough, field) are marked `// TODO(plugin)` and
+//! land with the M11 §2.4 test-plugin variants.
 //!
-//! 单库化后经 Rust API 直连（`Host::global().create_instance`），不再
-//! 经已删除的 `quercusplugin_host_init`/`quercusplugin_instance_create` C ABI。
+//! After the single-lib unification the tests go through the Rust API directly (`Host::global().create_instance`) instead of
+//! the removed `quercusplugin_host_init`/`quercusplugin_instance_create` C ABI.
 
 mod common;
 
@@ -35,7 +35,7 @@ use quercus_ofx_plugin::instance::Instance;
 
 const TEST_PLUGIN_ID: &str = "org.quercus.test-plugin";
 
-/// 扫描并创建实例；不可用返回 None（skip）。
+/// Scan and create an instance; returns None (skip) when unavailable.
 fn create_instance() -> Option<Arc<RefBox<Instance>>> {
 	if common::test_plugin_scan_dir().is_none() {
 		common::skip("最小测试插件未构建");
@@ -48,10 +48,10 @@ fn create_instance() -> Option<Arc<RefBox<Instance>>> {
 	host.create_instance(TEST_PLUGIN_ID, None).ok()
 }
 
-/// 协商顺序：测试插件声明 RGBA/F32、帧率 24——协商结果必须
-/// 原样采纳（HS: ofxhImageEffect.cpp:1686-1740 的回灌路径）。
-/// 全组合矩阵（RGBA/RGB/Alpha × Float/Half/Byte）需要插件变体：
-/// `// TODO(plugin)`。
+/// Negotiation order: the test plugin declares RGBA/F32 and frame rate 24 — the negotiated result must be
+/// adopted verbatim (HS: ofxhImageEffect.cpp:1686-1740's write-back path).
+/// The full combination matrix (RGBA/RGB/Alpha × Float/Half/Byte) needs plugin variants:
+/// `// TODO(plugin)`.
 #[test]
 fn clip_preferences_component_depth_matrix() {
 	common::with_host(|| {
@@ -81,8 +81,8 @@ fn clip_preferences_component_depth_matrix() {
 	});
 }
 
-/// 位深回退链（Half→Byte）：宿主当前只宣告 F32 支持、插件声明
-/// F32——直通。回退链的插件侧变体 `// TODO(plugin)`。
+/// Bit-depth fallback chain (Half→Byte): the host currently only announces F32 support and the plugin declares
+/// F32 — passthrough. The plugin-side fallback-chain variants are `// TODO(plugin)`.
 #[test]
 fn bit_depth_fallback_chain() {
 	common::with_host(|| {
@@ -96,9 +96,9 @@ fn bit_depth_fallback_chain() {
 	});
 }
 
-/// RoD：插件实现 getRegionOfDefinition → 用插件值（1920×1080，
-/// HS: ofxhImageEffect.cpp:1087-1130 的 out args 读取）。
-/// "未实现时用输入 RoD 并集"的默认语义需要插件变体：`// TODO(plugin)`。
+/// RoD: the plugin implements getRegionOfDefinition → use the plugin value (1920×1080,
+/// HS: ofxhImageEffect.cpp:1087-1130's out-args read).
+/// The default semantics ("union of input RoDs when not implemented") need plugin variants: `// TODO(plugin)`.
 #[test]
 fn region_of_definition_default_and_override() {
 	common::with_host(|| {
@@ -115,9 +115,9 @@ fn region_of_definition_default_and_override() {
 	});
 }
 
-/// RoI：插件把 region 原样写回 Source 的 per-clip 属性
-/// （"OfxImageEffectPropRegionOfInterest_Source"）；返回值与
-/// 请求 region 一致（HS: getRegionsOfInterest 的 per-clip 前缀）。
+/// RoI: the plugin writes the region back verbatim into Source's per-clip property
+/// ("OfxImageEffectPropRegionOfInterest_Source"); the returned value matches the
+/// requested region (HS: getRegionsOfInterest's per-clip prefix).
 #[test]
 fn regions_of_interest_writeback() {
 	common::with_host(|| {
@@ -159,8 +159,8 @@ fn regions_of_interest_writeback() {
 	});
 }
 
-/// isIdentity：测试插件恒非透传 → None（render 必须真正执行）。
-/// 透传短路（Some）需要插件变体：`// TODO(plugin)`。
+/// isIdentity: the test plugin is always non-passthrough → None (render must actually run).
+/// The passthrough short-circuit (Some) needs plugin variants: `// TODO(plugin)`.
 #[test]
 fn is_identity_shortcircuit() {
 	common::with_host(|| {
@@ -174,8 +174,8 @@ fn is_identity_shortcircuit() {
 	});
 }
 
-/// field 透传：插件声明的 field order（OfxFieldNone）原样透传到
-/// 协商结果（宿主只透传不处理）。多值矩阵 `// TODO(plugin)`。
+/// field passthrough: the plugin-declared field order (OfxFieldNone) is passed through verbatim into
+/// the negotiated result (the host only passes it through, never processes it). The multi-value matrix is `// TODO(plugin)`.
 #[test]
 fn field_passthrough() {
 	common::with_host(|| {
@@ -189,8 +189,8 @@ fn field_passthrough() {
 	});
 }
 
-/// begin/endSequenceRender：配对调用成功；begin 后 timeline
-/// getTimeBounds 返回该序列范围（sequence_range 接线）。
+/// begin/endSequenceRender: the paired calls succeed; after begin the timeline
+/// getTimeBounds returns that sequence range (the sequence_range wiring).
 #[test]
 fn sequence_render_brackets() {
 	common::with_host(|| {

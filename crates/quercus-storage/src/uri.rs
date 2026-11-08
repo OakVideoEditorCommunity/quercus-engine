@@ -92,6 +92,12 @@ impl StorageUri {
 }
 
 /// Whether `s` is a valid URI scheme (RFC 3986 §3.1).
+///
+/// A scheme is an ASCII letter followed by any number of ASCII letters,
+/// digits, `+`, `-` or `.`; the string must be non-empty and must not contain
+/// the `://` separator itself. Lowercase and uppercase are both accepted and
+/// no normalization is applied. Used by [`StorageUri::parse`] to decide
+/// whether a `://` prefix is a real scheme or part of a bare path.
 fn is_scheme(s: &str) -> bool {
 	let mut chars = s.chars();
 	match chars.next() {

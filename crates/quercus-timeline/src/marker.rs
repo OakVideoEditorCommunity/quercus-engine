@@ -55,6 +55,11 @@ impl TimelineMarker {
 	}
 
 	/// Construct with color, time and optional name.
+	///
+	/// `color` is the palette index, `time` the in/out range and `name` the
+	/// label (copied; may be empty for an unnamed marker). This is the full
+	/// constructor: [`Self::new`] forwards here with a zero-length range at time
+	/// zero, color 0 and no name.
 	pub fn with_time(color: i32, time: TimeRange, name: &str) -> Self {
 		Self {
 			time_: time,
@@ -68,14 +73,22 @@ impl TimelineMarker {
 		&self.time_
 	}
 
-	/// Set the time range. De-Qt: the marker has no parent pointer, so the
-	/// owning list is not re-sorted here; callers use
-	/// `TimelineMarkerList::resort`/`resort_at` when order must be restored.
+	/// Set the time range.
+	///
+	/// `time` replaces both bounds (in and out) as-is, with no validation of the
+	/// order or length. De-Qt: the marker has no parent pointer, so the owning
+	/// list is not re-sorted here; callers use `TimelineMarkerList::resort` /
+	/// `resort_at` when order must be restored.
 	pub fn set_time(&mut self, time: TimeRange) {
 		self.time_ = time;
 	}
 
-	/// Set the time to a zero-length range at `time`.
+	/// Move the marker's in point to `time`, keeping the current range length.
+	///
+	/// `time` becomes the new in point and the out point is set to `time + the
+	/// current length`, so a zero-length marker stays a point while an in/out
+	/// range is shifted rather than collapsed. Does not re-sort the owning list —
+	/// same contract as [`Self::set_time`].
 	pub fn set_time_point(&mut self, time: Rational) {
 		let length = self.time_.length();
 		self.set_time(TimeRange::new(time, time + length));
@@ -91,11 +104,19 @@ impl TimelineMarker {
 	}
 
 	/// The marker's name.
+	///
+	/// Returns an empty string when the marker was created without a name. The
+	/// value is informational and never affects sorting or lookup; see
+	/// [`Self::set_name`] for the counterpart.
 	pub fn name(&self) -> &str {
 		&self.name_
 	}
 
 	/// Set the marker's name.
+	///
+	/// `name` is copied into the marker; an empty string is allowed and means an
+	/// unnamed marker. The name is informational only — sorting and lookup use
+	/// the in point, so renaming never changes the list order.
 	pub fn set_name(&mut self, name: &str) {
 		self.name_ = name.to_string();
 	}
@@ -106,6 +127,10 @@ impl TimelineMarker {
 	}
 
 	/// Set the marker's color index.
+	///
+	/// `c` is a palette index stored as-is: it is not validated or clamped, so a
+	/// negative index is preserved even though the UI treats it as color 0. The
+	/// value is what `MarkerChangeColorCommand` captures and restores.
 	pub fn set_color(&mut self, c: i32) {
 		self.color_ = c;
 	}
@@ -137,6 +162,10 @@ impl TimelineMarkerList {
 	}
 
 	/// Marker at `i`; `None` out of range.
+	///
+	/// `i` is the zero-based list position. The borrow is shared (use
+	/// [`Self::at_mut`] for mutation); the marker stays owned by the list, and
+	/// the index is invalidated by inserts and removals.
 	pub fn at(&self, i: usize) -> Option<&TimelineMarker> {
 		self.markers_.get(i)
 	}
@@ -176,6 +205,11 @@ impl TimelineMarkerList {
 	}
 
 	/// First marker whose in point equals `t`; `None` if none.
+	///
+	/// `t` is an in-point time, not a range, and is compared exactly (no
+	/// tolerance). Because the list is kept sorted, the first match is the
+	/// earliest-inserted marker at that time. Used by `MarkerAddCommand::undo`
+	/// to find the marker it added.
 	pub fn get_marker_at_time(&self, t: Rational) -> Option<&TimelineMarker> {
 		self.markers_.iter().find(|m| m.time().in_() == t)
 	}
@@ -201,6 +235,12 @@ impl TimelineMarkerList {
 	}
 
 	/// Re-sort `m` after its time changed.
+	///
+	/// `m` must be the marker inside this list whose time was mutated; it is
+	/// removed and re-inserted through [`Self::add_marker`], restoring order by
+	/// in point (markers sharing an in point keep their earlier-before-later
+	/// order). A marker that is not in this list, compared by pointer identity,
+	/// is ignored.
 	pub fn resort(&mut self, m: &mut TimelineMarker) {
 		if let Some(index) = self.markers_.iter().position(|x| std::ptr::eq(x, &*m)) {
 			let marker = self.markers_.remove(index);
@@ -209,6 +249,11 @@ impl TimelineMarkerList {
 	}
 
 	/// Marker at `i`, mutably; `None` out of range.
+	///
+	/// `i` is the zero-based list position. The borrow must not be held across a
+	/// re-sort ([`Self::resort_at`]), since moving the marker would invalidate
+	/// it. Used by the change commands to mutate a marker in place before
+	/// restoring the list order.
 	fn at_mut(&mut self, i: usize) -> Option<&mut TimelineMarker> {
 		self.markers_.get_mut(i)
 	}
@@ -234,6 +279,11 @@ impl TimelineMarkerList {
 }
 
 /// Absolute value of a rational (quercuscore-rs has no `abs`).
+///
+/// Negates `r` when it is below zero and returns it unchanged otherwise, so the
+/// result is always non-negative and is computed without rounding or
+/// reduction. Used by marker-distance searches such as
+/// [`TimelineMarkerList::get_closest_marker_to_time`].
 fn rational_abs(r: Rational) -> Rational {
 	if r < Rational::new(0, 1) {
 		Rational::new(0, 1) - r
@@ -265,6 +315,10 @@ pub struct MarkerAddCommand {
 
 impl MarkerAddCommand {
 	/// Construct from range/name/color.
+	///
+	/// `marker_list` is the facade's marker-list handle (the shared list is
+	/// cloned out of it; a null/empty handle yields a no-op command), and
+	/// `range`, `name` and `color` describe the marker added on [`Self::redo`].
 	pub fn new(
 		marker_list: crate::handle::CHandle,
 		range: TimeRange,
@@ -283,8 +337,13 @@ impl MarkerAddCommand {
 		}
 	}
 
-	/// Construct over an already-shared marker list (the crate's
-	/// Rust-typed entry; the facade-facing [`Self::new`] forwards here).
+	/// Construct over an already-shared marker list (the crate's Rust-typed
+	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `marker_list` is the shared marker list, and `range`, `name` and `color`
+	/// are the range, label and palette index of the marker to add. The marker
+	/// is only materialized on [`Self::redo`], which inserts it sorted by in
+	/// point.
 	pub fn new_arc(
 		marker_list: Arc<Mutex<TimelineMarkerList>>,
 		range: TimeRange,
@@ -364,6 +423,11 @@ pub struct MarkerRemoveCommand {
 
 impl MarkerRemoveCommand {
 	/// Construct from list + index of the marker to remove.
+	///
+	/// `marker_list` is the facade's marker-list handle (the shared list is
+	/// cloned out of it; a null/empty handle yields a no-op command) and `index`
+	/// is the position to remove on [`Self::redo`], re-inserted in sorted order
+	/// by [`Self::undo`].
 	pub fn new(marker_list: crate::handle::CHandle, index: usize) -> Self {
 		// SAFETY: as `MarkerAddCommand::new`.
 		let list = unsafe { get::<Arc<Mutex<TimelineMarkerList>>>(&marker_list) }.cloned();
@@ -374,8 +438,12 @@ impl MarkerRemoveCommand {
 		}
 	}
 
-	/// Construct over an already-shared marker list (the crate's
-	/// Rust-typed entry; the facade-facing [`Self::new`] forwards here).
+	/// Construct over an already-shared marker list (the crate's Rust-typed
+	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `marker_list` is the shared marker list and `index` the position of the
+	/// marker to remove. Unlike [`Self::new`], no C handle is read and nothing
+	/// can panic; an out-of-range `index` simply makes [`Self::redo`] a no-op.
 	pub fn new_arc(marker_list: Arc<Mutex<TimelineMarkerList>>, index: usize) -> Self {
 		Self {
 			marker_list: Some(marker_list),
@@ -459,8 +527,13 @@ impl MarkerChangeColorCommand {
 		}
 	}
 
-	/// Construct over an already-shared marker list (the crate's
-	/// Rust-typed entry; the facade-facing [`Self::new`] forwards here).
+	/// Construct over an already-shared marker list (the crate's Rust-typed
+	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `marker_list` is the shared marker list, `index` the position of the
+	/// marker to change and `new_color` the color index to apply. The current
+	/// color is captured as `old_color` for [`Self::undo`] (0 when `index` is out
+	/// of range, which also makes both directions no-ops).
 	pub fn new_arc(
 		marker_list: Arc<Mutex<TimelineMarkerList>>,
 		index: usize,
@@ -552,8 +625,13 @@ impl MarkerChangeNameCommand {
 		}
 	}
 
-	/// Construct over an already-shared marker list (the crate's
-	/// Rust-typed entry; the facade-facing [`Self::new`] forwards here).
+	/// Construct over an already-shared marker list (the crate's Rust-typed
+	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `marker_list` is the shared marker list, `index` the position of the
+	/// marker to change and `name` the new name. The current name is captured as
+	/// `old_name` for [`Self::undo`]; an out-of-range `index` captures an empty
+	/// old name and makes both directions no-ops.
 	pub fn new_arc(marker_list: Arc<Mutex<TimelineMarkerList>>, index: usize, name: &str) -> Self {
 		let old_name = marker_list
 			.lock()
@@ -642,8 +720,14 @@ impl MarkerChangeTimeCommand {
 		}
 	}
 
-	/// Construct over an already-shared marker list (the crate's
-	/// Rust-typed entry; the facade-facing [`Self::new`] forwards here).
+	/// Construct over an already-shared marker list (the crate's Rust-typed
+	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `marker_list` is the shared marker list, `index` the position of the
+	/// marker to change and `time` the new range. The current range is captured
+	/// as `old_time` for [`Self::undo`]; an out-of-range `index` captures a
+	/// zero-length default range, and both [`Self::redo`] and [`Self::undo`] then
+	/// do nothing.
 	pub fn new_arc(
 		marker_list: Arc<Mutex<TimelineMarkerList>>,
 		index: usize,

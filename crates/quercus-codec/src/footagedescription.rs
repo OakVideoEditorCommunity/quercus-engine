@@ -59,6 +59,11 @@ pub struct FootageDescription {
 
 impl FootageDescription {
 	/// New, empty description with the given decoder id.
+	///
+	/// `decoder` is copied in as the decoder identifier. All counts start at
+	/// zero and no streams are present; `source_start_time` keeps the `0/0`
+	/// sentinel (meaning "unset") until `set_source_start_time` is called, and
+	/// `duration` starts as `None`. Never fails.
 	pub fn new(decoder: &str) -> Self {
 		Self {
 			decoder: decoder.to_string(),
@@ -74,11 +79,20 @@ impl FootageDescription {
 	}
 
 	/// The decoder id.
+	///
+	/// Identifier of the decoder that produced this description — the string
+	/// given to [`Self::new`], used to route the footage back to the same
+	/// decoder. Empty only for a `Default`-constructed value.
 	pub fn decoder(&self) -> &str {
 		&self.decoder
 	}
 
 	/// Total stream count.
+	///
+	/// Counts every stream the container reports, including streams the probe
+	/// could not describe (the C++ `set_stream_count` records those too), so it
+	/// may exceed the number of entries reachable through
+	/// [`Self::get_video_stream`] and the other typed getters.
 	pub fn total_stream_count(&self) -> usize {
 		self.total_stream_count
 	}
@@ -167,6 +181,11 @@ impl FootageDescription {
 	}
 
 	/// Source start time.
+	///
+	/// Returns the media's start offset as an owned rational. When
+	/// [`Self::has_source_start_time`] is `false` this is the default `0/0`
+	/// sentinel and must not be read as a real time; the probe sets both through
+	/// `set_source_start_time`.
 	pub fn source_start_time(&self) -> Rational {
 		self.source_start_time
 	}

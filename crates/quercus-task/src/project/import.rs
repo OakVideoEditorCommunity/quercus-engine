@@ -124,7 +124,13 @@ impl ProjectImportTask {
 		self.imported_footage.len()
 	}
 
-	/// Set the image-sequence confirmation callback.
+	/// Installs the callback consulted to confirm image-sequence detection.
+	///
+	/// The callback receives `(filename, filename)` — the C++ API passed original and
+	/// transformed names, both identical here — and returns true to import the detected
+	/// frames as one sequence instead of separate stills. Replaces any previously
+	/// installed callback; editing a running import is not supported (the task is
+	/// started after configuration).
 	pub fn set_image_sequence_confirm_callback(&mut self, cb: ImageSequenceConfirmFn) {
 		self.image_sequence_confirm = Some(cb);
 	}
@@ -134,6 +140,18 @@ impl ProjectImportTask {
 		self.file_count
 	}
 
+	/// Imports `entries` into `folder`, recursing into directories and emitting
+	/// progress against `self.file_count`.
+	///
+	/// A directory becomes a new folder node named after its basename (added to
+	/// `folder`, then recursed into). A file is probed by creating a footage node,
+	/// setting its filename and checking validity: valid footage goes through
+	/// [`Self::validate_image_sequence`], is added to the destination folder, and is
+	/// recorded in `imported_footage`; invalid files are recorded in `invalid_files`
+	/// and their temporary node is removed immediately. `counter` is the running
+	/// progress numerator (incremented once per file) and `parent_command` receives the
+	/// child undo commands. Stops early when the task is cancelled; the caller turns
+	/// that into `Error::Cancelled`.
 	fn import(
 		&mut self,
 		task: &mut Task,
@@ -230,11 +248,32 @@ impl ProjectImportTask {
 		}
 	}
 
+	/// Appends an undoable "add `item` to `folder`" child command to `command`.
+	///
+	/// `command` is the import-wide multi command; the child is queued (not executed)
+	/// so the whole import collapses into a single undo step when the task completes.
 	fn add_item_to_folder(&self, folder: NodeRef, item: NodeRef, command: &mut UndoCommand) {
 		let child = nodeops::folder_add_child_command(folder, item);
 		command.multi_add_child(child);
 	}
 
+	/// Promotes `footage` to a still image sequence when its filename has a numeric run
+	/// and the neighbouring numbered files exist with matching dimensions.
+	///
+	/// On detection the callback `image_sequence_confirm` is asked (absent callback
+	/// means "no"), later frames of the sequence are removed from `info_list` so they
+	/// are not imported again, and the footage's video params are rewritten: type
+	/// `ImageSequence`, time base/frame rate from the `DefaultSequenceFrameRate` config
+	/// (when parses and non-zero denominator; otherwise the probe's params are kept),
+	/// plus start time and duration derived from the first/last existing frame. If the
+	/// user declines, the affected filenames are recorded in
+	/// `image_sequence_ignore_files` so later files of the same sequence are not
+	/// re-probed.
+	///
+	/// `index` is the position of `footage`'s filename inside `info_list` and anchors
+	/// the backward/forward range scan. `footage` is a `(project, node)` reference;
+	/// probe nodes created for the neighbouring frames are removed before returning.
+	/// `task` is currently unused (the scan has no extra cancellation points).
 	fn validate_image_sequence(
 		&mut self,
 		task: &mut Task,
@@ -349,6 +388,13 @@ impl ProjectImportTask {
 		let _ = task;
 	}
 
+	/// Reports whether `footage` looks like a single still-image source: exactly one
+	/// probed stream, valid video params, and a `VideoType::Video` probe.
+	///
+	/// The "only" refers to the single-stream still-image shape that the C++
+	/// `total_stream_count == 1` + `kVideoTypeStill` check accepts (the decoder reports
+	/// a still as `Video`), not to the absence of other nodes. Returns false for
+	/// multi-stream or invalid footage.
 	fn item_is_still_image_footage_only(&self, footage: &NodeRef) -> bool {
 		// The quercusnode domain footage records probed streams; a single
 		// stream is the closest domain equivalent of the C++
@@ -366,6 +412,12 @@ impl ProjectImportTask {
 		vp.is_valid() && vp.video_type() == VideoType::Video
 	}
 
+	/// Reports whether `footage` is still-image footage whose first video stream is
+	/// exactly `width`x`height` pixels.
+	///
+	/// Used while detecting an image sequence: the previous/next numbered file is
+	/// probed and must match the original frame's geometry. Returns false when the
+	/// footage is not still-image footage or has no readable first video stream.
 	fn compare_still_image_size(&self, footage: &NodeRef, width: i32, height: i32) -> bool {
 		if !self.item_is_still_image_footage_only(footage) {
 			return false;
@@ -445,7 +497,12 @@ fn get_image_sequence_limit(start_fn: &str, start: i64, up: bool, digit_count: i
 	current
 }
 
-/// Parse a "num/den" frame-rate string.
+/// Parses a `"num/den"` frame-rate string into `(numerator, denominator)`, trimming
+/// whitespace around each part.
+///
+/// Returns `None` when a part is missing or not a valid `i32`; extra `/`-separated
+/// parts are ignored. A zero denominator is accepted here and must be rejected by
+/// the caller.
 fn parse_rational(s: &str) -> Option<(i32, i32)> {
 	let mut parts = s.trim().split('/');
 	let num: i32 = parts.next()?.trim().parse().ok()?;

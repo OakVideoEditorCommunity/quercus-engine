@@ -226,6 +226,12 @@ pub fn set_plugin_executor(executor: Option<Arc<PluginExecutor>>) {
 }
 
 /// The installed plugin executor, if any.
+///
+/// Returns a clone of the executor installed by [`set_plugin_executor`], or
+/// `None` when none is installed (the plugin render path then falls back to
+/// a purple failure frame). The returned `Arc` keeps the executor alive even
+/// if a later install clears or replaces the slot. Takes the slot lock and
+/// recovers from a poisoned mutex instead of panicking.
 pub fn plugin_executor() -> Option<Arc<PluginExecutor>> {
     executor_slot()
         .lock()
@@ -277,6 +283,14 @@ fn plugin_gpu_query_slot() -> &'static std::sync::Mutex<Option<Arc<PluginGpuQuer
 }
 
 /// Install/clear the plugin GPU-capability query.
+///
+/// The query maps an OFX plugin identifier to whether it can render on the
+/// GPU path; [`montage_has_cpu_effects`] consults it through
+/// [`plugin_is_gpu`] to keep CPU-only plugins on the CPU compositor (and to
+/// let GPU-capable plugins stay in the GPU montage). Passing `None` clears
+/// the process-wide slot, after which every non-builtin effect is
+/// conservatively treated as CPU. Safe to call repeatedly; the previous
+/// `Arc`, if any, is dropped.
 pub fn set_plugin_gpu_query(query: Option<Arc<PluginGpuQuery>>) {
     *plugin_gpu_query_slot()
         .lock()
@@ -322,6 +336,12 @@ fn texture_value(texture: Texture) -> NodeValue {
 /// The failure marker frame: solid magenta (1, 0, 1, 1) F32 RGBA —
 /// the C++ plugin renderer paints failed plugin output purple so a
 /// broken plugin is visible instead of silently black.
+///
+/// `size` is clamped to at least 1×1 (a zero/negative dimension becomes 1);
+/// `time` is used as the generated frame's timestamp. Every pixel is set to
+/// exactly `(1.0, 0.0, 1.0, 1.0)` F32 RGBA. Falls back to
+/// [`Texture::dummy`] when the frame cannot be allocated, so the caller
+/// never has to handle an error.
 fn purple_frame(time: Rational, size: (i32, i32)) -> Texture {
     let (w, h) = (size.0.max(1), size.1.max(1));
     let mut frame = match generate_frame(time, (w, h), PixelFormat::F32) {
@@ -461,6 +481,13 @@ impl RenderEvalHooks {
     /// inversion). A missing host/executor or a failed render yields a
     /// purple failure frame instead of aborting the graph, matching
     /// pluginjob.cpp's fallback.
+    ///
+    /// `src` is the texture the plugin renders against (the caller picks
+    /// the job's effect input, else the first clip texture, else a dummy
+    /// 1×1); `spec` must be a [`JobSpec::Plugin`] — any other variant
+    /// returns `Error::Invalid`. The job's `size` comes from `src`.
+    /// Only a non-plugin spec is an `Err`; plugin render failures are
+    /// logged and reported as [`purple_frame`] so the graph continues.
     fn process_plugin_job(&mut self, src: Texture, spec: &JobSpec) -> Result<Texture> {
         let JobSpec::Plugin {
             instance,
@@ -602,6 +629,13 @@ impl RenderEvalHooks {
     /// texture from the now-resolved param row (a pass-through — C++ leaves
     /// the failed shader's output as its input); a row without the effect
     /// input resolves to `NodeValue::None`.
+    ///
+    /// `payload` is the shader job whose `params` row is resolved in place;
+    /// `depth`/`in_flight` are the recursion state, and each param value is
+    /// resolved at the same `depth` (nested payload recursion happens inside
+    /// [`Self::resolve_value`]/[`Self::process_shader_job`]). Always returns
+    /// a value: the rendered texture, the effect-input value, or
+    /// `NodeValue::None`.
     fn process_shader_job_value(
         &mut self,
         payload: &ShaderJobPayload,
@@ -694,6 +728,11 @@ impl RenderEvalHooks {
     /// and replace the box with the result. A failure falls back to the
     /// job's resolved input texture (a pass-through — the C++ renderer
     /// leaves the failed transform's output as its input).
+    ///
+    /// `payload` is the color-transform job (input value plus processor);
+    /// `depth`/`in_flight` are forwarded to the recursion walk that
+    /// resolves the input first. Always returns a value: the transformed
+    /// texture, or the resolved input when the transform fails (logged).
     fn process_color_transform_job_value(
         &mut self,
         payload: &ColorTransformJobPayload,
@@ -716,6 +755,13 @@ impl RenderEvalHooks {
     /// wrote at the job's path. A missing or unreadable file substitutes
     /// the fallback — a real texture by then, not another job box — and is
     /// logged once per path (a cache miss repeats every frame).
+    ///
+    /// `payload` is the cache job (path plus fallback value); `depth` and
+    /// `in_flight` are the recursion state shared with
+    /// [`Self::resolve_value`], which resolves the fallback at the same
+    /// `depth` and uses `in_flight` to stop a job reachable from itself.
+    /// Always returns a value: the cached frame on success, else the
+    /// resolved fallback.
     fn process_cache_job_value(
         &mut self,
         payload: &CacheJobPayload,
@@ -759,6 +805,15 @@ impl RenderEvalHooks {
 
     /// [`Self::process_shader_job`] with a recursion guard for nested
     /// payloads (generator-over-base chains nest at most 2 deep).
+    ///
+    /// `payload` is the shader job to execute — its `params` row holds
+    /// texture boxes, scalar params and nested shader payloads; `depth` is
+    /// the current nesting level, 0 for the top-level job. A texture param
+    /// boxing another shader payload is resolved by a recursive call with
+    /// `depth + 1`; once `depth` reaches 8 (defensive ceiling; real chains
+    /// nest at most 2) the nested box is treated as unresolved and that
+    /// sampler is left unbound. Returns `None` when the job cannot run, for
+    /// the reasons listed on [`Self::process_shader_job`].
     fn process_shader_job_depth(&self, payload: &ShaderJobPayload, depth: u32) -> Option<Texture> {
         /// Nested-payload recursion ceiling (defensive; real graphs nest
         /// a generator job inside a merge job and stop there).
@@ -1091,6 +1146,16 @@ impl Default for RenderEvalHooks {
 
 /// Generate the pipeline's canonical frame: F32 RGBA, transparent black,
 /// with the given timestamp (the CPU-backend producer for video tickets).
+///
+/// `size` is `(width, height)` in pixels; `time` is stored as the frame
+/// timestamp; `format` is written into the frame's video params (F32 is
+/// the pipeline's canonical format). The frame is allocated and zeroed;
+/// callers fill the pixels.
+///
+/// # Errors
+///
+/// `Error::Invalid` for a non-positive dimension and `Error::NoMem` when
+/// the allocation fails.
 pub fn generate_frame(time: Rational, size: (i32, i32), format: PixelFormat) -> Result<Frame> {
     let (w, h) = size;
     if w <= 0 || h <= 0 {
@@ -1113,8 +1178,20 @@ pub fn generate_frame(time: Rational, size: (i32, i32), format: PixelFormat) -> 
 /// asks for (F32 pipeline frame). This is the CPU-backend render path.
 ///
 /// M12 P0 routing: a sequence montage (list of clips) is composited
-/// topmost-last; a single-footage ticket decodes one stream; otherwise
-/// the pipeline frame is generated.
+/// topmost-last through [`render_montage_frame`], which prefers the GPU
+/// compositor; a single-footage ticket decodes one stream through
+/// [`render_footage_frame`]; otherwise a transparent generated frame is
+/// produced — a GPU clear when the format is F32 and a context exists,
+/// falling back to [`generate_frame`].
+///
+/// `time` is the sequence time to render; `params` supplies the output
+/// size ([`VideoTicketParams::render_size`]), the optional forced pixel
+/// format (F32 when unset) and the clip/footage selection.
+///
+/// # Errors
+///
+/// Propagates decode and composite errors, and `Error::Invalid`/
+/// `Error::NoMem` from the generated-frame fallback.
 pub fn render_produced_frame(
     time: Rational,
     params: &crate::ticket::VideoTicketParams,
@@ -1238,6 +1315,15 @@ fn decoded_frames() -> std::sync::MutexGuard<'static, DecodedFrameCache> {
 }
 
 /// Insert `texture` under `key` with the general and planar caps applied.
+///
+/// A key that is already present is left untouched (the first insertion
+/// wins). Otherwise general-LRU victims are dropped until the cache is
+/// below [`MAX_CACHED_FRAMES`]; entries with tick 0 are pinned and never
+/// chosen as victims, so a cache full of them simply grows past the cap.
+/// A planar texture additionally prunes planar entries to
+/// [`MAX_CACHED_PLANAR_FRAMES`] - 1 before inserting, keeping hardware
+/// surface residency bounded. `tick` is the caller's LRU timestamp (higher
+/// is more recent); `cache` is borrowed for the whole operation.
 fn insert_cached_frame(cache: &mut DecodedFrameCache, key: DecodedFrameKey, texture: Texture, tick: u64) {
     if cache.contains_key(&key) {
         return;
@@ -1276,7 +1362,13 @@ fn prune_planar_frames(cache: &mut DecodedFrameCache, keep: usize) {
     }
 }
 
-/// Time-key rational (the frame-LRU's deterministic key half).
+/// The deterministic frame-LRU key half for a time value.
+///
+/// Returns the rational as `(numerator, denominator)` — the exact pair, not
+/// a float — so two requests for the same frame time compare equal even
+/// when reached through different rational arithmetic. `t` is borrowed and
+/// not reduced or normalized. Used as the time component of
+/// [`DecodedFrameKey`].
 fn time_key(t: &Rational) -> (i64, i64) {
     (t.numerator(), t.denominator())
 }
@@ -1315,6 +1407,21 @@ fn eviction_victim(
 }
 
 /// Open (or reuse) the decoder session for `(filename, stream_index)`.
+///
+/// Sessions are cached process-wide in [`DECODERS`], mutex-serialized so a
+/// handle can be shared across worker threads, and a cache hit refreshes
+/// the session's LRU tick. A miss opens a new FFmpeg decoder and evicts
+/// under [`MAX_CACHED_DECODERS`], preferring a hardware session as the
+/// victim (hardware sessions pin scarce GPU memory). `filename` is the
+/// media path (`&str`, borrowed only for the duration of the call) and
+/// `stream_index` selects the stream inside that file.
+///
+/// Setting the `QUERCUS_PERF` environment variable adds `[open]` tracing
+/// to standard error.
+///
+/// # Errors
+///
+/// `Error::Failed` when the codec cannot open the stream.
 fn open_decoder(filename: &str, stream_index: i32) -> Result<Arc<dyn quercus_codec::decoder::Decoder>> {
     let key = (filename.to_string(), stream_index);
     let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1735,6 +1842,12 @@ fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Resu
 /// path): baked from the same CPU reference (`colormath::decode_to_acescg`)
 /// the staging path uses, cached per colorimetry. `None` in the legacy
 /// sRGB working space (pass-through) or when the LUT cannot be built.
+///
+/// `color_primaries`/`color_trc` are the frame's `AVColorPrimaries` and
+/// `AVColorTransferCharacteristic` codes. The returned key
+/// (`"footage/{primaries}/{trc}"`) is passed to the GPU LUT pass as its
+/// cache identity; the per-process cache holds at most 16 entries and is
+/// cleared wholesale when full.
 fn footage_working_lut(
     color_primaries: i32,
     color_trc: i32,
@@ -1765,6 +1878,17 @@ fn footage_working_lut(
 
 /// Bake the source→ACEScg transform into a 3D LUT over the display
 /// domain (the same domain the color-transform LUTs use).
+///
+/// `color_primaries` and `color_trc` are the decoded frame's FFmpeg
+/// `AVColorPrimaries` / `AVColorTransferCharacteristic` integer codes,
+/// mapped through [`source_primaries_from_av`] / [`source_transfer_from_av`];
+/// every lattice point is transformed with the same CPU reference
+/// ([`decode_to_acescg`]) the staging path uses. The returned LUT is the
+/// GPU-side equivalent for imported planar frames.
+///
+/// Returns `None` when the transform cannot be produced; the current
+/// implementation always returns `Some`, so callers treat `None` as
+/// "working-space transform unavailable".
 fn build_footage_working_lut(
     color_primaries: i32,
     color_trc: i32,
@@ -2945,12 +3069,12 @@ fn process_clip_audio(
     }
 }
 
-/// Apply one built-in audio effect to an interleaved chunk by driving the
-/// existing node behavior (`VolumeNode`/`PanNode`) through the factory:
-/// the mixer uses the same `process_samples` kernels as the node graph
-/// instead of re-implementing them. Disabled effects are bypassed; an
-/// unknown type id passes the chunk through with a one-shot warning.
 /// Read a scalar effect parameter with a finite fallback.
+///
+/// `input` is the parameter input id looked up on `effect`; the value is
+/// returned as an `f64` only when present and finite, otherwise `default`.
+/// Used by the audio effect kernels so a missing or NaN/inf parameter
+/// never poisons the mix.
 fn effect_param(effect: &crate::ticket::MontageAudioEffect, input: &str, default: f64) -> f64 {
     effect
         .param(input)
@@ -2960,6 +3084,13 @@ fn effect_param(effect: &crate::ticket::MontageAudioEffect, input: &str, default
 }
 
 /// Three-band EQ: one-pole low/high split with per-band dB gains.
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1). The
+/// low band is a one-pole low-pass at 200 Hz, the high band is the residual
+/// above a 4 kHz low-pass, and the mid band is what remains. `effect`
+/// supplies the low/mid/high gains in dB, each clamped to `[-24, 24]` and
+/// defaulting to 0.
 fn apply_eq(
     buf: &mut [f32],
     frames: usize,
@@ -2994,6 +3125,14 @@ fn apply_eq(
 
 /// Feed-forward compressor with a sample-peak detector and exponential
 /// attack/release smoothing.
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1); the
+/// detector peak is linked across channels. `effect` supplies threshold
+/// (dB, clamped to `[-80, 0]`, default -24), ratio (clamped to `[1, 40]`,
+/// default 4), attack (ms, clamped to `[0.1, 1000]`, default 10), release
+/// (ms, clamped to `[1, 5000]`, default 100) and makeup gain (dB, clamped
+/// to `[-24, 24]`, default 0), applied after the envelope.
 fn apply_compressor(
     buf: &mut [f32],
     frames: usize,
@@ -3044,6 +3183,12 @@ fn apply_compressor(
 /// needed to put the current sample frame under the ceiling and the
 /// released previous gain, so the output never exceeds `ceiling_db`
 /// (a final sample clamp guarantees the bound even after f32 rounding).
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1). The
+/// detector is linked across channels. `effect` supplies `ceiling` (dB,
+/// clamped to `[-60, 0]`, default -1) and `release` (ms, clamped to
+/// `[1, 5000]`, default 50).
 fn apply_limiter(
     buf: &mut [f32],
     frames: usize,
@@ -3222,6 +3367,20 @@ fn apply_ducking(
     }
 }
 
+/// Apply one built-in audio effect to an interleaved chunk in place.
+///
+/// Dispatch is by `effect.type_id`: `EQ`, `Compressor`, `Limiter`, `Gate`
+/// and `Ducking` have dedicated kernels; `Volume`/`Pan` drive the existing
+/// node behavior through the factory, so the mixer reuses the node graph's
+/// `process_samples` kernels instead of duplicating them. A disabled
+/// effect is bypassed, and an unknown type id passes the chunk through
+/// with a one-shot warning ([`warn_unsupported_once`]).
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `frames` is a frame count (not a sample count); `rate` is the
+/// sample rate in Hz (the kernels clamp it to at least 1); `sidechain` is
+/// the montage accumulator over the clip window and is required only by
+/// `Ducking` — the master bus passes `None`.
 fn apply_audio_effect(
     buf: &mut [f32],
     frames: usize,
@@ -3399,6 +3558,12 @@ fn mix_audio_montage(
 /// `Limiter` and `Gate` kernels. `Ducking` is a clip-position sidechain
 /// effect and is bypassed on the bus (there is no detector signal after
 /// the final mix).
+///
+/// `acc` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `channels` is floored to 1 so the frame count cannot divide by
+/// zero; `effects` run in chain order with each stage feeding the next;
+/// `rate` is the sample rate in Hz. Called by [`mix_audio_montage`] after
+/// the per-clip mixing and before the full-scale clamp.
 fn apply_bus_effects(
     acc: &mut [f32],
     channels: usize,
@@ -3438,6 +3603,21 @@ pub fn render_audio_samples_into(
 }
 
 /// Bilinear scale an F32-RGBA image (row-major with per-row strides).
+///
+/// `src` points at the first source row and `src_stride` is the source row
+/// stride in bytes; `src_w`/`src_h` are the source dimensions in pixels.
+/// `dst` receives the scaled image with `dst_stride` bytes per row and
+/// `dst_w`/`dst_h` pixels. Sample positions use half-pixel centers and
+/// clamp to the image border, so edge texels are replicated. RGB is
+/// written unclamped (linear-light values above 1.0 are preserved); only
+/// alpha is clamped to `[0.0, 1.0]`.
+///
+/// Any non-positive dimension returns without writing `dst`.
+///
+/// The caller must guarantee that `src` is readable for `src_h` rows of
+/// `src_stride` bytes (at least `src_w * 16` bytes used per row) and that
+/// `dst` holds at least `(dst_h - 1) * dst_stride + dst_w * 16` bytes; the
+/// function performs no bounds checks against the real allocations.
 fn scale_rgba_f32(
     src: *const u8,
     src_stride: i32,
@@ -3551,6 +3731,16 @@ pub fn render_montage_frame(
     Ok(Texture::wrap_frame(acc))
 }
 
+/// Whether `params` should be composited by the GPU montage path.
+///
+/// True only when the ticket asks for the canonical F32 frame, a shared
+/// [`GpuContext`] exists, no montage effect is CPU-only (see
+/// [`montage_has_cpu_effects`]) and no earlier frame latched
+/// `GPU_MONTAGE_FAILED`. Cheap and side-effect free; the pipeline uses it
+/// to decide whether speculative decode requests may import planar textures
+/// ([`DecodedFrameKey`]'s import flag). [`render_montage_frame`] is the
+/// consumer and re-checks the same conditions, falling back to the CPU
+/// compositor.
 pub(crate) fn montage_prefers_gpu(
     params: &crate::ticket::VideoTicketParams,
     format: PixelFormat,
@@ -3559,6 +3749,28 @@ pub(crate) fn montage_prefers_gpu(
         && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
         && !montage_has_cpu_effects(params)
         && quercus_core::backend::GpuContext::shared().is_some()
+}
+
+/// 1×1 transparent F32 GPU base for the first montage layer.
+///
+/// The texture is borrowed from `ctx`'s placeholder pool
+/// ([`GpuContext::placeholder_texture`]) rather than allocated and
+/// cleared, so the first alpha-over pass can replace it with a full-size
+/// accumulator without a per-frame `clear_texture` submit.
+fn transparent_gpu_base(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+) -> Result<Texture> {
+    let token = ctx.placeholder_texture()?;
+    let lease = quercus_core::texture::GpuLease::borrowed(ctx.clone(), token);
+    Ok(Texture::Gpu {
+        token,
+        backend: ctx.kind(),
+        width: 1,
+        height: 1,
+        format: PixelFormat::F32,
+        ctx: ctx.clone(),
+        lease,
+    })
 }
 
 /// GPU montage compositor (the playback path's replacement for the CPU
@@ -3578,25 +3790,19 @@ pub(crate) fn montage_prefers_gpu(
 /// the normal path: the only transfers are uploads of CPU-decoded frames
 /// (software decode) and the explicit readback of a texture that belongs
 /// to a different context.
-/// 1×1 transparent GPU base for the first montage layer. Using this as the
-/// first alpha-over destination avoids a separate `clear_texture` submit
-/// per frame (the first pass writes a full-size opaque/alpha result).
-fn transparent_gpu_base(
-    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
-) -> Result<Texture> {
-    let token = ctx.placeholder_texture()?;
-    let lease = quercus_core::texture::GpuLease::borrowed(ctx.clone(), token);
-    Ok(Texture::Gpu {
-        token,
-        backend: ctx.kind(),
-        width: 1,
-        height: 1,
-        format: PixelFormat::F32,
-        ctx: ctx.clone(),
-        lease,
-    })
-}
-
+///
+/// `ctx` is the shared GPU context the returned texture belongs to;
+/// `time` is the sequence time to composite; `params` carries the
+/// bottom-up `montage` clip list and the adjustment spans; `size` is the
+/// output size in pixels.
+///
+/// # Errors
+///
+/// `Error::Invalid` when `size` has a non-positive dimension, plus
+/// propagated shader-compile, allocation, decode and composite errors. A
+/// shader-compile failure also latches `GPU_MONTAGE_FAILED`, so
+/// [`render_montage_frame`] keeps using the CPU compositor for the rest of
+/// the process instead of retrying the pipeline every frame.
 fn render_montage_frame_gpu(
     ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
     time: Rational,
@@ -4089,7 +4295,13 @@ fn build_color_transform_lut(
     Some(std::sync::Arc::new(Lut3d { edge, lo, hi, data }))
 }
 
-/// Log an unsupported-effect passthrough once per type id.
+/// Log once per process that an effect passes through unchanged, keyed by
+/// `type_id`, and drop further reports for the same type.
+///
+/// `type_id` is the effect/node type id used as the de-duplication key (it
+/// need not be a currently registered type); `reason` is the human-readable
+/// explanation printed after the type id on the first occurrence. Writes a
+/// single line to standard error; never panics and returns no status.
 fn warn_unsupported_once(type_id: &str, reason: &str) {
     if unsupported_warned().insert(type_id.to_string()) {
         eprintln!("montage effect \"{type_id}\" passes through unchanged: {reason}");

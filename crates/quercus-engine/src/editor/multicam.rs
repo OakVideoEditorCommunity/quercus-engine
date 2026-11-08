@@ -47,7 +47,18 @@ impl NativeMirror for QuercusEditorMulticamState {
 	}
 }
 
-/// Resolves a clip's multicam state; false when it is not multicam-enabled.
+/// Resolves a clip's multicam state: multicam node, source sequence, angle count
+/// and current angle.
+///
+/// On success the resolved state is written through `out`; on failure `out` is
+/// left untouched. Returns `false` when `session` or `out` is null, when `clip`
+/// is not a valid node id, when the clip is not multicam-enabled, or when its
+/// multicam node has no connected source sequence.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new` (or null); `out`
+/// must be valid for one `QuercusEditorMulticamState` write when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_state(
 	session: *const EditorSessionHandle,
@@ -69,7 +80,17 @@ pub unsafe extern "C" fn quercus_editor_multicam_state(
 	true
 }
 
-/// Returns the first sequence feeding a clip, or the invalid-node sentinel.
+/// Returns the first sequence feeding a clip's texture chain.
+///
+/// The clip's `texture_in` source is returned when it is itself a sequence;
+/// otherwise the upstream input graph is walked depth-first and the first
+/// sequence found wins. Returns the sequence's node identity, or
+/// `QUERCUS_NODE_ID_INVALID` when the session or clip id is invalid or no
+/// sequence is reachable.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_connected_sequence(
 	session: *const EditorSessionHandle,
@@ -87,6 +108,14 @@ pub unsafe extern "C" fn quercus_editor_multicam_connected_sequence(
 }
 
 /// Whether a clip's direct texture source is a multicam node.
+///
+/// Only the node wired to the clip's `texture_in` input is checked — one hop,
+/// not a walk — so a multicam buried further upstream is not reported. Returns
+/// `false` for a null session or an invalid node id.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_is_clip(
 	session: *const EditorSessionHandle,
@@ -102,6 +131,17 @@ pub unsafe extern "C" fn quercus_editor_multicam_is_clip(
 }
 
 /// Finds the multicam clip covering `time` on a sequence's video tracks.
+///
+/// `time` is a position in the sequence's timebase (a `QuercusRational` passed by
+/// value); a clip matches when `clip.in <= time < clip.out`. Video tracks are
+/// scanned in order and each track's blocks in track order, and the first block
+/// whose clip has multicam enabled is returned. Returns the clip's node identity,
+/// or `QUERCUS_NODE_ID_INVALID` when the session or sequence id is invalid or no
+/// multicam clip covers `time`.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_clip_at(
 	session: *const EditorSessionHandle,
@@ -119,7 +159,17 @@ pub unsafe extern "C" fn quercus_editor_multicam_clip_at(
 		.unwrap_or(QUERCUS_NODE_ID_INVALID)
 }
 
-/// Returns a multicam node's connected source sequence.
+/// Returns the source sequence connected to a multicam node.
+///
+/// That sequence's track list supplies the angles (see
+/// [`quercus_editor_multicam_source_count`] and
+/// [`quercus_editor_multicam_source_track`]). Returns the sequence's node
+/// identity, or `QUERCUS_NODE_ID_INVALID` when the session or node id is invalid,
+/// or when nothing is connected to the node's `sequence_in` input.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_sequence(
 	session: *const EditorSessionHandle,
@@ -137,7 +187,18 @@ pub unsafe extern "C" fn quercus_editor_multicam_sequence(
 		.unwrap_or(QUERCUS_NODE_ID_INVALID)
 }
 
-/// Returns one angle's track inside the connected source sequence.
+/// Returns one angle's track inside the multicam node's source sequence.
+///
+/// `source` is a zero-based index into the source sequence's track list of the
+/// type selected by `sequence_type_in` (video by default), i.e. the same list
+/// counted by [`quercus_editor_multicam_source_count`]. Returns the track's node
+/// identity, or `QUERCUS_NODE_ID_INVALID` when the session or node id is invalid,
+/// `source < 0`, no source sequence is connected, or `source` is past the end of
+/// the track list.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_source_track(
 	session: *const EditorSessionHandle,
@@ -182,6 +243,11 @@ fn source_count(graph: &Graph, multicam: NodeId) -> i32 {
 }
 
 /// Reads the multicam node's `current_in` standard value.
+///
+/// The combo is stored as a double and truncated to `i32`, defaulting to `-1`
+/// when the input is missing; also `-1` when `multicam` is not in `graph`.
+/// Mirrors `editor_commands::multicam::current_source` so the FFI and the command
+/// layer agree.
 fn current_source(graph: &Graph, multicam: NodeId) -> i32 {
 	graph
 		.get(multicam)
@@ -189,7 +255,16 @@ fn current_source(graph: &Graph, multicam: NodeId) -> i32 {
 		.unwrap_or(-1)
 }
 
-/// Number of angles for a multicam node, or -1 when the node is invalid.
+/// Returns the number of angles (source tracks) of a multicam node.
+///
+/// Counts the tracks of the node's connected source sequence in the track list
+/// selected by `sequence_type_in` (video by default), so it is `0` when no
+/// sequence is connected or the list is unreadable. Returns `-1` for a null
+/// session, an invalid node id, or an id no longer in the graph.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_source_count(
 	session: *const EditorSessionHandle,
@@ -208,7 +283,17 @@ pub unsafe extern "C" fn quercus_editor_multicam_source_count(
 	source_count(&guard.graph, multicam)
 }
 
-/// Current angle of a multicam node, or -1 when the node is invalid.
+/// Returns the multicam node's currently selected angle.
+///
+/// Reads the node's `current_in` standard value (a combo stored as a double,
+/// truncated to `i32`), which defaults to `-1` when the input is missing.
+/// Returns `-1` for a null session, an invalid node id, or an id that is no
+/// longer present in the project graph.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null (which is
+/// rejected).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_current_source(
 	session: *const EditorSessionHandle,
@@ -227,8 +312,22 @@ pub unsafe extern "C" fn quercus_editor_multicam_current_source(
 	current_source(&guard.graph, multicam)
 }
 
-/// Copies one angle's display name (`"Video Track N"` by default), or -1 for
-/// an invalid node/source.
+/// Copies one angle's display name into the caller's buffer.
+///
+/// The name is `"Video Track {n}"`, `"Audio Track {n}"` or `"Subtitle Track {n}"`
+/// from the angle track's kind and stored index (`n` falls back to `source` when
+/// the stored index is negative). When `buf` is non-null and `buf_len > 0` the
+/// name is copied and NUL-terminated, truncated to `buf_len - 1` bytes; the full
+/// name length in bytes is returned regardless, so a null/zero buffer queries the
+/// length. Returns `-1` for a null session, an invalid node id, a negative
+/// `source`, no connected source sequence, or a `source` past the end of the
+/// track list.
+///
+/// # Safety
+///
+/// `session` must be a live handle from `quercus_editor_new`, or null; `buf`
+/// must be valid for `buf_len` byte writes when non-null. The buffer is borrowed
+/// for the call only and stays owned by the caller.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_source_name(
 	session: *const EditorSessionHandle,
@@ -266,8 +365,18 @@ pub unsafe extern "C" fn quercus_editor_multicam_source_name(
 	copy_str_out(&name, buf, buf_len)
 }
 
-/// Computes the square-ish angle grid for `source_count`; false for a
-/// non-positive count or null outputs (nothing is written).
+/// Computes the square-ish angle grid used to display `source_count` angles.
+///
+/// The smaller dimension grows first (`1x1`, `1x2`, `2x2`, `2x3`, ...), matching
+/// `MultiCamNode::rows_and_columns`; `rows`/`cols` receive the result and are the
+/// same grid [`quercus_editor_multicam_source_at`] hit-tests. Returns `false`
+/// without writing anything when either out-pointer is null or
+/// `source_count <= 0`.
+///
+/// # Safety
+///
+/// `rows` and `cols` must each be valid for one `i32` write when non-null and
+/// must not alias each other; null is accepted and rejected with `false`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_grid(
 	source_count: i32,
@@ -286,8 +395,23 @@ pub unsafe extern "C" fn quercus_editor_multicam_grid(
 	true
 }
 
-/// Hit-tests normalized display coordinates against the angle grid (C++
-/// `MulticamDisplay::DisplayClicked`); -1 outside the grid or an empty cell.
+/// Hit-tests normalized display coordinates against the multicam angle grid.
+///
+/// `source_count` is the number of angles; `x`/`y` are normalized display
+/// coordinates in `0.0..=1.0` from the top-left. The grid comes from
+/// `MultiCamNode::rows_and_columns(source_count)` and the cell is
+/// `(floor(y * max(rows, cols)), floor(x * max(rows, cols)))`. Returns the angle
+/// index in `0..source_count`, or `-1` for a non-positive count, a coordinate
+/// outside `0..=1` (NaN included), a point outside the grid (the unused part of
+/// a non-square grid), or an index past the last angle.
+///
+/// Port of C++ `MulticamDisplay::DisplayClicked`; no session or project is
+/// needed.
+///
+/// # Safety
+///
+/// No pointers are involved and there are no preconditions: the `unsafe`
+/// qualifier only marks the C ABI boundary, where callers may pass any `f64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_multicam_source_at(
 	source_count: i32,

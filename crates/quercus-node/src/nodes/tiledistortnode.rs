@@ -381,8 +381,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TileDistortNode { gizmo }))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.tile`).
+/// Registers this node type in the node factory table.
+///
+/// Pushes a [`NodeMeta`] with the stable type id
+/// `org.olivevideoeditor.Olive.tile` (the C++ factory entry is only a parity
+/// reference), the display name "Tile", the distort category and this module's
+/// [`create`] constructor.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.tile",

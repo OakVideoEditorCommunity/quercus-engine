@@ -70,6 +70,11 @@ impl MultiCamNode {
 	}
 
 	/// The connected sequence node (C++ `sequence_`).
+	///
+	/// `Some` while a sequence is wired to `sequence_in` (the state
+	/// [`Self::set_sequence`] maintains), `None` when no sequence is
+	/// connected or after the edge is removed. The node then takes its
+	/// sources from that sequence's track list instead of `sources_in`.
 	pub fn sequence(&self) -> Option<NodeId> {
 		self.sequence
 	}
@@ -344,6 +349,11 @@ impl NodeBehavior for MultiCamNode {
 /// `current_in`/`sources_in`/`sequence_in`/`sequence_type_in` with the
 /// defaults, flags and properties documented on the constants, and
 /// initializes `sequence_` to null.
+///
+/// Returns the fresh [`NodeCore`] together with the behavior; this is the
+/// factory registered by [`register`]. Wire a sequence through
+/// [`MultiCamNode::set_sequence`] to switch the source list from
+/// `sources_in` to that sequence's tracks.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
@@ -385,6 +395,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ `k_multicam_node` in
 /// `factory.cpp::create_from_factory_index`).
+///
+/// Appends one [`NodeMeta`] to `meta` with type id
+/// `org.olivevideoeditor.Olive.multicam`, display name `Multi-Cam`, the
+/// [`Category::Timeline`] category and the [`create`] factory; the registry
+/// calls this once at startup.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.multicam",

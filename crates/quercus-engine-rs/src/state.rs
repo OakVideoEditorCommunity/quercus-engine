@@ -197,42 +197,74 @@ impl Config {
 		config_save()
 	}
 
-	/// Reads a string or formatted scalar (`None` when absent).
+	/// Read the global config value for `key`, or `None` when it is absent.
+	///
+	/// Typed entries are formatted into their text form by the native store, so
+	/// one getter covers strings, numbers and booleans. `key` is the full
+	/// native path (e.g. `"Storage/Backend"`).
 	pub fn get(self, key: &str) -> Option<String> {
 		config_get(None, key)
 	}
 
-	/// Writes a string or parses it into an existing typed entry.
+	/// Write `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`). A new key is
+	/// stored as a string; when the key already exists with another type,
+	/// `value` is parsed into that type (an unparseable value leaves the old
+	/// value untouched). Empty keys are ignored, and `Err(Error)` is returned
+	/// only when the engine rejects the call.
 	pub fn set(self, key: &str, value: &str) -> Result<(), Error> {
 		config_set(None, key, value)
 	}
 
-	/// The `get_bool` operation.
+	/// Read boolean config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely boolean entry is returned; an absent key, another
+	/// stored type, or a native rejection yields `fallback`.
 	pub fn get_bool(self, key: &str, fallback: bool) -> bool {
 		config_get_bool(None, key, fallback)
 	}
 
-	/// The `set_bool` operation.
+	/// Write boolean `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native bool. An empty key is ignored, and `Err(Error)` is
+	/// returned only when the engine rejects the call.
 	pub fn set_bool(self, key: &str, value: bool) -> Result<(), Error> {
 		config_set_bool(None, key, value)
 	}
 
-	/// The `get_i64` operation.
+	/// Read integer config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely integer entry is returned; an absent key, another
+	/// stored type, or a native rejection yields `fallback`.
 	pub fn get_i64(self, key: &str, fallback: i64) -> i64 {
 		config_get_i64(None, key, fallback)
 	}
 
-	/// The `set_i64` operation.
+	/// Write integer `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native 64-bit integer. An empty key is ignored, and
+	/// `Err(Error)` is returned only when the engine rejects the call.
 	pub fn set_i64(self, key: &str, value: i64) -> Result<(), Error> {
 		config_set_i64(None, key, value)
 	}
 
-	/// The `get_f64` operation.
+	/// Read floating-point config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely floating-point entry is returned; an absent key,
+	/// another stored type, or a native rejection yields `fallback`.
 	pub fn get_f64(self, key: &str, fallback: f64) -> f64 {
 		config_get_f64(None, key, fallback)
 	}
 
-	/// The `set_f64` operation.
+	/// Write floating-point `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native double without a range check. An empty key is
+	/// ignored, and `Err(Error)` is returned only when the engine rejects the
+	/// call.
 	pub fn set_f64(self, key: &str, value: f64) -> Result<(), Error> {
 		config_set_f64(None, key, value)
 	}
@@ -280,7 +312,11 @@ pub fn config_get_bool(group: Option<&str>, key: &str, fallback: bool) -> bool {
 	unsafe { quercus_core_config_get_bool(g, gl, k, kl, fallback as i32) != 0 }
 }
 
-/// The `config_set_bool` operation.
+/// Write boolean `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native bool; an empty `key` is ignored. Returns `Err(Error)` only when the
+/// engine rejects the call.
 pub fn config_set_bool(group: Option<&str>, key: &str, value: bool) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -291,14 +327,23 @@ pub fn config_set_bool(group: Option<&str>, key: &str, value: bool) -> Result<()
 	}
 }
 
-/// Reads an i64 config value, `fallback` when unset.
+/// Read integer config `key` from `group`, or `fallback` when it is
+/// unavailable.
+///
+/// Only a genuinely integer entry is returned; an absent key, another stored
+/// type, or a native rejection yields `fallback`. `group == None` addresses
+/// the global key space.
 pub fn config_get_i64(group: Option<&str>, key: &str, fallback: i64) -> i64 {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
 	unsafe { quercus_core_config_get_int64(g, gl, k, kl, fallback) }
 }
 
-/// The `config_set_i64` operation.
+/// Write integer `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native 64-bit integer; an empty `key` is ignored. Returns `Err(Error)` only
+/// when the engine rejects the call.
 pub fn config_set_i64(group: Option<&str>, key: &str, value: i64) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -309,14 +354,23 @@ pub fn config_set_i64(group: Option<&str>, key: &str, value: i64) -> Result<(), 
 	}
 }
 
-/// Reads an f64 config value, `fallback` when unset.
+/// Read floating-point config `key` from `group`, or `fallback` when it is
+/// unavailable.
+///
+/// Only a genuinely floating-point entry is returned; an absent key, an entry
+/// of a different type, or a native rejection yields `fallback`. `group ==
+/// None` addresses the global key space.
 pub fn config_get_f64(group: Option<&str>, key: &str, fallback: f64) -> f64 {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
 	unsafe { quercus_core_config_get_double(g, gl, k, kl, fallback) }
 }
 
-/// The `config_set_f64` operation.
+/// Write floating-point `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native double with no range check (NaN/Inf are kept as-is); an empty `key`
+/// is ignored. Returns `Err(Error)` only when the engine rejects the call.
 pub fn config_set_f64(group: Option<&str>, key: &str, value: f64) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -375,7 +429,19 @@ struct SourceBox {
 	active: Arc<AtomicBool>,
 }
 
-/// C trampoline for `load`: snprintf-style, panic-safe.
+/// C trampoline for [`ConfigSource::load`].
+///
+/// Calls the host source (mutex-guarded, panic caught) and copies the TOML
+/// text into `buf` snprintf-style: at most `cap - 1` bytes plus a NUL
+/// terminator, returning the full byte length so `ret >= cap` means
+/// truncation. Returns `-1` when `userdata` is null, the source yields `None`,
+/// the text length does not fit `i32`, or the callback panics; `buf == null`
+/// or `cap == 0` is query mode.
+///
+/// # Safety
+///
+/// `userdata` must be the live `Box<SourceBox>` installed as the engine's
+/// config source, and `buf` must be writable for `cap` bytes when non-null.
 unsafe extern "C" fn config_source_load(userdata: *mut c_void, buf: *mut u8, cap: usize) -> i32 {
 	if userdata.is_null() {
 		return -1;
@@ -406,7 +472,17 @@ unsafe extern "C" fn config_source_load(userdata: *mut c_void, buf: *mut u8, cap
 	i32::try_from(text.len()).unwrap_or(-1)
 }
 
-/// C trampoline for `save`: borrowed UTF-8 TOML, panic-safe.
+/// C trampoline for [`ConfigSource::save`].
+///
+/// Borrows `len` bytes as UTF-8 TOML and forwards them to the host source,
+/// catching panics. Returns `false` when `userdata` is null, `data` is null
+/// with `len > 0`, the bytes are not valid UTF-8, the source rejects the
+/// write, or the callback panics.
+///
+/// # Safety
+///
+/// `userdata` must be the live `Box<SourceBox>` installed as the engine's
+/// config source; `data` must be readable for `len` bytes (or `len == 0`).
 unsafe extern "C" fn config_source_save(
 	userdata: *mut c_void,
 	data: *const u8,
@@ -439,7 +515,17 @@ unsafe extern "C" fn config_source_save(
 	.unwrap_or(false)
 }
 
-/// C trampoline for `drop`: marks the guard inactive and reclaims the box.
+/// C trampoline for dropping the installed [`ConfigSource`].
+///
+/// Marks the registration guard inactive, reclaims the `Box<SourceBox>` and
+/// drops the host source; a panic in the source's destructor is caught so it
+/// cannot unwind across the C ABI. Null is a no-op. Ownership of `userdata`
+/// transfers here, so this must run exactly once for a registered pointer.
+///
+/// # Safety
+///
+/// `userdata` must be the pointer handed to the engine by
+/// [`set_config_source`] and must not be freed by anyone else.
 unsafe extern "C" fn config_source_drop(userdata: *mut c_void) {
 	if userdata.is_null() {
 		return;
@@ -553,6 +639,17 @@ pub fn set_log_sink<F>(sink: Option<F>) -> bool
 where
 	F: Fn(i32, &str) + Send + 'static,
 {
+	/// C trampoline that forwards one formatted log line to the user sink.
+	///
+	/// `message`/`len` is the engine-formatted UTF-8 line (invalid UTF-8 is
+	/// forwarded as `""`), `level` is the engine's 0 = DEBUG … 4 = FATAL code,
+	/// and `userdata` is the `Box<F>` created by [`set_log_sink`]. A panic in
+	/// the user closure is caught so it never unwinds across the C ABI.
+	///
+	/// # Safety
+	///
+	/// `userdata` must be the live `Box<F>` installed as the sink, and
+	/// `message` must be readable for `len` bytes when non-null.
 	unsafe extern "C" fn trampoline<F>(
 		level: i32,
 		message: *const u8,
@@ -578,6 +675,17 @@ where
 		}));
 	}
 
+	/// C trampoline that reclaims the log-sink closure after the engine
+	/// uninstalls it.
+	///
+	/// `userdata` is the `Box<F>` leaked by [`set_log_sink`]; null is a no-op
+	/// and it must run exactly once for that pointer. Never called for the
+	/// `None` sink, which installs no userdata.
+	///
+	/// # Safety
+	///
+	/// `userdata` must come from [`set_log_sink`] and must not be freed
+	/// anywhere else.
 	unsafe extern "C" fn drop_trampoline<F>(userdata: *mut c_void)
 	where
 		F: Fn(i32, &str) + Send + 'static,
@@ -731,7 +839,11 @@ impl CancelAtom {
 		}
 	}
 
-	/// Sets the cancel flag.
+	/// Set the token's cancel flag so every clone observes cancellation.
+	///
+	/// Idempotent and callable from any thread. The flag is a refcounted atom
+	/// shared by all clones; `is_cancelled` afterwards returns `true` and
+	/// records that the cancellation was heard (see `heard_cancel`).
 	pub fn cancel(&self) {
 		unsafe { quercus_core_cancelatom_cancel(self.ptr) };
 	}

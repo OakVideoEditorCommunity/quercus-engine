@@ -286,6 +286,14 @@ pub fn import_srt_styled(
 	result
 }
 
+/// The display text stored on `node`, used when exporting subtitles.
+///
+/// `graph` is the project graph and `node` the text source to read. Looks at
+/// the standard inputs `plain_text_in` and then `text_in` (element `-1`),
+/// returning the first non-empty `NodeValue::Text`; returns `None` when the
+/// node does not exist or neither input holds non-empty text. Empty strings
+/// are skipped rather than returned, so a cue with cleared text is not
+/// exported.
 fn text_value(graph: &Graph, node: NodeId) -> Option<String> {
 	let entry = graph.get(node)?;
 	for input in [
@@ -305,6 +313,20 @@ fn text_value(graph: &Graph, node: NodeId) -> Option<String> {
 
 /// Export every Text clip on the sequence's video tracks to an SRT file.
 /// Returns the number of cues written.
+///
+/// `project` is the project graph (locked while collecting), `sequence` the
+/// sequence whose video tracks are scanned and `path` the SRT file to write
+/// (created or overwritten). For each video-track clip the exporter takes its
+/// in/out points (converted to seconds) and the text of the node connected to
+/// the clip's `TEXTURE_INPUT` via [`text_value`]; clips without a range or a
+/// text source are skipped silently. Cues are sorted by start time and then
+/// by end time, then written by `write_srt`. Returns the cue count (0 produces
+/// an empty file).
+///
+/// # Errors
+///
+/// Returns a `String` describing the failure when the file cannot be written
+/// (including the path and the OS error).
 pub fn export_srt(project: &ProjectRef, sequence: NodeId, path: &Path) -> Result<usize, String> {
 	let mut cues = Vec::new();
 	{
@@ -657,6 +679,18 @@ mod tests {
 }
 
 /// Reads the style currently applied to `clip`'s Text source.
+///
+/// `project` is the project graph (locked for the read) and `clip` the clip
+/// block whose text styling should be recovered. Follows the clip's
+/// `TEXTURE_INPUT` to its source node; returns `None` when the clip has no
+/// texture input or the source is not a `text3` node (the text footprint the
+/// subtitle importer creates), otherwise a [`SubtitleStyle`] with every field
+/// read from the source's standard inputs: `font_family_in`
+/// (StrCombo/Text), `font_size_in`, `color_in`, `outline_enabled_in`,
+/// `outline_color_in`, `outline_width_in` and `valign_in`. A missing or
+/// mistyped input keeps the [`SubtitleStyle::default`] value instead of
+/// failing, so the result is a best-effort snapshot rather than a validation;
+/// the vertical alignment lands in `align`.
 pub fn read_subtitle_style(project: &ProjectRef, clip: NodeId) -> Option<SubtitleStyle> {
 	let guard = lock(project);
 	let source = guard

@@ -90,7 +90,15 @@ impl FrameCache {
 		Self::with_limits(budget, DEFAULT_MAX_ENTRIES)
 	}
 
-	/// An empty cache with explicit limits (tests).
+	/// An empty cache with explicit limits.
+	///
+	/// `budget_bytes` is the soft byte budget for all cached frames combined
+	/// and `max_entries` the hard cap on the number of entries; both are used
+	/// verbatim by [`Self::insert`]'s LRU eviction, so `0` means "keep only
+	/// the single newest entry". Intended for tests and callers that size the
+	/// cache explicitly; production uses [`Self::new`], which applies the
+	/// 64 MiB / 64-entry defaults (and the `QUERCUS_WORKER_FRAME_CACHE_MB`
+	/// override).
 	pub fn with_limits(budget_bytes: u64, max_entries: usize) -> Self {
 		Self {
 			entries: HashMap::new(),

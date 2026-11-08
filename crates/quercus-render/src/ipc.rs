@@ -449,6 +449,10 @@ pub struct WireMontageClip {
 }
 
 /// A rational's wire parts. `0/1` is the no-duration sentinel.
+///
+/// Returns `(numerator, denominator)`; a non-positive denominator (an
+/// unset rational) is normalized to `0/1`, so peers never receive a
+/// division by zero. Inverse of `rational_from_wire_parts`.
 fn wire_rational_parts(value: quercus_core::Rational) -> (i64, i64) {
 	if value.denominator() <= 0 {
 		(0, 1)
@@ -459,6 +463,9 @@ fn wire_rational_parts(value: quercus_core::Rational) -> (i64, i64) {
 
 /// Rebuild a rational from wire parts. Old payloads omit the fields
 /// (0/0) and must read as "no fade", not NaN.
+///
+/// Any non-positive `den` collapses to the `0/1` sentinel; otherwise
+/// `(num, den)` is used as given. Inverse of `wire_rational_parts`.
 fn rational_from_wire_parts(num: i64, den: i64) -> quercus_core::Rational {
 	if den <= 0 {
 		quercus_core::Rational::new(0, 1)
@@ -468,6 +475,11 @@ fn rational_from_wire_parts(num: i64, den: i64) -> quercus_core::Rational {
 }
 
 /// Map a ticket-side audio effect to its wire form.
+///
+/// `type_id` and `enabled` are copied verbatim; `params` entries whose
+/// value has no wire representation are dropped (the wire value enum is
+/// a subset of the node value), so a round trip through
+/// [`montage_audio_effect_from`] keeps only representable inputs.
 pub fn wire_audio_effect_from(
 	effect: &crate::ticket::MontageAudioEffect,
 ) -> WireMontageAudioEffect {
@@ -503,6 +515,12 @@ pub fn montage_audio_effect_from(
 }
 
 /// Map a ticket-side montage clip to its wire form.
+///
+/// Every rational is flattened to a num/den pair; the fades go through
+/// `wire_rational_parts`, so an unset fade becomes the `0/1` "no
+/// fade" sentinel, and the effect stacks are mapped with
+/// [`wire_effect_from`] / [`wire_audio_effect_from`]. Inverse of
+/// [`montage_clip_from`].
 pub fn wire_montage_clip_from(clip: &crate::ticket::MontageClip) -> WireMontageClip {
 	let (fade_in_num, fade_in_den) = wire_rational_parts(clip.fade_in);
 	let (fade_out_num, fade_out_den) = wire_rational_parts(clip.fade_out);
@@ -527,6 +545,13 @@ pub fn wire_montage_clip_from(clip: &crate::ticket::MontageClip) -> WireMontageC
 }
 
 /// Map a wire montage clip back to the ticket-side form (worker).
+///
+/// The in/out and media-in rationals are rebuilt straight from their
+/// num/den parts; the fades go through `rational_from_wire_parts`, so
+/// a payload that omitted the protocol-v2 fade fields reads as "no
+/// fade" instead of `0/0`. Both effect stacks are rebuilt with
+/// [`montage_effect_from`] / [`montage_audio_effect_from`]. Inverse of
+/// [`wire_montage_clip_from`].
 pub fn montage_clip_from(wire: &WireMontageClip) -> crate::ticket::MontageClip {
 	crate::ticket::MontageClip {
 		filename: wire.filename.clone(),
@@ -568,6 +593,12 @@ pub fn wire_effect_from(effect: &crate::ticket::MontageEffect) -> WireMontageEff
 }
 
 /// Map a wire effect back to the ticket-side form (worker).
+///
+/// `effect_input_id` is rebuilt as `None` when the wire string is empty
+/// (the effect is not tied to a specific input node), and `params` are
+/// converted from their wire representation via
+/// `WireNodeValue::to_node_value`. Inverse of [`wire_effect_from`]; used
+/// when a worker deserializes a batch ticket.
 pub fn montage_effect_from(wire: &WireMontageEffect) -> crate::ticket::MontageEffect {
 	crate::ticket::MontageEffect {
 		type_id: wire.type_id.clone(),
@@ -876,8 +907,18 @@ pub fn error_message(message: &str, ticket: Option<i64>) -> Value {
 	}
 }
 
-/// Write one NDJSON message line (compact JSON + `\n`), the Rust port of
-/// `ipcmessage.cpp write_message()`.
+/// Write one NDJSON message line (compact JSON + `\n`), the Rust port
+/// of `ipcmessage.cpp write_message()`.
+///
+/// `w` is the sink (a pipe or socket stream) and `msg` the already-built
+/// JSON object; `w` is not flushed, so buffered sinks must be flushed
+/// by the caller. The newline is written in a second `write_all`, so a
+/// partial write can leave a message split across calls.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] with kind `InvalidData` when `msg` cannot be
+/// serialized, or the underlying write error.
 pub fn write_message(w: &mut impl Write, msg: &Value) -> io::Result<()> {
 	let line =
 		serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -1129,21 +1170,68 @@ impl SpscRingBuffer {
 	}
 
 	#[inline]
+	/// The ring's `head` counter (`AtomicU32` at offset 0): the producer's
+	/// next write slot.
+	///
+	/// Read by [`Self::pop`] (acquire) and advanced by [`Self::push`]
+	/// (release); written to `0` by [`Self::create`].
+	///
+	/// # Safety
+	///
+	/// The ring must be live: `self.base` must point at a mapped segment of
+	/// at least [`Self::HEADER_BYTES`] bytes initialized by
+	/// [`Self::create`] or an ABI-identical C++ peer. The returned
+	/// reference must not outlive that mapping.
 	unsafe fn head(&self) -> &AtomicU32 {
 		unsafe { &*(self.base as *const AtomicU32) }
 	}
 
 	#[inline]
+	/// The ring's `tail` counter (`AtomicU32` at offset 4): the consumer's
+	/// next read slot.
+	///
+	/// Read by [`Self::push`] (acquire) and advanced by [`Self::pop`]
+	/// (release); written to `0` by [`Self::create`].
+	///
+	/// # Safety
+	///
+	/// The ring must be live: `self.base` must point at a mapped segment of
+	/// at least [`Self::HEADER_BYTES`] bytes initialized by
+	/// [`Self::create`] or an ABI-identical C++ peer. The returned
+	/// reference must not outlive that mapping.
 	unsafe fn tail(&self) -> &AtomicU32 {
 		unsafe { &*(self.base.add(4) as *const AtomicU32) }
 	}
 
 	#[inline]
+	/// Writes the ring's capacity (slot count) into the header at offset
+	/// 8.
+	///
+	/// Only [`Self::create`] calls this, on the process that owns segment
+	/// creation; peers read the value back through [`Self::capacity`].
+	///
+	/// # Safety
+	///
+	/// `self.base` must point at a writable mapped segment of at least
+	/// [`Self::HEADER_BYTES`] bytes, and the header must be exclusively
+	/// owned during initialization (no peer may be reading it yet).
 	unsafe fn store_capacity(&self, capacity: u32) {
 		unsafe { *(self.base.add(8) as *mut u32) = capacity };
 	}
 
 	#[inline]
+	/// Raw `*mut u32` to slot `index` in the slot array that follows the
+	/// 12-byte header (`HEADER_BYTES + index * 4`).
+	///
+	/// Used by [`Self::create`], [`Self::push`] and [`Self::pop`] to read
+	/// and write the queued index/value.
+	///
+	/// # Safety
+	///
+	/// The ring must be live, `index` must be `< self.capacity()`, and
+	/// `self.base` must address at least `HEADER_BYTES + (index + 1) * 4`
+	/// writable bytes. The pointer is valid only while the segment mapping
+	/// stays alive and outlives the last use.
 	unsafe fn slot_ptr(&self, index: usize) -> *mut u32 {
 		unsafe { self.base.add(Self::HEADER_BYTES + index * 4) as *mut u32 }
 	}
@@ -1532,6 +1620,12 @@ impl SharedMemoryRegion {
 	/// "olive-rw-<pid>-<index>" (`SharedMemoryRegion::make_key`).
 	/// Centralized so the owner and the spawned worker agree on the same
 	/// name.
+	///
+	/// `owner_pid` is the owning process id and `worker_index` the worker's
+	/// ordinal within that owner; the pair must be unique among live
+	/// segments. The key is also the input to the platform shm name
+	/// derivation (`shm_name_for_key`), so both sides must pass the same
+	/// numbers.
 	pub fn make_key(owner_pid: i64, worker_index: i32) -> String {
 		format!("olive-rw-{owner_pid}-{worker_index}")
 	}

@@ -56,6 +56,13 @@ macro_rules! export_vec {
 		$crate::export_vec!(@common $alias, $prefix);
 
 		const _: () = {
+			/// Appends one UTF-8 string, copying it into the vector.
+			///
+			/// `value`/`length` are the caller's bytes (not NUL-terminated); null
+			/// with `length == 0` means the empty string while null with a
+			/// non-zero length is rejected. Returns false without modifying the
+			/// vector when `this` is null, the pointer/length pair is invalid, or
+			/// the bytes are not valid UTF-8.
 			#[doc = concat!("Pushes one UTF-8 string (`", $prefix, "_push`). False on null / invalid UTF-8.")]
 			#[unsafe(export_name = concat!($prefix, "_push"))]
 			pub extern "C" fn push(this: *mut $alias, value: *const u8, length: usize) -> bool {
@@ -81,6 +88,13 @@ macro_rules! export_vec {
 				}
 			}
 
+			/// Borrows the string at `index`, returning a pointer to its bytes.
+			///
+			/// `out_len` (optional) receives the byte length, which is the only
+			/// way to learn the length: the pointer is not NUL-terminated and no
+			/// terminator is written. Returns null, and leaves `*out_len`
+			/// untouched, when `this` is null or `index` is out of bounds. The
+			/// borrow stays valid only until the vector is cleared or released.
 			#[doc = concat!("Borrows the string at `index` (`", $prefix, "_get`). Null when out of bounds.")]
 			#[unsafe(export_name = concat!($prefix, "_get"))]
 			pub extern "C" fn get(
@@ -112,6 +126,12 @@ macro_rules! export_vec {
 		$crate::export_vec!(@common $alias, $prefix);
 
 		const _: () = {
+			/// Appends one element to the vector.
+			///
+			/// `value` is copied in by value (these vectors hold plain-old-data
+			/// element types). A null `this` is a no-op; the signature has no
+			/// failure path, so an allocation failure aborts rather than being
+			/// reported to the caller.
 			#[doc = concat!("Appends one element (`", $prefix, "_push`).")]
 			#[unsafe(export_name = concat!($prefix, "_push"))]
 			pub extern "C" fn push(this: *mut $alias, value: $elem) {
@@ -121,6 +141,12 @@ macro_rules! export_vec {
 				unsafe { &mut *this }.push(value);
 			}
 
+			/// Copies the element at `index` into `out`.
+			///
+			/// `out` must point to writable storage for one element of the
+			/// vector's type; nothing is written and no pointer is retained.
+			/// Returns false when `this` or `out` is null, or when `index` is out
+			/// of bounds (the vector is left untouched).
 			#[doc = concat!("Copies the element at `index` into `out` (`", $prefix, "_get`). False when out of bounds.")]
 			#[unsafe(export_name = concat!($prefix, "_get"))]
 			pub extern "C" fn get(this: *const $alias, index: usize, out: *mut $elem) -> bool {
@@ -136,6 +162,12 @@ macro_rules! export_vec {
 				}
 			}
 
+			/// Overwrites the element at `index` with `value`.
+			///
+			/// `value` is copied in and the vector's length never changes, so
+			/// this updates an element in place. Returns false without modifying
+			/// the vector when `this` is null or `index` is out of bounds (use
+			/// `<prefix>_push` to grow the vector first).
 			#[doc = concat!("Overwrites the element at `index` (`", $prefix, "_set`). False when out of bounds.")]
 			#[unsafe(export_name = concat!($prefix, "_set"))]
 			pub extern "C" fn set(this: *mut $alias, index: usize, value: $elem) -> bool {
@@ -156,6 +188,15 @@ macro_rules! export_vec {
 	// Shared by both arms: the Arc handle pair + init/len/clear.
 	(@common $alias:ident, $prefix:literal) => {
 		const _: () = {
+			/// Adds one extra strong reference to the handle, without taking
+			/// ownership of a new handle.
+			///
+			/// # Safety
+			///
+			/// `this` must be a live handle from this module (or null, which is a
+			/// no-op) whose strong count can still be incremented; every call must
+			/// be balanced by one `_release`. Passing a dangling or already-freed
+			/// pointer is undefined behavior.
 			#[doc = concat!("Adds one strong reference (`", $prefix, "_add_ref`). Null is a no-op.")]
 			#[unsafe(export_name = concat!($prefix, "_add_ref"))]
 			pub unsafe extern "C" fn add_ref(this: *const $alias) {
@@ -165,6 +206,16 @@ macro_rules! export_vec {
 				unsafe { std::sync::Arc::increment_strong_count(this) };
 			}
 
+			/// Consumes one strong reference, destroying the vector when it was
+			/// the last one.
+			///
+			/// # Safety
+			///
+			/// `this` must be a live handle from this module (or null, which is a
+			/// no-op), and the caller must own exactly one strong reference to
+			/// spend — i.e. this pairs with `_init`, `_add_ref` or `into_ffi_vec`.
+			/// Releasing a pointer whose count already reached zero, or releasing
+			/// a reference the caller does not own, is undefined behavior.
 			#[doc = concat!("Consumes one strong reference (`", $prefix, "_release`). Null is a no-op.")]
 			#[unsafe(export_name = concat!($prefix, "_release"))]
 			pub unsafe extern "C" fn release(this: *const $alias) {
@@ -180,6 +231,11 @@ macro_rules! export_vec {
 				$crate::handle::into_ffi(<$alias>::new()) as *mut $alias
 			}
 
+			/// Returns the element count.
+			///
+			/// Null reads as 0, so a null handle and an empty vector are
+			/// indistinguishable by length alone. Only a shared borrow is taken;
+			/// the count changes only through `_push` / `_clear`.
 			#[doc = concat!("Element count (`", $prefix, "_len`). Null reads as 0.")]
 			#[unsafe(export_name = concat!($prefix, "_len"))]
 			pub extern "C" fn len(this: *const $alias) -> usize {
@@ -189,6 +245,11 @@ macro_rules! export_vec {
 				unsafe { &*this }.len()
 			}
 
+			/// Drops all elements, keeping the handle and its allocation alive.
+			///
+			/// A null `this` is a no-op. String elements' buffers are freed, so
+			/// any pointer previously returned by `_get` becomes invalid; the
+			/// vector itself remains usable with `_push` afterwards.
 			#[doc = concat!("Drops all elements, keeping the vector alive (`", $prefix, "_clear`).")]
 			#[unsafe(export_name = concat!($prefix, "_clear"))]
 			pub extern "C" fn clear(this: *mut $alias) {

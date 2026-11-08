@@ -9,6 +9,20 @@ use super::super::abi::*;
 use super::{CommandArgs, kind_code};
 
 impl CommandArgs {
+	/// Builds the ABI request for `command` by filling the opcode plus the
+	/// slots that opcode consumes (`params.a`..`d`, `rate`, `enabled`,
+	/// `kind`, `track_index`, `in_ts`/`out_ts`/`media_in_ts`, and the
+	/// name/path/input-id/IDs/placements/values buffers).
+	///
+	/// The string and slice setters copy their argument into a buffer owned
+	/// by this `CommandArgs`, so the pointers stored in `params` stay valid
+	/// until the struct is dropped or a setter replaces that buffer. Slots
+	/// a variant does not use keep the default (zero/null) value, so the
+	/// engine must read only the slots documented for the opcode.
+	///
+	/// # Arguments
+	///
+	/// * `command` - typed edit command to encode; consumed by value.
 	pub(super) fn map(&mut self, command: EditCommand) {
 		match command {
 			EditCommand::AddTrack { kind } => {

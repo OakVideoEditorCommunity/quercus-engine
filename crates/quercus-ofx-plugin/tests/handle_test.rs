@@ -14,14 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! handle.rs 的契约测试：`RefBox` 容器。
+//! Contract tests for handle.rs: the `RefBox` container.
 //!
-//! 单库化（M14 R5）后 crate 内部不再传 CHandle——原 CHandle 装拆
-//! （`make_owned`/`make_borrowed`/`get`）、panic 兜底（`guard`/
-//! `guard_handle`/`guard_void`）与身份注册表（`Registry`）均已删除。
-//! [`quercus_ofx_plugin::handle::RefBox`] 仅作为 `Host::create_instance` 的
-//! 边界返回类型保留（`Arc<RefBox<Instance>>`，quercusengine test_support
-//! 消费）；此处验证其基本契约。每个测试只验一条规则，命名即规约。
+//! After the single-library change (M14 R5) the crate no longer passes CHandle internally — the old CHandle packing/unpacking
+//! (`make_owned`/`make_borrowed`/`get`), panic fallback (`guard`/
+//! `guard_handle`/`guard_void`) and identity registry (`Registry`) are all removed.
+//! [`quercus_ofx_plugin::handle::RefBox`] is kept only as the boundary return type of `Host::create_instance`
+//! (`Arc<RefBox<Instance>>`, quercusengine test_support
+//! consumes it); here we verify its basic contract. Each test checks one rule; the name is the spec.
 
 mod common;
 
@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 use quercus_ofx_plugin::handle::RefBox;
 
-/// 析构标志：以"被析构次数"断言对象的销毁时机（Arc 生命周期语义的
-/// 行为探针）。
+/// Drop flag: asserts the object's destruction timing by counting destructions (a behavioral
+/// probe for Arc lifetime semantics).
 struct DropFlag(Arc<AtomicUsize>);
 
 impl Drop for DropFlag {
@@ -40,7 +40,7 @@ impl Drop for DropFlag {
 	}
 }
 
-/// 值可经 `.value` 字段取回（create_instance 返回后调用方的访问方式）。
+/// The value is retrievable through the `.value` field (how the caller accesses it after create_instance returns).
 #[test]
 fn refbox_exposes_value_by_field() {
 	let boxed = RefBox {
@@ -50,9 +50,9 @@ fn refbox_exposes_value_by_field() {
 	assert_eq!(boxed.value, 7);
 }
 
-/// 生命周期完全由外层 Arc 管理：`refs` 只以固定值 1 构造（无 thunk
-/// 增减），Arc 归零时内含对象恰好析构一次；弱引用在 Arc 存活期间
-/// 有效、归零后失效（host 的活跃实例表即 Weak 列表）。
+/// Lifetime is managed entirely by the outer Arc: `refs` is only ever constructed with the fixed value 1 (no thunk
+/// increments/decrements), and when the Arc reaches zero the contained object is dropped exactly once; the weak reference stays valid while the Arc lives
+/// and expires after it reaches zero (the host's active-instance table is such a Weak list).
 #[test]
 fn refbox_value_drops_exactly_once_when_arc_reaches_zero() {
 	let drops = Arc::new(AtomicUsize::new(0));

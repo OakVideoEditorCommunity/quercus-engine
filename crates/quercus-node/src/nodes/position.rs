@@ -193,7 +193,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(PositionNode))
 }
 
-/// Register this node type.
+/// Appends the Position effect to the node registry.
+///
+/// The descriptor uses type id `org.olivevideoeditor.Olive.position`, the
+/// display name "Position", and [`Category::Distort`]; `create` is the
+/// factory used to instantiate the node.
+///
+/// # Arguments
+///
+/// * `meta` - Mutable node registry the descriptor is appended to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.position",

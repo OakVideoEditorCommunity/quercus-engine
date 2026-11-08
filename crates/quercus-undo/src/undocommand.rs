@@ -121,7 +121,16 @@ impl UndoCommand {
 		command
 	}
 
-	/// Add `child` to a composite command (takes one reference).
+	/// Appends `child` to this composite command, taking ownership of it.
+	///
+	/// Children run in insertion order on `redo` and in reverse on `undo`, so
+	/// later children may depend on earlier ones. `child` is moved in, not cloned.
+	///
+	/// # Panics
+	///
+	/// Panics when `self` is not a composite (built with [`UndoCommand::multi`]);
+	/// use [`UndoCommand::multi_child_count`] or `is_multi` first
+	/// when the command's kind is not known statically.
 	pub fn multi_add_child(&mut self, child: UndoCommand) {
 		match self.inner.as_multi_mut() {
 			Some(m) => m.add_child(child),
@@ -134,7 +143,13 @@ impl UndoCommand {
 		self.inner.as_multi().map_or(0, |m| m.child_count())
 	}
 
-	/// Reference to the child at `index` of a composite command.
+	/// Borrows the child at `index` of a composite command.
+	///
+	/// `index` is the zero-based insertion order, `0..multi_child_count()`.
+	/// Returns `Error::Invalid` when `self` is not a composite and
+	/// `Error::NotFound` when the index is out of range. Read-only; use
+	/// [`UndoCommand::multi_child_mut`] to edit the child, or
+	/// [`UndoCommand::multi_add_child`] to grow the composite.
 	pub fn multi_child(&self, index: usize) -> Result<&UndoCommand> {
 		self.inner
 			.as_multi()
@@ -160,7 +175,12 @@ impl UndoCommand {
 		}
 	}
 
-	/// `undo_now` semantics: a no-op if not done.
+	/// Reverts the operation if it is currently applied, otherwise does nothing.
+	///
+	/// Guarded by the done flag: calling it twice, or before the first `redo_now`,
+	/// is a no-op, so undo stacks can drain safely. On the first call it runs the
+	/// command's `undo` and clears the done flag. Counterpart of
+	/// [`UndoCommand::redo_now`].
 	pub fn undo_now(&mut self) {
 		if self.done {
 			self.undo();
@@ -185,12 +205,23 @@ impl UndoCommand {
 		self.prepared
 	}
 
-	/// `set_prepared`.
+	/// Marks the command as prepared without running it.
+	///
+	/// The command trait has no `prepare()` callback, so a fresh command starts
+	/// prepared and this only ever sets the flag `true` (the C++ `prepared_`
+	/// compat path). Paired with [`UndoCommand::has_prepared`]; does not touch the
+	/// done flag.
 	pub fn set_prepared(&mut self) {
 		self.prepared = true;
 	}
 
-	/// `set_done`: mark as already executed without running redo.
+	/// Marks the command as already executed without running it.
+	///
+	/// Use when the effect has been applied by other means: the command then
+	/// behaves as applied, so [`UndoCommand::undo_now`] will run the undo side and
+	/// [`UndoCommand::redo_now`] will skip its redo. `done == false` makes it look
+	/// unapplied again. Does not run any command code. See
+	/// [`UndoCommand::is_done`].
 	pub fn set_done(&mut self, done: bool) {
 		self.done = done;
 	}
@@ -256,22 +287,41 @@ impl MultiUndoCommand {
 		}
 	}
 
-	/// Add a child (takes one reference).
+	/// Appends `child` to the composite, taking ownership of it.
+	///
+	/// Children run in insertion order on [`MultiUndoCommand::redo`] and in reverse
+	/// on [`MultiUndoCommand::undo`], so register them in execution order. `child`
+	/// is moved in, not cloned; use [`MultiUndoCommand::child`]/
+	/// [`MultiUndoCommand::child_mut`] to reach it afterwards.
 	pub fn add_child(&mut self, child: UndoCommand) {
 		self.children.push(child);
 	}
 
-	/// Child count.
+	/// Number of children registered in the composite.
+	///
+	/// Also the valid upper bound for [`MultiUndoCommand::child`] and
+	/// [`MultiUndoCommand::child_mut`] indexes; grows by one per
+	/// [`MultiUndoCommand::add_child`].
 	pub fn child_count(&self) -> usize {
 		self.children.len()
 	}
 
-	/// Child at `index`.
+	/// Borrows the child at `index` in insertion order.
+	///
+	/// `index` is zero-based and must be below [`MultiUndoCommand::child_count`].
+	/// Returns `Error::NotFound` when it is out of range, which is the only
+	/// failure mode (an empty composite reports `NotFound` for `0`). Pair with
+	/// [`MultiUndoCommand::child_mut`] for edits.
 	pub fn child(&self, index: usize) -> Result<&UndoCommand> {
 		self.children.get(index).ok_or(Error::NotFound)
 	}
 
-	/// Mutable child at `index`.
+	/// Borrows the child at `index` mutably, for inspecting or editing it in place.
+	///
+	/// `index` is zero-based and must be below [`MultiUndoCommand::child_count`];
+	/// out-of-range indexes return `Error::NotFound`. Because the borrow is mutable,
+	/// the composite cannot be undone or extended while it is held. Counterpart of
+	/// [`MultiUndoCommand::child`].
 	pub fn child_mut(&mut self, index: usize) -> Result<&mut UndoCommand> {
 		self.children.get_mut(index).ok_or(Error::NotFound)
 	}

@@ -423,6 +423,12 @@ pub fn pack_uniforms(
 	buf
 }
 
+/// Write `v` as little-endian bytes into `buf` at `offset`, if it fits.
+///
+/// `buf` is the uniform byte buffer, `offset` a byte position inside it and
+/// `v` the integer value (e.g. an int uniform); a write that would run past
+/// `buf.len()` is silently skipped rather than panicking, so a short buffer
+/// leaves the tail untouched.
 fn write_i32(buf: &mut [u8], offset: usize, v: i32) {
 	if offset + 4 <= buf.len() {
 		buf[offset..offset + 4].copy_from_slice(&v.to_le_bytes());

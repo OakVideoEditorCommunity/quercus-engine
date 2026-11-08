@@ -155,8 +155,22 @@ unsafe extern "C" {
 }
 
 impl EditorSession {
-	/// Reads the selected clip's audio mix and effect chain. Returns `None`
-	/// for a non-clip or invalid node.
+	/// Read the audio mix state and effect chain of one clip.
+	///
+	/// `clip` is the clip node's id. Returns `None` when the engine refuses
+	/// the query — an invalid/stale node id, a node that is not a clip block
+	/// (so no clip behavior to read), or a null session — and `Some` with:
+	/// `gain` (1.0 = unity), `pan` (-1..1), `fade_in`/`fade_out` as linear
+	/// durations converted from the engine's numerator/denominator pair into
+	/// [`Rational`], and the ordered effect chain.
+	///
+	/// Each effect entry mirrors [`Self::audio_bus_effects`]: type id decoded
+	/// from the fixed buffer up to the first NUL, the `enabled` flag, and the
+	/// whitelisted static params only. `volume` and `pan` are convenience
+	/// copies of the `volume_in`/`panning_in` entries when present, and
+	/// `None` otherwise. An entry whose info query fails, or a param whose
+	/// query fails, is skipped rather than aborting the whole read, so a
+	/// partially unreadable chain still returns the entries that did resolve.
 	pub fn clip_audio(&self, clip: NodeId) -> Option<ClipAudioState> {
 		let mut raw = QuercusClipAudioState::default();
 		unsafe {
@@ -255,7 +269,24 @@ impl EditorSession {
 		unsafe { quercus_editor_measure_loudness(self.ptr, &range, &mut out) }.then_some(out)
 	}
 
-	/// Reads the current sequence's master-bus effect chain.
+	/// Read the current sequence's master-bus effect chain.
+	///
+	/// Returns one [`AudioBusEffect`] per chain entry in chain order, or an
+	/// empty vector when the session has no current sequence (the engine
+	/// reports a count of 0). Each entry carries its built-in effect type id
+	/// (decoded lossily from the engine's fixed 128-byte buffer, up to the
+	/// first NUL), its `enabled` flag, and its static scalar parameters as
+	/// `(input id, value)` pairs. Only a per-type whitelist of inputs is
+	/// queried — `volume_in`; `panning_in`; `low_gain_db`/`mid_gain_db`/
+	/// `high_gain_db`; the compressor's threshold/ratio/attack/release/
+	/// makeup; the limiter's ceiling/release; the gate's threshold/attack/
+	/// release/hold; the ducking's threshold/amount/attack/release — so an
+	/// unknown type id (an entry added while the renderer does not know it)
+	/// yields an entry with no params, and a single failed parameter query
+	/// simply omits that pair. Entries whose info query fails are skipped,
+	/// which can make the returned vector shorter than the engine chain —
+	/// the index for [`Self::set_audio_bus_effect_param`] is the engine's,
+	/// not this vector's.
 	pub fn audio_bus_effects(&self) -> Vec<AudioBusEffect> {
 		let count = unsafe { quercus_editor_audio_bus_effect_count(self.ptr) }.max(0);
 		let mut effects = Vec::new();
@@ -347,7 +378,19 @@ impl EditorSession {
 		unsafe { quercus_editor_remove_audio_bus_effect(self.ptr, index) }
 	}
 
-	/// Enables/disables one entry of the current sequence's master-bus chain.
+	/// Enable or disable one entry of the current sequence's master-bus
+	/// effect chain, as one undo row.
+	///
+	/// `index` is the entry's position in the chain (see
+	/// [`Self::audio_bus_effects`]); a disabled entry is skipped by the
+	/// mixer without being removed from the chain, so the indices of the
+	/// following entries are unaffected. `enabled` is written verbatim.
+	///
+	/// Returns `false` when `index` does not fit in `i32`, the session has
+	/// no current sequence, the current node is not a sequence, or `index`
+	/// is past the end of the chain; `true` otherwise, including the no-op
+	/// case where the entry already had that state (no undo row is pushed
+	/// then).
 	pub fn set_audio_bus_effect_enabled(&self, index: usize, enabled: bool) -> bool {
 		let Ok(index) = i32::try_from(index) else {
 			return false;
@@ -355,7 +398,25 @@ impl EditorSession {
 		unsafe { quercus_editor_set_audio_bus_effect_enabled(self.ptr, index, enabled) }
 	}
 
-	/// Sets one static float parameter of a master-bus effect entry.
+	/// Set one static (non-keyframed) scalar parameter of a master-bus
+	/// effect entry.
+	///
+	/// `index` indexes the current sequence's master-bus chain (the order
+	/// returned by [`Self::audio_bus_effects`]); `input_id` is the effect
+	/// input name, e.g. `volume_in`, `panning_in`, `low_gain_db`,
+	/// `threshold_db` or `release_ms` (surrounding whitespace is trimmed).
+	/// `value` is in the input's own unit (gain for `volume_in`, -1..1 for
+	/// pan, dB for the `*_db` inputs, ms for the `*_ms` inputs) and must be
+	/// finite — NaN/inf is rejected, not clamped. The write replaces the
+	/// entry's static value and is recorded as one undo row; an input id the
+	/// entry does not carry yet is appended as a new static value.
+	///
+	/// Returns `false` (this API has no error type) when `index` does not
+	/// fit in `i32`, the session has no current sequence, the current node
+	/// is not a sequence, `index` is past the end of the chain, `input_id`
+	/// is empty, or `value` is not finite. Returns `true` when the value was
+	/// stored or already equal — an unchanged value is a successful no-op
+	/// that pushes no undo row.
 	pub fn set_audio_bus_effect_param(
 		&self,
 		index: usize,

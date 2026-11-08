@@ -40,6 +40,20 @@ pub struct SubtitleCue {
 	pub text: String,
 }
 
+/// Decodes raw subtitle bytes into text, honoring an optional byte-order mark.
+///
+/// `bytes` is the whole file content as read from disk; a leading UTF-8 BOM,
+/// UTF-16LE BOM, or UTF-16BE BOM selects that encoding and is stripped before
+/// decoding. Without a BOM the bytes are decoded as UTF-8. Only the first
+/// matching BOM is consumed; a UTF-16 stream is split into 16-bit code units,
+/// so a trailing odd byte is dropped.
+///
+/// # Errors
+///
+/// Returns a human-readable `String` when the payload is not valid in the
+/// selected encoding: `"SRT is not UTF-8"`, `"SRT is not valid UTF-16LE"`, or
+/// `"SRT is not valid UTF-16BE"`. Called by [`parse_srt`] before any cue
+/// parsing, so those messages are the ones callers see for undecodable input.
 fn decode_text(bytes: &[u8]) -> Result<String, String> {
 	if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
 		return String::from_utf8(bytes[3..].to_vec()).map_err(|_| "SRT is not UTF-8".into());

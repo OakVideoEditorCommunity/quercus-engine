@@ -225,7 +225,14 @@ fn io_failure(error: io::Error) -> (i32, String) {
 	(0, error.to_string())
 }
 
-/// Map a registration return code to the SDK error.
+/// Turn a non-zero `quercus_codec_mediaio_register` return code into the
+/// [`MediaIoError`] surfaced by [`register_media_io`].
+///
+/// [`E_INSTALLED`] (`-2`) becomes "a media I/O provider is already
+/// installed"; [`E_INVALID`] (`-1`) becomes "invalid media I/O provider or
+/// vtable"; any other code keeps a generic message that includes the code.
+/// The code is preserved verbatim in the returned error, so callers can
+/// branch on it instead of the message text.
 fn registration_error(code: i32) -> MediaIoError {
 	let message = match code {
 		E_INSTALLED => "a media I/O provider is already installed".to_string(),
@@ -235,7 +242,26 @@ fn registration_error(code: i32) -> MediaIoError {
 	MediaIoError { code, message }
 }
 
-/// C trampoline for `can_open`: panics never cross the ABI boundary.
+/// Vtable `can_open` trampoline: ask the registered provider whether it
+/// claims `path`.
+///
+/// `path`/`path_len` are the URI as UTF-8 bytes (no NUL needed; an empty
+/// path is passed through as `""`). Returns `1` when the provider claims the
+/// URI and `0` otherwise. Every failure — null userdata, null path with a
+/// non-zero length, non-UTF-8 path, or a panic inside the provider — is
+/// reported as "not claimed" (`0`) with `err` (when non-null) filled in,
+/// because this is a query and the engine must be able to fall back to the
+/// local filesystem. Panics never cross the ABI boundary.
+///
+/// This is asked for every input open, so providers are expected to answer
+/// without I/O.
+///
+/// # Safety
+///
+/// `userdata` must be the live `ProviderBox` pointer installed by
+/// `register_media_io` (the engine only calls back while that provider is
+/// registered); `path` must be null or point to `path_len` readable bytes;
+/// `err` must be null or point to a writable [`QuercusMediaIoError`].
 unsafe extern "C" fn mediaio_can_open(
 	userdata: *mut c_void,
 	path: *const u8,
@@ -266,8 +292,28 @@ unsafe extern "C" fn mediaio_can_open(
 	}
 }
 
-/// C trampoline for `open`: boxes the stream and hands its raw pointer to
-/// the engine, which returns it through [`mediaio_close`].
+/// Vtable `open` trampoline: let the provider open `path`, box the stream
+/// and hand its raw pointer to the engine.
+///
+/// `path`/`path_len` are the media URI as UTF-8 bytes (no NUL needed, may be
+/// empty). `out_stream` is written up front with null and, on success, with
+/// a `Box::into_raw` pointer to a [`StreamBox`]; the engine owns that
+/// pointer until it calls [`mediaio_close`] exactly once. `err` (when
+/// non-null) receives the failure code and message. Returns `0` on success;
+/// on failure returns a negative code — the provider's own negative code, or
+/// [`E_INVALID`] when the code was `0`/non-negative or the trampoline itself
+/// rejected the call (null userdata, null out-parameter, null/malformed
+/// path, panic). Panics are caught, so an unwinding provider cannot cross the
+/// ABI boundary. `_userdata` is the provider box installed at registration
+/// and must stay alive for the call.
+///
+/// # Safety
+///
+/// `userdata` must be the live `ProviderBox` pointer passed to
+/// `quercus_codec_mediaio_register` (the engine only calls back while the
+/// provider is registered). `path` must be null or point to `path_len`
+/// readable bytes; `out_stream` must point to a writable `*mut c_void`;
+/// `err` must be null or point to a writable [`QuercusMediaIoError`].
 unsafe extern "C" fn mediaio_open(
 	userdata: *mut c_void,
 	path: *const u8,
@@ -311,7 +357,26 @@ unsafe extern "C" fn mediaio_open(
 	}
 }
 
-/// C trampoline for `read`: recovers the boxed [`MediaStream`].
+/// Vtable `read` trampoline: copy up to `cap` bytes from the boxed stream
+/// into the engine's buffer.
+///
+/// `buf`/`cap` describe a caller-owned writable buffer of `cap` bytes;
+/// `cap == 0` performs an empty read and is allowed with a null `buf`.
+/// Returns the number of bytes written — short reads are legal, `0` means
+/// end of stream — or `-1` on failure, in which case `err` (when non-null)
+/// is filled in. Failures are: null stream, null `buf` with `cap > 0`, an
+/// I/O error from the provider (reported with code `0`), a provider that
+/// claims to have written more than `cap` bytes (a defensive violation
+/// check), and a byte count that does not fit `i64`. Panics are caught and
+/// reported as errors; `_userdata` is unused.
+///
+/// # Safety
+///
+/// `stream` must be a live pointer returned by [`mediaio_open`] and not yet
+/// closed; `buf` must be null or point to at least `cap` writable bytes that
+/// stay valid for the call, and must not alias the stream's internals. `err`
+/// must be null or point to a writable [`QuercusMediaIoError`]. The stream
+/// must not be used concurrently from another thread.
 unsafe extern "C" fn mediaio_read(
 	_userdata: *mut c_void,
 	stream: *mut c_void,
@@ -358,7 +423,25 @@ unsafe extern "C" fn mediaio_read(
 	}
 }
 
-/// C trampoline for `seek`: maps the C whence value to [`SeekFrom`].
+/// Vtable `seek` trampoline: translate the C `whence`/`offset` pair into a
+/// [`SeekFrom`] and return the stream's new absolute position.
+///
+/// `whence` follows the usual libc numbering: `0` = start (an `offset` that
+/// does not fit `u64`, i.e. a negative one, is rejected), `1` = current,
+/// `2` = end; any other value is rejected. On success the new absolute byte
+/// position is returned as `i64`. On any failure — null stream, bad
+/// `whence`, I/O error from the provider, or a position/target that does not
+/// fit the return type — `-1` is returned and `err` (when non-null) is
+/// filled with a code and a message; panics are caught and reported the same
+/// way rather than unwinding into the engine. `_userdata` is unused (the
+/// provider box is not needed to seek an existing stream).
+///
+/// # Safety
+///
+/// `stream` must be a live pointer returned by [`mediaio_open`] and not yet
+/// passed to [`mediaio_close`]; it must not be driven concurrently with
+/// itself (one stream is read/seeked from a single decoder thread). `err`
+/// must be null or point to a writable [`QuercusMediaIoError`].
 unsafe extern "C" fn mediaio_seek(
 	_userdata: *mut c_void,
 	stream: *mut c_void,
@@ -402,7 +485,20 @@ unsafe extern "C" fn mediaio_seek(
 	}
 }
 
-/// C trampoline for `close`: reclaims the boxed stream exactly once.
+/// Vtable `close` trampoline: reclaim the [`StreamBox`] handed out by
+/// [`mediaio_open`] exactly once.
+///
+/// A null `stream` is a no-op, so a failed open cannot leak or double-free.
+/// Any panic raised by the stream's destructor is caught, so no unwind
+/// crosses the C ABI boundary; a caught panic is swallowed here because
+/// `close` has no error channel. `_userdata` is the provider box and is
+/// ignored (the stream is owned by the engine between open and close).
+///
+/// # Safety
+///
+/// `stream` must be null or the pointer returned by [`mediaio_open`] in
+/// `out_stream`, and the engine must pass it here at most once: this
+/// performs `Box::from_raw` on it, after which the allocation is freed.
 unsafe extern "C" fn mediaio_close(_userdata: *mut c_void, stream: *mut c_void) {
 	// The stream's destructor may panic; keep any unwind inside the
 	// trampoline. A null handle is tolerated (nothing to reclaim).

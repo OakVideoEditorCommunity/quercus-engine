@@ -38,7 +38,13 @@ pub struct LoadResult {
 }
 
 impl LoadResult {
-	/// A normal successful load.
+	/// A normal successful load: `project` wrapped with
+	/// [`QUERCUSSTORAGE_OK`](crate::error::QUERCUSSTORAGE_OK).
+	///
+	/// # Arguments
+	///
+	/// * `project` - the owned loaded project handle (refcount 1); moved into
+	///   the result.
 	pub fn success(project: crate::handle::CHandle) -> Self {
 		LoadResult {
 			project,
@@ -56,6 +62,14 @@ impl LoadResult {
 	}
 
 	/// No project — only an info code (TOO_NEW / UNKNOWN_VERSION).
+	///
+	/// The project handle is null and `version_info` carries the code, so
+	/// callers report the version outcome instead of loading a project.
+	///
+	/// # Arguments
+	///
+	/// * `version_info` - the info code to surface (normally
+	///   `QUERCUSSTORAGE_TOO_NEW` or `QUERCUSSTORAGE_UNKNOWN_VERSION`).
 	pub fn info_only(version_info: i32) -> Self {
 		LoadResult {
 			project: crate::handle::CHandle::null(),
@@ -219,11 +233,30 @@ pub trait StorageBackend: Send + Sync {
 	}
 
 	/// Delete the row `uuid` from the library at `uri`.
+	///
+	/// The default returns
+	/// [`Error::Unsupported`](crate::error::Error::Unsupported); backends
+	/// with [`Self::supports_library`] implemented override it.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library location; its scheme selects the backend.
+	/// * `uuid` - project uuid of the row to delete.
 	fn library_delete(&self, _uri: &StorageUri, _uuid: &str) -> crate::error::Result<()> {
 		Err(crate::error::Error::Unsupported)
 	}
 
-	/// Rename the row `uuid` in the library at `uri`.
+	/// Rename the row `uuid` in the library at `uri` to `name`.
+	///
+	/// The default returns
+	/// [`Error::Unsupported`](crate::error::Error::Unsupported); backends
+	/// with [`Self::supports_library`] implemented override it.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library location; its scheme selects the backend.
+	/// * `uuid` - project uuid of the row to rename.
+	/// * `name` - the new display name (the row's uuid is unchanged).
 	fn library_rename(
 		&self,
 		_uri: &StorageUri,
@@ -233,9 +266,17 @@ pub trait StorageBackend: Send + Sync {
 		Err(crate::error::Error::Unsupported)
 	}
 
-	/// Derived statistics for the row `uuid`. Backends that store the graph
-	/// in a queryable form implement this; the engine otherwise falls back
-	/// to `load` + [`crate::backend::LibraryProjectStats`] derivation.
+	/// Derived statistics for the row `uuid` in the library at `uri`.
+	///
+	/// Backends that store the graph in a queryable form implement this; the
+	/// default returns [`Error::Unsupported`](crate::error::Error::Unsupported)
+	/// and the engine then falls back to `load` plus
+	/// [`derive_library_stats`].
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library location; its scheme selects the backend.
+	/// * `uuid` - project uuid of the row to measure.
 	fn library_stats(
 		&self,
 		_uri: &StorageUri,
@@ -244,9 +285,16 @@ pub trait StorageBackend: Send + Sync {
 		Err(crate::error::Error::Unsupported)
 	}
 
-	/// Snapshot (compact / version) the row `uuid`. Whole-document
-	/// backends can keep the default no-op: every `save` is already a
-	/// snapshot. Journaled backends implement it.
+	/// Snapshot (compact / version) the row `uuid` in the library at `uri`.
+	/// Whole-document backends can keep the default no-op: every `save` is
+	/// already a snapshot, so the default implementation reports success
+	/// without touching anything. Journaled backends override it to fold
+	/// their journal.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library location; its scheme selects the backend.
+	/// * `uuid` - project uuid of the row to snapshot.
 	fn library_snapshot(&self, _uri: &StorageUri, _uuid: &str) -> crate::error::Result<()> {
 		Ok(())
 	}

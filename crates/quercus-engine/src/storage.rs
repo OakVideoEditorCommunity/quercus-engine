@@ -32,12 +32,35 @@ use quercus_storage::uri::StorageUri;
 use crate::codec::{copy_str_out, str_arg};
 use crate::node::ProjectHandle;
 
-/// Maps an quercus-storage error to its public code.
+/// Maps a quercus-storage error to the public negative `QUERCUSSTORAGE_E_*`
+/// code that every C entry point in this module returns.
+///
+/// The mapping lives in `Error::code()`, so the C ABI and the Rust API agree on
+/// one error-number space; this helper only adapts the call to `map_err`.
+///
+/// # Arguments
+///
+/// * `e` - the storage error to convert; consumed by value.
+///
+/// # Returns
+///
+/// The public error code (`QUERCUSSTORAGE_E_*`; the built-in variants are all
+/// negative).
 fn code(e: Error) -> i32 {
 	e.code()
 }
 
 /// Parses and resolves `uri` to its claiming backend.
+///
+/// Wraps `str_arg` + `StorageUri::parse` + the global registry's `resolve`, and
+/// returns the parsed URI alongside the backend so open/save do not parse
+/// twice. A resolved backend is not guaranteed to implement the project
+/// library; the `library_*` path uses `library_for`/`library_backend`.
+///
+/// # Errors
+///
+/// `QUERCUSSTORAGE_E_INVALID` for a null/non-UTF-8 argument or an unparseable
+/// URI; otherwise the registry's error code (e.g. no backend claims the scheme).
 fn resolve(
 	uri: *const u8,
 	uri_len: usize,
@@ -81,6 +104,26 @@ pub(crate) fn project_uri(uuid: &str) -> Result<StorageUri, i32> {
 
 /// The configured default library URI, snprintf-style; negative when
 /// write-through storage is disabled or cannot be resolved.
+///
+/// The URI is the write-through library root chosen for this process; it is
+/// copied into `buf` (truncated and NUL-terminated when `buf_len` is too small)
+/// and its full byte length is returned. Pass a null buffer with `buf_len == 0`
+/// to query the required size.
+///
+/// # Arguments
+///
+/// * `buf` - destination buffer, or null to query the required length.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// Byte length of the URI string, or a negative `QUERCUSSTORAGE_E_*` code when
+/// write-through storage is disabled or the configured URI does not parse.
+///
+/// # Safety
+///
+/// `buf` must reference `buf_len` writable bytes (or be null with
+/// `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_default_library_uri(buf: *mut u8, buf_len: usize) -> i32 {
 	match default_library() {
@@ -89,11 +132,26 @@ pub unsafe extern "C" fn quercus_storage_default_library_uri(buf: *mut u8, buf_l
 	}
 }
 
-/// Opens the project at `uri` through the claiming backend. Returns
-/// the project handle (ref count 1), or null on failure. When the
-/// backend only reports version info (the project was written by an
-/// older/newer build), the handle is null and `version_info` carries
-/// the positive info code; `version_info` is 0 on a normal load.
+/// Opens the project at `uri` through the claiming backend.
+///
+/// The result is a new engine project handle with ref count 1 (release it with
+/// `quercus_project_release`), bridged from the storage layer's project box, or
+/// null on failure. `version_info` reports the outcome of the load: 0 for a
+/// normal open, a positive TOO_OLD/TOO_NEW/UNKNOWN_VERSION-style code when the
+/// backend only reports version info (the handle is then null), or a negative
+/// `QUERCUSSTORAGE_E_*` code when loading failed.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the project, resolved through the backend registry.
+/// * `uri_len` - byte length of `uri`.
+/// * `version_info` - optional out-parameter for the info code; null is allowed
+///   and simply discards it.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes, and `version_info` when
+/// non-null must be writable for one `i32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_open(
 	uri: *const u8,
@@ -132,9 +190,31 @@ pub unsafe extern "C" fn quercus_storage_open(
 	}
 }
 
-/// Saves the project to `uri` through the claiming backend. `options`
-/// is the quercus-storage save bitmask (unknown bits are ignored). Returns
-/// `QUERCUSSTORAGE_OK` or a negative error code.
+/// Saves the project to `uri` through the claiming backend.
+///
+/// The handle is borrowed for the call only: the engine clones the underlying
+/// `Arc`, wraps it for the storage layer and releases the wrapper afterwards,
+/// so the caller still owns (and must still release) `project`.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle to serialize; null returns
+///   `QUERCUSSTORAGE_E_INVALID`.
+/// * `uri` - UTF-8 destination URI, resolved through the backend registry.
+/// * `uri_len` - byte length of `uri`.
+/// * `options` - quercus-storage save bitmask: bit 0 is
+///   `QUERCUSSTORAGE_SAVE_COMPRESS` (accepted but not implemented by the
+///   built-in file backend) and unknown bits are ignored.
+///
+/// # Returns
+///
+/// `QUERCUSSTORAGE_OK` or a negative `QUERCUSSTORAGE_E_*` code (invalid
+/// arguments/URI, unresolved backend, or the backend's save error).
+///
+/// # Safety
+///
+/// `project` must be a live handle created by this engine and `uri` must
+/// reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_save(
 	project: *const ProjectHandle,
@@ -159,6 +239,23 @@ pub unsafe extern "C" fn quercus_storage_save(
 }
 
 /// Whether `uri` parses as a storage URI.
+///
+/// Lenient, parse-only check: `scheme://body` is accepted when the prefix is a
+/// valid RFC 3986 scheme, and anything else (including a bare absolute or
+/// relative path) is accepted as a `file://` path. Only the empty string is
+/// rejected — null/non-UTF-8 bytes also return `false`, so there is no separate
+/// error value. Registration and target existence are not checked; use
+/// `quercus_storage_backend_for_uri` for resolvability.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 candidate URI bytes; no NUL terminator is required.
+/// * `uri_len` - byte length of `uri`.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes, or be null (which yields
+/// `false`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_uri_is_valid(uri: *const u8, uri_len: usize) -> bool {
 	match unsafe { str_arg(uri, uri_len) } {
@@ -173,6 +270,12 @@ pub extern "C" fn quercus_storage_backend_count() -> i32 {
 	Registry::global().list().len() as i32
 }
 
+/// Shared body of `..._backend_name_at` and `..._backend_scheme_at`: copies
+/// field 0 (name) or field 1 (scheme) of the backend at `index` out of the
+/// registry's registration-order list through `copy_str_out`.
+///
+/// Returns -1 for a negative/out-of-range index, otherwise the full string
+/// length (snprintf semantics, so a short `buf` only truncates the copy).
 fn backend_string_at(index: i32, buf: *mut u8, buf_len: usize, field: usize) -> i32 {
 	if index < 0 {
 		return -1;
@@ -185,8 +288,22 @@ fn backend_string_at(index: i32, buf: *mut u8, buf_len: usize, field: usize) -> 
 	copy_str_out(s, buf, buf_len)
 }
 
-/// The name of the backend at `index` (registration order),
-/// snprintf-style; -1 when out of range.
+/// The name of the backend at `index` (registration order), snprintf-style.
+///
+/// Use the name to match a user-configured backend; the paired scheme getter is
+/// [`quercus_storage_backend_scheme_at`]. Returns -1 when `index` is negative or
+/// out of range.
+///
+/// # Arguments
+///
+/// * `index` - zero-based position in the registration-order list.
+/// * `buf` - destination buffer, or null with `buf_len == 0` to query.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Safety
+///
+/// `buf` must reference `buf_len` writable bytes (or be null with
+/// `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_backend_name_at(
 	index: i32,
@@ -196,8 +313,22 @@ pub unsafe extern "C" fn quercus_storage_backend_name_at(
 	backend_string_at(index, buf, buf_len, 0)
 }
 
-/// The URI scheme of the backend at `index`, snprintf-style; -1 when
-/// out of range.
+/// The URI scheme of the backend at `index`, snprintf-style.
+///
+/// `index` is a position in the registry's registration-order list, so it pairs
+/// with [`quercus_storage_backend_name_at`] only while the registry is not
+/// modified in between. Returns -1 when `index` is negative or out of range.
+///
+/// # Arguments
+///
+/// * `index` - zero-based position in the registration-order list.
+/// * `buf` - destination buffer, or null with `buf_len == 0` to query.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Safety
+///
+/// `buf` must reference `buf_len` writable bytes (or be null with
+/// `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_backend_scheme_at(
 	index: i32,
@@ -207,8 +338,24 @@ pub unsafe extern "C" fn quercus_storage_backend_scheme_at(
 	backend_string_at(index, buf, buf_len, 1)
 }
 
-/// The name of the backend that claims `uri`, snprintf-style; -1 when
-/// no backend claims it (or the URI is invalid).
+/// The name of the backend that claims `uri`, snprintf-style.
+///
+/// Copies the registered backend name into `buf` and returns its full byte
+/// length; -1 when the argument is null/non-UTF-8, the URI does not parse, or
+/// no backend claims the scheme. Unlike `quercus_storage_library_supported`
+/// this only reports the claim, not the library capability.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 candidate URI.
+/// * `uri_len` - byte length of `uri`.
+/// * `buf` - destination buffer, or null with `buf_len == 0` to query.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes and `buf` must reference
+/// `buf_len` writable bytes (or be null with `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_backend_for_uri(
 	uri: *const u8,
@@ -325,8 +472,23 @@ pub extern "C" fn quercus_storage_unregister_transport(slot: i32) -> bool {
 // Project library (backend-neutral: everything resolves through the registry)
 // ---------------------------------------------------------------------------
 
-/// Parses a library URI argument and resolves the backend that provides
-/// it (built-in database or a foreign transport).
+/// Parses a library URI argument and resolves the backend that provides it
+/// (built-in database or a foreign transport).
+///
+/// The library-side peer of `resolve`: it returns the parsed root URI together
+/// with the claiming backend so callers can build row URIs
+/// (`<root>?project=<uuid>`) without parsing twice.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 bytes of the library root URI.
+/// * `uri_len` - byte length of `uri`.
+///
+/// # Errors
+///
+/// `QUERCUSSTORAGE_E_INVALID` for a null/non-UTF-8 argument or an unparseable
+/// URI; otherwise the registry's resolution error code (no backend claims the
+/// scheme).
 fn library_for(
 	uri: *const u8,
 	uri_len: usize,
@@ -339,6 +501,13 @@ fn library_for(
 	Ok((parsed, backend))
 }
 
+/// The library rows of `uri` (display name, uuid, timestamps) in the order the
+/// backend returns them; the engine does not re-sort them.
+///
+/// Fails with the negative `QUERCUSSTORAGE_E_*` code when the URI is invalid,
+/// no backend provides the library, or `library_list` fails. All index-based
+/// library getters (`library_info`, `library_string_at`, `library_stats`) go
+/// through this listing.
 fn library_projects(
 	uri: *const u8,
 	uri_len: usize,
@@ -534,8 +703,22 @@ pub(crate) fn export_library_project(
 	outcome
 }
 
-/// Whether the backend claiming `uri` implements the project library
-/// (a backend may support plain project open/save without one).
+/// Whether the backend claiming `uri` implements the project library (a
+/// backend may support plain project open/save without one).
+///
+/// Capability probe only: null/non-UTF-8 bytes, an unparseable URI, an
+/// unclaimed scheme and a backend whose `supports_library()` is `false` all
+/// return `false`, so callers should treat `false` as "no project library
+/// here" rather than as a specific failure.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `uri_len` - byte length of `uri`.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_supported(uri: *const u8, uri_len: usize) -> bool {
 	let Some(text) = (unsafe { str_arg(uri, uri_len) }) else {
@@ -550,8 +733,24 @@ pub unsafe extern "C" fn quercus_storage_library_supported(uri: *const u8, uri_l
 	}
 }
 
-/// Number of projects in the library at `uri`; negative error code on
-/// failure.
+/// Number of projects in the library at `uri`.
+///
+/// This is the length of the backend's `library_list` result, i.e. the valid
+/// index range for the `..._library_*_at` getters is `0..count`.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+///
+/// # Returns
+///
+/// The row count, or a negative `QUERCUSSTORAGE_E_*` code (null/non-UTF-8
+/// argument, unparseable URI, unresolved/unavailable library backend, or a
+/// failed listing).
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_count(uri: *const u8, uri_len: usize) -> i32 {
 	match library_projects(uri, uri_len) {
@@ -560,6 +759,13 @@ pub unsafe extern "C" fn quercus_storage_library_count(uri: *const u8, uri_len: 
 	}
 }
 
+/// Shared body of `..._library_name_at` and `..._library_uuid_at`: copies
+/// either the display name (`name == true`) or the uuid of the library row at
+/// `index` out through `copy_str_out`.
+///
+/// Returns -1 for a negative/out-of-range index, an unreadable or unparseable
+/// URI, an unresolved library, or a failed listing; otherwise the full string
+/// length (snprintf semantics, so a short `buf` only truncates the copy).
 fn library_string_at(
 	uri: *const u8,
 	uri_len: usize,
@@ -581,8 +787,28 @@ fn library_string_at(
 	copy_str_out(s, buf, buf_len)
 }
 
-/// The uuid of the library project at `index`, snprintf-style; -1 on
-/// failure.
+/// The uuid of the library project at `index`, snprintf-style.
+///
+/// Copies the backend's row uuid into `buf` and returns its full byte length;
+/// `buf` may be null with `buf_len == 0` to query the required size. The uuid is
+/// the stable identifier accepted by the delete/rename/duplicate entry points.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `index` - zero-based offset in the backend's listing order.
+/// * `buf` - destination buffer of `buf_len` bytes, or null to query.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// Byte length of the uuid, or -1 when `index` is negative/out of range, the
+/// URI/library cannot be resolved, or the listing fails.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes and `buf` must reference
+/// `buf_len` writable bytes (or be null with `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_uuid_at(
 	uri: *const u8,
@@ -594,8 +820,27 @@ pub unsafe extern "C" fn quercus_storage_library_uuid_at(
 	library_string_at(uri, uri_len, index, buf, buf_len, false)
 }
 
-/// The display name of the library project at `index`, snprintf-style;
-/// -1 on failure.
+/// The display name of the library project at `index`, snprintf-style.
+///
+/// Copies the backend's row name into `buf` and returns its full byte length;
+/// `buf` may be null with `buf_len == 0` to query the required size.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `index` - zero-based offset in the backend's listing order.
+/// * `buf` - destination buffer of `buf_len` bytes, or null to query.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// Byte length of the name, or -1 when `index` is negative/out of range, the
+/// URI/library cannot be resolved, or the listing fails.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes and `buf` must reference
+/// `buf_len` writable bytes (or be null with `buf_len == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_name_at(
 	uri: *const u8,
@@ -607,8 +852,28 @@ pub unsafe extern "C" fn quercus_storage_library_name_at(
 	library_string_at(uri, uri_len, index, buf, buf_len, true)
 }
 
-/// Deletes the project `uuid` from the library at `uri`. Returns
-/// `QUERCUSSTORAGE_OK` or a negative error code.
+/// Deletes the project `uuid` from the library at `uri`.
+///
+/// Removes the row's stored project and, on the journaled backend, its
+/// journal/snapshot history; the library root itself is untouched. A uuid that
+/// does not exist surfaces as the backend's not-found error.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `uuid` - uuid of the row to delete.
+/// * `uri_len` / `uuid_len` - byte lengths of the arguments.
+///
+/// # Returns
+///
+/// `QUERCUSSTORAGE_OK` or a negative `QUERCUSSTORAGE_E_*` code (`E_INVALID`
+/// for null/non-UTF-8 arguments or an unparseable URI, `E_NOT_FOUND` for a
+/// missing row, or the backend's failure code).
+///
+/// # Safety
+///
+/// Each `(ptr, len)` pair must reference `len` readable bytes valid for the
+/// duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_delete(
 	uri: *const u8,
@@ -634,8 +899,30 @@ pub unsafe extern "C" fn quercus_storage_library_delete(
 	}
 }
 
-/// Renames the project `uuid` in the library at `uri`. Returns
-/// `QUERCUSSTORAGE_OK` or a negative error code.
+/// Renames the project `uuid` in the library at `uri`.
+///
+/// Only the library row metadata changes: the project payload is not
+/// re-saved, so the in-project `projectname` setting keeps its old value.
+/// The name is stored verbatim (no emptiness check at this layer); a uuid that
+/// no longer exists surfaces as the backend's not-found error.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `uuid` - uuid of the row to rename.
+/// * `new_name` - new display name, UTF-8.
+/// * `uri_len` / `uuid_len` / `new_name_len` - byte lengths of the arguments.
+///
+/// # Returns
+///
+/// `QUERCUSSTORAGE_OK` or a negative `QUERCUSSTORAGE_E_*` code (`E_INVALID`
+/// for null/non-UTF-8 arguments or an unparseable URI, `E_NOT_FOUND` for a
+/// missing row, or the backend's failure code).
+///
+/// # Safety
+///
+/// Each `(ptr, len)` pair must reference `len` readable bytes valid for the
+/// duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_rename(
 	uri: *const u8,
@@ -665,17 +952,41 @@ pub unsafe extern "C" fn quercus_storage_library_rename(
 	}
 }
 
-/// Unix timestamps and derived graph statistics for one library row.
+/// Creation time of the library row at `index`, as Unix seconds (UTC); -1 when
+/// the row or its metadata is unavailable.
+///
+/// The companion timestamp is [`quercus_storage_library_modified_at`]; both
+/// read the same `library_list` entry, so one listing serves either getter.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_created_at(uri: *const u8, uri_len: usize, index: i32) -> i64 {
 	library_info(uri, uri_len, index).map_or(-1, |info| info.created_at)
 }
 
+/// Last-modified time of the library row at `index`, as Unix seconds (UTC);
+/// -1 when the row or its metadata is unavailable.
+///
+/// The value is the backend's recorded timestamp (`modified_at` column on the
+/// journaled backend), not the project's in-memory dirty flag.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_modified_at(uri: *const u8, uri_len: usize, index: i32) -> i64 {
 	library_info(uri, uri_len, index).map_or(-1, |info| info.modified_at)
 }
 
+/// The library row metadata at `index` (display name, uuid, created/modified
+/// timestamps), or `None` when `index` is negative/out of range, the URI or
+/// library cannot be resolved, or the listing fails.
+///
+/// This is a lookup in the backend's `library_list` result, so `index` is an
+/// offset in the backend's own ordering; `quercus_storage_library_name_at`,
+/// `..._uuid_at`, `..._created_at` and `..._modified_at` all go through it.
 fn library_info(uri: *const u8, uri_len: usize, index: i32) -> Option<LibraryProjectInfo> {
 	if index < 0 {
 		return None;
@@ -686,6 +997,14 @@ fn library_info(uri: *const u8, uri_len: usize, index: i32) -> Option<LibraryPro
 		.nth(index as usize)
 }
 
+/// Stats of the library row at `index`, or `None` when `index` is out of range,
+/// the URI cannot be parsed, no backend provides the library, the row uuid is
+/// not in the listing, or the backend fails a non-`Unsupported` stats query.
+///
+/// The uuid comes from the library listing, so a row that is listed but no
+/// longer loads also yields `None`. The four stats getters
+/// (`..._library_footage_count`, `..._clip_count`, `..._track_count`,
+/// `..._library_duration_ms`) are thin wrappers over this.
 fn library_stats(uri: *const u8, uri_len: usize, index: i32) -> Option<LibraryProjectStats> {
 	let info = library_info(uri, uri_len, index)?;
 	let text = unsafe { str_arg(uri, uri_len) }?;
@@ -694,27 +1013,85 @@ fn library_stats(uri: *const u8, uri_len: usize, index: i32) -> Option<LibraryPr
 	library_project_stats(backend.as_ref(), &parsed, &info.uuid)
 }
 
+/// Duration of the library row at `index` in milliseconds, derived from the
+/// row's project graph (backend stats query or replay, see `library_stats`).
+///
+/// Returns 0 when the row or its stats are unavailable, which is also the
+/// legitimate value for an empty project.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_duration_ms(uri: *const u8, uri_len: usize, index: i32) -> i64 {
 	library_stats(uri, uri_len, index).map_or(0, |stats| stats.duration_ms)
 }
 
+/// Number of tracks in the library row at `index`, derived from the row's
+/// project graph (backend stats query or replay, see `library_stats`).
+///
+/// Returns 0 when the row or its stats are unavailable.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_track_count(uri: *const u8, uri_len: usize, index: i32) -> i32 {
 	library_stats(uri, uri_len, index).map_or(0, |stats| stats.track_count)
 }
 
+/// Number of clips in the library row at `index`, derived from the row's
+/// project graph (backend stats query or replay, see `library_stats`).
+///
+/// Returns 0 when the row or its stats are unavailable.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_clip_count(uri: *const u8, uri_len: usize, index: i32) -> i32 {
 	library_stats(uri, uri_len, index).map_or(0, |stats| stats.clip_count)
 }
 
+/// Number of footage items in the library row at `index`, derived from the
+/// row's project graph (backend stats query or replay, see `library_stats`).
+///
+/// Returns 0 when the row or its stats are unavailable, which is also the
+/// legitimate value for a project without footage.
+///
+/// # Safety
+///
+/// `uri` must reference `uri_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_footage_count(uri: *const u8, uri_len: usize, index: i32) -> i32 {
 	library_stats(uri, uri_len, index).map_or(0, |stats| stats.footage_count)
 }
 
-/// Creates a blank row in the selected library and returns its uuid.
+/// Creates a blank project row in the library at `uri` and returns its uuid.
+///
+/// The row is a freshly initialized `Project` whose `projectname` setting is
+/// the trimmed `name`; it is saved through the library backend at
+/// `<uri>?project=<new uuid>`, so the library listing picks it up.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `name` - UTF-8 display name; leading/trailing whitespace is trimmed and
+///   an empty or whitespace-only name is rejected with `E_INVALID`.
+/// * `uuid_buf` - snprintf-style output buffer for the new uuid (see
+///   [`quercus_storage_library_import`] for the truncation rules).
+/// * `uuid_buf_len` - capacity of `uuid_buf` in bytes.
+///
+/// # Returns
+///
+/// The byte length of the new uuid string, or a negative `QUERCUSSTORAGE_E_*`
+/// code (invalid arguments/URI, empty name, or a failed save).
+///
+/// # Safety
+///
+/// Each input `(ptr, len)` pair must reference `len` readable bytes, and
+/// `uuid_buf` must reference `uuid_buf_len` writable bytes (or be null); all
+/// buffers must stay valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_create(
 	uri: *const u8,
@@ -741,9 +1118,31 @@ pub unsafe extern "C" fn quercus_storage_library_create(
 	}
 }
 
-/// Duplicates a library row and returns the new uuid. Generic
-/// composition (load + deep copy + save), so the copy carries no journal
-/// history; see [`duplicate_library_project`].
+/// Duplicates library row `uuid` and reports the uuid of the new row.
+///
+/// Generic composition (load + deep copy + save), so the copy carries no
+/// journal history; the new row is named `<display name> (copy)` and gets a
+/// fresh uuid. See `duplicate_library_project` for the generic path.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root.
+/// * `uuid` - uuid of the source row.
+/// * `uri_len` / `uuid_len` - byte lengths of the two arguments.
+/// * `new_uuid_buf` - snprintf-style output buffer for the new uuid (see
+///   [`quercus_storage_library_import`] for the truncation rules).
+/// * `new_uuid_buf_len` - capacity of `new_uuid_buf` in bytes.
+///
+/// # Returns
+///
+/// The byte length of the new uuid string, or a negative `QUERCUSSTORAGE_E_*`
+/// code (invalid arguments, missing source row, or a failed save).
+///
+/// # Safety
+///
+/// Each input `(ptr, len)` pair must reference `len` readable bytes, and
+/// `new_uuid_buf` must reference `new_uuid_buf_len` writable bytes (or be
+/// null); all buffers must stay valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_duplicate(
 	uri: *const u8,
@@ -767,8 +1166,35 @@ pub unsafe extern "C" fn quercus_storage_library_duplicate(
 	}
 }
 
-/// Imports a project from any registry-resolvable source URI as a new
-/// row and returns its uuid.
+/// Imports the project at `file_uri` as a new row in the library at `uri` and
+/// reports the new row uuid through `new_uuid_buf`.
+///
+/// The source is resolved like any project open (so it may be `file://`, a
+/// foreign transport URI, ...). The loaded project keeps its own content and
+/// in-project name but is assigned a fresh uuid, then saved whole to the
+/// library row `<uri>?project=<uuid>`. Same composition as
+/// `import_library_project`.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the target library root.
+/// * `file_uri` - UTF-8 URI of the project to import.
+/// * `uri_len` / `file_uri_len` - byte lengths of the two arguments.
+/// * `new_uuid_buf` - snprintf-style output buffer for the new uuid (truncated
+///   and NUL-terminated when `new_uuid_buf_len` is too small; null with 0 to
+///   only query the required length).
+/// * `new_uuid_buf_len` - capacity of `new_uuid_buf` in bytes.
+///
+/// # Returns
+///
+/// The byte length of the new uuid string, or a negative `QUERCUSSTORAGE_E_*`
+/// code on any failure.
+///
+/// # Safety
+///
+/// Each input `(ptr, len)` pair must reference `len` readable bytes, and
+/// `new_uuid_buf` must reference `new_uuid_buf_len` writable bytes (or be
+/// null); all buffers must stay valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_import(
 	uri: *const u8,
@@ -792,8 +1218,31 @@ pub unsafe extern "C" fn quercus_storage_library_import(
 	}
 }
 
-/// Exports a library row to any registry-resolvable target URI (the
-/// claiming backend decides the format; not restricted to `file://`).
+/// Exports library row `uuid` from the library at `uri` to `file_uri`.
+///
+/// The destination is resolved through the backend registry, so it need not
+/// be a `file://` URI: whichever backend claims `file_uri` performs the save
+/// and therefore picks the format. The row is loaded in full through the
+/// library backend, saved to the target with save options `0`, and released;
+/// the library itself is not modified. Same composition as
+/// `export_library_project`.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 URI of the library root (not a row URI).
+/// * `uuid` - uuid of the row to export.
+/// * `file_uri` - UTF-8 destination URI claimed by a registered backend.
+///
+/// # Returns
+///
+/// `QUERCUSSTORAGE_OK` on success, otherwise a negative `QUERCUSSTORAGE_E_*`
+/// code: null/non-UTF-8 arguments, an unparseable URI, an unresolved library
+/// or target backend, a missing row, or the target backend's save error.
+///
+/// # Safety
+///
+/// Every `(ptr, len)` pair must reference `len` readable bytes valid for the
+/// duration of the call; the string data is borrowed only.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_storage_library_export(
 	uri: *const u8,

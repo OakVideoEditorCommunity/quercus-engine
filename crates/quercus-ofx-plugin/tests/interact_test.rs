@@ -14,22 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Interact 宿主端到端：生命周期 + action 调用面 + Draw suite 真实 GL。
+//! Host-side Interact end-to-end: lifecycle + action call surface + Draw suite
+//! real GL.
 //!
-//! 链路：扫描最小测试插件的 interact 变体（org.quercus.test-plugin.interact，
-//! describe 期声明 kOfxImageEffectPluginPropOverlayInteractV2 → 指向
-//! mainEntryInteract）→ `new_interact`（发 kOfxActionNewInteract）→
-//! describe → create_instance → pen/key/idle 事件 → draw（宿主
-//! gl_bridge 保持 GL current，插件经 Draw suite setColour + 原生 GL 画
-//! 已知色块）→ 回读断言。
+//! Chain: scan the minimal test plugin's interact variant
+//! (org.quercus.test-plugin.interact, which at describe time declares
+//! kOfxImageEffectPluginPropOverlayInteractV2 → points at
+//! mainEntryInteract) → `new_interact` (sends kOfxActionNewInteract) →
+//! describe → create_instance → pen/key/idle events → draw (the host
+//! gl_bridge keeps GL current; the plugin uses the Draw suite setColour +
+//! native GL to draw a known colour block) → read back and assert.
 //!
-//! 断言即"真实调用到插件"的证据：插件把每次 action 的实参写入
-//! `QUERCUS_TEST_PLUGIN_INTERACT_MARKER` 指向的标记文件（unix 下
-//! `va_list` 由 stdarg.h 承担），测试逐行断言；GL 断言另读回 FBO 像素
-//! 比对插件绘制颜色（与 CPU 路径可区分）。
+//! The assertions are the evidence that the plugin is really called: the
+//! plugin writes each action's arguments into the marker file pointed to by
+//! `QUERCUS_TEST_PLUGIN_INTERACT_MARKER` (on unix the `va_list` is provided
+//! by stdarg.h), and the test asserts line by line; the GL assertions
+//! additionally read back FBO pixels and compare the plugin's drawn colour
+//! (distinguishable from the CPU path).
 //!
-//! 门：事件用例不依赖 GL，任何平台可跑；draw 用例要求 macOS +
-//! `QUERCUS_GPU_TESTS`（GL 验收约定，CI 一律跳过）。
+//! Gates: the event tests do not depend on GL and run on any platform; the
+//! draw tests require macOS + `QUERCUS_GPU_TESTS` (the GL acceptance
+//! convention, always skipped in CI).
 
 mod common;
 
@@ -39,10 +44,12 @@ use quercus_ofx_plugin::suites::{interact::Interact, status};
 
 const INTERACT_PLUGIN_ID: &str = "org.quercus.test-plugin.interact";
 const BASE_PLUGIN_ID: &str = "org.quercus.test-plugin";
-/// 插件把 interact action 记录写入该环境变量指向的文件。
+/// The plugin writes its interact action records to the file this
+/// environment variable points to.
 const MARKER_ENV: &str = "QUERCUS_TEST_PLUGIN_INTERACT_MARKER";
 
-/// 扫描测试插件 + 注册节点（幂等；不可用 → false = skip）。
+/// Scans the test plugin + registers the node (idempotent; unavailable →
+/// false = skip).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
 		common::skip("最小测试插件未构建");
@@ -56,7 +63,8 @@ fn scan_and_register() -> bool {
 	true
 }
 
-/// 独立标记文件路径（临时目录，进程 id 防串）。
+/// Standalone marker-file path (temp directory, process id to avoid
+/// collisions).
 fn marker_path(tag: &str) -> PathBuf {
 	std::env::temp_dir().join(format!(
 		"quercus-interact-{}-{}.log",
@@ -65,7 +73,7 @@ fn marker_path(tag: &str) -> PathBuf {
 	))
 }
 
-/// 读标记文件全部行。
+/// Reads all lines of the marker file.
 fn read_marker(path: &PathBuf) -> Vec<String> {
 	std::fs::read_to_string(path)
 		.unwrap_or_default()
@@ -74,8 +82,8 @@ fn read_marker(path: &PathBuf) -> Vec<String> {
 		.collect()
 }
 
-/// 无 interact 的插件：new_interact → None（main entry 对
-/// kOfxActionNewInteract 返回 ReplyDefault 且未声明 overlay 入口）。
+/// Plugin without interact: new_interact → None (the main entry returns
+/// ReplyDefault for kOfxActionNewInteract and declares no overlay entry).
 #[test]
 fn base_plugin_has_no_interact() {
 	common::with_host(|| {
@@ -93,8 +101,9 @@ fn base_plugin_has_no_interact() {
 	});
 }
 
-/// 生命周期 + 事件调用面：new_interact → describe → create → pen/key/
-/// idle → destroy。逐条断言插件侧真实记录与参数。
+/// Lifecycle + event call surface: new_interact → describe → create →
+/// pen/key/idle → destroy. Asserts the plugin-side real records and arguments
+/// one by one.
 #[test]
 fn interact_lifecycle_and_events() {
 	common::with_host(|| {
@@ -181,8 +190,9 @@ fn interact_lifecycle_and_events() {
 	});
 }
 
-/// 返回值如实透传：插件对 Escape 的 key_down 返回 kOfxStatReplyDefault
-/// （未处理），宿主原样返回 14。
+/// Return values are passed through faithfully: the plugin returns
+/// kOfxStatReplyDefault for Escape's key_down (unhandled) and the host returns
+/// 14 unchanged.
 #[test]
 fn interact_passthrough_plugin_status() {
 	common::with_host(|| {
@@ -214,8 +224,9 @@ fn interact_passthrough_plugin_status() {
 	});
 }
 
-/// 实例销毁连带销毁 interact（同一生命周期）：drop 实例 → 插件收到
-/// destroy（interact 的 kOfxActionDestroyInstance）。
+/// Destroying the instance also destroys the interact (same lifecycle): drop
+/// the instance → the plugin receives destroy (the interact's
+/// kOfxActionDestroyInstance).
 #[test]
 fn instance_destroy_cleans_up_interact() {
 	common::with_host(|| {
@@ -246,12 +257,13 @@ fn instance_destroy_cleans_up_interact() {
 	});
 }
 
-/// draw 端到端（真实 GL）：宿主 acquire → 建输出纹理/FBO → 调 draw →
-/// 插件 glClear 暗背景 + Draw suite setColour(0.9,0.1,0.2,1) +
-/// draw(Rectangle 10..30) → 回读断言矩形区域颜色与背景色。
+/// draw end-to-end (real GL): the host acquires → creates the output
+/// texture/FBO → calls draw → the plugin glClears a dark background + Draw
+/// suite setColour(0.9,0.1,0.2,1) + draw(Rectangle 10..30) → read back and
+/// assert the rectangle area colour and the background colour.
 ///
-/// 同时断言 Draw suite 状态真实往返：setColour/getColour 在插件侧返回
-/// OK（记录在标记文件）。
+/// Also asserts the Draw suite state really round-trips: setColour/getColour
+/// return OK on the plugin side (recorded in the marker file).
 #[test]
 fn interact_draw_renders_plugin_colours() {
 	common::with_host(|| {

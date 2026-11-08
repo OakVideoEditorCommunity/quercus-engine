@@ -30,7 +30,11 @@ pub struct FolderBehavior {
 }
 
 impl FolderBehavior {
-	/// New empty folder.
+	/// Creates an empty folder behavior with display name `name`.
+	///
+	/// `name` becomes the folder's display name (shown in the bin); it is
+	/// not validated or trimmed and may be empty. The folder starts with no
+	/// children; add them with [`FolderBehavior::add_child`].
 	pub fn new(name: &str) -> Self {
 		FolderBehavior {
 			name: name.to_string(),
@@ -38,21 +42,35 @@ impl FolderBehavior {
 		}
 	}
 
-	/// Add a child (C++ `Folder::add_child`).
+	/// Appends `child` to the end of the folder's child list, preserving bin
+	/// order.
+	///
+	/// Adding an id that is already a direct child is a no-op (no duplicate
+	/// entry). This does not validate that `child` is a live folder/footage
+	/// node or set its parent pointer — callers own that bookkeeping.
 	pub fn add_child(&mut self, child: NodeId) {
 		if !self.children.contains(&child) {
 			self.children.push(child);
 		}
 	}
 
-	/// Remove a child; false when absent.
+	/// Removes `child` from the direct children, closing the gap in bin
+	/// order.
+	///
+	/// Returns `true` when an entry was removed and `false` when `child` was
+	/// not a direct child of this folder. Nested children are not searched.
 	pub fn remove_child(&mut self, child: NodeId) -> bool {
 		let before = self.children.len();
 		self.children.retain(|c| *c != child);
 		self.children.len() != before
 	}
 
-	/// Index of `child` in the direct children.
+	/// Returns the zero-based index of `child` among the folder's direct
+	/// children (bin order), or `None` when it is not a direct child.
+	///
+	/// Pairs with [`FolderBehavior::add_child`] /
+	/// [`FolderBehavior::remove_child`]; nested children are not searched
+	/// (see [`FolderBehavior::has_child_recursive`]).
 	pub fn index_of_child(&self, child: NodeId) -> Option<usize> {
 		self.children.iter().position(|c| *c == child)
 	}

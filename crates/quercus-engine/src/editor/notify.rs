@@ -32,8 +32,34 @@ impl Drop for SessionObserver {
 	}
 }
 
-/// Registers one callback and returns its nonzero subscription ID, or zero for
-/// invalid arguments. Data is owned by the registration thereafter.
+/// Registers one native edit callback on the session and returns its nonzero
+/// subscription ID.
+///
+/// The callback fires after each executed edit command as
+/// `callback(user_data, op, revision)`, where `op` is the operation code and
+/// `revision` is the undo-stack revision after the command. Registrations are
+/// session-local, kept in insertion order, and notified from a snapshot taken
+/// outside the session lock. IDs start at 1 and wrap past 0, so a returned ID is
+/// always valid for [`quercus_editor_edit_unsubscribe`].
+///
+/// # Arguments
+///
+/// * `session` - Editor session handle; null returns 0.
+/// * `callback` - The callback to invoke; a null callback returns 0.
+/// * `user_data` - Opaque pointer passed back to every callback; the
+///   registration takes ownership of it from now on.
+/// * `drop_callback` - Optional destructor for `user_data`, called exactly once
+///   when the registration is dropped (after any in-flight notification has
+///   released its reference).
+///
+/// # Safety
+///
+/// `session` must be a valid handle or null; `callback` and `drop_callback` must
+/// stay valid functions and `user_data` must stay valid for as long as the
+/// registration lives. Callbacks run on whichever thread executes an edit, so
+/// the data must be thread-safe (the registration is `Send`/`Sync` by contract
+/// with the caller). Do not free `user_data` after subscription: the drop
+/// callback owns that step.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_edit_subscribe(
 	session: *mut EditorSessionHandle,
@@ -62,8 +88,19 @@ pub unsafe extern "C" fn quercus_editor_edit_subscribe(
 	id
 }
 
-/// Removes one subscription. Returns false for null or an unknown ID. Callback
-/// data is destroyed after any in-flight shared notification releases its Arc.
+/// Removes one subscription from the session.
+///
+/// Returns `false` when `session` is null, `id` is 0, or no registration has
+/// that id (in which case nothing is removed). The observer stops being
+/// notified immediately; its `user_data` is destroyed by the registration's
+/// `drop_callback` only after any notification that already cloned the observer
+/// finishes, so the caller must not free the data itself.
+///
+/// # Safety
+///
+/// `session` must be a valid handle or null. The caller must not use the
+/// subscription's `user_data` after this returns; it may still be live in an
+/// in-flight notification until the drop callback runs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_edit_unsubscribe(
 	session: *mut EditorSessionHandle,

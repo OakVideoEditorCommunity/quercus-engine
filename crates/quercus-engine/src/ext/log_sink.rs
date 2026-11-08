@@ -74,7 +74,16 @@ impl Drop for ForeignLogSink {
 	}
 }
 
-/// Install a C log sink, replacing any previous one.
+/// Install a C log sink, replacing the previous one (whose drop callback runs).
+///
+/// `cb` is invoked for every engine log line with the level code, a borrowed
+/// non-NUL-terminated UTF-8 slice valid only for that call, and `userdata`;
+/// `userdata` is opaque to the engine and must stay valid until the drop
+/// callback runs. `drop` (optional; `None` = no cleanup) is called exactly once
+/// with `userdata` when this sink is replaced or cleared via [`clear`]. The
+/// previous sink's drop hook runs synchronously inside this call, so callbacks
+/// must not re-enter the logging API. Wired from the C ABI
+/// `quercus_core_log_set_sink`.
 pub(crate) fn install(
 	cb: unsafe extern "C" fn(level: i32, message: *const u8, len: usize, userdata: *mut c_void),
 	userdata: *mut c_void,

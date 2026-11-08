@@ -177,8 +177,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(VolumeNode))
 }
 
-/// Register this node type (C++ `k_audio_volume` in
-/// `factory.cpp::create_from_factory_index`).
+/// Appends the Volume node type to the built-in factory list.
+///
+/// `meta` is the table [`crate::nodes::register_all`] is building; the pushed
+/// [`NodeMeta`] declares type id
+/// `org.olivevideoeditor.Olive.volume`, display name `"Volume"`, the
+/// [`Category::Filter`] category and the [`create`] constructor, which adds
+/// `samples_in`/`volume_in`, marks the node an audio effect and makes
+/// `samples_in` the effect input. The C++ equivalent is `k_audio_volume` in
+/// `factory.cpp::create_from_factory_index`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.volume",

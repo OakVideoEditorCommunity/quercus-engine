@@ -113,11 +113,22 @@ fn ffmpeg_init() -> crate::error::Result<()> {
 }
 
 /// Wrap an FFmpeg error in the crate error type.
+///
+/// Returns [`crate::error::Error::Failed`] with the message
+/// `"ffmpeg error: {e}"`, preserving the original `FfmpegError` text (and
+/// errno) for logs. Applied at every call site that maps an FFmpeg result
+/// into `crate::error::Result`; counterpart of [`fail`], which builds a
+/// message-only error.
 fn ffmpeg_err(e: FfmpegError) -> crate::error::Error {
 	crate::error::Error::Failed(format!("ffmpeg error: {e}"))
 }
 
-/// Build a generic failure.
+/// Build a generic failure from any message convertible to `String`.
+///
+/// `msg` becomes the payload of [`crate::error::Error::Failed`]; used for the
+/// crate's own diagnostics where no FFmpeg error code is available (missing
+/// track, unopenable file, unknown codec, ...). Counterpart of
+/// [`ffmpeg_err`], which wraps an actual `FfmpegError`.
 fn fail(msg: impl Into<String>) -> crate::error::Error {
 	crate::error::Error::Failed(msg.into())
 }
@@ -216,7 +227,12 @@ fn pixel_from_raw(v: i32) -> Pixel {
 	Pixel::from(unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>(v) })
 }
 
-/// The quercuscore timebase equivalent of an ffmpeg rational.
+/// Convert an ffmpeg rational (a num/den pair in `AVRational` layout) into
+/// the quercuscore [`Rational`] time base.
+///
+/// Used to hand a stream time base to `Rational::time_to_timestamp` /
+/// `timestamp_to_time` and to the timecode parser; `r.1` must be non-zero,
+/// which FFmpeg guarantees for a time base.
 fn quercus_rational(r: FfRational) -> Rational {
 	Rational::new(r.0 as i64, r.1 as i64)
 }
@@ -814,13 +830,33 @@ struct AudioResampler {
 }
 
 impl DecoderState {
-	/// Open `(filename, stream_index)` for decoding.
+	/// Open `(filename, stream_index)` for decoding, preferring hardware
+	/// decoding and probing the input.
+	///
+	/// Shorthand for [`DecoderState::open_impl`] with `allow_hw` and `probe`
+	/// both `true`: the platform hardware device is used when available and a
+	/// software decoder otherwise.
 	fn open(stream: &CodecStream) -> crate::error::Result<DecoderState> {
 		Self::open_impl(stream, true, true)
 	}
 
-	/// Open with the hardware-decode preference explicitly on/off (the
-	/// off path is the hardware fallback's software reopen).
+	/// Open a decoder for `stream` with the hardware-decode preference
+	/// explicitly on/off (the off path is the hardware fallback's software
+	/// reopen).
+	///
+	/// `stream` names the file and the stream index to decode. `allow_hw`
+	/// permits attaching a hardware device for video (VideoToolbox / VA-API /
+	/// NVDEC / D3D11VA, config-gated; audio always opens software); `probe`
+	/// selects the large analyze/probe window (5 s / 20 MB) instead of the
+	/// minimal one, trading open latency for reliable stream detection. On
+	/// success the returned state carries the opened codec plus the format,
+	/// rate, layout and time base read from the stream.
+	///
+	/// # Errors
+	///
+	/// Fails when the input cannot be opened, the stream index is missing,
+	/// the medium is neither video nor audio, or no decoder exists / can be
+	/// opened for the codec.
 	fn open_impl(
 		stream: &CodecStream,
 		allow_hw: bool,
@@ -1155,6 +1191,27 @@ impl DecoderState {
 
 	/// Retrieve the video frame at (or before) `time`, mirroring the C++
 	/// `retrieve_frame` seek/cache logic.
+	///
+	/// `time` is the requested position as a rational timecode, converted to
+	/// a timestamp in the stream time base and offset by the container's
+	/// start time. Cached frames are tried first; on a miss the decoder seeks
+	/// up to `maximum_queue_size` frames early and, when the seek overshoots
+	/// the target, steps back a second at a time. With `any_timecode` the
+	/// first frame decoded at/after the seek point is accepted instead of
+	/// requiring an exact match. `cancelled`, when set, aborts the loop. At
+	/// EOF the last cached frame is returned (with a one-shot diagnostic when
+	/// it is far from the requested time); the cache is kept for the next
+	/// call.
+	///
+	/// # Returns
+	///
+	/// The best-matching frame, or `None` when `cancelled` fired or no frame
+	/// was produced.
+	///
+	/// # Errors
+	///
+	/// Fails on `unexpected codec EOF` (an empty cache at EOF that a rewind
+	/// does not fix) and on seek/feed errors.
 	fn retrieve_frame(
 		&mut self,
 		time: &Rational,
@@ -1684,6 +1741,21 @@ impl DecoderState {
 
 	/// Conform the open stream's audio into per-channel PCM files, mirroring
 	/// `FFmpegDecoder::conform_audio_internal`.
+	///
+	/// `output_filenames` holds one path per output channel (written through
+	/// `PlanarFileDevice`); `sample_rate` and `channel_layout` (an FFmpeg
+	/// channel mask) define the written format and `sample_format` is a raw
+	/// `SampleFormat` discriminant for the per-channel sample type. The
+	/// decoder is rewound to the start, its audio is resampled in a single
+	/// pass and the resampler tail is flushed at the end. A set `cancelled`
+	/// atom stops the loop early.
+	///
+	/// # Errors
+	///
+	/// Fails when the input channel layout is unknown, `sample_format` is
+	/// unsupported or produces no planes, the output files cannot be opened,
+	/// or a decode/resample/write step fails; returns
+	/// [`crate::error::Error::Cancelled`] when cancellation is observed.
 	fn conform_audio_to(
 		&mut self,
 		output_filenames: &[String],
@@ -1765,6 +1837,18 @@ impl DecoderState {
 impl AudioResampler {
 	/// Create a resampler converting from the source definition to the
 	/// destination definition.
+	///
+	/// `src_format`/`src_layout`/`src_rate` describe the decoder output and
+	/// `dst_format`/`dst_layout`/`dst_rate` the requested output. Equal rates
+	/// still go through swr, which then only converts format/layout and may
+	/// buffer a small delay (so callers must flush via
+	/// [`flush_resampler_interleaved_f32`]). The destination channel count is
+	/// derived from `dst_layout`.
+	///
+	/// # Errors
+	///
+	/// Returns the error from `resampling::Context::get` for an unsupported
+	/// format/layout combination.
 	fn get(
 		src_format: Sample,
 		src_layout: ChannelLayout,
@@ -1924,7 +2008,22 @@ fn resample_to_interleaved_f32(
 	Ok(buf)
 }
 
-/// Flush any samples buffered in the resampler as interleaved f32.
+/// Flush samples still buffered inside the resampler as interleaved f32.
+///
+/// `resampler` must already have consumed its input frames; `swr_convert` is
+/// then called with a null input until it stops producing output (bounded to
+/// 32 iterations so a broken build cannot spin forever). The samples are
+/// interleaved and use the resampler's destination layout, so the caller can
+/// append them to the last written chunk.
+///
+/// # Returns
+///
+/// `None` when the resampler had nothing buffered, otherwise the tail
+/// samples.
+///
+/// # Errors
+///
+/// Returns the swr error when a conversion step fails.
 fn flush_resampler_interleaved_f32(
 	resampler: &mut AudioResampler,
 ) -> crate::error::Result<Option<Vec<f32>>> {
@@ -1965,6 +2064,19 @@ fn flush_resampler_interleaved_f32(
 
 /// Get the cached scaler for a (src → dst) pair, recreating it when the
 /// parameters change.
+///
+/// `cache` holds at most one scaler per decoder. `src_format`,
+/// `src_width`, `src_height`, `dst_format`, `dst_width` and `dst_height` are
+/// compared with the cached parameters: any difference builds a new BILINEAR
+/// context (bilinear matches the render layer's former Rust resampler; POINT
+/// is visibly aliased), otherwise the existing context is reused. When the
+/// sizes are equal the filter does not run and only the format conversion
+/// happens.
+///
+/// # Errors
+///
+/// Returns the error from `scaling::Context::get` when the pair is not
+/// supported.
 fn get_or_create_scaler(
 	cache: &mut Option<ScalingCache>,
 	src_format: Pixel,
@@ -2012,9 +2124,13 @@ fn get_or_create_scaler(
 }
 
 /// Map a frame's `AVCOL_SPC_*` tag to a swscale colorspace id (the YUV→RGB
-/// coefficient set). Untagged frames fall back by size (HD material is
+/// coefficient set).
+///
+/// `av_colorspace` is the frame tag and `src_w`/`src_h` the source
+/// dimensions. Untagged frames fall back by size (HD material is
 /// overwhelmingly BT.709, SD is BT.601 — the old code used BT.601 for
-/// everything, tinting every HD source).
+/// everything, tinting every HD source). The result is the `SWS_CS_*` value
+/// that [`apply_sws_colorspace`] passes to `sws_getCoefficients`.
 fn sws_colorspace_for(av_colorspace: i32, src_w: u32, src_h: u32) -> i32 {
 	match av_colorspace {
 		AVCOL_SPC_BT709 => SWS_CS_ITU709,
@@ -2032,10 +2148,15 @@ fn sws_colorspace_for(av_colorspace: i32, src_w: u32, src_h: u32) -> i32 {
 	}
 }
 
-/// The Rust-side YUV→RGB matrix for a frame's `AVCOL_SPC_*` tag. Unlike
-/// [`sws_colorspace_for`] only tags with an exact matrix in [`YuvMatrix`]
-/// are honored; everything else (including SMPTE 240M and BT.2020 CL) falls
-/// back by size.
+/// The Rust-side YUV→RGB matrix for a frame's `AVCOL_SPC_*` tag.
+///
+/// `av_colorspace` is the frame tag; `src_w`/`src_h` select the fallback for
+/// untagged frames (>= 1280 pixels wide or > 576 lines is treated as HD →
+/// [`YuvMatrix::Bt709`], otherwise [`YuvMatrix::Bt601`]). Unlike
+/// [`sws_colorspace_for`] only tags with an exact matrix in [`YuvMatrix`] are
+/// honored; everything else (including SMPTE 240M and BT.2020 CL) falls back
+/// by size. Consumed by the CPU scale paths, which apply the matrix
+/// themselves instead of letting swscale do it.
 fn yuv_matrix_for(av_colorspace: i32, src_w: u32, src_h: u32) -> YuvMatrix {
 	match av_colorspace {
 		AVCOL_SPC_BT709 => YuvMatrix::Bt709,
@@ -2095,11 +2216,16 @@ fn pix_fmt_depth_and_yuv(fmt: Pixel) -> (i32, bool) {
 	}
 }
 
-/// Configure a swscale context's YUV→RGB matrix and range.
+/// Configure a swscale context's YUV→RGB matrix and range for decoding.
 ///
-/// The range flag selects full/limited input coefficients; the RGB output is
-/// always full range. `sws_setColorspaceDetails` ignores the tables for
-/// non-YUV sources, so RGB footage passes through unchanged.
+/// `ctx` is the YUV→RGB converter, `av_colorspace` the frame's `AVCOL_SPC_*`
+/// tag (resolved by [`sws_colorspace_for`]), `full_range` whether the source
+/// is full range, and `src_w`/`src_h` the source dimensions used to pick a
+/// matrix when the tag is untagged. The range flag selects full/limited input
+/// coefficients; the RGB output is always full range and
+/// brightness/contrast/saturation stay at unity.
+/// `sws_setColorspaceDetails` ignores the tables for non-YUV sources, so RGB
+/// footage passes through unchanged.
 fn apply_sws_colorspace(
 	ctx: &mut scaling::Context,
 	av_colorspace: i32,
@@ -2125,7 +2251,11 @@ fn apply_sws_colorspace(
 	}
 }
 
-/// The frame's presentation timestamp (NOPTS when unset).
+/// The presentation timestamp of an optional cached frame.
+///
+/// Returns `None` when there is no frame, or when the frame carries no
+/// timestamp (`AV_NOPTS_VALUE`); both are treated as "unknown" by the cache
+/// lookups in `get_frame_from_cache` and `retrieve_frame`.
 fn pts_of(f: Option<&RefFrame>) -> Option<i64> {
 	f.and_then(|f| f.pts())
 }
@@ -2161,16 +2291,27 @@ fn get_frame_from_cache(video: &VideoDecodeState, t: i64) -> Option<RefFrame> {
 	None
 }
 
-/// Decoder frame-cache size (C++ `maximum_queue_size`).
+/// Maximum number of decoded frames kept in the decoder's frame cache.
+///
+/// Two frames (C++ `maximum_queue_size`, "fairly arbitrary size… this value
+/// may be tweaked over time") is deliberately small: the cache only has to
+/// cover the frame at the requested time plus one ahead, and larger values
+/// multiply memory for 4K footage. Used by `retrieve_frame` as the seek
+/// slack and as the cache eviction threshold.
 fn maximum_queue_size() -> usize {
 	// # CPP-PARITY ffmpegdecoder.cpp:1184 — "Fairly arbitrary size... This
 	// value may be tweaked over time."
 	2
 }
 
-/// Copy a packed F32-RGBA byte buffer (as produced by swscale RGBAF32LE)
-/// into an owned buffer, forcing alpha opaque (1.0) per pixel
-/// (CPP-PARITY ffmpegdecoder.cpp:428).
+/// Copy a packed F32-RGBA (little-endian) frame into an owned tightly packed
+/// buffer with alpha forced to opaque.
+///
+/// `data` is the swscale `RGBAF32LE` plane, `w`/`h` the frame dimensions and
+/// `stride` its row stride in bytes (rows may be padded). Every pixel's alpha
+/// component is overwritten with `1.0` (CPP-PARITY ffmpegdecoder.cpp:428), so
+/// the decoded frame is always fully opaque. Returns a `w * h * 16` byte
+/// buffer.
 fn convert_rgba_f32_le(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 	let mut out = vec![0u8; (w as usize) * (h as usize) * PIXEL_F32_BYTES];
 	for y in 0..h as usize {
@@ -2185,9 +2326,13 @@ fn convert_rgba_f32_le(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 	out
 }
 
-/// Copy a packed 8-bit RGBA buffer into F32 RGBA bytes (the universal
-/// swscale fallback; M12 P0 — some static FFmpeg swscale builds lack
-/// float output formats).
+/// Convert one packed 8-bit RGBA frame to F32 RGBA bytes.
+///
+/// `data` is the source plane, `w`/`h` the frame dimensions and `stride` its
+/// row stride in bytes (rows may be padded). Each 8-bit component is divided
+/// by 255 into an f32; the returned buffer is tightly packed and
+/// `w * h * 16` bytes long. This is the universal swscale fallback because
+/// some static FFmpeg builds lack float output formats (M12 P0).
 fn convert_rgba8_to_f32(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 	let mut out = vec![0u8; (w as usize) * (h as usize) * PIXEL_F32_BYTES];
 	for y in 0..h as usize {
@@ -2724,8 +2869,24 @@ fn apply_sws_output_colorspace(scaler: &mut scaling::Context, params: &EncodingP
 }
 
 impl EncoderState {
-	/// Open the output file, create the streams and encoders and write the
+	/// Open the output file and its streams, then write the container
 	/// header.
+	///
+	/// `params` is the C-ABI encoding request: `filename` (NUL-terminated
+	/// `[u8; 1024]`), the `video_enabled`/`audio_enabled` flags, the raw
+	/// `export_codec_to_id` codec ids, video width/height, time base, pixel
+	/// aspect, frame rate, bit rates, `video_pix_fmt` and the delivery color
+	/// tags, plus audio sample rate, channel-layout mask and bit rate. One
+	/// encoder is created per enabled track (plus a scaler and frame duration
+	/// for video); the header is written and the stream time base the muxer
+	/// actually settled on is recorded for packet rescaling. Idempotent:
+	/// returns `Ok(())` immediately when an output is already open.
+	///
+	/// # Errors
+	///
+	/// Fails when no filename or no track is enabled, when a codec id has no
+	/// mapping or no encoder is available, when a stream cannot be added, or
+	/// when the header cannot be written.
 	fn open(&mut self, params: &EncodingParams) -> crate::error::Result<()> {		if self.output.is_some() {
 			return Ok(());
 		}
@@ -2924,7 +3085,22 @@ impl EncoderState {
 		Ok(())
 	}
 
-	/// Encode one frame (F32 RGBA) into the open output.
+	/// Encode one F32 RGBA frame into the open output.
+	///
+	/// `frame` must match the size the encoder was opened with
+	/// (`EncodingParams::video_width`/`video_height`); its rows may be
+	/// strided. The float pixels are converted to 8-bit RGBA (swscale cannot
+	/// take float input on every build), scaled into the encoder's pixel
+	/// format with the delivery colorimetry, stamped with a PTS derived from
+	/// its timestamp in the encoder time base, and the packets the encoder
+	/// emits are muxed immediately. `_params` is unused: the delivery
+	/// colorimetry was baked into the scaler at open.
+	///
+	/// # Errors
+	///
+	/// Fails when the encoder is not open, was already flushed, or has no
+	/// video track, when the frame carries no pixel data, when its size
+	/// differs from the encoder's, and on scaler/encode/mux errors.
 	fn write_video(&mut self, frame: &Frame, _params: &EncodingParams) -> crate::error::Result<()> {
 		let output = self
 			.output
@@ -2992,7 +3168,20 @@ impl EncoderState {
 		drain_video_packets(&mut output.output, video)
 	}
 
-	/// Encode interleaved f32 audio into the open output.
+	/// Encode one buffer of interleaved f32 audio into the open output.
+	///
+	/// `samples` is interleaved with the output stream's channel count, and
+	/// `params` supplies the channel-layout mask used to build each input
+	/// frame; `_frame_count` is part of the C-ABI call shape and is ignored —
+	/// the frame count comes from `samples.len() / channels`. The buffer is
+	/// split into encoder-sized chunks (AAC: 1024 samples), resampled to the
+	/// encoder's native sample format, and each converted frame is stamped
+	/// with the running `output.audio_pts` and muxed immediately.
+	///
+	/// # Errors
+	///
+	/// Fails when the encoder is not open, was already flushed by `close`, or
+	/// has no audio track, and propagates resampler, encode and mux errors.
 	fn write_audio(
 		&mut self,
 		samples: &[f32],
@@ -3091,7 +3280,17 @@ impl EncoderState {
 	}
 }
 
-/// Drain a video encoder after EOF, writing any packets.
+/// Flush the video encoder after EOF and write the packets it emits.
+///
+/// `video` is the open video encoder state. EOF is sent to the encoder, then
+/// the emitted packets are muxed with the same handling as
+/// [`drain_video_packets`] (missing duration filled from
+/// `video.frame_duration`, timestamps rescaled into the stream time base).
+/// Called once from `EncoderState::close`, before the trailer is written.
+///
+/// # Errors
+///
+/// Propagates the encoder or muxing error; a clean EOF just ends the loop.
 fn drain_video_encoder(
 	output: &mut ffmpeg::format::context::Output,
 	video: &mut VideoEncoderState,
@@ -3118,7 +3317,17 @@ fn drain_video_encoder(
 	Ok(())
 }
 
-/// Drain an audio encoder after EOF, writing any packets.
+/// Flush the audio encoder after EOF and write the packets it emits.
+///
+/// `audio` is the open audio encoder state. EOF is sent to the encoder and
+/// the loop drains and muxes every packet until the encoder reports end of
+/// stream; called once from `EncoderState::close`, before the trailer is
+/// written. Counterpart of [`drain_audio_packets`], which drains without
+/// sending EOF.
+///
+/// # Errors
+///
+/// Propagates the encoder or muxing error; a clean EOF just ends the loop.
 fn drain_audio_encoder(
 	output: &mut ffmpeg::format::context::Output,
 	audio: &mut AudioEncoderState,
@@ -3138,7 +3347,19 @@ fn drain_audio_encoder(
 	Ok(())
 }
 
-/// Drain ready packets from a video encoder into the muxer.
+/// Write every packet the video encoder already has ready into the muxer.
+///
+/// `video` is the open video encoder state. Each packet is stamped with
+/// `video.stream_index`; the final frame's packet carries duration 0, so a
+/// zero duration is replaced with `video.frame_duration` to keep the track
+/// the full export length. Timestamps are then rescaled from the encoder's
+/// time base into the stream's post-`write_header` time base
+/// (`video.stream_time_base`) before the packet is written.
+///
+/// # Errors
+///
+/// Propagates the muxing error when a packet cannot be written; "end of
+/// stream" and `EAGAIN` simply end the loop.
 fn drain_video_packets(
 	output: &mut ffmpeg::format::context::Output,
 	video: &mut VideoEncoderState,
@@ -3168,7 +3389,18 @@ fn drain_video_packets(
 	Ok(())
 }
 
-/// Drain ready packets from an audio encoder into the muxer.
+/// Write every packet the audio encoder already has ready into the muxer.
+///
+/// `audio` is the open audio encoder state; each packet is stamped with its
+/// `stream_index` and written interleaved (so A/V ordering is preserved).
+/// Only produced packets are drained — nothing is sent to the encoder, so
+/// the caller must have just fed a frame; `EncoderState::close` uses
+/// [`drain_audio_encoder`] for the final flush.
+///
+/// # Errors
+///
+/// Propagates the muxing error when a packet cannot be written; "end of
+/// stream" and `EAGAIN` simply end the loop.
 fn drain_audio_packets(
 	output: &mut ffmpeg::format::context::Output,
 	audio: &mut AudioEncoderState,
@@ -3188,8 +3420,19 @@ fn drain_audio_packets(
 }
 
 /// The stream's time base as recorded in the container after
-/// `write_header` (the muxer may have re-set it). `None` if the stream is
-/// missing or the muxer left the time base unset (num/den == 0).
+/// `write_header` (the muxer may have re-set it).
+///
+/// `output` is the muxer's live context and `index` a stream index returned
+/// by `add_stream` on that same context. The value is read back from the
+/// `AVStream` because containers such as mp4/mov force their own timescale
+/// (a 1/10 stream becomes 1/10240), and FFmpeg 9 no longer rescales packet
+/// timestamps for the caller. `EncoderState::open` stores it in
+/// `VideoEncoderState::stream_time_base` for `drain_video_packets`.
+///
+/// # Returns
+///
+/// `None` if the stream is missing or the muxer left the time base unset
+/// (num/den == 0).
 fn stream_time_base_after_header(
 	output: &ffmpeg::format::context::Output,
 	index: usize,
@@ -3240,7 +3483,11 @@ fn is_ffmpeg_format(format: i32) -> bool {
 	matches!(format, 0 | 1 | 2 | 4 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14)
 }
 
-/// Default encoder pixel format for a codec.
+/// The pixel format an encoder should be opened with when
+/// `EncodingParams::video_pix_fmt` is empty.
+///
+/// ProRes and DNxHD — both 10-bit 4:2:2 codecs — get `YUV422P10LE`; every
+/// other codec gets 8-bit 4:2:0 (`YUV420P`).
 fn default_pixel_format_for_codec(codec: ffmpeg::codec::Id) -> Pixel {
 	match codec {
 		ffmpeg::codec::Id::PRORES | ffmpeg::codec::Id::DNXHD => Pixel::YUV422P10LE,
@@ -3248,7 +3495,12 @@ fn default_pixel_format_for_codec(codec: ffmpeg::codec::Id) -> Pixel {
 	}
 }
 
-/// Default encoder sample format for a codec.
+/// The sample format an encoder should be opened with when
+/// `EncodingParams` does not force one.
+///
+/// PCM keeps its conventional packed 16-bit layout, MP3 uses packed f32,
+/// FLAC planar 16-bit, and every other codec planar f32 — the format the
+/// audio resampler is configured to produce in `EncoderState::open`.
 fn default_sample_format_for_codec(codec: ffmpeg::codec::Id) -> Sample {
 	match codec {
 		ffmpeg::codec::Id::PCM_S16LE => Sample::I16(SampleType::Packed),
@@ -3258,7 +3510,13 @@ fn default_sample_format_for_codec(codec: ffmpeg::codec::Id) -> Sample {
 	}
 }
 
-/// Parse a NUL-terminated pixel-format name (e.g. "yuv420p").
+/// Parse a pixel-format name (e.g. `yuv420p`) from a fixed-size,
+/// NUL-terminated C-string buffer.
+///
+/// `buf` is the 64-byte `EncodingParams::video_pix_fmt` field; parsing stops
+/// at the first NUL. Returns `None` when the name is empty, is not valid
+/// UTF-8, or is not a pixel-format name FFmpeg recognizes — the caller then
+/// falls back to [`default_pixel_format_for_codec`].
 fn pixel_format_from_name(buf: &[u8; 64]) -> Option<Pixel> {
 	let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
 	let name = std::str::from_utf8(&buf[..end]).ok()?;
@@ -3268,7 +3526,13 @@ fn pixel_format_from_name(buf: &[u8; 64]) -> Option<Pixel> {
 	name.parse::<Pixel>().ok()
 }
 
-/// Map an quercuscore sample format to an FFmpeg sample format.
+/// Map a quercuscore sample format to the equivalent FFmpeg [`Sample`],
+/// keeping planar and packed layouts distinct.
+///
+/// `f` is a delivery sample format (e.g. one decoded from
+/// `EncodingParams`); every variant has a direct FFmpeg counterpart, so only
+/// [`SampleFormat::Invalid`] returns `None` — callers turn that into an
+/// "unsupported sample format" error.
 fn sample_format_to_ffmpeg(f: SampleFormat) -> Option<Sample> {
 	match f {
 		SampleFormat::U8Planar => Some(Sample::U8(SampleType::Planar)),

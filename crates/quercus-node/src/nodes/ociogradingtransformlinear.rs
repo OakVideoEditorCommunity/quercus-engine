@@ -156,9 +156,14 @@ fn set_input_property(core: &mut NodeCore, input: &str, key: &str, value: crate:
 }
 
 impl OCIOGradingTransformLinearNode {
-	/// Set the per-component widget colors of a vec4 input (C++
-	/// `set_vec4_input_colors()`): master `#c0c0c0`, R `#ff0000`, G
-	/// `#00ff00`, B `#0000ff`.
+	/// Set the per-component widget colours of a vec4 input through its
+	/// `color0..=3` Text properties.
+	///
+	/// Writes master `#c0c0c0`, red `#ff0000`, green `#00ff00` and blue
+	/// `#0000ff` (the C++ `set_vec4_input_colors()` palette), each via
+	/// [`set_input_property`] so an existing property is replaced and a
+	/// missing one is appended. `input` is the id of an input on `core`; a
+	/// missing input is a no-op (the helper's `get_input_mut` guard).
 	#[allow(dead_code)] // C++ parity helper; the parametrized widget colours
 	// are re-applied through `set_input_property` at setup time.
 	fn set_vec4_input_colors(core: &mut NodeCore, input: &str) {
@@ -645,8 +650,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(node))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.ociogradingtransformlinear`).
+/// Append the OCIO Linear grading node to the factory metadata list.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.ociogradingtransformlinear`, display name
+/// `OCIO Color Grading (Linear)`, the [`Category::Color`] category and
+/// [`create`] as constructor. [`crate::nodes::register_all`] calls this while
+/// building the built-in factory table; the push order there defines the
+/// create-menu order.
+///
+/// # Arguments
+///
+/// * `meta` - metadata list being assembled; the entry is appended in place.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.ociogradingtransformlinear",

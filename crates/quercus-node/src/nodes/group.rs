@@ -128,6 +128,10 @@ impl NodeGroup {
 	}
 
 	/// The inner output node (C++ `get_output_passthrough()`).
+	///
+	/// This is the node the group's output reads. `None` until
+	/// [`Self::set_output_passthrough`] sets it - the constructor leaves
+	/// it unset.
 	pub fn output_passthrough(&self) -> Option<NodeId> {
 		self.output_passthrough
 	}
@@ -168,6 +172,11 @@ impl NodeGroup {
 	}
 
 	/// The passthrough entries (C++ `get_input_passthroughs()`).
+	///
+	/// Each entry pairs a group input id with the inner [`InnerInput`] it
+	/// forwards to, in insertion order; additions append and removals
+	/// preserve the order of the rest. The slice is a read-only view of
+	/// the live list.
 	pub fn passthroughs(&self) -> &[InputPassthrough] {
 		&self.input_passthroughs
 	}
@@ -339,6 +348,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 /// Register this node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.group`; note C++ files it under
 /// `k_category_unknown`, which is unrepresentable in [`Category`]).
+///
+/// `meta` is the process-wide node-type table; this pushes one
+/// [`NodeMeta`] with the type id, the display name "Group", an empty
+/// category list and [`create`] as the constructor. The type is
+/// discoverable by the factory but stays out of the create menu (see
+/// the HIDDEN flag in [`create`]).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.group",

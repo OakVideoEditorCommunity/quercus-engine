@@ -191,6 +191,14 @@ impl TransformDistortNode {
 	/// auto-scale mode (stretch: per-axis; fit/fill: uniform by width
 	/// or height depending on the aspect-ratio comparison).
 	///
+	/// `mat` is the generated node matrix (row-major 4x4), `sequence_res`
+	/// / `texture_res` are the sequence and texture sizes in pixels (the
+	/// auto-scale decision compares their aspect ratios), `offset` is the
+	/// translation applied after the sequence-to-square scale and before
+	/// `mat`, and `autoscale_type` selects the final fit/fill/stretch
+	/// scaling (`None` leaves the texture at its own size). Pure: it reads
+	/// no node state and returns the combined 4x4 matrix.
+	///
 	/// Also covers the C++ private helpers `create_scale_point` and
 	/// `get_direction_from_angles` (below). The remaining helpers are not
 	/// representable: `generate_auto_scaled_matrix` needs the texture
@@ -673,6 +681,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.transform`).
+///
+/// `meta` is the process-wide node-type table; this pushes one
+/// [`NodeMeta`] with the type id, the display name "Transform", the
+/// [`Category::Distort`] category and [`create`] as the constructor, so
+/// the node is available to the factory and the create menu.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.transform",

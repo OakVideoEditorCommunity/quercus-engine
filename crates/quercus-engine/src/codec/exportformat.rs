@@ -8,6 +8,11 @@ use quercus_codec::exportformat::Format;
 use crate::vecs::{IntoFfiVec, QuercusVecI32};
 
 /// Whether `format` is a valid Format discriminant.
+///
+/// `format` is the C ABI's `format: i32` code — a `repr(i32)` discriminant, not a
+/// name. Returns `true` for the real formats (`0..Format::Count`) and `false` for
+/// the `Count` sentinel and every value outside the enum; the string and codec-list
+/// calls treat exactly those values as invalid.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_codec_format_is_valid(format: i32) -> bool {
 	Format::from_i32(format).is_some()
@@ -29,8 +34,16 @@ pub extern "C" fn quercus_codec_format_get_name(format: i32, buf: *mut u8, buf_l
 	super::copy_str_out(&Format::get_name(format), buf, buf_len)
 }
 
-/// The file extension of `format` (e.g. "mkv"), snprintf-style;
-/// -1 when `format` is invalid.
+/// The file extension of `format` (e.g. "mkv"), snprintf-style.
+///
+/// `format` is the C ABI's `format: i32` code (a `repr(i32)` discriminant, not a
+/// name); `buf` / `buf_len` describe the caller's buffer. The extension is written
+/// NUL-terminated, truncated to `buf_len - 1` when it does not fit, and the return
+/// value is the full length excluding the NUL, so `ret >= buf_len` signals
+/// truncation and a null buffer (or `buf_len == 0`) only queries the length.
+///
+/// Returns `-1` when `format` is not a valid discriminant (nothing is written); use
+/// [`quercus_codec_format_is_valid`] to test a code up front.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_codec_format_get_extension(
 	format: i32,

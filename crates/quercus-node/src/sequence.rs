@@ -181,7 +181,11 @@ impl SequenceBehavior {
 		self.video_params.len()
 	}
 
-	/// Audio stream count.
+	/// Number of audio streams in this sequence's stream list.
+	///
+	/// The count is the current `audio_params` length, i.e. what was loaded from
+	/// the project file or edited in memory. The video counterpart is
+	/// [`Self::video_stream_count`].
 	pub fn audio_stream_count(&self) -> usize {
 		self.audio_params.len()
 	}
@@ -228,6 +232,17 @@ fn read_i32_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, defau
 }
 
 /// Read an unsigned integer attribute with the same fallback rules.
+///
+/// Parses the trimmed attribute text as `u64`; a missing attribute, an empty
+/// string or malformed text yields `default`, so the load path never fails on
+/// a missing field. The signed counterpart is `read_i32_attribute`.
+///
+/// # Arguments
+///
+/// * `reader` - XML source of the current element.
+/// * `name` - attribute name to look up.
+/// * `default` - value used when the attribute is absent or not a valid
+///   `u64`.
 fn read_u64_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, default: u64) -> u64 {
 	reader
 		.attribute(name)
@@ -237,6 +252,17 @@ fn read_u64_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, defau
 
 /// Read a boolean attribute written as `1`/`0` (also accepts
 /// `true`/`false`); absent means `false`.
+///
+/// Only the exact trimmed tokens `1` and `true` are truthy; `0`, `false`, an
+/// empty string and malformed text all read as `false`, so the loader never
+/// fails on this attribute. Pairs with the writer that emits `1`/`0`
+/// (e.g. `interlaced`).
+///
+/// # Arguments
+///
+/// * `reader` - XML source of the current element.
+/// * `name` - attribute name to look up; there is no default value because
+///   the field is opt-in.
 fn read_bool_attribute(reader: &dyn crate::serializer::XmlRead, name: &str) -> bool {
 	matches!(
 		reader.attribute(name).as_deref().map(str::trim),

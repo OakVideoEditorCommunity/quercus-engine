@@ -268,8 +268,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ThreeWayColorNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.threewaycolor`).
+/// Add the Three-Way Color node type to the factory registry.
+///
+/// Pushes one [`NodeMeta`] entry - type id
+/// `org.olivevideoeditor.Olive.threewaycolor`, display name "Three-Way Color",
+/// the color category, and the `create` constructor - into `meta`. Called from
+/// `nodes::register_all`, so the node appears in the create menu and can be
+/// instantiated by the project loader (the C++ factory entry).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.threewaycolor",

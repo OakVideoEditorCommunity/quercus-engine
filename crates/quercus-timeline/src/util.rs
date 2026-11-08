@@ -59,7 +59,12 @@ pub struct NodeRef {
 }
 
 impl NodeRef {
-	/// New reference.
+	/// Create a reference to a node in a project's graph.
+	///
+	/// `project` is the shared, mutex-guarded project that owns the graph; it is
+	/// cloned into the reference (not borrowed) and later accessors lock it.
+	/// `id` is the node's id in that graph; validity is not checked here, so a
+	/// stale id yields the accessors' fallback (`None`/`0`/`false`).
 	pub fn new(project: Arc<Mutex<Project>>, id: NodeId) -> NodeRef {
 		NodeRef { project, id }
 	}
@@ -73,25 +78,41 @@ impl NodeRef {
 	}
 }
 
-/// Split a `Rational` into numerator/denominator pairs for the C ABI
-/// (timelineutil.h `rat_nd`). Kept for the ABI-compatible command paths.
+/// Split a `Rational` into reduced numerator/denominator for the C ABI.
+///
+/// `r` is the value to split; `n` and `d` are out-parameters receiving the
+/// reduced numerator and denominator as `i32` (truncating casts; reduced
+/// values normally fit). The C++ counterpart is `rat_nd` in
+/// `timelineutil.h`; kept for the ABI-compatible command paths.
 pub fn rat_nd(r: Rational, n: &mut i32, d: &mut i32) {
 	*n = r.numerator() as i32;
 	*d = r.denominator() as i32;
 }
 
-/// `same_block`: two block references name the same graph node
-/// (`NodeId` equality; both are assumed to live in the same project).
+/// Whether two block references address the same graph node.
+///
+/// `a` and `b` are block references; only their node ids are compared, so
+/// the owning project is not part of the test (both are assumed to live in
+/// the same project). Used by timeline commands and undo guards when
+/// comparing selection or neighbour entries.
 pub fn same_block(a: &NodeRef, b: &NodeRef) -> bool {
 	a.id == b.id
 }
 
-/// `same_track`: two track references name the same graph node.
+/// Whether two track references address the same graph node.
+///
+/// `a` and `b` are track references; only their node ids are compared, so
+/// the owning project is not part of the test (both are assumed to live in
+/// the same project).
 pub fn same_track(a: &NodeRef, b: &NodeRef) -> bool {
 	a.id == b.id
 }
 
-/// `same_node`: two node references name the same graph node.
+/// Whether two node references address the same graph node.
+///
+/// `a` and `b` are node references of any kind; only their node ids are
+/// compared, so the owning project is not part of the test (both are assumed
+/// to live in the same project).
 pub fn same_node(a: &NodeRef, b: &NodeRef) -> bool {
 	a.id == b.id
 }
@@ -134,6 +155,11 @@ fn block_core_of(project: &Project, id: NodeId) -> Option<&BlockCore> {
 }
 
 /// Mutable [`BlockCore`] of the block node `id`, or `None`.
+///
+/// `project` is the graph owner (locked by the caller); `id` must name a node
+/// whose behavior embeds a block core (clip, gap, transition or adjustment
+/// block). Returns `None` for a stale id or a non-block node. Pairs with the
+/// immutable `block_core_of`.
 fn block_core_of_mut(project: &mut Project, id: NodeId) -> Option<&mut BlockCore> {
 	let entry = project.graph.get_mut(id)?;
 	let a = entry.behavior.as_any_mut()?;
@@ -270,13 +296,21 @@ pub fn block_in(b: &NodeRef) -> Rational {
 	block_core_of(&p, b.id).map(BlockCore::in_).unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// `block_out`: out point as a `Rational`.
+/// Timeline out-point of block `b`.
+///
+/// `b` is the block reference (its project is locked for the call). Returns
+/// the exclusive end of the block's stored range, or `0/1` for a stale or
+/// non-block node. Counterpart of `block_in`; `block_length` is `out - in`.
 pub fn block_out(b: &NodeRef) -> Rational {
 	let p = b.lock();
 	block_core_of(&p, b.id).map(BlockCore::out).unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// `block_length`: block length as a `Rational`.
+/// Timeline length of block `b` (`out - in`).
+///
+/// `b` is the block reference (its project is locked for the call). Returns
+/// `0/1` for a stale or non-block node. Derived from the stored range; see
+/// [`block_out`] and `block_in`.
 pub fn block_length(b: &NodeRef) -> Rational {
 	let p = b.lock();
 	block_core_of(&p, b.id)
@@ -303,7 +337,12 @@ pub fn block_enabled(b: &NodeRef) -> bool {
 	block_core_of(&p, b.id).map(|c| c.enabled).unwrap_or(false)
 }
 
-/// `quercusnode_block_set_enabled`.
+/// Enable or disable block `b`.
+///
+/// `b` is the block reference; `enabled` is the new flag. The renderer's clip
+/// evaluation skips disabled blocks. Silently no-ops for a stale or non-block
+/// node, so callers that need confirmation should re-read [`block_enabled`].
+/// No undo is pushed.
 pub fn block_set_enabled(b: &NodeRef, enabled: bool) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -311,8 +350,12 @@ pub fn block_set_enabled(b: &NodeRef, enabled: bool) {
 	}
 }
 
-/// `block_set_length_and_media_out`: keep the in point anchored (the out
-/// point shifts; the media in point does not move).
+/// Resize block `b` to `len` with the in point anchored.
+///
+/// `b` is the block reference; `len` is the new timeline length. The out point
+/// shifts with the length while `media_in` stays put, so the media range
+/// grows/shrinks at its tail. No-op for a stale/non-block node; the arithmetic
+/// lives in `BlockCore::set_length_and_media_out`.
 pub fn block_set_length_and_media_out(b: &NodeRef, len: Rational) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -320,9 +363,12 @@ pub fn block_set_length_and_media_out(b: &NodeRef, len: Rational) {
 	}
 }
 
-/// `block_set_length_and_media_in`: keep the in point anchored (the out
-/// point shifts) while the media in point follows the length change, so
-/// the media out stays anchored.
+/// Resize block `b` to `len` with the in point anchored, moving `media_in`.
+///
+/// `b` is the block reference; `len` is the new timeline length. `media_in`
+/// follows the length change so the media out point stays anchored (the
+/// complement of [`block_set_length_and_media_out`]). No-op for a stale or
+/// non-block node.
 pub fn block_set_length_and_media_in(b: &NodeRef, len: Rational) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -330,9 +376,12 @@ pub fn block_set_length_and_media_in(b: &NodeRef, len: Rational) {
 	}
 }
 
-/// Keep the OUT point anchored (the in point shifts) and move the media
-/// in point with it: the net of a head trim in the stored-range model
-/// (the C++ derives the shifted in-point from the resized previous block).
+/// Resize block `b` to `len` with the out point anchored.
+///
+/// `b` is the block reference; `len` is the new timeline length. The in point
+/// shifts and `media_in` moves with it — the net of a head trim in the
+/// stored-range model (the C++ derives the shifted in-point from the resized
+/// previous block). No-op for a stale or non-block node.
 pub fn block_set_length_keeping_out(b: &NodeRef, len: Rational) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -340,7 +389,11 @@ pub fn block_set_length_keeping_out(b: &NodeRef, len: Rational) {
 	}
 }
 
-/// `block_set_in`: set the in point, keeping the length (the out follows).
+/// Move block `b`'s timeline in point to `in_`, keeping its length.
+///
+/// `b` is the block reference; `in_` is the new in point in timeline time. The
+/// out point follows so the length is unchanged. No-op for a stale or
+/// non-block node.
 pub fn block_set_in(b: &NodeRef, in_: Rational) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -358,7 +411,12 @@ pub fn clip_media_in(b: &NodeRef) -> Rational {
 		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// `quercusnode_clip_set_media_in`.
+/// Set the block's media-in point.
+///
+/// `b` is the block reference; `media_in` is the source-media time that maps
+/// to the block's timeline in point. Works for any block kind (the media
+/// fields live on the shared `BlockCore`), despite the `clip_` name; no-op
+/// for a stale or non-block node. Pairs with `clip_media_in`.
 pub fn clip_set_media_in(b: &NodeRef, media_in: Rational) {
 	let mut p = b.lock();
 	if let Some(core) = block_core_of_mut(&mut p, b.id) {
@@ -397,7 +455,12 @@ pub fn transition_offsets(t: &NodeRef) -> Option<(Rational, Rational)> {
 	Some((transition.in_offset, transition.out_offset))
 }
 
-/// Set the transition block's offsets (a no-op for a non-transition node).
+/// Set a transition block's in/out offsets.
+///
+/// `t` is the transition-block reference; `in_offset` and `out_offset` are the
+/// two transition wedges in timeline time (stored on the transition
+/// behavior). Silently no-ops for a stale node or a non-transition block; no
+/// undo is pushed.
 pub fn transition_set_offsets(t: &NodeRef, in_offset: Rational, out_offset: Rational) {
 	let mut p = t.lock();
 	if let Some(a) = p.graph.get_mut(t.id).and_then(|e| e.behavior.as_any_mut()) {
@@ -488,7 +551,10 @@ pub fn track_length(t: &NodeRef) -> Rational {
 	}
 }
 
-/// `quercusnode_track_get_block_count`.
+/// Number of blocks currently on track `t`.
+///
+/// `t` is the track reference; returns `0` for a stale or non-track node.
+/// Counterpart of `track_block_at`.
 pub fn track_block_count(t: &NodeRef) -> usize {
 	let p = t.lock();
 	track_behavior_of(&p, t.id).map(|t| t.blocks.len()).unwrap_or(0)
@@ -502,7 +568,11 @@ pub fn track_block_at(t: &NodeRef, index: usize) -> Option<NodeRef> {
 		.map(|id| NodeRef::new(t.project.clone(), *id))
 }
 
-/// `quercusnode_track_get_locked`.
+/// Whether track `t` is locked.
+///
+/// `t` is the track reference (its project is locked for the call). Timeline
+/// edit commands consult this flag before mutating a track. Returns `false`
+/// for a stale or non-track node.
 pub fn track_locked(t: &NodeRef) -> bool {
 	let p = t.lock();
 	track_behavior_of(&p, t.id).map(|t| t.locked).unwrap_or(false)
@@ -602,7 +672,12 @@ pub fn track_insert_block_after(track: &NodeRef, block: &NodeRef, before: Option
 	}
 }
 
-/// C++ `quercusnode_track_prepend_block`.
+/// Insert `block` at the front of `track`.
+///
+/// `track` is the track reference and `block` the block to insert. On success
+/// the block is inserted at index 0 and its `BlockCore::track` is set to
+/// `track.id`; a stale/non-track `track` makes the call a no-op. No undo is
+/// pushed — the calling command owns undo/redo.
 pub fn track_prepend_block(track: &NodeRef, block: &NodeRef) {
 	let mut p = track.lock();
 	let ok = track_behavior_of_mut(&mut p, track.id)
@@ -726,7 +801,10 @@ pub fn track_create(project: &Arc<Mutex<Project>>, kind: TrackType) -> NodeRef {
 // Track list / sequence queries
 // ---------------------------------------------------------------------------
 
-/// `quercusnode_tracklist_get_track_count`.
+/// Number of tracks in track list `list`.
+///
+/// `list` is the track-list reference; returns `0` for a stale or
+/// non-track-list node. Counterpart of `tracklist_track_at`.
 pub fn tracklist_track_count(list: &NodeRef) -> usize {
 	let p = list.lock();
 	tracklist_behavior_of(&p, list.id)

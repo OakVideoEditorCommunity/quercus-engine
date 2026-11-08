@@ -14,20 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 参数体系：13 种参数实例 + param ↔ quercusnode 桥。
+//! Parameter system: 13 parameter instances + the param ↔ quercusnode bridge.
 //!
-//! 对应 C++ 的 `ParamInstance`/`OliveParamInstance`。桥的语义
-//! （M9 已定）：节点输入值变化 → 写回 OFX 参数；OFX 参数被插件
-//! 改动 → 经 quercusnode 回写节点（undoable 经
-//! `quercus_undo::undocommand::UndoCommand`）。
+//! Mirrors C++'s `ParamInstance`/`OliveParamInstance`. Bridge semantics
+//! (settled in M9): node input value change → write back to the OFX parameter; an OFX parameter
+//! changed by the plugin → write back to the node through quercusnode (undoable via
+//! `quercus_undo::undocommand::UndoCommand`).
 //!
-//! 句柄约定（[`crate::suites::tag`]）：`ParamDef`/`ParamInstance`
-//! `#[repr(C)]` 且 `props` 在偏移 0；元素装箱（`Vec<Box<..>>`）保证
-//! Vec 重分配不移动对象、句柄不悬垂。
+//! Handle conventions ([`crate::suites::tag`]): `ParamDef`/`ParamInstance`
+//! are `#[repr(C)]` with `props` at offset 0; element boxing (`Vec<Box<..>>`) guarantees
+//! that Vec reallocation moves no object and no handle dangles.
 //!
-//! 节点值布局：随 [`crate::node`] 冻结（`include/node/node.h` 的
-//! `quercusnode_value` POD）；单库化后 quercusnode 的身份注册表随其 ffi
-//! 删除，回写路径是保留失败路径的本地桩（见 [`crate::node`]）。
+//! Node value layout: frozen together with [`crate::node`] (the
+//! `quercusnode_value` POD in `include/node/node.h`); after the single-lib unification quercusnode's identity registry was
+//! deleted with its ffi, and the write-back path is a local stub that keeps the failure path (see [`crate::node`]).
 
 use std::ffi::CString;
 
@@ -35,158 +35,158 @@ use crate::property::{PropertySet, Value};
 
 // ---- OFX 参数类型字符串（ofxParam.h）----
 
-/// kOfxParamTypeInteger。
+/// kOfxParamTypeInteger.
 pub const TYPE_INTEGER: &str = "OfxParamTypeInteger";
-/// kOfxParamTypeInteger2D。
+/// kOfxParamTypeInteger2D.
 pub const TYPE_INTEGER2D: &str = "OfxParamTypeInteger2D";
-/// kOfxParamTypeInteger3D。
+/// kOfxParamTypeInteger3D.
 pub const TYPE_INTEGER3D: &str = "OfxParamTypeInteger3D";
-/// kOfxParamTypeDouble。
+/// kOfxParamTypeDouble.
 pub const TYPE_DOUBLE: &str = "OfxParamTypeDouble";
-/// kOfxParamTypeDouble2D。
+/// kOfxParamTypeDouble2D.
 pub const TYPE_DOUBLE2D: &str = "OfxParamTypeDouble2D";
-/// kOfxParamTypeDouble3D。
+/// kOfxParamTypeDouble3D.
 pub const TYPE_DOUBLE3D: &str = "OfxParamTypeDouble3D";
-/// kOfxParamTypeBoolean。
+/// kOfxParamTypeBoolean.
 pub const TYPE_BOOLEAN: &str = "OfxParamTypeBoolean";
-/// kOfxParamTypeChoice。
+/// kOfxParamTypeChoice.
 pub const TYPE_CHOICE: &str = "OfxParamTypeChoice";
-/// kOfxParamTypeString。
+/// kOfxParamTypeString.
 pub const TYPE_STRING: &str = "OfxParamTypeString";
-/// kOfxParamTypeStrChoice。
+/// kOfxParamTypeStrChoice.
 pub const TYPE_STRCHOICE: &str = "OfxParamTypeStrChoice";
-/// kOfxParamTypeRGB。
+/// kOfxParamTypeRGB.
 pub const TYPE_RGB: &str = "OfxParamTypeRGB";
-/// kOfxParamTypeRGBA。
+/// kOfxParamTypeRGBA.
 pub const TYPE_RGBA: &str = "OfxParamTypeRGBA";
-/// kOfxParamTypeBytes。
+/// kOfxParamTypeBytes.
 pub const TYPE_BYTES: &str = "OfxParamTypeBytes";
-/// kOfxParamTypeCustom。
+/// kOfxParamTypeCustom.
 pub const TYPE_CUSTOM: &str = "OfxParamTypeCustom";
-/// kOfxParamTypePushButton。
+/// kOfxParamTypePushButton.
 pub const TYPE_PUSHBUTTON: &str = "OfxParamTypePushButton";
-/// kOfxParamTypeGroup。
+/// kOfxParamTypeGroup.
 pub const TYPE_GROUP: &str = "OfxParamTypeGroup";
-/// kOfxParamTypePage。
+/// kOfxParamTypePage.
 pub const TYPE_PAGE: &str = "OfxParamTypePage";
-/// kOfxParamTypeParametric（值 = 曲线列表，经
-/// OfxParametricParameterSuite 读写，见
-/// [`crate::suites::parametric`] 与 [`crate::param_curve`]）。
+/// kOfxParamTypeParametric (value = curve list, read/written through
+/// OfxParametricParameterSuite, see
+/// [`crate::suites::parametric`] and [`crate::param_curve`]).
 pub const TYPE_PARAMETRIC: &str = "OfxParamTypeParametric";
 
 // ---- 属性名（ofxParam.h / ofxCore.h）----
 
-/// kOfxParamPropSecret。
+/// kOfxParamPropSecret.
 pub(crate) const P_SECRET: &str = "OfxParamPropSecret";
-/// kOfxParamPropHint。
+/// kOfxParamPropHint.
 pub(crate) const P_HINT: &str = "OfxParamPropHint";
-/// kOfxParamPropScriptName。
+/// kOfxParamPropScriptName.
 pub(crate) const P_SCRIPT_NAME: &str = "OfxParamPropScriptName";
-/// kOfxParamPropParent。
+/// kOfxParamPropParent.
 pub(crate) const P_PARENT: &str = "OfxParamPropParent";
-/// kOfxParamPropEnabled。
+/// kOfxParamPropEnabled.
 pub(crate) const P_ENABLED: &str = "OfxParamPropEnabled";
-/// kOfxParamPropDataPtr。
+/// kOfxParamPropDataPtr.
 pub(crate) const P_DATA_PTR: &str = "OfxParamPropDataPtr";
-/// kOfxParamPropType。
+/// kOfxParamPropType.
 pub(crate) const P_TYPE: &str = "OfxParamPropType";
-/// kOfxParamPropIsAnimating。
+/// kOfxParamPropIsAnimating.
 pub(crate) const P_IS_ANIMATING: &str = "OfxParamPropIsAnimating";
-/// kOfxParamPropIsAutoKeying。
+/// kOfxParamPropIsAutoKeying.
 pub(crate) const P_IS_AUTO_KEYING: &str = "OfxParamPropIsAutoKeying";
-/// kOfxParamPropPersistant。
+/// kOfxParamPropPersistant.
 pub(crate) const P_PERSISTANT: &str = "OfxParamPropPersistant";
-/// kOfxParamPropEvaluateOnChange。
+/// kOfxParamPropEvaluateOnChange.
 pub(crate) const P_EVALUATE_ON_CHANGE: &str = "OfxParamPropEvaluateOnChange";
-/// kOfxParamPropCanUndo。
+/// kOfxParamPropCanUndo.
 pub(crate) const P_CAN_UNDO: &str = "OfxParamPropCanUndo";
-/// kOfxParamPropCacheInvalidation。
+/// kOfxParamPropCacheInvalidation.
 pub(crate) const P_CACHE_INVALIDATION: &str = "OfxParamPropCacheInvalidation";
-/// kOfxParamInvalidateValueChange（P_CACHE_INVALIDATION 的默认值）。
+/// kOfxParamInvalidateValueChange (the default value of P_CACHE_INVALIDATION).
 pub(crate) const V_INVALIDATE_VALUE_CHANGE: &str = "OfxParamInvalidateValueChange";
-/// kOfxParamPropAnimates。
+/// kOfxParamPropAnimates.
 pub(crate) const P_ANIMATES: &str = "OfxParamPropAnimates";
-/// kOfxParamPropDefault。
+/// kOfxParamPropDefault.
 pub(crate) const P_DEFAULT: &str = "OfxParamPropDefault";
-/// kOfxParamPropDisplayMin。
+/// kOfxParamPropDisplayMin.
 pub(crate) const P_DISPLAY_MIN: &str = "OfxParamPropDisplayMin";
-/// kOfxParamPropDisplayMax。
+/// kOfxParamPropDisplayMax.
 pub(crate) const P_DISPLAY_MAX: &str = "OfxParamPropDisplayMax";
-/// kOfxParamPropMin。
+/// kOfxParamPropMin.
 pub(crate) const P_MIN: &str = "OfxParamPropMin";
-/// kOfxParamPropMax。
+/// kOfxParamPropMax.
 pub(crate) const P_MAX: &str = "OfxParamPropMax";
-/// kOfxParamPropIncrement。
+/// kOfxParamPropIncrement.
 pub(crate) const P_INCREMENT: &str = "OfxParamPropIncrement";
-/// kOfxParamPropDigits。
+/// kOfxParamPropDigits.
 pub(crate) const P_DIGITS: &str = "OfxParamPropDigits";
-/// kOfxParamPropDoubleType。
+/// kOfxParamPropDoubleType.
 pub(crate) const P_DOUBLE_TYPE: &str = "OfxParamPropDoubleType";
-/// kOfxParamDoubleTypePlain。
+/// kOfxParamDoubleTypePlain.
 pub(crate) const V_DOUBLE_TYPE_PLAIN: &str = "OfxParamDoubleTypePlain";
-/// kOfxParamPropDefaultCoordinateSystem。
+/// kOfxParamPropDefaultCoordinateSystem.
 pub(crate) const P_DEFAULT_COORD_SYS: &str = "OfxParamPropDefaultCoordinateSystem";
-/// kOfxParamCoordinatesCanonical。
+/// kOfxParamCoordinatesCanonical.
 pub(crate) const V_COORD_CANONICAL: &str = "OfxParamCoordinatesCanonical";
-/// kOfxParamCoordinatesNormalised（ofxParam.h:514）。
+/// kOfxParamCoordinatesNormalised (ofxParam.h:514).
 pub(crate) const V_COORD_NORMALISED: &str = "OfxParamCoordinatesNormalised";
-/// kOfxParamPropShowTimeMarker。
+/// kOfxParamPropShowTimeMarker.
 pub(crate) const P_SHOW_TIME_MARKER: &str = "OfxParamPropShowTimeMarker";
-/// kOfxParamPropDimensionLabel。
+/// kOfxParamPropDimensionLabel.
 pub(crate) const P_DIMENSION_LABEL: &str = "OfxParamPropDimensionLabel";
-/// kOfxParamPropStringMode。
+/// kOfxParamPropStringMode.
 pub(crate) const P_STRING_MODE: &str = "OfxParamPropStringMode";
-/// kOfxParamStringIsSingleLine。
+/// kOfxParamStringIsSingleLine.
 pub(crate) const V_STRING_SINGLE_LINE: &str = "OfxParamStringIsSingleLine";
-/// kOfxParamPropStringFilePathExists。
+/// kOfxParamPropStringFilePathExists.
 pub(crate) const P_STRING_FILE_EXISTS: &str = "OfxParamPropStringFilePathExists";
-/// kOfxParamPropChoiceOption。
+/// kOfxParamPropChoiceOption.
 pub(crate) const P_CHOICE_OPTION: &str = "OfxParamPropChoiceOption";
-/// kOfxParamPropChoiceOrder。
+/// kOfxParamPropChoiceOrder.
 pub(crate) const P_CHOICE_ORDER: &str = "OfxParamPropChoiceOrder";
-/// kOfxParamPropChoiceEnum。
+/// kOfxParamPropChoiceEnum.
 pub(crate) const P_CHOICE_ENUM: &str = "OfxParamPropChoiceEnum";
-/// kOfxParamPageSkipRow（page 子项哨兵，ofxParam.h:178）。
+/// kOfxParamPageSkipRow (page-child sentinel, ofxParam.h:178).
 pub(crate) const PAGE_SKIP_ROW: &str = "OfxParamPageSkipRow";
-/// kOfxParamPageSkipColumn（page 子项哨兵，ofxParam.h:186）。
+/// kOfxParamPageSkipColumn (page-child sentinel, ofxParam.h:186).
 pub(crate) const PAGE_SKIP_COLUMN: &str = "OfxParamPageSkipColumn";
-/// kOfxParamPropCustomInterpCallbackV1。
+/// kOfxParamPropCustomInterpCallbackV1.
 pub(crate) const P_CUSTOM_INTERP: &str = "OfxParamPropCustomCallbackV1";
-/// kOfxParamPropParametricDimension（int×1，默认 1）。
+/// kOfxParamPropParametricDimension (int×1, default 1).
 pub(crate) const P_PARAMETRIC_DIMENSION: &str = "OfxParamPropParametricDimension";
-/// kOfxParamPropParametricRange（double×2，默认 (0,1)）。
+/// kOfxParamPropParametricRange (double×2, default (0,1)).
 pub(crate) const P_PARAMETRIC_RANGE: &str = "OfxParamPropParametricRange";
-/// kOfxParamPropParametricUIColour（double×3N，默认未设）。
+/// kOfxParamPropParametricUIColour (double×3N, unset by default).
 pub(crate) const P_PARAMETRIC_UI_COLOUR: &str = "OfxParamPropParametricUIColour";
-/// kOfxParamPropParametricInteractBackground（pointer×1，默认 NULL）。
+/// kOfxParamPropParametricInteractBackground (pointer×1, default NULL).
 pub(crate) const P_PARAMETRIC_INTERACT_BG: &str = "OfxParamPropParametricInteractBackground";
-/// kOfxParamPropPageChild。
+/// kOfxParamPropPageChild.
 pub(crate) const P_PAGE_CHILD: &str = "OfxParamPropPageChild";
-/// kOfxParamPropGroupOpen。
+/// kOfxParamPropGroupOpen.
 pub(crate) const P_GROUP_OPEN: &str = "OfxParamPropGroupOpen";
-/// kOfxParamPropInteractV1。
+/// kOfxParamPropInteractV1.
 pub(crate) const P_INTERACT_V1: &str = "OfxParamPropInteractV1";
-/// kOfxParamPropInteractSize。
+/// kOfxParamPropInteractSize.
 pub(crate) const P_INTERACT_SIZE: &str = "OfxParamPropInteractSize";
-/// kOfxParamPropInteractSizeAspect。
+/// kOfxParamPropInteractSizeAspect.
 pub(crate) const P_INTERACT_ASPECT: &str = "OfxParamPropInteractSizeAspect";
-/// kOfxParamPropInteractMinimumSize。
+/// kOfxParamPropInteractMinimumSize.
 pub(crate) const P_INTERACT_MIN_SIZE: &str = "OfxParamPropInteractMinimumSize";
-/// kOfxParamPropInteractPreferedSize。
+/// kOfxParamPropInteractPreferedSize.
 pub(crate) const P_INTERACT_PREF_SIZE: &str = "OfxParamPropInteractPreferedSize";
-/// kOfxPropType。
+/// kOfxPropType.
 pub(crate) const PROP_TYPE: &str = "OfxPropType";
-/// kOfxPropName。
+/// kOfxPropName.
 pub(crate) const PROP_NAME: &str = "OfxPropName";
-/// kOfxPropLabel。
+/// kOfxPropLabel.
 pub(crate) const PROP_LABEL: &str = "OfxPropLabel";
-/// kOfxPropShortLabel。
+/// kOfxPropShortLabel.
 pub(crate) const PROP_SHORT_LABEL: &str = "OfxPropShortLabel";
-/// kOfxPropLongLabel。
+/// kOfxPropLongLabel.
 pub(crate) const PROP_LONG_LABEL: &str = "OfxPropLongLabel";
-/// kOfxPropIcon。
+/// kOfxPropIcon.
 pub(crate) const PROP_ICON: &str = "OfxPropIcon";
-/// kOfxTypeParameter。
+/// kOfxTypeParameter.
 pub(crate) const TYPE_PARAMETER: &str = "OfxTypeParameter";
 
 fn cs(s: &str) -> CString {
@@ -194,40 +194,40 @@ fn cs(s: &str) -> CString {
 	CString::new(s).unwrap()
 }
 
-/// 参数值类别（param shim 的变长参数分发；与
-/// cbits/ofx_param_shim.c 的 KIND_* 枚举逐字对应）。
+/// Parameter value kind (the param shim's varargs dispatch; corresponds
+/// verbatim to the KIND_* enum in cbits/ofx_param_shim.c).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParamKind {
-	/// Integer。
+	/// Integer.
 	Int = 1,
-	/// Integer2D。
+	/// Integer2D.
 	Int2 = 2,
-	/// Integer3D。
+	/// Integer3D.
 	Int3 = 3,
-	/// Double。
+	/// Double.
 	Double = 4,
-	/// Double2D。
+	/// Double2D.
 	Double2 = 5,
-	/// Double3D。
+	/// Double3D.
 	Double3 = 6,
-	/// Boolean。
+	/// Boolean.
 	Bool = 7,
-	/// Choice。
+	/// Choice.
 	Choice = 8,
-	/// RGB。
+	/// RGB.
 	Rgb = 9,
-	/// RGBA。
+	/// RGBA.
 	Rgba = 10,
-	/// String。
+	/// String.
 	Str = 11,
-	/// StrChoice。
+	/// StrChoice.
 	StrChoice = 12,
 }
 
-/// OFX 类型字符串 → 值类别 + 维度（HS: ofxhParam.cpp `findType`）。
-/// 无值类（PushButton/Group/Page）与 parametric（曲线值走
-/// OfxParametricParameterSuite，无标量变长入口）返回 None。
+/// OFX type string → value kind + dimension (HS: ofxhParam.cpp `findType`).
+/// Value-less types (PushButton/Group/Page) and parametric (curve values go
+/// through OfxParametricParameterSuite, which has no scalar varargs entry) return None.
 pub(crate) fn kind_of_type(ofx_type: &str) -> Option<(ParamKind, usize)> {
 	match ofx_type {
 		TYPE_INTEGER => Some((ParamKind::Int, 1)),
@@ -246,9 +246,9 @@ pub(crate) fn kind_of_type(ofx_type: &str) -> Option<(ParamKind, usize)> {
 	}
 }
 
-/// 数值类参数（Min/Max/DisplayMin/Max 表格适用；HS
-/// `addNumericParamProps` 的 isDoubleParam || isIntParam ||
-/// isColourParam）。
+/// Numeric parameter types (the Min/Max/DisplayMin/Max tables apply; HS
+/// `addNumericParamProps`'s isDoubleParam || isIntParam ||
+/// isColourParam).
 fn is_numeric_type(ofx_type: &str) -> bool {
 	matches!(
 		ofx_type,
@@ -263,8 +263,8 @@ fn is_numeric_type(ofx_type: &str) -> bool {
 	)
 }
 
-/// 该类型的默认 ParamValue（describe 期基线；HS 的属性默认在 props
-/// 的 kOfxParamPropDefault，值语义等价）。
+/// The default ParamValue of this type (the describe-time baseline; HS keeps the property default
+/// in props' kOfxParamPropDefault, with equivalent value semantics).
 fn type_default(ofx_type: &str) -> ParamValue {
 	match kind_of_type(ofx_type) {
 		Some((ParamKind::Int, d)) | Some((ParamKind::Int2, d)) | Some((ParamKind::Int3, d)) => {
@@ -291,8 +291,8 @@ fn type_default(ofx_type: &str) -> ParamValue {
 	}
 }
 
-/// 数值属性表的值（Min/Max/Display 族；HS ofxhParam.cpp:420-449）。
-/// `is_max` 选 ±f64::MAX / ±i32::MAX；colour 参数恒 0/1。
+/// A value for the numeric property tables (Min/Max/Display family; HS ofxhParam.cpp:420-449).
+/// `is_max` picks ±f64::MAX / ±i32::MAX; colour parameters are always 0/1.
 fn numeric_value(ofx_type: &str, kind: ParamKind, dim: usize, is_max: bool) -> Vec<Value> {
 	if ofx_type == TYPE_RGB || ofx_type == TYPE_RGBA {
 		// colour：display 范围 0..1，min/max 同。
@@ -311,56 +311,81 @@ fn numeric_value(ofx_type: &str, kind: ParamKind, dim: usize, is_max: bool) -> V
 	}
 }
 
-/// 参数值（与 OFX 参数类型一一对应）。
+/// A parameter value (one-to-one with the OFX parameter types).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParamValue {
-	/// kOfxParamTypeInteger / Integer2D / Integer3D。
+	/// kOfxParamTypeInteger / Integer2D / Integer3D.
 	Int([i32; 3], usize),
-	/// kOfxParamTypeDouble / Double2D / Double3D。
+	/// kOfxParamTypeDouble / Double2D / Double3D.
 	Double([f64; 3], usize),
-	/// kOfxParamTypeBoolean。
+	/// kOfxParamTypeBoolean.
 	Bool(bool),
-	/// kOfxParamTypeChoice（选项索引）。
+	/// kOfxParamTypeChoice (option index).
 	Choice(i32),
-	/// kOfxParamTypeString。
+	/// kOfxParamTypeString.
 	String(std::ffi::CString),
-	/// kOfxParamTypeRGB / RGBA。
+	/// kOfxParamTypeRGB / RGBA.
 	Color([f64; 4], usize),
-	/// kOfxParamTypeStrChoice。
+	/// kOfxParamTypeStrChoice.
 	StrChoice(std::ffi::CString),
-	/// kOfxParamTypeBytes / Custom（不透明字节串）。
+	/// kOfxParamTypeBytes / Custom (opaque byte string).
 	Bytes(Vec<u8>),
-	/// kOfxParamTypePushButton（无值，仅触发）。
+	/// kOfxParamTypePushButton (no value, trigger only).
 	PushButton,
-	/// kOfxParamTypeGroup / Page（容器，无值）。
+	/// kOfxParamTypeGroup / Page (container, no value).
 	Container,
-	/// kOfxParamTypeParametric：每维一条曲线（曲线模型见
-	/// [`crate::param_curve`]；默认 = 1 条恒等曲线，维度由属性
-	/// `OfxParamPropParametricDimension` 决定，见
-	/// [`ParamDef::new`]）。
+	/// kOfxParamTypeParametric: one curve per dimension (curve model in
+	/// [`crate::param_curve`]; the default is 1 identity curve, the dimension comes from the
+	/// `OfxParamPropParametricDimension` property, see
+	/// [`ParamDef::new`]).
 	Parametric(Vec<crate::param_curve::Curve>),
 }
 
-/// 参数定义（describe 产物，见 [`crate::descriptor::EffectDescriptor`]）。
-/// `#[repr(C)]` + props 在偏移 0（句柄约定，见 [`crate::suites::tag`]）。
+/// A parameter definition (a describe product, see [`crate::descriptor::EffectDescriptor`]).
+/// `#[repr(C)]` + props at offset 0 (handle convention, see [`crate::suites::tag`]).
 #[derive(Clone)]
 #[repr(C)]
 pub struct ParamDef {
-	/// 定义属性（label/hint/parent/coordinate-system/secret/
-	/// display min-max/choice 选项与排序等；describe 期预置
-	/// HostSupport 同款表格）。
+	/// Definition properties (label/hint/parent/coordinate-system/secret/
+	/// display min-max/choice options and ordering, etc.; pre-populated at describe time with
+	/// the same tables as HostSupport).
 	pub props: PropertySet,
-	/// 参数名（OFX 标识）。
+	/// Parameter name (the OFX identifier).
 	pub name: String,
-	/// OFX 类型字符串（kOfxParamType*）。
+	/// OFX type string (kOfxParamType*).
 	pub ofx_type: String,
-	/// 默认值（describe 后读取）。
+	/// Default value (read after describe).
 	pub default: ParamValue,
 }
 
 impl ParamDef {
-	/// 按 OFX 类型构建定义（镜像 HS ofxhParam.cpp:224-352：
-	/// universalProps + addStandardParamProps 的分类型属性表）。
+	/// Build a parameter definition from an OFX type string and pre-populate the type's standard property tables.
+	///
+	/// Mirrors HS `ofxhParam.cpp:224-352`; writes into `props` in four layers:
+	/// 1. universalProps — `OfxParamPropType=kOfxParamTypeParameter`,
+	///    [`PROP_NAME`]/[`PROP_LABEL`]/short label/long label/script name all take
+	///    `name`; secret=0, hint empty, parent empty, enabled=1,
+	///    data pointer null, icon two empty strings;
+	/// 2. value-type invariants (when `kind_of_type` yields a value) — isAnimating=0,
+	///    isAutoKeying=0, persistant=1, evaluateOnChange=1, canUndo=1,
+	///    cache invalidation=kInvalidateValueChange, Animates per HS rules (custom/
+	///    string/boolean/choice are 0, all others 1), the default value uses
+	///    [`default_values`];
+	/// 3. numeric types (`is_numeric_type`) — the four display/min/max tables use
+	///    [`numeric_value`] (±`f64::MAX`/±`i32::MAX` sentinels, colours 0..1),
+	///    the double family gets increment=1.0/digits=2, plain type and canonical
+	///    coordinate system, 2D/3D append x/y/z dimension labels;
+	/// 4. type-specific (HS `addStandardParamProps`) — string single-line mode and
+	///    file-exists=1, choice pre-defines three empty option tables (so plugins never read an
+	///    unknown property), custom's interpolation pointer, the page child table, group open by default,
+	///    parametric's dimension=1/empty interact background/range (0,1); non-group/page types also get
+	///    the interact properties.
+	///
+	/// `name` is the OFX parameter identifier, stored verbatim without dedup or escaping; `ofx_type`
+	/// determines the `ofx_type` field and all type properties. Unknown types do not error; a definition
+	/// is still returned (`default` degrades to the `ParamValue::Container` placeholder), and the describe
+	/// layer is responsible for rejecting it. The default current value comes from `type_default` (e.g. parametric is
+	/// one (0,1) identity curve), stored separately from the property default.
 	pub(crate) fn new(name: &str, ofx_type: &str) -> Self {
 		let props = PropertySet::new();
 		let uname = name.to_string();
@@ -516,13 +541,23 @@ impl ParamDef {
 		}
 	}
 
-	/// 值类别（变长参数分发用；无值类返回 None）。
+	/// Value kind (used for varargs dispatch; value-less types return None).
 	pub(crate) fn kind(&self) -> Option<ParamKind> {
 		kind_of_type(&self.ofx_type).map(|(k, _)| k)
 	}
 }
 
-/// kOfxParamPropDefault 的属性值（HS ofxhParam.cpp:376-377）。
+/// Compute the default-value vector for `kOfxParamPropDefault` (HS ofxhParam.cpp:376-377).
+///
+/// `kind` decides the element type: the integer family (`Int`/`Int2`/`Int3`/`Bool`/`Choice`)
+/// yields `Value::Int(0)`; the float and colour families (`Double*`/`Rgb`/`Rgba`) yield
+/// `Value::Double(0.0)`; the string family (`Str`/`StrChoice`) always has exactly 1
+/// empty-string element and ignores `dim`.
+///
+/// `dim` is the type's value dimension: 1/2/3 per [`kind_of_type`]'s convention,
+/// 3 for RGB colours and 4 for RGBA; the vector length is `dim.max(1)`, i.e. passing 0
+/// degrades to one element (HS's fallback for dimension 0). The result is used by [`ParamDef::new`]
+/// to pre-populate the default property; it does not affect an instance's current value (that comes from `type_default`).
 fn default_values(kind: ParamKind, dim: usize) -> Vec<Value> {
 	match kind {
 		ParamKind::Int
@@ -541,22 +576,22 @@ fn default_values(kind: ParamKind, dim: usize) -> Vec<Value> {
 	}
 }
 
-/// 参数实例（createInstance 后由 [`ParamDef`] 实例化）。
-/// `#[repr(C)]` + props 在偏移 0（句柄约定）。
+/// A parameter instance (instantiated from [`ParamDef`] after createInstance).
+/// `#[repr(C)]` + props at offset 0 (handle convention).
 #[repr(C)]
 pub struct ParamInstance {
-	/// 实例级属性（当前值镜像等）。
+	/// Instance-level properties (the current-value mirror, etc.).
 	pub props: PropertySet,
-	/// 对应定义。
+	/// The corresponding definition.
 	pub def: ParamDef,
-	/// 当前值（节点桥与 OFX 侧的同步点）。
+	/// The current value (the synchronization point between the node bridge and the OFX side).
 	value: std::sync::Mutex<ParamValue>,
 }
 
 impl ParamInstance {
-	/// 从定义实例化（createInstance 路径调用）。实例 props 是定义
-	/// props 的深拷贝（HS: SetInstance::makeParam 的 descriptor 属性
-	/// 复制语义——插件在实例期读 label/min/max 等）。
+	/// Instantiate from a definition (called from the createInstance path). The instance props are a deep
+	/// copy of the definition props (HS: SetInstance::makeParam's descriptor-property
+	/// copy semantics — plugins read label/min/max etc. at instance time).
 	pub fn from_def(def: ParamDef) -> Self {
 		let value = def.default.clone();
 		let props = def.props.clone();
@@ -567,18 +602,28 @@ impl ParamInstance {
 		}
 	}
 
-	/// 读当前值。
+	/// Read the current value.
 	pub fn get(&self) -> ParamValue {
 		self.value.lock().unwrap_or_else(|e| e.into_inner()).clone()
 	}
 
-	/// 写当前值（OFX 语义：paramSetValue action 语义，不打节点桥）。
+	/// Write the current value with OFX's paramSetValue semantics: replace only the value stored on the instance,
+	/// bypassing the node bridge (no undo command, no host notification, no props change).
+	///
+	/// `value` replaces the old value wholesale, with no type/dimension validation or clamping — the caller (the
+	/// param suite's set entry points) must build [`ParamValue`] according to the parameter's OFX type.
+	/// The value sits behind a `Mutex`; if the lock is poisoned the inner value is recovered and writing continues,
+	/// so this method returns no error and never fails because of lock poisoning.
+	///
+	/// Pairs with [`ParamInstance::get`] (read back verbatim); syncing the value back to the node is
+	/// [`notify_instance_changed`] / the host-side `set_from_node`'s job,
+	/// so a plugin calling this method does not automatically change the node input.
 	pub fn set_ofx(&self, value: ParamValue) {
 		*self.value.lock().unwrap_or_else(|e| e.into_inner()) = value;
 	}
 
-	/// 字符串值的内驻指针（param suite 的 get_string 用；指向实例
-	/// 存储，下次 set 前有效——克隆的 CString 指针会悬垂，不能给）。
+	/// The resident pointer of a string value (used by the param suite's get_string; points at the instance
+	/// storage and is valid until the next set — a cloned CString pointer would dangle and must not be returned).
 	pub(crate) fn string_ptr(&self) -> Option<*const std::ffi::c_char> {
 		let v = self.value.lock().unwrap_or_else(|e| e.into_inner());
 		match &*v {
@@ -587,17 +632,17 @@ impl ParamInstance {
 		}
 	}
 
-	/// 从 quercusnode 输入值写入（节点→插件方向）。类型映射表逐行对照
-	/// C++ 的 `valueconvert`/`paraminstance.h`（`node_get` 的镜像）：
-	/// INT→Integer、FLOAT→Double、BOOL→Boolean、COMBO→Choice、
-	/// COLOR→RGB/RGBA、VEC2/VEC3→Double(2D/3D)/Integer(2D/3D)。
-	/// 维度不齐按 OFX 语义截断/补零（缺失元素按 0）。字符串族
-	/// （QUERCUSNODE_VALUE_STRING）的 POD 不携带数据——此路径不改值
-	/// （走 facade 的字符串 API，见 `include/plugin/instance.h`）；
-	/// parametric 同理（曲线 JSON 文本经渲染期注入
-	/// [`crate::node_factory`] 的 set_text_param 写回，见
-	/// `crate::node_factory::execute_plugin_job`）。
-	/// 类型不匹配 → 忽略（保持现值；C++ `node_get` 失败时参数不回写）。
+	/// Write from a quercusnode input value (node → plugin direction). The type mapping table mirrors
+	/// C++'s `valueconvert`/`paraminstance.h` line by line (the `node_get` mirror):
+	/// INT→Integer, FLOAT→Double, BOOL→Boolean, COMBO→Choice,
+	/// COLOR→RGB/RGBA, VEC2/VEC3→Double(2D/3D)/Integer(2D/3D).
+	/// Mismatched dimensions are truncated/zero-padded per OFX semantics (missing elements count as 0). The string family
+	/// (QUERCUSNODE_VALUE_STRING)'s POD carries no data — this path does not change the value
+	/// (it goes through the facade's string API, see `include/plugin/instance.h`);
+	/// likewise for parametric (curve JSON text is written back via the render-time
+	/// set_text_param injection in [`crate::node_factory`], see
+	/// `crate::node_factory::execute_plugin_job`).
+	/// A type mismatch → ignored (current value kept; C++ does not write back when `node_get` fails).
 	pub fn set_from_node(&self, node_value: &crate::node::Value) {
 		if let Some(pv) = param_value_from_node(node_value, &self.def.ofx_type) {
 			self.set_ofx(pv);
@@ -605,9 +650,9 @@ impl ParamInstance {
 	}
 }
 
-/// 节点值 → ParamValue（按参数类型解释；字符串族走专用路径）。
-/// 镜像 `set_from_node` 的映射表；render 驱动的参数覆盖
-/// （apply_param_overrides）复用同一转换。
+/// Node value → ParamValue (interpreted by parameter type; the string family takes a dedicated path).
+/// Mirrors `set_from_node`'s mapping table; the render driver's parameter overrides
+/// (apply_param_overrides) reuse the same conversion.
 pub(crate) fn param_value_from_node(
 	v: &crate::node::Value,
 	ofx_type: &str,
@@ -638,12 +683,12 @@ pub(crate) fn param_value_from_node(
 	}
 }
 
-/// ParamValue → [`crate::node::Value`]（插件→节点方向；
-/// 字符串族经 [`crate::node::set_input_string_undoable`]）。
-/// 镜像 C++ `paraminstance.h` 的 `value_int`/`value_double`/
-/// `value_vec`/`value_color` 构造：RGB 颜色补 alpha=1（C++
-/// `RGBInstance::set` 的 `value_color(r,g,b,1.0)`）。无值类与 Bytes
-/// 无节点对应 → None。
+/// ParamValue → [`crate::node::Value`] (plugin → node direction;
+/// the string family goes through [`crate::node::set_input_string_undoable`]).
+/// Mirrors the `value_int`/`value_double`/`value_vec`/`value_color` construction
+/// in C++ `paraminstance.h`: an RGB colour gets alpha=1 (C++
+/// `RGBInstance::set`'s `value_color(r,g,b,1.0)`). Value-less types and Bytes
+/// have no node counterpart → None.
 pub(crate) fn to_node_value(v: &ParamValue) -> Option<crate::node::Value> {
 	use crate::node::node_value_type as T;
 	let mut out = crate::node::Value::default();
@@ -697,14 +742,20 @@ pub(crate) fn to_node_value(v: &ParamValue) -> Option<crate::node::Value> {
 	Some(out)
 }
 
-/// 参数实例集（实例级）。
+/// A set of parameter instances (instance level).
 pub struct ParamSetInstance {
-	/// 全部参数（定义顺序稳定；Box 保证句柄地址稳定）。
+	/// All parameters (stable definition order; Box keeps every handle address stable).
 	pub params: Vec<Box<ParamInstance>>,
 }
 
 impl ParamSetInstance {
-	/// 按名查找。
+	/// Find a parameter in the instance set by parameter name.
+	///
+	/// `name` is compared exactly (case-sensitive) against [`ParamDef::name`]
+	/// (the parameter identifier the plugin gives via `OfxParamPropName` at describe
+	/// time); the first match is returned as a borrowed reference bounded by `&self`. `ParamSetInstance::params` is in definition order,
+	/// so the hit order matches the describe order. Returns `None` when not found
+	/// (the normal path when a plugin queries an unknown parameter name, not an error).
 	pub fn find(&self, name: &str) -> Option<&ParamInstance> {
 		self.params
 			.iter()
@@ -712,10 +763,10 @@ impl ParamSetInstance {
 			.map(|b| b.as_ref())
 	}
 
-	/// 快照（内省 C ABI 与快照测试用）。
+	/// A snapshot (used by the introspection C ABI and by snapshot tests).
 	///
-	/// 声明原为 `Vec<(&str, &ParamValue)>`：值在 Mutex 内，无法返回
-	/// 活引用——改为拥有型 `(String, ParamValue)`（内省语义不变）。
+	/// The signature used to be `Vec<(&str, &ParamValue)>`: the values sit behind a Mutex, so no live
+	/// reference can be returned — changed to owned `(String, ParamValue)` (introspection semantics unchanged).
 	pub fn snapshot(&self) -> Vec<(String, ParamValue)> {
 		self.params
 			.iter()
@@ -724,26 +775,26 @@ impl ParamSetInstance {
 	}
 }
 
-/// 插件 → 节点方向的回写入口（instanceChanged action 触发）。
-/// 经 [`crate::node`] 定位绑定节点（身份注册表），再经
-/// `quercus_undo::undocommand::UndoCommand` 包成 undoable 修改。未绑定
-/// 节点或身份查无时 no-op（单库化后身份注册表重建为
-/// [`crate::node::register_node`]/[`crate::node::node_from_identity`]；
-/// facade 装配期登记，project 释放后弱条目自然失效）。
+/// The write-back entry point for the plugin → node direction (triggered by the instanceChanged action).
+/// Locates the bound node through [`crate::node`] (the identity registry), then wraps the change
+/// as an undoable modification via `quercus_undo::undocommand::UndoCommand`. With no bound
+/// node or no identity match it is a no-op (after the single-lib unification the identity registry is rebuilt as
+/// [`crate::node::register_node`]/[`crate::node::node_from_identity`];
+/// registered during facade setup, weak entries expire naturally once the project is released).
 ///
-/// 语义对照 C++ `paraminstance.h` 的 `set()` 路径（`detail::node_set`/
-/// `node_set_at`）：
-/// - 只回写 [`ChangeReason::PluginEdited`]（插件自改）。UserEdited/
-///   TimeChanged 是宿主侧变更，值已由 [`ParamInstance::set_from_node`]
-///   同步，不重复写回；
-/// - 字符串族经 [`crate::node::set_input_string_undoable`]
-///   （POD 不携带字符串数据）；parametric 曲线同样经该字符串 setter
-///   以 JSON 文本写回输入（[`crate::param_curve::curves_to_json`]，
-///   与标量回写同一 undo 语义——插件在实例上改曲线 → 节点输入更新，
-///   工程序列化随标准值保留）；
-/// - 无值类（PushButton/Group/Page）与 Bytes 无节点对应 → no-op；
-/// - 编辑事务内（[`crate::instance::Instance::in_edit`]）并入 multi
-///   命令，否则单命令立即 redo 生效（C++ `submit_undo_command`）。
+/// Semantics follow C++ `paraminstance.h`'s `set()` path (`detail::node_set`/
+/// `node_set_at`):
+/// - Only [`ChangeReason::PluginEdited`] (plugin self-edit) is written back. UserEdited/
+///   TimeChanged are host-side changes whose values were already synced by [`ParamInstance::set_from_node`],
+///   so they are not written back again;
+/// - The string family goes through [`crate::node::set_input_string_undoable`]
+///   (the POD carries no string data); parametric curves likewise go through that string setter
+///   and are written back as JSON text ([`crate::param_curve::curves_to_json`],
+///   with the same undo semantics as scalar write-back — the plugin edits a curve on the instance → the node input updates,
+///   and the project serialization keeps it with the standard values);
+/// - Value-less types (PushButton/Group/Page) and Bytes have no node counterpart → no-op;
+/// - Inside an edit transaction ([`crate::instance::Instance::in_edit`]) the change joins the multi
+///   command; otherwise a single command takes effect with an immediate redo (C++ `submit_undo_command`).
 pub(crate) fn notify_instance_changed(
 	instance: &crate::instance::Instance,
 	param_name: &str,
@@ -797,14 +848,14 @@ pub(crate) fn notify_instance_changed(
 	}
 }
 
-/// instanceChanged 的原因（OFX kOfxChange*）。
+/// The instanceChanged reason (OFX kOfxChange*).
 #[derive(Clone, Copy, Debug)]
 pub enum ChangeReason {
-	/// 用户编辑。
+	/// User edit.
 	UserEdited,
-	/// 插件自改。
+	/// Plugin self-edit.
 	PluginEdited,
-	/// 时间变化。
+	/// Time change.
 	TimeChanged,
 }
 
@@ -817,8 +868,8 @@ mod tests {
 		ParamInstance::from_def(ParamDef::new("p", ofx_type))
 	}
 
-	/// ParamValue → quercusnode Value 的类型映射表（镜像 C++
-	/// paraminstance.h 的 value_* 构造）。
+	/// The ParamValue → quercusnode Value type mapping table (mirrors C++
+	/// paraminstance.h's value_* construction).
 	#[test]
 	fn to_node_value_mapping() {
 		use crate::node::Value;
@@ -863,7 +914,7 @@ mod tests {
 		let _ = c(T::NONE); // 哨兵：类型常量可达
 	}
 
-	/// type_default 的无值类/字节族基线（paramDefine 拒绝前的兜底）。
+	/// type_default's value-less/bytes-family baseline (the fallback before paramDefine rejects).
 	#[test]
 	fn type_default_edge_cases() {
 		assert!(matches!(type_default(TYPE_BYTES), ParamValue::Bytes(_)));
@@ -894,8 +945,8 @@ mod tests {
 		));
 	}
 
-	/// parametric 的默认：1 条恒等曲线；4 个专属属性就位
-	/// （dimension=1、range=(0,1)、UIColour 未设、interact 背景 NULL）。
+	/// parametric's default: 1 identity curve; the 4 dedicated properties in place
+	/// (dimension=1, range=(0,1), UIColour unset, interact background NULL).
 	#[test]
 	fn parametric_type_default() {
 		assert!(matches!(
@@ -929,7 +980,7 @@ mod tests {
 		}
 	}
 
-	/// set_from_node 的维度截断/补零与字符串静默路径。
+	/// set_from_node's dimension truncation/zero-padding and the silent string path.
 	#[test]
 	fn set_from_node_dimension_rules() {
 		// Integer2D 缺第三维补零；浮点截断。

@@ -88,7 +88,13 @@ pub struct XmlWriterBridge {
 }
 
 impl XmlReaderBridge {
-	/// Create from XML text; `None` on a parse error.
+	/// Create a reader over `xml`; `None` on a parse error.
+	///
+	/// `xml` is the whole document text. The returned bridge starts before
+	/// the root element, so the caller must call
+	/// [`XmlRead::next_start_element`] to advance to it. A malformed
+	/// document returns `None` rather than an error, which the loaders turn
+	/// into `Error::Failed("quercus_core XML reader unavailable")`.
 	pub fn new(xml: &str) -> Option<XmlReaderBridge> {
 		let reader = XmlReader::new(xml).ok()?;
 		Some(XmlReaderBridge {
@@ -140,7 +146,12 @@ impl XmlWriterBridge {
 		})
 	}
 
-	/// The serialized output.
+	/// The serialized output ("" when the writer has no buffer).
+	///
+	/// Returns the XML document accumulated so far; an underlying
+	/// [`XmlWriter`] error is swallowed as an empty string. Leaves the
+	/// bridge usable — call it after closing the root element, as [`save`]
+	/// does.
 	pub fn output(&self) -> String {
 		self.writer.output().unwrap_or_default()
 	}
@@ -259,6 +270,15 @@ pub fn value_to_string(declared: ValueType, value: &NodeValue, key_track: bool) 
 }
 
 /// String -> [`NodeValue`] (C++ `NodeValue::string_to_value`).
+///
+/// `declared` selects both the target variant and the text syntax: vec2/
+/// vec3/vec4/color split on ':' (missing or malformed components become
+/// 0.0); rational uses [`Rational::from_string`]; int/combo trim and parse
+/// (fallback 0); boolean accepts `"1"` or `"true"` and anything else is
+/// `false`; float trims and parses (fallback 0.0); text/strcombo/parametric
+/// keep the raw string. Unsupported declared types yield `NodeValue::None`.
+/// The inverse of [`value_to_string`]; no malformed numeric field makes the
+/// load fail.
 pub fn string_to_value(declared: ValueType, text: &str) -> NodeValue {
 	match declared {
 		ValueType::Vec2 | ValueType::Vec3 | ValueType::Vec4 | ValueType::Color => {
@@ -317,6 +337,18 @@ pub fn parse_node_ref(text: &str) -> Option<NodeId> {
 }
 
 /// Save a whole project to the current-version XML format.
+///
+/// Writes `<project version="1">` with the uuid, every node (graph arena
+/// order, each through [`save_node`]) and the settings map sorted by key.
+/// Cache-location settings are persisted from the project's struct fields
+/// rather than the settings map (stale map copies are skipped), and default
+/// values add no noise to the file. Returns the serialized XML document.
+///
+/// # Errors
+///
+/// `Error::Failed` when the XML writer cannot be created and
+/// `Error::NotFound` when a node id from the graph cannot be fetched (a
+/// corrupt graph).
 pub fn save(project: &Project) -> crate::error::Result<String> {
 	use crate::error::Error;
 	let mut writer = XmlWriterBridge::new().ok_or(Error::Failed(
@@ -459,6 +491,12 @@ pub fn save_node(
 
 /// Save one input element (`primary` + `subelements`; C++
 /// `Node::save_input`).
+///
+/// `id` names the input and `core` the node. Always writes `<primary>` with
+/// the scalar immediate ([`save_immediate`] at element -1); when the input
+/// has a nonzero array size, also writes `<subelements count=N>` with one
+/// `<element>` per index in order. The caller writes the enclosing
+/// `<input id="...">` element (see [`save_node`]).
 fn save_input(writer: &mut dyn XmlWrite, core: &NodeCore, id: &str) {
 	writer.start_element("primary");
 	save_immediate(writer, core, id, -1);
@@ -479,6 +517,15 @@ fn save_input(writer: &mut dyn XmlWrite, core: &NodeCore, id: &str) {
 
 /// Save one immediate (standard values + keyframes; C++
 /// `Node::save_immediate`).
+///
+/// `id` is the input id and `element` the array index (-1 for the scalar
+/// immediate); `core` supplies the declared type, the keyframable flag and
+/// the stored values/keys. Emits `<keyframing>` for keyframable inputs, one
+/// `<track>` per component under `<standard>`, and the `<keyframes>` block
+/// only when the track has keys. Values are encoded with the key-track form
+/// (`key_track = true`), so standard and keyframe payloads share one string
+/// syntax; the enclosing `<primary>`/`<element>` wrapper is written by
+/// [`save_input`].
 fn save_immediate(writer: &mut dyn XmlWrite, core: &NodeCore, id: &str, element: i32) {
 	let keyframable = core.input_flags(id) & crate::input::flags::NOT_KEYFRAMABLE == 0;
 	let keyframing = core
@@ -528,7 +575,14 @@ fn save_immediate(writer: &mut dyn XmlWrite, core: &NodeCore, id: &str, element:
 	}
 }
 
-/// Write character data through the writer trait.
+/// Write character data (raw XML text, no element wrapper) through the
+/// writer.
+///
+/// Forwards to [`XmlWrite::characters`], the C++ `write_characters`
+/// equivalent, for the `<track>`/`<key>` value payloads. The trait's
+/// default implementation is a no-op, so a bridge that does not override it
+/// would drop the payload silently; `XmlWriterBridge` forwards to the real
+/// XML writer.
 fn writer_text_chars(writer: &mut dyn XmlWrite, text: &str) {
 	writer.characters(text);
 }
@@ -714,6 +768,21 @@ fn load_project_body(
 }
 
 /// Parse one `<node>` into the graph; returns its id.
+///
+/// `reader` is positioned at the `<node>` start element. The type is
+/// reconstructed through [`create_timeline_type`] for structural timeline
+/// types, else through the global factory (including runtime-registered
+/// OpenFX plugin types). The node enters `graph` before its body is parsed
+/// so deferred connections/links can reference it, and a present `ptr`
+/// attribute is registered in `id_map` (`XML ptr -> NodeId`).
+/// `connections`/`links` accumulate the file-identity edges for the
+/// post-load resolve pass.
+///
+/// # Errors
+///
+/// `Error::Failed("unknown node type ...")` when neither the timeline table
+/// nor the factory knows the type (the element body is skipped), and
+/// `Error::NotFound` if the just-added node cannot be fetched.
 #[allow(clippy::too_many_arguments)]
 fn load_node(
 	reader: &mut dyn XmlRead,
@@ -802,6 +871,17 @@ fn create_timeline_type(
 }
 
 /// Parse the body of a `<node>` element (label/color/inputs/links/...).
+///
+/// `reader` is positioned at the `<node>` start element and is consumed to
+/// its end; `core`/`behavior` are the newly created node's state; `node_id`
+/// is the live graph id and `node_ptr` the file's `ptr` identity
+/// (connections and links are recorded with the FILE identity so the
+/// deferred resolve pass can translate them). `connections` collects
+/// `(source_file_id, node_id, input_id, element)` and `links` collects
+/// `(node_ptr, linked_file_id)` pairs, both resolved once the whole project
+/// is live. `label`, `color`, `input`, `links`, `connections` and `caches`
+/// are handled here; everything else goes through
+/// [`NodeBehavior::load_custom`], and unknown elements are skipped.
 fn load_node_body(
 	reader: &mut dyn XmlRead,
 	core: &mut NodeCore,
@@ -875,6 +955,15 @@ fn load_node_body(
 }
 
 /// Parse one `<input>` element: the primary immediate and subelements.
+///
+/// `reader` is positioned at the `<input>` start element and `input_id`
+/// names the core input to fill (it must already exist — the node
+/// constructor creates it; an unknown id leaves the node unchanged). The
+/// optional `<primary>` child becomes the scalar immediate (`element = -1`);
+/// each `<element>` under `<subelements>` is then appended to the input
+/// array (its index derived from the current array size) and loaded as that
+/// element's immediate. The declared value type is read once from the input
+/// definition and reused; unknown children are skipped.
 fn load_input_element(reader: &mut dyn XmlRead, core: &mut NodeCore, input_id: &str) {
 	let declared = core.input_data_type(input_id).unwrap_or(ValueType::None);
 
@@ -906,6 +995,17 @@ fn load_input_element(reader: &mut dyn XmlRead, core: &mut NodeCore, input_id: &
 }
 
 /// Parse one immediate (standard values + keyframes).
+///
+/// `reader` is positioned at the immediate's `<primary>` (or `<element>`)
+/// start element and is consumed through its matching end. `core`,
+/// `input_id` and `element` select what to fill: `element` is -1 for the
+/// scalar immediate, otherwise the array index; `declared` is the input's
+/// value type and drives text decoding through [`string_to_value`].
+/// Standard tracks are combined with [`NodeValue::combine_tracks`]. A
+/// `keyframing=1` immediate merges its keys into the input's track, while
+/// `keyframing=0` drops any pre-existing track for that input/element.
+/// Malformed attributes fall back to defaults (time 0, linear
+/// interpolation, zero Bezier handles) instead of failing the load.
 fn load_immediate(
 	reader: &mut dyn XmlRead,
 	core: &mut NodeCore,
@@ -1146,6 +1246,15 @@ fn resolve_timeline_refs(graph: &mut Graph, id_map: &std::collections::HashMap<u
 /// writer persists them in the folder custom segment) and reattach each
 /// child to its bin folder (`// CPP-PARITY: folder.cpp:43`
 /// `InputConnectedEvent` sets the child's folder).
+///
+/// `graph` is the freshly loaded graph and `id_map` is the load-time
+/// identity translation (`XML ptr -> NodeId`). For every folder node the
+/// `child_in` array is read for connected children, the custom-segment
+/// children are resolved through `id_map` (unresolvable ones are dropped),
+/// and both sets are merged; a non-empty node label overwrites the folder's
+/// display name (C++ `Folder::Name()` returns the label). Each child's
+/// `bin_folder` is then set to its folder. Non-folder nodes are untouched;
+/// returns `()` and cannot fail.
 fn resolve_folder_children(
 	graph: &mut Graph,
 	id_map: &std::collections::HashMap<u64, NodeId>,
@@ -1205,7 +1314,13 @@ fn resolve_folder_children(
 	}
 }
 
-/// Lock a project mutex (poison-tolerant).
+/// Lock a project mutex, recovering from a poisoned mutex.
+///
+/// `m` is the mutex guarding the project or graph. A previous panic while
+/// the lock was held poisons the mutex; this returns a guard on the inner
+/// data anyway instead of propagating the panic, so one bad writer cannot
+/// make the project permanently unreadable. The returned guard borrows `m`
+/// for its whole lifetime.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
 }

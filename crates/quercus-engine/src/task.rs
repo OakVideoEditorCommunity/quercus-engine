@@ -153,7 +153,16 @@ fn task(id: u64) -> Option<Arc<TaskEntry>> {
 		.cloned()
 }
 
-/// Spawns `behavior` on its own thread, returning the registry id.
+/// Creates a task registry entry, enqueues `behavior` on the engine task pool, and
+/// returns its id (never 0; ids are allocated monotonically).
+///
+/// `title` is the display name stored in the registry. Each `*_slot` argument is an
+/// optional shared hand-off cell for one result kind; exactly one is normally set,
+/// and the matching `quercus_task_take_*` function transfers the value out later.
+/// An audio or video slot marks the job foreground (preview priority); every other
+/// job goes to the background queue. A job cancelled while still queued skips
+/// `behavior` entirely and publishes `QUERCUS_TASK_CANCELLED`, so a preview can
+/// withdraw frames before the pool reaches them.
 fn spawn_task(
 	title: String,
 	behavior: Box<dyn TaskBehavior + Send>,
@@ -243,6 +252,13 @@ struct TaskPool {
 }
 
 impl TaskPool {
+	/// Enqueues `job` for execution: on the foreground queue (2 workers) when
+	/// `foreground` is true, otherwise on the background queue
+	/// (`QUERCUS_TASK_THREADS` workers), then wakes one waiter.
+	///
+	/// Each queue runs jobs in FIFO order. The call never waits for the job itself, so
+	/// it only pays for the queue lock; poisoned locks are recovered rather than
+	/// panicking across the C ABI.
 	fn push(&self, job: Job, foreground: bool) {
 		let queue = if foreground {
 			&self.foreground
@@ -257,6 +273,13 @@ impl TaskPool {
 
 static TASK_POOL: OnceLock<TaskPool> = OnceLock::new();
 
+/// Returns the process-global [`TaskPool`], creating it on first use.
+///
+/// Creation spawns `QUERCUS_TASK_THREADS` background workers (default 8 when the
+/// variable is unset, zero, or non-numeric) plus 2 foreground workers; threads are
+/// named `quercus-task-<n>` and `quercus-foreground-<n>`. Individual spawn failures
+/// are ignored, so an OS thread limit silently reduces parallelism. The pool is
+/// initialized once, so later environment changes have no effect.
 fn task_pool() -> &'static TaskPool {
 	TASK_POOL.get_or_init(|| {
 		let workers = std::env::var("QUERCUS_TASK_THREADS")
@@ -590,6 +613,14 @@ pub(crate) fn spawn_audio_render(
 }
 
 /// Starts an owned video-frame render on an engine worker.
+///
+/// `track` restricts rendering to one multicam angle (`None` renders the viewer's
+/// normal output); `playback` tags the job as a playback-priority preview
+/// `(frame, distance, generation)` (`None` for a plain render). `time` is the frame
+/// position, `width`/`height` the target dimensions, and `pixel_format` the output
+/// layout. Returns the task id, or 0 when `width`/`height` is non-positive. The
+/// task publishes its frame into a fresh slot taken by
+/// [`quercus_task_take_video`].
 pub(crate) fn spawn_video_render(
 	project: Arc<Mutex<quercus_node::project::Project>>,
 	viewer: NodeId,
@@ -639,6 +670,20 @@ pub extern "C" fn quercus_task_proxy_max_concurrent() -> i32 {
 /// Starts an export of the viewer node (a sequence or footage) to
 /// `filename` with `params`. Returns the task id, 0 on invalid input.
 #[unsafe(no_mangle)]
+/// Starts an export of the viewer node (a sequence or footage) to `filename` with
+/// `params`, returning the task id (0 on invalid input).
+///
+/// `viewer` is the node identity to export and `params` is a complete
+/// [`QuercusTaskEncodingParams`] (the out-of-band filename is added by this
+/// wrapper). Wait with [`quercus_task_wait`] and read failures with
+/// [`quercus_task_error`]; the task clones the project `Arc`.
+///
+/// # Safety
+///
+/// `project`/`params` must be null or point to live `ProjectHandle` /
+/// `QuercusTaskEncodingParams` values; `filename` must be null or point to
+/// `filename_len` readable bytes. All pointers need to stay valid only for the
+/// duration of the call.
 pub unsafe extern "C" fn quercus_task_export(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -673,6 +718,18 @@ pub unsafe extern "C" fn quercus_task_export(
 /// `.fcpxml`, chosen by the filename extension). Returns the task id,
 /// 0 on invalid input.
 #[unsafe(no_mangle)]
+/// Starts saving the project to an interchange format (`.otio` / `.fcpxml`,
+/// chosen by the destination filename's extension) and returns the task id; 0 on
+/// invalid input.
+///
+/// `filename` is a UTF-8 `(ptr, len)` byte slice with the destination path. The
+/// task clones the project `Arc`, so the caller keeps ownership of its
+/// `ProjectHandle` and controls the save settings through the project itself.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; `filename` must be
+/// null or point to `filename_len` readable bytes valid for the call.
 pub unsafe extern "C" fn quercus_task_project_save_otio(
 	project: *const ProjectHandle,
 	filename: *const u8,
@@ -723,6 +780,18 @@ impl TaskBehavior for LoadBehavior {
 /// project is taken with [`quercus_task_take_project`] once the task
 /// succeeds.
 #[unsafe(no_mangle)]
+/// Starts loading an interchange document (`.otio` / `.fcpxml`) as a new project
+/// and returns the task id; 0 when `filename` is null or not valid UTF-8.
+///
+/// `filename` is a UTF-8 `(ptr, len)` byte slice holding the document path. The
+/// produced project is transferred with [`quercus_task_take_project`] once the task
+/// succeeds; an unknown id, a failed or unfinished task, or a second take yields
+/// null.
+///
+/// # Safety
+///
+/// `filename` must be null or point to `filename_len` readable bytes valid for the
+/// call; the task copies the path into its own `String`.
 pub unsafe extern "C" fn quercus_task_project_load_otio(
 	filename: *const u8,
 	filename_len: usize,
@@ -757,6 +826,19 @@ pub unsafe extern "C" fn quercus_task_project_load_otio(
 /// Starts asynchronous waveform extraction for one zero-based audio-stream
 /// ordinal. The result is transferred with [`quercus_task_take_waveform`].
 #[unsafe(no_mangle)]
+/// Starts asynchronous waveform peak extraction for one zero-based audio stream and
+/// returns the task id; 0 on invalid input.
+///
+/// `filename` is a UTF-8 `(ptr, len)` byte slice (not NUL-terminated), normally the
+/// media path; `stream_index` must be >= 0 and identifies the audio stream within
+/// that file, and `samples_per_point` (> 0) is how many source samples each
+/// returned peak point summarizes. The result is transferred with
+/// [`quercus_task_take_waveform`] after success.
+///
+/// # Safety
+///
+/// `filename` must be null or point to `filename_len` readable bytes valid for the
+/// call; the task copies the path into its own `String`.
 pub unsafe extern "C" fn quercus_task_waveform_extract(
 	filename: *const u8,
 	filename_len: usize,
@@ -772,6 +854,19 @@ pub unsafe extern "C" fn quercus_task_waveform_extract(
 /// Starts an asynchronous thumbnail render. The task owns a strong reference
 /// to the project, so a host may close its own handle while the worker runs.
 #[unsafe(no_mangle)]
+/// Starts an asynchronous thumbnail render and returns the task id; 0 on invalid
+/// input (null project or unknown viewer identity, or non-positive `width`/
+/// `height`).
+///
+/// `time` is the thumbnail's frame position; the result is a `width`x`height` tight
+/// F32 RGBA buffer, transferred with [`quercus_task_take_thumbnail`] after success.
+/// The task owns a strong reference to the project, so a host may close its own
+/// handle while the worker runs.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; the task clones the
+/// project `Arc`, so the caller may release its handle after this call.
 pub unsafe extern "C" fn quercus_task_thumbnail_render(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -794,6 +889,18 @@ pub unsafe extern "C" fn quercus_task_thumbnail_render(
 
 /// Starts an asynchronous sequence/footage audio mix into an owned buffer.
 #[unsafe(no_mangle)]
+/// Starts an asynchronous sequence/footage audio mix into an owned buffer and
+/// returns the task id; 0 on invalid input.
+///
+/// `range` is the half-open `[in, out)` time range to mix, `sample_rate` the output
+/// rate in Hz (must be positive), and `channel_layout` the packed channel mask
+/// (must be non-zero). An empty or inverted range is rejected. The mixed buffer is
+/// transferred with [`quercus_task_take_audio`] after success.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; the task clones the
+/// project `Arc`, so the caller may release its handle after this call.
 pub unsafe extern "C" fn quercus_task_audio_render(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -818,6 +925,18 @@ pub unsafe extern "C" fn quercus_task_audio_render(
 /// Starts an asynchronous sequence/footage video render into an owned buffer.
 /// `pixel_format`: 0 = F32 RGBA, 1 = packed BGRA8.
 #[unsafe(no_mangle)]
+/// Starts an asynchronous sequence/footage video render into an owned buffer and
+/// returns the task id; 0 on invalid input.
+///
+/// `time` is the frame position, `width`x`height` the buffer size (must be
+/// positive), and `pixel_format` is 0 for F32 RGBA or 1 for packed BGRA8 (any other
+/// value falls back to F32 RGBA). The rendered frame is transferred with
+/// [`quercus_task_take_video`] once the task succeeds.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; the task clones the
+/// project `Arc`, so the caller may release its handle after this call.
 pub unsafe extern "C" fn quercus_task_video_render(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -849,6 +968,19 @@ pub unsafe extern "C" fn quercus_task_video_render(
 
 /// Starts an asynchronous Playback-priority preview frame render.
 #[unsafe(no_mangle)]
+/// Starts an asynchronous, Playback-priority preview frame render and returns the
+/// task id; 0 on invalid input.
+///
+/// The job runs on the foreground pool and carries `(frame, distance, generation)`
+/// so the preview scheduler can identify and drop stale frames. `time` is the frame
+/// position, `width`x`height` the buffer size (must be positive), and
+/// `pixel_format` is 0 for F32 RGBA or 1 for packed BGRA8. Take the frame with
+/// [`quercus_task_take_video`] after success.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; the task clones the
+/// project `Arc`, so the caller may release its handle after this call.
 pub unsafe extern "C" fn quercus_task_video_render_playback(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -883,6 +1015,19 @@ pub unsafe extern "C" fn quercus_task_video_render_playback(
 
 /// Starts an asynchronous single-track multicam-angle render.
 #[unsafe(no_mangle)]
+/// Starts an asynchronous render of a single multicam track (one angle) and returns
+/// the task id; 0 on invalid input.
+///
+/// `viewer` and `track` are node identities; `time` is the frame position,
+/// `width`x`height` the requested buffer size (must be positive), and
+/// `pixel_format` is 0 for F32 RGBA or 1 for packed BGRA8. The rendered frame is
+/// transferred with [`quercus_task_take_video`] once the task succeeds.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; the task clones the
+/// project's `Arc`, so the caller may release its handle after this function
+/// returns.
 pub unsafe extern "C" fn quercus_task_video_render_track(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -917,6 +1062,17 @@ pub unsafe extern "C" fn quercus_task_video_render_track(
 
 /// The task title, snprintf-style; -1 on an unknown id.
 #[unsafe(no_mangle)]
+/// Copies the task's display title (as shown in the task panel) into `buf`.
+/// Returns the title length in bytes; -1 on an unknown id.
+///
+/// Uses the same `snprintf`-style contract as [`quercus_task_error`]:
+/// NUL-terminated, truncated to `buf_len - 1` bytes, with the full required length
+/// returned even when truncated; null `buf` or `buf_len == 0` queries the length.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes that stay
+/// valid for the duration of the call.
 pub unsafe extern "C" fn quercus_task_title(id: u64, buf: *mut u8, buf_len: usize) -> i32 {
 	let Some(entry) = task(id) else {
 		return -1;
@@ -926,6 +1082,12 @@ pub unsafe extern "C" fn quercus_task_title(id: u64, buf: *mut u8, buf_len: usiz
 
 /// The task's progress in 0.0..=1.0; -1 on an unknown id.
 #[unsafe(no_mangle)]
+/// Returns the task's most recent progress in `0.0..=1.0`, as reported by the
+/// worker's event listener. Unknown ids yield `-1.0`, which is outside the valid
+/// progress range and therefore unambiguous.
+///
+/// The value can lag the state query while a worker is finishing; poll it only
+/// while the task is running, or read it after [`quercus_task_wait`].
 pub extern "C" fn quercus_task_progress(id: u64) -> f64 {
 	let Some(entry) = task(id) else {
 		return -1.0;
@@ -945,6 +1107,18 @@ pub extern "C" fn quercus_task_state(id: u64) -> i32 {
 /// The task's error message ("" when none), snprintf-style; -1 on an
 /// unknown id.
 #[unsafe(no_mangle)]
+/// Copies the task's error message into `buf` (an empty string when the task has no
+/// error, e.g. still running or succeeded). Returns the message length in bytes;
+/// -1 on an unknown id.
+///
+/// The buffer is filled `snprintf`-style: at most `buf_len - 1` bytes plus a NUL
+/// terminator are written, and truncation still returns the full required length.
+/// A null `buf` or `buf_len == 0` queries the length without writing anything.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes that stay
+/// valid for the duration of the call.
 pub unsafe extern "C" fn quercus_task_error(id: u64, buf: *mut u8, buf_len: usize) -> i32 {
 	let Some(entry) = task(id) else {
 		return -1;

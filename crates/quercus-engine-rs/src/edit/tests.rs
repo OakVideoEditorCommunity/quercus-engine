@@ -22,6 +22,14 @@ struct Fixture {
 }
 
 /// Creates isolated media and session state shared by one test scenario.
+///
+/// Disables the project library (`Storage/Backend = off`) so the session is
+/// standalone, then builds a fresh [`EditorSession`] with two sequences
+/// (`Source` and `Host`), imports a uniquely named test clip into it, and
+/// places two contiguous 10-frame footage clips (`0..10` and `10..20`,
+/// media-in 0) on the `Host` sequence's first video track. The [`Fixture`]
+/// carries the session, both clip ids, the footage id, the source sequence
+/// and the media path for the calling test to use or reload.
 fn fixture() -> Fixture {
 	Config::global().set("Storage/Backend", "off").expect("disable library");
 	let session = EditorSession::new().expect("session");
@@ -66,6 +74,11 @@ fn fixture() -> Fixture {
 	}
 }
 
+/// Execute `command` on `session`, panicking on failure.
+///
+/// Test helper: unwraps the SDK `Result` with the message "semantic
+/// operation" and returns the [`EditResult`] (primary node, ids, value) so
+/// the caller can inspect the nodes the edit produced.
 fn ok(session: &EditorSession, command: EditCommand) -> EditResult {
 	session.execute(command).expect("semantic operation")
 }

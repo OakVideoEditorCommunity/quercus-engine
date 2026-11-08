@@ -120,8 +120,30 @@ pub(crate) fn transition_commands(
 	Ok((block, vec![insert, from, to]))
 }
 
-/// Create a transition at the seam between two contiguous clips and push
-/// it as one "Add Transition" undo row (the timeline's wedge drag path).
+/// Creates a symmetric transition at the seam between two contiguous clips and
+/// pushes it as one "Add Transition" undo row.
+///
+/// `prev` and `next` must be clip blocks listed back to back on the same track
+/// and touching exactly at the seam; the transition covers
+/// `[out(prev) - half, out(prev) + half)`, eating `half` into each clip. This is
+/// the timeline's wedge-drag creation path; the single-sided counterpart is
+/// [`add_transition_at_edge`] (head/tail fades against black) and the batch
+/// action is [`add_default_transition`].
+///
+/// # Arguments
+///
+/// * `p` - Project to modify.
+/// * `prev` - Outgoing clip block (the one whose `out` defines the seam).
+/// * `next` - Incoming clip block, starting exactly at `out(prev)`.
+/// * `half` - Half the transition length; must be positive.
+///
+/// # Returns
+///
+/// The id of the created transition block. Returns `Err` (pushing nothing) when
+/// `half` is non-positive, either block is not a clip, the clips are not
+/// adjacent/contiguous on one track, or the seam already carries a transition.
+/// Validation runs under the project lock and the block is created under a fresh
+/// lock, so callers must serialize edits to the same project.
 pub fn add_transition_at_seam(
 	p: &ProjectRef,
 	prev: NodeId,
@@ -133,8 +155,25 @@ pub fn add_transition_at_seam(
 	Ok(block)
 }
 
-/// The undo commands of [`add_transition_at_edge`], unpushed (the batch
-/// paths build their own combined rows).
+/// Builds (without pushing) the commands for a SINGLE-SIDED transition on one
+/// edge of `clip`.
+///
+/// With `start_edge` true this is a head fade-in covering
+/// `[in(clip), in(clip) + length)`; with false it is a tail fade-out covering
+/// `[out(clip) - length, out(clip))`. The clip is wired to the transition's
+/// `in_block_in` for the head and `out_block_in` for the tail, leaving the open
+/// side unwired so the renderer blends it against black. `length` must be
+/// positive, and the clip must be a clip block with a block core, sitting on a
+/// track, whose edge does not already carry a transition.
+///
+/// # Returns
+///
+/// The new transition block id plus the unpushed commands
+/// (`TrackInsertBlockAfterCommand` followed by the connect command). The block
+/// node is already added to the graph, so the caller must push these commands as
+/// part of its own undo row; [`add_transition_at_edge`] does exactly that under
+/// "Add Transition". Validation failures return `Err` before the block is
+/// created, leaving the graph untouched.
 pub(crate) fn edge_transition_commands(
 	p: &ProjectRef,
 	clip: NodeId,

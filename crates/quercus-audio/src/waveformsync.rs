@@ -94,7 +94,20 @@ pub fn extract_rms_envelope(planar: &[&[f32]], window_samples: usize) -> Vec<f64
 	envelope
 }
 
-/// Estimate a plain sample offset between two planar buffers.
+/// Estimates a plain sample offset (no rate change) between two planar buffers.
+///
+/// `reference` and `candidate` are planar f32 buffers (`[channel][sample]`); each
+/// is reduced to one RMS envelope with [`extract_rms_envelope`] using
+/// `window_samples` samples per window. The window count comes from the first
+/// channel's length, and every channel must be at least that long because each
+/// window pools all channels' samples. `max_offset_samples` caps the search after
+/// truncating to whole windows (`max_offset_samples / window_samples`), so a
+/// value below one window searches lag 0 only.
+///
+/// Returns the offset quantized to windows (`lag * window_samples`) with its
+/// confidence; a zero `window_samples` yields the invalid result (offset 0,
+/// confidence 0, `valid == false`). Both envelopes are treated as fully valid;
+/// use [`estimate_envelope_offset_valid`] for masked synchronization.
 ///
 /// `// CPP-PARITY: src/audio/src/audiowaveformsync.cpp:65`
 /// (`AudioWaveformSync::estimate_offset`).
@@ -124,7 +137,17 @@ pub fn estimate_offset(
 	)
 }
 
-/// Estimate an offset from RMS envelopes, treating both as fully valid.
+/// Estimates an offset from two RMS envelopes, treating every window as valid.
+///
+/// `reference` and `candidate` hold one f64 per envelope window (as returned by
+/// [`extract_rms_envelope`]); `window_samples` is the number of original samples
+/// per window and converts the winning lag back to samples; `max_offset_windows`
+/// bounds the lag search symmetrically to
+/// `-max_offset_windows..=max_offset_windows`.
+///
+/// Equivalent to [`estimate_envelope_offset_valid`] with empty validity masks,
+/// i.e. every overlapping window participates in the normalized
+/// cross-correlation.
 ///
 /// `// CPP-PARITY: src/audio/src/audiowaveformsync.cpp:84`
 /// (`AudioWaveformSync::estimate_envelope_offset`, unmasked overload).
@@ -144,10 +167,23 @@ pub fn estimate_envelope_offset(
 	)
 }
 
-/// Estimate an offset from RMS envelopes, excluding windows flagged invalid.
+/// Estimates an offset from two RMS envelopes, excluding windows flagged invalid.
 ///
-/// Empty masks are treated as "all windows valid". This is the variant the
-/// frozen C ABI exposes.
+/// `reference` and `candidate` hold one f64 per envelope window;
+/// `reference_valid`/`candidate_valid` are per-window masks where `true` means the
+/// window may contribute. An empty mask means "all windows valid"; a mask whose
+/// length differs from its envelope is ignored entirely instead of rejecting
+/// windows. `window_samples` converts the winning lag to samples and
+/// `max_offset_windows` bounds the lag search to
+/// `-max_offset_windows..=max_offset_windows`.
+///
+/// For each lag the overlapping windows are compared by normalized correlation
+/// after subtracting the mean over the valid windows; a lag is skipped when fewer
+/// than two valid windows overlap or when either correlation energy is below
+/// `1e-12`. The best-scoring lag then yields `offset_samples = lag *
+/// window_samples`, `confidence = max(0, score)` and `valid == true`; if no lag
+/// qualifies the result stays invalid (offset 0, confidence 0). This is the
+/// variant the frozen C ABI exposes.
 ///
 /// `// CPP-PARITY: src/audio/src/audiowaveformsync.cpp:95`
 /// (`AudioWaveformSync::estimate_envelope_offset`, masked overload): a mask

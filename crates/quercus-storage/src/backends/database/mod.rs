@@ -121,7 +121,11 @@ pub(crate) enum DbTarget {
 }
 
 impl DbTarget {
-	/// The `?project=` selector.
+	/// The `?project=<uuid>` selector of a parsed target.
+	///
+	/// `None` means no row was selected, so the load path falls back to the
+	/// most recently modified project; only `load_project` needs it, the
+	/// uuid-addressed paths pass an explicit uuid.
 	fn project(&self) -> Option<&str> {
 		match self {
 			DbTarget::Sqlite { project, .. } | DbTarget::Pg { project, .. } => project.as_deref(),
@@ -190,7 +194,19 @@ fn valid_pg_conn(conn: &str) -> bool {
 	sea_orm::sqlx::postgres::PgConnectOptions::from_str(&format!("postgres://{conn}")).is_ok()
 }
 
-/// Split `body` at the first `?` (the query part, if any).
+/// Split `body` at the first `?` into the opaque part and the query part.
+///
+/// The `?` itself is dropped from both halves: the base has no query and the
+/// query has no leading `?`. Only the first `?` splits, so later ones stay
+/// in the query (relevant for PostgreSQL connection strings).
+///
+/// # Arguments
+///
+/// * `body` - URI body, i.e. the text after `scheme://`.
+///
+/// # Returns
+///
+/// `(base, Some(query))` when a `?` is present, otherwise `(body, None)`.
 fn split_query(body: &str) -> (&str, Option<&str>) {
 	match body.split_once('?') {
 		Some((base, query)) => (base, Some(query)),
@@ -199,6 +215,20 @@ fn split_query(body: &str) -> (&str, Option<&str>) {
 }
 
 /// Look up `key` in a `k=v&…` query string.
+///
+/// The first matching pair wins; keys and values are taken verbatim (no
+/// percent-decoding, matching `parse_target`'s uuid/connection-string
+/// usage), and a pair without `=` is skipped.
+///
+/// # Arguments
+///
+/// * `query` - query text after the `?`; `None` yields `None`.
+/// * `key` - exact key to match (case-sensitive).
+///
+/// # Returns
+///
+/// The value of the first `key=value` pair, or `None` when the key is
+/// absent.
 fn query_param(query: Option<&str>, key: &str) -> Option<String> {
 	let query = query?;
 	for pair in query.split('&') {
@@ -574,10 +604,24 @@ impl DatabaseBackend {
 		})
 	}
 
-	/// Export a library project to a `.ove` file, using the ove-xml
-	/// backend's save semantics (same serializer output, file container;
-	/// assembled in memory, nothing is written to the library). The
-	/// target URI must be a `file://` URI.
+	/// Export a library project to a `.ove` file.
+	///
+	/// Uses the ove-xml backend's save semantics (same serializer output, file
+	/// container); the row is loaded and assembled in memory, so nothing is
+	/// written to the library. The counterpart of [`Self::import_from_file`].
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library URI (`quercusdb+…`); its target selects the database.
+	/// * `uuid` - uuid of the row to export.
+	/// * `file_uri` - `file://` destination; any other scheme is rejected with
+	///   `Error::Invalid`.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-`file` destination or an unparseable target,
+	/// `Error::NotFound` for an unknown uuid, and the ove-xml backend's
+	/// serialization/IO errors.
 	pub fn export_to_file(
 		&self,
 		uri: &StorageUri,
@@ -593,10 +637,32 @@ impl DatabaseBackend {
 	}
 
 	/// Import a `.ove`/`.otio`/`.fcpxml` file as a new library row
-	/// (plan §2 "导入"): the file backend parses it into a project, a
-	/// fresh uuid is assigned, and the first save writes the whole
-	/// project as one `kind='import'` command (seq 1). Returns the new
-	/// row's uuid.
+	/// (plan §2 "导入").
+	///
+	/// The source file's backend (resolved through the registry, chosen by the
+	/// file extension) parses `file_uri` into a project, a fresh uuid is
+	/// assigned, and the first save writes the whole project as one
+	/// `kind='import'` command (seq 1) in the target library. The source
+	/// project's own name and settings are kept.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - target library URI (`quercusdb+…`); the imported row is
+	///   created there.
+	/// * `file_uri` - `file://` URI of the source file; any other scheme is
+	///   rejected with `Error::Invalid`.
+	///
+	/// # Returns
+	///
+	/// The new row's uuid. The temporary source handle is released even when
+	/// the save fails.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-`file` source, `Error::Format` when the
+	/// source backend loads no project (its version-info code is in the
+	/// message), plus the source backend's parse error and the target save
+	/// error. The counterpart of [`Self::export_to_file`].
 	pub fn import_from_file(&self, uri: &StorageUri, file_uri: &StorageUri) -> Result<String> {
 		if file_uri.scheme != "file" {
 			return Err(Error::Invalid);
@@ -629,10 +695,24 @@ impl DatabaseBackend {
 		outcome
 	}
 
-	/// Force a snapshot of the project at its head seq (the D2 snapshot
-	/// thread and the exit flush call this; tests use it to exercise the
-	/// snapshot+replay path). No-op when a snapshot already exists at
-	/// the head seq.
+	/// Force a snapshot of the project at its head seq.
+	///
+	/// The D2 snapshot thread and the exit flush call this; tests use it to
+	/// exercise the snapshot+replay path. The write is a no-op when a snapshot
+	/// already exists at the head seq (`write_snapshot` checks first), and the
+	/// snapshot set is pruned to [`SNAPSHOT_KEEP`] afterwards. Unlike the
+	/// automatic policy in `maybe_snapshot` this ignores
+	/// `Storage/SnapshotIntervalSec`.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library URI; its target selects the database.
+	/// * `uuid` - uuid of the row to snapshot.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` when the row does not exist, `Error::Invalid` for an
+	/// unparseable target, and database errors from the write.
 	pub fn snapshot(&self, uri: &StorageUri, uuid: &str) -> Result<()> {
 		let target = parse_target(uri)?;
 		let key = db_key_of(&target);
@@ -680,8 +760,22 @@ impl DatabaseBackend {
 		Ok(crate::nodeutil::make_project_owned(project))
 	}
 
-	/// The manager stats of a library project (plan §4): the head state
-	/// is replayed and the stats derived from the node graph.
+	/// The manager stats of a library project (plan §4): the head state is
+	/// replayed and the stats derived from the node graph.
+	///
+	/// Stats are derived on the fly and never stored (`derive_stats`): duration
+	/// is the longest sequence's end point, plus track, clip and footage counts.
+	///
+	/// # Arguments
+	///
+	/// * `uri` - library URI (`quercusdb+…`); its target selects the database.
+	/// * `uuid` - uuid of the row to inspect.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` for an unknown uuid, `Error::Invalid` for an
+	/// unparseable target or a poisoned project lock, and the
+	/// database/serialization errors of the head replay.
 	pub fn project_stats(&self, uri: &StorageUri, uuid: &str) -> Result<ProjectStats> {
 		let project = self.load_project_by_uuid(uri, uuid)?;
 		let guard = project.lock().map_err(|_| Error::State)?;
@@ -971,8 +1065,23 @@ fn serialize_project_state(
 	Ok((nodes, settings, settings_map))
 }
 
-/// Serialize one node as a standalone `<node>…</node>` element (the
-/// same writer `serializer::save` uses inside `<nodes>`).
+/// Serialize one node as a standalone `<node>…</node>` element (the same writer
+/// `serializer::save` uses inside `<nodes>`).
+///
+/// The fragment carries the node's input connections (filtered from
+/// `output_connections_all` to the ones targeting `id`), which makes it
+/// self-contained: a journal row can store it and load it back on its own.
+///
+/// # Arguments
+///
+/// * `p` - project whose graph is serialized.
+/// * `id` - graph node id to serialize.
+///
+/// # Errors
+///
+/// `Error::NotFound` when `id` is not in the live graph, `Error::Failed` when
+/// the XML writer cannot be created, and `Error::Format` when the node
+/// serializer rejects the node.
 fn serialize_node_xml(p: &Project, id: NodeId) -> Result<String> {
 	use quercus_node::serializer::{XmlWrite, XmlWriterBridge};
 	let entry = p.graph.get(id).ok_or(Error::NotFound)?;
@@ -1118,6 +1227,18 @@ async fn replay_state<C: ConnectionTrait>(
 }
 
 /// Assemble the full project XML for a state.
+///
+/// Replays the newest snapshot at or before `target_seq` and applies the journal
+/// rows up to it (`replay_state`), then renders the `<project>` document via
+/// `assemble_xml`. Used by the snapshot writer and by `load_at`; `target_seq` 0
+/// yields a project with no nodes and empty settings.
+///
+/// # Arguments
+///
+/// * `conn` - connection/interaction to read the snapshot and journal through.
+/// * `project_id` - database row id of the project.
+/// * `uuid` - project uuid, embedded in the assembled document.
+/// * `target_seq` - command seq of the state to render.
 async fn assemble_at<C: ConnectionTrait>(
 	conn: &C,
 	project_id: i64,
@@ -1221,7 +1342,35 @@ async fn save_tx(
 	}
 }
 
-/// The one-attempt body of [`save_tx`].
+/// The one-attempt body of [`save_tx`]: journal one project state in a single
+/// transaction.
+///
+/// Finds the project row by uuid (inserting it with `command_seq` 0 when
+/// absent), then either writes one `KIND_IMPORT` command carrying every node
+/// plus the settings pseudo-node (first entry, seq 1) or diffs against the
+/// replayed head and writes only the changed nodes as `KIND_REDO` at
+/// `head_seq + 1`. When the diff is empty no journal rows are written: only
+/// `modified_at` is touched and the old head seq is returned. A written state
+/// then replaces the settings table, runs the snapshot policy and prunes
+/// retention, all before the transaction commits.
+///
+/// # Arguments
+///
+/// * `conn` - database connection; the transaction is opened here.
+/// * `uuid` - project uuid, the row lookup key.
+/// * `name` - display name stored on the project row.
+/// * `nodes` - per-node XML fragments keyed by real graph identity.
+/// * `settings_xml` - the `<settings>…</settings>` element used for the diff.
+/// * `settings_map` - the raw settings map mirrored into the settings table.
+///
+/// # Returns
+///
+/// The head sequence number after the save (unchanged for a no-op save).
+///
+/// # Errors
+///
+/// Database errors are mapped through `db_err`; a concurrent writer's
+/// `SQLITE_BUSY` surfaces as-is and is retried by [`save_tx`].
 async fn save_tx_once(
 	conn: &DatabaseConnection,
 	uuid: &str,
@@ -1321,6 +1470,23 @@ async fn save_tx_once(
 }
 
 /// Insert the journal rows of one command.
+///
+/// Writes one row per diff entry, all sharing `seq`, `kind` and `at`, so replay
+/// can tell redo (`new_xml` present), undo (`old_xml` present) and deletion
+/// (both `None`) apart. The insert order follows `rows`; a later replay sorts by
+/// `seq`/`node_identity` anyway.
+///
+/// # Arguments
+///
+/// * `conn` - connection/interaction to insert through (a transaction in the
+///   save path).
+/// * `project_id` - database row id of the project.
+/// * `seq` - command sequence number the rows belong to (1 = import).
+/// * `kind` - one of the `KIND_*` constants (`import`/`redo`/`undo`/`jump`/
+///   `group`).
+/// * `rows` - `(journal identity, old_xml, new_xml)` entries; journal identity
+///   is the graph identity + 1, reserving 0 for the settings pseudo-node.
+/// * `now` - UTC timestamp stored in every row's `at` column.
 async fn write_journal_rows<C: ConnectionTrait>(
 	conn: &C,
 	project_id: i64,
@@ -1348,6 +1514,16 @@ async fn write_journal_rows<C: ConnectionTrait>(
 }
 
 /// Mirror the current settings into the settings table (replace-all).
+///
+/// Deletes every settings row of `project_id` and re-inserts `settings`, so
+/// removed keys disappear and the table matches the map exactly. Runs inside the
+/// caller's transaction; `save_tx_once` calls it after journaling.
+///
+/// # Arguments
+///
+/// * `conn` - connection/interaction to write through.
+/// * `project_id` - database row id of the project.
+/// * `settings` - the full settings map; keys and values are stored verbatim.
 async fn replace_settings<C: ConnectionTrait>(
 	conn: &C,
 	project_id: i64,
@@ -1377,8 +1553,21 @@ async fn replace_settings<C: ConnectionTrait>(
 // ---------------------------------------------------------------------------
 
 /// Snapshot policy: write a full payload when the project is dirty and
-/// `Storage/SnapshotIntervalSec` (default 600) seconds have passed since
-/// the last snapshot (an interval ≤ 0 snapshots on every dirty save).
+/// `Storage/SnapshotIntervalSec` (default 600) seconds have passed since the
+/// last snapshot (an interval ≤ 0 snapshots on every dirty save).
+///
+/// "Dirty" means the head seq has advanced past the newest snapshot's
+/// `command_seq`: `save_tx_once` calls this only after journal rows were
+/// written, so a no-op save never snapshots. A project without any snapshot is
+/// always due. After writing, the snapshot set is pruned to [`SNAPSHOT_KEEP`].
+///
+/// # Arguments
+///
+/// * `conn` - transaction to read/write through; the caller commits.
+/// * `project_id` - database row id of the project.
+/// * `uuid` - project uuid, embedded in the assembled snapshot payload.
+/// * `head_seq` - command seq to snapshot (the state just saved).
+/// * `now` - UTC timestamp used for `written_at` and the interval check.
 async fn maybe_snapshot<C: ConnectionTrait>(
 	conn: &C,
 	project_id: i64,
@@ -1443,7 +1632,20 @@ async fn write_snapshot<C: ConnectionTrait>(
 	Ok(())
 }
 
-/// Keep the newest [`SNAPSHOT_KEEP`] snapshots, drop the rest.
+/// Keep the newest [`SNAPSHOT_KEEP`] snapshots of a project, drop the rest.
+///
+/// Ordering is by `command_seq` descending; every snapshot older than the
+/// `SNAPSHOT_KEEP`-th is deleted, which keeps the newest replay bases. A
+/// project with no snapshots is left untouched.
+///
+/// # Arguments
+///
+/// * `conn` - connection/transaction to delete through.
+/// * `project_id` - database row id of the project (not its uuid).
+///
+/// Called by `maybe_snapshot` right after a snapshot is written and by
+/// `snapshot`; a failure leaves the extra snapshots in place (they only cost
+/// space, replay still works).
 async fn prune_snapshots<C: ConnectionTrait>(conn: &C, project_id: i64) -> Result<()> {
 	let keep: Vec<i64> = snapshot::Entity::find()
 		.filter(snapshot::Column::ProjectId.eq(project_id))
@@ -1468,10 +1670,20 @@ async fn prune_snapshots<C: ConnectionTrait>(conn: &C, project_id: i64) -> Resul
 }
 
 /// Journal retention window (`Storage/JournalRetentionDays`, default 0 =
-/// keep everything). Rows older than the window are dropped only when
-/// the newest snapshot already covers them, so the head state stays
-/// reconstructible from the snapshot plus the remaining rows (plan §1:
-/// history beyond the window is forfeit).
+/// keep everything).
+///
+/// Rows older than the window are dropped only when the newest snapshot already
+/// covers them, so the head state stays reconstructible from the snapshot plus
+/// the remaining rows (plan §1: history beyond the window is forfeit).
+///
+/// # Arguments
+///
+/// * `conn` - connection/transaction to delete through; the caller commits.
+/// * `project_id` - database row id of the project (not its uuid).
+/// * `now` - UTC timestamp used to compute the cutoff, passed in so one save
+///   transaction uses a single consistent clock value.
+///
+/// Returns `Ok(())` without touching anything when the window is `<= 0`.
 async fn retention_prune<C: ConnectionTrait>(
 	conn: &C,
 	project_id: i64,

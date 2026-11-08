@@ -136,23 +136,40 @@ pub type TextMeasureBackend = fn(&TextLayoutRequest) -> TextLayoutSize;
 pub type TextRenderBackend =
 	for<'a> fn(&TextLayoutRequest, &TextRenderTransform, TextRenderTarget<'a>);
 
-/// Install the backend hooks (C++ `set_text_backends()`). When a hook
-/// is `None` the caller falls back to a zero size / leaves the (already
-/// cleared) buffer untouched — a documented behavior gap until the
-/// facade installs a text engine. Setting a hook to `None` uninstalls
-/// it (the C++ global is a plain function pointer, assignable any
-/// number of times; a `Mutex` keeps the tests able to reset it).
+/// Install the process-global text measure/render hooks.
+///
+/// `measure` lays out a request and returns the document size; `render` draws
+/// it into the target buffer (see [`TextMeasureBackend`] and
+/// [`TextRenderBackend`]). Passing `None` for either uninstalls that hook: with
+/// no measure hook callers fall back to a zero size, and with no render hook
+/// the already-cleared buffer is left untouched. Both hooks can be replaced any
+/// number of times, mirroring the assignable C++ globals.
+///
+/// # Arguments
+///
+/// * `measure` - layout-measurement hook, or `None` to uninstall it.
+/// * `render` - drawing hook, or `None` to uninstall it.
 pub fn set_text_backends(measure: Option<TextMeasureBackend>, render: Option<TextRenderBackend>) {
 	*MEASURE.lock().unwrap() = measure;
 	*RENDER.lock().unwrap() = render;
 }
 
-/// Currently installed measure hook (C++ `text_measure_backend()`).
+/// The currently installed measure hook.
+///
+/// Returns a copy of the process-global [`TextMeasureBackend`] function
+/// pointer, or `None` when none has been installed (or [`set_text_backends`]
+/// uninstalled it). Without a hook, callers fall back to a zero size. Pairs
+/// with [`text_render_backend`].
 pub fn text_measure_backend() -> Option<TextMeasureBackend> {
 	*MEASURE.lock().unwrap()
 }
 
-/// Currently installed render hook (C++ `text_render_backend()`).
+/// The currently installed render hook.
+///
+/// Returns a copy of the process-global [`TextRenderBackend`] function pointer,
+/// or `None` when none has been installed (or [`set_text_backends`] uninstalled
+/// it). A `None` render hook means drawing is skipped and the already-cleared
+/// target buffer stays empty. Pairs with [`text_measure_backend`].
 pub fn text_render_backend() -> Option<TextRenderBackend> {
 	*RENDER.lock().unwrap()
 }

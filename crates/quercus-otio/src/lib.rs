@@ -63,6 +63,16 @@ pub fn from_json_string(text: &str) -> Result<Serializable> {
 }
 
 /// Read and parse an OpenTimelineIO JSON document from a file.
+///
+/// `path` is any path-like value; the file is read as UTF-8 text and delegated
+/// to [`from_json_string`], so the same permissive root handling applies (an
+/// unrecognized root is kept whole as `model::Serializable::Raw`). Used by the
+/// project-load task; the counterpart writer is in [`model`].
+///
+/// # Errors
+///
+/// `OtioError` when the file cannot be read (missing, unreadable, not UTF-8),
+/// or when the JSON is malformed or does not match the expected schema.
 pub fn from_json_file(path: impl AsRef<Path>) -> Result<Serializable> {
 	from_json_string(&std::fs::read_to_string(path)?)
 }

@@ -567,6 +567,19 @@ impl<'a> Cursor<'a> {
 		self.s[self.i..].starts_with(p)
 	}
 
+	/// Reads an element or attribute name at the cursor.
+	///
+	/// A name is a non-empty run of Unicode alphanumeric characters plus `_`
+	/// and `-`; it is returned as an owned `String` and the cursor advances
+	/// past it. `:` and `.` terminate the run, so namespaced names such as
+	/// `ns:tag` are not supported: the caller stops at the `:` and then fails
+	/// while looking for the next tag or attribute token.
+	///
+	/// # Errors
+	///
+	/// Returns `"expected element/attribute name"` when the first character
+	/// is not part of a name (including EOF); the cursor is not advanced in
+	/// that case.
 	fn read_name(&mut self) -> Result<String, String> {
 		let start = self.i;
 		while let Some(ch) = self.peek() {
@@ -582,6 +595,18 @@ impl<'a> Cursor<'a> {
 		Ok(self.s[start..self.i].to_string())
 	}
 
+	/// Reads a double-quoted attribute value at the cursor.
+	///
+	/// Skips whitespace, requires an opening `"` (single-quoted values are not
+	/// supported), then copies bytes up to the next `"` and consumes it. The
+	/// value is returned raw: entities such as `&amp;` are not decoded here,
+	/// so callers comparing attribute text compare against the encoded form.
+	/// On error the cursor is left where the check failed.
+	///
+	/// # Errors
+	///
+	/// Returns a message when the next non-space character is not `"`, or
+	/// when EOF is reached before the closing quote.
 	fn read_attr_value(&mut self) -> Result<String, String> {
 		self.skip_ws();
 		if !self.starts_with("\"") {
@@ -600,6 +625,18 @@ impl<'a> Cursor<'a> {
 		Ok(v)
 	}
 
+	/// Consumes the closing tag for `name` and verifies it matches.
+	///
+	/// Skips whitespace, requires `</`, reads the end-tag name, skips
+	/// whitespace before `>`, and only then compares against `name`. On
+	/// success the cursor is past `>`; on error it may be partially advanced,
+	/// so a failed parse must be abandoned rather than resumed.
+	///
+	/// # Errors
+	///
+	/// Returns a message when the text at the cursor is not `</`, when `>`
+	/// does not close the end tag, or when the end-tag name differs from
+	/// `name`.
 	fn expect_end(&mut self, name: &str) -> Result<(), String> {
 		self.skip_ws();
 		if !self.starts_with("</") {
@@ -618,6 +655,23 @@ impl<'a> Cursor<'a> {
 		Ok(())
 	}
 
+	/// Parses one element starting at the cursor, recursively.
+	///
+	/// Accepts attributes with or without a space around `=`, self-closing
+	/// tags (`text` stays `None`, `children` empty), and either nested
+	/// children or a single text node (content that begins with text is
+	/// captured up to the next `<`, so mixed content is not supported). The
+	/// leading whitespace of text content is skipped; the text itself is
+	/// stored raw (see [`text`], which unescapes it), as are attribute values.
+	/// On success the cursor sits just past the element's end tag.
+	///
+	/// # Errors
+	///
+	/// Returns a message when the cursor is not at `<`, when a tag/attribute
+	/// name is empty, when an attribute value is not double-quoted or is
+	/// unterminated, when EOF arrives before the end tag, when text appears
+	/// where a child element or `</` was expected, or when the end tag does
+	/// not match the start tag.
 	fn parse_element(&mut self) -> Result<El, String> {
 		self.skip_ws();
 		if !self.starts_with("<") {
@@ -693,6 +747,18 @@ impl<'a> Cursor<'a> {
 }
 
 /// Parse the single root element of a preset document.
+///
+/// Starts a fresh [`Cursor`] at byte 0 and returns the first element; leading
+/// whitespace is skipped by [`Cursor::parse_element`]. Only the root element
+/// is consumed — trailing bytes after it are ignored rather than rejected, so
+/// a document with a second top-level element parses "successfully" with the
+/// rest dropped.
+///
+/// # Errors
+///
+/// Returns a human-readable message (not a code) when the input does not
+/// start with an element, a name is missing, an attribute value is
+/// unterminated, or an end tag does not match its opening tag.
 fn parse_preset(data: &str) -> Result<El, String> {
 	let mut c = Cursor { s: data, i: 0 };
 	c.parse_element()
@@ -766,6 +832,12 @@ fn cstr(arr: &[u8]) -> &str {
 }
 
 /// Write a string into a NUL-padded byte array (truncating if too long).
+///
+/// `dst` is zero-filled first, then at most `dst.len()` bytes of `s` are
+/// copied, so the result is always NUL-padded and never NUL-terminated
+/// within `dst`. Truncation is byte-wise: a multi-byte UTF-8 character
+/// straddling the cut is split, and [`cstr`] will then read back an empty
+/// string because the slice is not valid UTF-8. `s` is not escaped.
 fn set_cstr(dst: &mut [u8], s: &str) {
 	dst.fill(0);
 	let n = s.len().min(dst.len());
@@ -773,6 +845,11 @@ fn set_cstr(dst: &mut [u8], s: &str) {
 }
 
 /// Minimal XML escaping for text content.
+///
+/// Escapes `&` first, then `<` and `>`, so already-written entity markers are
+/// not double-escaped; quotes are not escaped, which is why this is only used
+/// for element text (attribute values are written raw). The counterpart is
+/// [`unescape_xml`].
 fn escape_xml(s: &str) -> String {
 	s.replace('&', "&amp;")
 		.replace('<', "&lt;")
@@ -780,6 +857,13 @@ fn escape_xml(s: &str) -> String {
 }
 
 /// Minimal XML unescaping for text content.
+///
+/// Replaces `&lt;`, `&gt;` and `&amp;` — in that order, so `&amp;lt;`
+/// decodes to the literal `&lt;` rather than to `<`. Quotes, numeric
+/// character references and unknown entities are left as-is; attribute values
+/// are never passed through this function. The counterpart is
+/// [`escape_xml`]; the round-trip is lossless only for text that does not
+/// itself contain entity-like sequences.
 fn unescape_xml(s: &str) -> String {
 	s.replace("&lt;", "<")
 		.replace("&gt;", ">")

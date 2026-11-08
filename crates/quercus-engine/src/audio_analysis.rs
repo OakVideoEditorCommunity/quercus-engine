@@ -78,6 +78,13 @@ pub struct WaveformHandle {
 crate::export_handle!(WaveformHandle, quercus_waveform_add_ref, quercus_waveform_release);
 
 impl WaveformHandle {
+	/// Move `data` into a new reference-counted C handle and return its raw
+	/// pointer.
+	///
+	/// The pointer owns one strong reference (an [`std::sync::Arc`] created by
+	/// [`crate::handle::into_ffi`]); the C caller must pass it to
+	/// `quercus_waveform_release` exactly once. No copy is made — the peak buffer
+	/// moves into the handle.
 	pub(crate) fn from_data(data: WaveformData) -> *const Self {
 		crate::handle::into_ffi(Self { data })
 	}
@@ -111,11 +118,22 @@ pub(crate) fn extract_waveform(
 	})
 }
 
-/// Synchronously extracts a waveform and returns an owned handle.
+/// Decode a whole audio stream into an owned waveform handle, synchronously.
 ///
-/// Null indicates invalid input or decode failure. UI consumers should normally
-/// use `quercus_task_waveform_extract`; this entry point exists for hosts that
-/// already own a media-analysis worker thread.
+/// `filename`/`filename_len` are a UTF-8 path pair; `stream_index` selects
+/// the audio stream (0-based; negative values fail) and `samples_per_point`
+/// is the number of source frames summarized by each peak (must be > 0).
+/// Returns a handle owning the channel-interleaved peaks (query it with
+/// `quercus_waveform_info` / `quercus_waveform_point_at`) or null when the
+/// path is null, empty or not UTF-8, the arguments are out of range, or
+/// decoding produces no peaks. The caller owns one reference and must call
+/// `quercus_waveform_release`; UI code should use
+/// `quercus_task_waveform_extract` instead of blocking here.
+///
+/// # Safety
+///
+/// `filename` must point to `filename_len` readable bytes that stay valid for
+/// the call and contain valid UTF-8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_waveform_extract(
 	filename: *const u8,
@@ -168,7 +186,19 @@ impl NativeMirror for QuercusWaveformInfo {
 	}
 }
 
-/// Reads waveform metadata; false for null handles/output pointers.
+/// Write a waveform handle's `(channels, sample_rate, samples_per_point,
+/// point_count)` metadata into `out`.
+///
+/// `point_count` is the number of windows per channel. Returns `false` and
+/// leaves `out` untouched when either pointer is null; otherwise fills the
+/// struct and returns `true`. The handle's data is immutable, so the query is
+/// safe to repeat from multiple threads.
+///
+/// # Safety
+///
+/// `waveform` must be a live handle from
+/// [`quercus_audio_waveform_extract`] (or an extra reference) and `out` must
+/// point to writable storage for one [`QuercusWaveformInfo`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_waveform_info(
 	waveform: *const WaveformHandle,
@@ -182,7 +212,20 @@ pub unsafe extern "C" fn quercus_waveform_info(
 	true
 }
 
-/// Reads one channel-interleaved peak without exposing native point storage.
+/// Read one channel's min/max peak without exposing the native point storage.
+///
+/// `point` is the 0-based window index and `channel` the 0-based interleaved
+/// channel (validated against the waveform's channel count); `out` receives
+/// the [`QuercusWaveformPoint`]. Returns `false`, leaving `out` untouched,
+/// when either pointer is null, `channel` is out of range, or
+/// `point * channels + channel` is past the peak buffer (including on
+/// multiply overflow).
+///
+/// # Safety
+///
+/// `waveform` must be a live handle from
+/// [`quercus_audio_waveform_extract`] (or an extra reference) and `out` must
+/// point to writable storage for one [`QuercusWaveformPoint`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_waveform_point_at(
 	waveform: *const WaveformHandle,
@@ -275,6 +318,16 @@ impl NativeMirror for QuercusAudioStretchEstimate {
 	}
 }
 
+/// Borrow a C `(ptr, len)` `f64` buffer as a slice.
+///
+/// Returns `Some(&[])` for `len == 0` (even with a null pointer); for a
+/// non-zero `len` returns `None` when `ptr` is null, letting the C entry
+/// points fail closed instead of dereferencing bad input.
+///
+/// # Safety
+///
+/// For non-zero `len`, `ptr` must point to `len` initialized `f64` values
+/// that stay valid for `'a` and are not mutated concurrently.
 unsafe fn f64_slice<'a>(ptr: *const f64, len: usize) -> Option<&'a [f64]> {
 	if len == 0 {
 		Some(&[])
@@ -283,6 +336,17 @@ unsafe fn f64_slice<'a>(ptr: *const f64, len: usize) -> Option<&'a [f64]> {
 	}
 }
 
+/// Borrow a C `(ptr, len)` `bool` buffer as a slice.
+///
+/// Returns `Some(&[])` for `len == 0` (even with a null pointer); for a
+/// non-zero `len` returns `None` when `ptr` is null, letting the C entry
+/// points fail closed instead of dereferencing bad input.
+///
+/// # Safety
+///
+/// For non-zero `len`, `ptr` must point to `len` readable bytes that are each
+/// `0` or `1` (any other byte is an invalid `bool` and undefined behaviour),
+/// valid for `'a`, and not mutated concurrently.
 unsafe fn bool_slice<'a>(ptr: *const bool, len: usize) -> Option<&'a [bool]> {
 	if len == 0 {
 		Some(&[])
@@ -291,10 +355,22 @@ unsafe fn bool_slice<'a>(ptr: *const bool, len: usize) -> Option<&'a [bool]> {
 	}
 }
 
-/// Estimates candidate offset from precomputed RMS/peak envelopes.
+/// Estimate the candidate's offset from precomputed RMS/peak envelopes.
 ///
-/// Empty validity masks mean all windows valid, matching quercus-audio. A mask with
-/// a nonmatching length is also ignored by the underlying algorithm.
+/// `reference`/`candidate` hold one value per envelope window and
+/// `window_samples` is the number of source samples each window summarizes
+/// (0 fails). `max_offset_windows` bounds the lag search to
+/// `[-max_offset_windows, +max_offset_windows]` windows, and the returned
+/// `offset_samples` is the best lag multiplied back by `window_samples`.
+/// `reference_valid`/`candidate_valid` are optional per-window masks: an
+/// empty slice means "all windows valid", and a mask whose length does not
+/// match its envelope is ignored entirely. `valid = false` (offset 0) when
+/// nothing correlates; `confidence` is `max(0, best_score)`.
+///
+/// # Safety
+///
+/// Each `(ptr, len)` pair must point to `len` readable elements of its stated
+/// type (or have `len == 0`), and `bool` bytes must be `0` or `1`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_estimate_envelope_offset(
 	reference: *const f64,
@@ -330,7 +406,23 @@ pub unsafe extern "C" fn quercus_audio_estimate_envelope_offset(
 	QuercusAudioOffsetEstimate::from_native(&result)
 }
 
-/// Searches playback rate and offset together when plain correlation is weak.
+/// Search playback rate and offset together, for cases where correlation at
+/// rate 1 is weak.
+///
+/// Like [`quercus_audio_estimate_envelope_offset`], but the candidate is
+/// resampled for each rate in `[min_rate, max_rate]` stepping by `rate_step`
+/// (all three must be finite, `min_rate > 0`, `max_rate >= min_rate`,
+/// `rate_step > 0`; otherwise the invalid default is returned).
+/// `window_samples` is the source samples per envelope window and
+/// `max_offset_windows` bounds the lag search to `±max_offset_windows`
+/// windows. Returns the best `(rate, offset_samples, confidence)`;
+/// `valid = false` (and `rate = 1.0`) when no rate/lag produced a usable
+/// correlation.
+///
+/// # Safety
+///
+/// The four `(ptr, len)` pairs must be readable for their lengths (or have
+/// `len == 0`), and `bool` bytes must be `0` or `1`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_estimate_stretch_offset(
 	reference: *const f64,
@@ -436,7 +528,22 @@ impl NativeMirror for QuercusAudioSyncPlacement {
 	}
 }
 
-/// Aligns candidate source timecode to the reference at a timeline anchor.
+/// Place the candidate on the timeline by aligning its source timecode with
+/// the reference.
+///
+/// `reference`/`candidate` carry source start time, media in point and a
+/// "source start time is set" flag. The result's `timeline_in` is
+/// `reference_timeline_in + (candidate.source_start_time +
+/// candidate.media_in) - (reference.source_start_time + reference.media_in)`
+/// in seconds. Returns the invalid default (`valid = false`, null rational)
+/// when either pointer is null, either clip lacks a source start time, a
+/// rational is NaN, or the computed time is NaN.
+///
+/// # Safety
+///
+/// `reference` and `candidate` must point to readable
+/// [`QuercusAudioSourceClip`] values for the duration of the call; null is
+/// allowed and maps to the invalid default.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_place_by_source_time(
 	reference: *const QuercusAudioSourceClip,
@@ -455,7 +562,15 @@ pub unsafe extern "C" fn quercus_audio_place_by_source_time(
 	))
 }
 
-/// Converts a measured sample offset into a timeline placement.
+/// Convert a measured waveform offset into a placement relative to the
+/// reference clip.
+///
+/// `candidate_offset_samples` is the delay measured in source samples
+/// (negative = candidate earlier than the reference) and `sample_rate` is the
+/// source rate in Hz; the returned `timeline_in` is `reference_timeline_in +
+/// offset_samples / sample_rate` seconds. Returns the invalid default
+/// (`valid = false`, null rational) when `sample_rate <= 0` or the computed
+/// time is NaN.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_place_by_waveform_offset(
 	reference_timeline_in: crate::coretypes::QuercusRational,

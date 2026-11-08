@@ -83,6 +83,12 @@ fn stored_enabled_default() -> bool {
 }
 
 impl StoredBusEffect {
+	/// Build the persisted form of a bus effect.
+	///
+	/// Copies `effect` into the plain-JSON [`StoredBusEffect`] shape: the type id
+	/// and enabled flag are kept, and only finite scalar parameter values survive
+	/// (non-finite or non-scalar values are dropped). Keeping a separate shape
+	/// decouples the saved setting from the node-value wire enum.
 	fn from_effect(effect: &MontageAudioEffect) -> Self {
 		StoredBusEffect {
 			type_id: effect.type_id.clone(),
@@ -221,6 +227,13 @@ struct Biquad {
 }
 
 impl Biquad {
+	/// Construct a biquad from its coefficients.
+	///
+	/// `b0`, `b1`, `b2` are the feed-forward coefficients and `a1`, `a2` the
+	/// feedback ones, with `a0` assumed already normalized to 1 (the K-weighting
+	/// builder divides by `a0` before calling). Both state variables start at zero.
+	/// The section runs in transposed direct form II (see `process`), so the
+	/// coefficients must come from a stable filter design.
 	fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
 		Biquad {
 			b0,

@@ -367,8 +367,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(DropShadowFilter))
 }
 
-/// Register this node type (C++ `k_drop_shadow_filter` in
-/// `factory.cpp::create_from_factory_index`).
+/// Register this node type with the built-in factory.
+///
+/// Appends one entry to `meta`: type id
+/// `org.olivevideoeditor.Olive.dropshadow`, display name "Drop Shadow" and
+/// `Category::Filter`, with `create` as the constructor. `nodes::register_all`
+/// collects every built-in this way and installs them in order, so the
+/// position in `meta` becomes the menu order.
+///
+/// # Arguments
+///
+/// * `meta` - the list being built; the type is appended, nothing is returned.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.dropshadow",

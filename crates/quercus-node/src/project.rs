@@ -160,12 +160,20 @@ impl Project {
 	}
 
 	/// Set the pipeline working colorspace property.
+	///
+	/// Stores `space` under the project setting that
+	/// [`Project::working_color_space`] reads, persisting the string form via
+	/// `as_setting`; empty or absent settings still fall back to ACEScg on read.
 	pub fn set_working_color_space(&mut self, space: quercus_core::colormath::WorkingColorSpace) {
 		self.settings
 			.insert(SETTING_WORKING_COLOR_SPACE.to_string(), space.as_setting().to_string());
 	}
 
 	/// Set the output/delivery colorspace properties.
+	///
+	/// Writes the gamut and transfer components of `spec` into the two project
+	/// settings read by [`Project::output_color_spec`], replacing any previous
+	/// values; absent settings fall back to sRGB on read.
 	pub fn set_output_color_spec(&mut self, spec: quercus_core::colormath::OutputColorSpec) {
 		self.settings
 			.insert(SETTING_OUTPUT_GAMUT.to_string(), spec.gamut.as_setting().to_string());
@@ -302,12 +310,19 @@ impl Project {
 		}
 	}
 
-	/// Full filename or "" (C++ `Project::filename()`).
+	/// The project's full filename.
+	///
+	/// Returns the stored path, or `""` when the project has never been saved. Use
+	/// [`Project::pretty_filename`] for a title-safe display name.
 	pub fn filename(&self) -> &str {
 		&self.filename
 	}
 
-	/// Window-title name (C++ `Project::pretty_filename()`).
+	/// The name to show in the window title.
+	///
+	/// Returns the full stored filename, or `"(untitled)"` when the project has no
+	/// filename yet. Counterpart of [`Project::name`], which strips the directory
+	/// and extension.
 	pub fn pretty_filename(&self) -> &str {
 		if self.filename.is_empty() {
 			"(untitled)"
@@ -316,7 +331,12 @@ impl Project {
 		}
 	}
 
-	/// Set the filename (C++ `Project::set_filename()`).
+	/// Set the project's filename.
+	///
+	/// `filename` is stored as given (no canonicalization or existence check) and
+	/// becomes what [`Project::filename`] returns and what relative save/load paths
+	/// resolve against. Does not clear the modified flag; pair with
+	/// [`Project::set_modified`].
 	pub fn set_filename(&mut self, filename: &str) {
 		self.filename = filename.to_string();
 	}
@@ -326,7 +346,11 @@ impl Project {
 		self.modified
 	}
 
-	/// Set the modified flag (C++ `set_modified()`).
+	/// Set the project's unsaved-changes flag.
+	///
+	/// `modified` is stored as-is and reported by [`Project::is_modified`]; saving
+	/// a project clears it by passing `false`. Does not touch the filename, so an
+	/// untitled unmodified project stays "new" (see [`Project::is_new`]).
 	pub fn set_modified(&mut self, modified: bool) {
 		self.modified = modified;
 	}

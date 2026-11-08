@@ -186,7 +186,9 @@ fn to_text(v: &NodeValue) -> String {
 	}
 }
 
-/// `Variant::to_bool()` for the args toggle.
+/// `Variant::to_bool()` for the args toggle: a boolean payload is returned
+/// as-is; any other value type converts through `to_double() != 0.0`, so a
+/// missing/empty value is `false` and any non-zero number is `true`.
 fn to_bool(v: &NodeValue) -> bool {
 	match v {
 		NodeValue::Boolean(b) => *b,
@@ -355,7 +357,14 @@ impl TextGeneratorV3 {
 	}
 
 	/// The current alignment (C++ `get_vertical_alignment()`): the
-	/// `valign_in` standard value as a [`VerticalAlignment`].
+	/// `valign_in` standard value as a [`VerticalAlignment`]. The standard
+	/// value uses [`VerticalAlignment::from_int`]'s encoding (`1` = middle,
+	/// `2` = bottom, anything else = top); the gizmo-facing
+	/// [`Self::get_our_alignment_from_gizmos`] uses a different int order.
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core whose standard `valign_in` value is read.
 	pub fn vertical_alignment(core: &NodeCore) -> VerticalAlignment {
 		VerticalAlignment::from_int(
 			core.standard_value(VERTICAL_ALIGNMENT_INPUT, -1)
@@ -750,6 +759,22 @@ impl TextGeneratorV3 {
 	/// [`Self::layout_request`] with the path chosen explicitly: the
 	/// backend state is a process-global, so the tests drive both paths
 	/// through this parameter instead of installing hooks.
+	///
+	/// Both paths read the shape's `size_in` as the wrap width (missing size
+	/// wraps at 0) and use 3780 dots per meter (96 DPI); the plain-text path
+	/// honors [`FONT_FAMILY_INPUT`]/[`FONT_SIZE_INPUT`] (empty/zero means the
+	/// backend default), while the legacy path reports an empty family and
+	/// zero point size because the HTML markup carries the font.
+	///
+	/// # Arguments
+	///
+	/// * `plain_text` - `true` for [`PLAIN_TEXT_INPUT`] as plain text,
+	///   `false` for legacy [`TEXT_INPUT`] Olive HTML.
+	/// * `row` - the evaluated input row for this frame.
+	///
+	/// # Returns
+	///
+	/// The layout request; horizontal centering is always off.
 	fn layout_request_path(plain_text: bool, row: &NodeValueRow) -> TextLayoutRequest {
 		let size = row
 			.get(crate::nodes::shapenodebase::SIZE_INPUT)
@@ -871,12 +896,32 @@ impl TextGeneratorV3 {
 			.unwrap_or_else(|| core.value_at_time(id, -1, time))
 	}
 
-	/// Read a float input (REDESIGN post-process inputs).
+	/// Read a float input (REDESIGN post-process inputs): resolved row-first,
+	/// then from the core at `time`, and converted with
+	/// [`NodeValue::to_double`]. Used for the outline width and glow radius.
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core, read when the row lacks `id`.
+	/// * `inputs` - the evaluated input row for this frame.
+	/// * `id` - the input id to read (e.g. [`OUTLINE_WIDTH_INPUT`],
+	///   [`GLOW_RADIUS_INPUT`]).
+	/// * `time` - evaluation time, in seconds, for the core fallback lookup.
 	fn float_arg(core: &NodeCore, inputs: &NodeValueRow, id: &str, time: Rational) -> f64 {
 		Self::input_value(core, inputs, id, time).to_double()
 	}
 
-	/// Read a boolean input (REDESIGN post-process inputs).
+	/// Read a boolean input (REDESIGN post-process inputs). The value is
+	/// resolved row-first, then from the core at `time`, and converted with
+	/// [`to_bool`]; used for the outline/glow enable switches.
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core, read when the row lacks `id`.
+	/// * `inputs` - the evaluated input row for this frame.
+	/// * `id` - the input id to read (e.g. [`OUTLINE_ENABLED_INPUT`],
+	///   [`GLOW_ENABLED_INPUT`]).
+	/// * `time` - evaluation time, in seconds, for the core fallback lookup.
 	fn bool_arg(core: &NodeCore, inputs: &NodeValueRow, id: &str, time: Rational) -> bool {
 		let val = Self::input_value(core, inputs, id, time);
 		to_bool(&val)
@@ -884,7 +929,19 @@ impl TextGeneratorV3 {
 
 	/// Read a color input; a mis-typed value falls back to opaque black
 	/// (the same fallback the C++ `Variant::to_color()` callers get for a
-	/// non-color).
+	/// non-color). Used by the font and outline/glow color passes.
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core, read when the row lacks `id`.
+	/// * `inputs` - the evaluated input row for this frame.
+	/// * `id` - the input id to read (e.g. [`COLOR_INPUT`],
+	///   [`OUTLINE_COLOR_INPUT`], [`GLOW_COLOR_INPUT`]).
+	/// * `time` - evaluation time, in seconds, for the core fallback lookup.
+	///
+	/// # Returns
+	///
+	/// `[r, g, b, a]` with components in 0.0..=1.0.
 	fn color_arg(core: &NodeCore, inputs: &NodeValueRow, id: &str, time: Rational) -> [f64; 4] {
 		match Self::input_value(core, inputs, id, time) {
 			NodeValue::Color(c) => c,
@@ -895,6 +952,11 @@ impl TextGeneratorV3 {
 	/// The vertical alignment of this evaluation: the row's `valign_in`
 	/// when present, else the standard value (the lookup
 	/// [`Self::vertical_alignment`] documents).
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core, read when the row lacks `valign_in`.
+	/// * `inputs` - the evaluated input row for this frame.
 	fn alignment_arg(core: &NodeCore, inputs: &NodeValueRow) -> VerticalAlignment {
 		match inputs.get(VERTICAL_ALIGNMENT_INPUT) {
 			Some(v) => VerticalAlignment::from_int(v.to_double() as i32),
@@ -912,7 +974,19 @@ impl TextGeneratorV3 {
 	}
 
 	/// The rasterization size of this evaluation: the shape size
-	/// (`size_in`), rounded and clamped per dimension.
+	/// (`size_in`), rounded and clamped per dimension. Each dimension lands in
+	/// `1..=MAX_RASTER_SIZE`; a missing size reads as `[0, 0]` and a
+	/// non-finite component falls back to one pixel.
+	///
+	/// # Arguments
+	///
+	/// * `core` - the node core, read when the row lacks `size_in`.
+	/// * `inputs` - the evaluated input row for this frame.
+	/// * `time` - evaluation time, in seconds, for the core fallback lookup.
+	///
+	/// # Returns
+	///
+	/// `(width, height)` in pixels, both at least 1.
 	fn raster_size(core: &NodeCore, inputs: &NodeValueRow, time: Rational) -> (i32, i32) {
 		let size = to_vec2(&Self::input_value(
 			core,
@@ -923,10 +997,25 @@ impl TextGeneratorV3 {
 		(Self::clamp_raster(size[0]), Self::clamp_raster(size[1]))
 	}
 
-	/// Box one post-process shader job (REDESIGN, no C++ counterpart):
-	/// this node's type id (the chain is all ours), an invalid node id
-	/// (the jobs are synthetic — no graph node evaluates them) and the
-	/// shader id selecting the pass in [`Self::shader_code`].
+	/// Box one post-process shader job (REDESIGN, no C++ counterpart): this
+	/// node's type id (the chain is all ours), an invalid node id (the jobs
+	/// are synthetic — no graph node evaluates them) and the shader id
+	/// selecting the pass in [`Self::shader_code`]. The caller owns the
+	/// returned handle (reference count 1).
+	///
+	/// # Arguments
+	///
+	/// * `time` - evaluation time carried by the job, in seconds.
+	/// * `type_id` - the text node's type id, so the renderer can resolve the
+	///   node type when running the job.
+	/// * `shader_id` - which pass to run (one of the `*_SHADER_ID` constants
+	///   or `"mrg"` for the merge pass).
+	/// * `effect_input` - input id of the source texture the shader samples
+	///   (`tex_in` for the post-process passes, `base_in` for the merge).
+	/// * `iterations` - number of passes the shader runs; the glow blur uses
+	///   `2` (one per axis), the colorize/merge passes use `1`.
+	/// * `params` - the shader's input values (source texture, radius/width,
+	///   color, resolution) keyed by input id.
 	fn shader_job(
 		time: Rational,
 		type_id: &str,
@@ -1183,7 +1272,10 @@ impl TextGeneratorV3 {
 /// exists to migrate the legacy [`TEXT_INPUT`] payload into
 /// [`PLAIN_TEXT_INPUT`].
 pub fn strip_html_to_plain(html: &str) -> String {
-	/// Whether `chars` starts with the (ASCII) `entity` text.
+	/// Whether the character slice `chars` starts with the ASCII `entity`
+	/// text, compared character-by-character. Used only by
+	/// [`strip_html_to_plain`]'s entity table, so `entity` is a short literal
+	/// like `&amp;`; a shorter `chars` (or a mismatch) returns `false`.
 	fn starts_with(chars: &[char], entity: &str) -> bool {
 		let mut it = chars.iter();
 		entity.chars().all(|c| it.next() == Some(&c))
@@ -1451,8 +1543,16 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ `k_text_generator_v3` in
-/// `factory.cpp::create_from_factory_index`).
+/// Registers the text generator with the node registry by appending a
+/// [`NodeMeta`] entry: type id `org.olivevideoeditor.Olive.text3`, display
+/// name "Text", the [`Category::Generator`] category, and [`create`] as the
+/// factory. Called once during factory setup; the C++ equivalent is
+/// `k_text_generator_v3` in `factory.cpp::create_from_factory_index`.
+///
+/// # Arguments
+///
+/// * `meta` - the registry vector to append to (the caller owns the
+///   registry; registration is not idempotent).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.text3",

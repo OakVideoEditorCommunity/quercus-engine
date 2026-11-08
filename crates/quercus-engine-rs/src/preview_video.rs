@@ -82,6 +82,15 @@ unsafe impl Send for VideoFrame {}
 unsafe impl Sync for VideoFrame {}
 
 impl VideoFrame {
+	/// Wrap a raw `quercus_video_buffer` pointer as an owned [`VideoFrame`].
+	///
+	/// `ptr` must be a live engine frame pointer whose reference the caller
+	/// already owns (for example the result of `quercus_task_take_video`); the
+	/// returned frame adopts that reference and releases it on drop, and `Clone`
+	/// adds a reference first. Returns `None` for a null pointer, in which case
+	/// nothing is adopted and there is no reference to release. It is
+	/// `pub(crate)` because the pointer is the C ABI's type, not part of the safe
+	/// public surface.
 	pub(crate) fn from_raw(ptr: *const c_void) -> Option<Self> {
 		(!ptr.is_null()).then_some(Self { ptr })
 	}

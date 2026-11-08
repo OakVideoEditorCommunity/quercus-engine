@@ -174,6 +174,23 @@ pub fn get_compatible_pixel_format(pix_fmt: i32) -> i32 {
 }
 
 /// Bridge pixel format for a given native pixel format and channel count.
+///
+/// RGB and RGBA are handled as separate tables; U16/F16/F32 map to their
+/// little-endian interleaved bridge equivalents. This is the bridge side of
+/// `get_compatible_pixel_format`.
+///
+/// # Arguments
+///
+/// * `pix_fmt` - native pixel-format code (`PIX_FMT_U8`, `U10`, `U16`, `F16`,
+///   `F32`).
+/// * `channel_count` - `RGB_CHANNEL_COUNT` (3) for RGB or
+///   `RGBA_CHANNEL_COUNT` (4) for RGBA.
+///
+/// # Returns
+///
+/// The bridge code, or `FB_PIX_FMT_NONE` when there is no bridge
+/// representation: U10 in either layout, an unknown native format, or a
+/// channel count other than 3/4.
 pub fn get_ffmpeg_pixel_format(pix_fmt: i32, channel_count: i32) -> i32 {
 	if channel_count == RGB_CHANNEL_COUNT {
 		match pix_fmt {
@@ -199,6 +216,19 @@ pub fn get_ffmpeg_pixel_format(pix_fmt: i32, channel_count: i32) -> i32 {
 }
 
 /// Native sample format for a given bridge sample format (`-1` if unknown).
+///
+/// Maps `FB_SAMPLE_FMT_*` to the engine's `SMP_FMT_*` codes; the reverse
+/// mapping is `get_ffmpeg_sample_format`. Both keep the packed/planar
+/// distinction.
+///
+/// # Arguments
+///
+/// * `smp_fmt` - bridge sample-format code.
+///
+/// # Returns
+///
+/// The native code, or `SMP_FMT_INVALID` (`-1`) for `FB_SAMPLE_FMT_NONE`,
+/// `FB_SAMPLE_FMT_INVALID` or any unknown code.
 pub fn get_native_sample_format(smp_fmt: i32) -> i32 {
 	match smp_fmt {
 		FB_SAMPLE_FMT_U8 => SMP_FMT_U8,
@@ -218,6 +248,19 @@ pub fn get_native_sample_format(smp_fmt: i32) -> i32 {
 }
 
 /// Bridge sample format for a given native sample format.
+///
+/// The inverse of `get_native_sample_format` for every mapping that exists:
+/// packed and planar variants map one-to-one (`SMP_FMT_U8_P` ->
+/// `FB_SAMPLE_FMT_U8_P`, and so on through the 64-bit and float types).
+///
+/// # Arguments
+///
+/// * `smp_fmt` - native sample-format code (`SMP_FMT_*`).
+///
+/// # Returns
+///
+/// The bridge code, or `FB_SAMPLE_FMT_NONE` (`-1`) for `SMP_FMT_INVALID`,
+/// `SMP_FMT_COUNT` or any unknown code.
 pub fn get_ffmpeg_sample_format(smp_fmt: i32) -> i32 {
 	match smp_fmt {
 		SMP_FMT_U8 => FB_SAMPLE_FMT_U8,

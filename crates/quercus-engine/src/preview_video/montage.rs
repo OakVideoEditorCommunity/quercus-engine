@@ -37,6 +37,13 @@ pub(crate) fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> 
 	}
 }
 
+/// Collect the effect descriptors applied to `clip` at `time`.
+///
+/// `project` supplies the graph, `clip` is the clip node, and `time` is the
+/// timeline position used to evaluate each effect input's standard/keyframed
+/// value. Returns one [`MontageEffect`] per effect in the clip's chain that has
+/// an effect input; texture/samples/matrix, hidden inputs and `enabled_in` are
+/// excluded from `params`, while `enabled` records the effect's own flag.
 fn clip_effects(project: &Project, clip: NodeId, time: Rational) -> Vec<MontageEffect> {
 	crate::effect::chain(&project.graph, clip)
 		.into_iter()
@@ -66,6 +73,13 @@ fn clip_effects(project: &Project, clip: NodeId, time: Rational) -> Vec<MontageE
 		.collect()
 }
 
+/// Find the enabled adjustment block covering `time` on one track.
+///
+/// `project` supplies the graph, `blocks` is the track's block list in order,
+/// `time` is the timeline position, and `below` is the track index stored in the
+/// returned span. Returns the first [`AdjustmentSpan`] whose block is enabled
+/// and whose `[in, out)` range covers `time` (with its effects evaluated at
+/// `time`), or `None` when no adjustment block covers it.
 fn covering_adjustment(
 	project: &Project,
 	blocks: &[NodeId],
@@ -94,6 +108,14 @@ fn covering_adjustment(
 	None
 }
 
+/// Resolve the active multicam angle's media for `clip` at `time`.
+///
+/// `project` supplies the graph; `clip` is the timeline clip; `host_in` is the
+/// host clip's timeline in point, used to offset into the angle's media; `time`
+/// is the current timeline position. Returns `(filename, stream_index,
+/// media_in)` for the angle block covering `time`, or `None` when `clip` is not
+/// fed by a multicam node, the current angle has no media at `time`, or the
+/// referenced sequence/track/block is missing.
 fn multicam_media(
 	project: &Project,
 	clip: NodeId,
@@ -136,7 +158,14 @@ fn multicam_media(
 	})
 }
 
-/// Builds the bottom-to-top video montage and adjustment spans for `time`.
+/// Build the bottom-to-top video montage and adjustment spans for `time`.
+///
+/// `project` supplies the graph, `sequence` is the sequence node, and `time` is
+/// the timeline position. Returns `(clips, adjustments)`: one [`MontageClip`]
+/// per visible video clip across the sequence's video tracks (ordered
+/// bottom-to-top) and one [`AdjustmentSpan`] per enabled adjustment block
+/// covering `time` (its `track_index` records the number of clips below it).
+/// Both vectors are empty when `sequence` is stale or not a sequence node.
 pub(crate) fn video_montage_with_adjustments(
 	project: &Project,
 	sequence: NodeId,
@@ -245,7 +274,12 @@ pub(crate) fn video_montage_with_adjustments(
 	(clips, adjustments)
 }
 
-/// Builds a multicam-angle montage containing only the requested video track.
+/// Build a montage containing only video track `track` of `sequence`.
+///
+/// `project` supplies the graph; `sequence` and `track` are node ids; `time` is
+/// the timeline position. Returns an empty vector when the sequence is stale,
+/// `track` is not a video track belonging to the sequence, the track is muted,
+/// or no clip covers `time`. Used for multicam angle previews.
 pub(crate) fn single_track_video_montage(
 	project: &Project,
 	sequence: NodeId,
@@ -324,6 +358,12 @@ pub(crate) fn single_track_video_montage(
 	clips
 }
 
+/// Native pixel resolution of a footage's proxy media.
+///
+/// `footage` supplies the custom proxy parameters (falling back to the global
+/// proxy config) and the source video stream. Returns `(width, height)` from the
+/// proxy params when positive, otherwise the source dimensions divided by
+/// `divider` (rounded down, minimum 2); `None` when there is no video stream.
 fn proxy_resolution(footage: &FootageBehavior) -> Option<(i32, i32)> {
 	let params = footage
 		.custom_proxy_params
@@ -345,7 +385,14 @@ fn proxy_resolution(footage: &FootageBehavior) -> Option<(i32, i32)> {
 	))
 }
 
-/// Clamps a sequence render to every active proxy's native resolution.
+/// Clamp a render size to the native resolution of active proxies.
+///
+/// `project`, `sequence` and `time` select the visible clips; `width`/`height`
+/// are the requested render dimensions. For every visible clip currently using
+/// its proxy, the result is scaled down by the smallest proxy/requested ratio
+/// (preserving aspect ratio), rounded and floored at 2 px; if no proxy is active
+/// (or the scale is >= 1) the input size is returned unchanged. Only video
+/// tracks are considered.
 pub(crate) fn clamp_render_size(
 	project: &Project,
 	sequence: NodeId,

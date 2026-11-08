@@ -243,6 +243,14 @@ pub fn log_get_level() -> Level {
 }
 
 /// Set the minimum level emitted by [`log`].
+///
+/// `level` is the new threshold: [`log`] drops messages whose severity is
+/// below it and keeps those at or above it ([`Level::Debug`] is the most
+/// verbose, [`Level::Fatal`] the least). The value is mirrored in a static
+/// so Fatal filtering still works through the `log` facade (which has no
+/// Fatal severity) and is forwarded to `log::set_max_level`; it applies to
+/// the whole process. This only changes filtering - it does not install a
+/// sink (see [`set_log_sink`]).
 pub fn log_set_level(level: Level) {
 	ensure_logger();
 	LEVEL_MIRROR.store(level as i32, Ordering::Relaxed);

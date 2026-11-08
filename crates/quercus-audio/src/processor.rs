@@ -128,10 +128,26 @@ fn fix_channel_layout(params: AudioParams) -> AudioParams {
 	result
 }
 
-/// Build the conversion graph: abuffer → atempo chain → aformat (fltp at the
-/// output rate/layout) → abuffersink. `atempo` accepts factors in
-/// [0.5, 100], so out-of-range tempos are chained
-/// (`// CPP-PARITY: ffmpeg_bridge.cpp` `fb_audio_graph_create`).
+/// Builds the ffmpeg filter graph for one conversion.
+///
+/// `from` is the recorded input format/rate/layout, `to` the output
+/// format/rate/layout, and `speed` the time-stretch factor (1.0 = unchanged).
+/// The graph is `abuffer → atempo chain → aformat → abuffersink`: `atempo`
+/// only accepts factors in [0.5, 100], so larger or smaller factors are split
+/// into a chain (250 becomes `atempo=100` then `atempo=2.5`) instead of being
+/// rejected, and `aformat` forces the output to `fltp` at `to.sample_rate` /
+/// `to.channel_layout`.
+///
+/// `speed` must be positive: [`Processor::open`] rejects non-positive values
+/// before calling this, and the halving loop that keeps `atempo` in range
+/// would not terminate on a non-positive factor (`// CPP-PARITY:
+/// ffmpeg_bridge.cpp` `fb_audio_graph_create`).
+///
+/// # Errors
+///
+/// Returns `Error::Failed` when the input sample format is not supported by
+/// ffmpeg, when the `abuffer`/`abuffersink` filters are unavailable, or when
+/// ffmpeg rejects the generated filter spec or fails graph validation.
 fn build_graph(from: &AudioParams, to: &AudioParams, speed: f64) -> Result<ffmpeg::filter::Graph> {
 	let in_format = to_ffmpeg_sample_format(from.format);
 	if in_format == Sample::None {
@@ -250,7 +266,17 @@ impl Processor {
 		Ok(())
 	}
 
-	/// 1 when open, 0 when closed.
+	/// Whether the conversion graph is currently open.
+	///
+	/// Mirrors the C API's boolean query (1 when open, 0 when closed): the graph
+	/// is created by [`Self::open`], dropped by [`Self::close`], and
+	/// [`Self::convert`] only succeeds while this returns `true`.
+	///
+	/// # Errors
+	///
+	/// The query itself does not fail; the `Result` mirrors the C-ABI-shaped
+	/// surface used by the other `Processor` methods. A poisoned inner lock makes
+	/// this panic, like the rest of this type.
 	pub fn is_open(&self) -> Result<bool> {
 		let inner = self.inner.lock().unwrap();
 		Ok(inner.graph.is_some())

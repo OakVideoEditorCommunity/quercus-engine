@@ -262,6 +262,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.despill`).
+///
+/// `meta` is the process-wide node-type table; this pushes one
+/// [`NodeMeta`] with the type id, the display name "Despill", the
+/// [`Category::Keying`] category and [`create`] as the constructor,
+/// so the node appears in the keying section of the create menu.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.despill",

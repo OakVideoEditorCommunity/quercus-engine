@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 构建脚本：编译 C shim（cbits/）。动机见 README 的依赖登记
-//! （"C 变长参数"条目）：stable Rust 不能定义 C-variadic 函数，
-//! 入口留在 C。`cc` crate 只参与构建，不进产物。
+//! Build script: compiles the C shims under `cbits/`. For the rationale see
+//! the README's dependency register (the "C variadic" entry): stable Rust
+//! cannot define C-variadic functions, so the entry points stay in C. The
+//! `cc` crate takes part in the build only and does not enter the artifacts.
 
 fn main() {
 	println!("cargo:rerun-if-changed=cbits/ofx_message_shim.c");
@@ -36,7 +37,8 @@ fn main() {
 	build_test_plugin();
 }
 
-/// 编译最小测试插件为共享库（$OUT_DIR/quercus_test_plugin.{dylib,so}）。
+/// Compile the minimal test plugin into a shared library
+/// (`$OUT_DIR/quercus_test_plugin.{dylib,so}`).
 fn build_test_plugin() {
 	use std::process::Command;
 	let out = std::env::var("OUT_DIR").expect("OUT_DIR");

@@ -43,7 +43,11 @@ struct RemoveNodeCommand {
 }
 
 impl RemoveNodeCommand {
-	/// Construct from the node to remove.
+	/// Construct an unapplied remove command for `node`.
+	///
+	/// `node` is a graph reference rather than an owned entry: `redo` detaches the
+	/// arena entry into the command and `undo` re-inserts it at the original slot,
+	/// preserving node identity. Nothing is detached until `redo`/`redo_now` runs.
 	fn new(node: NodeRef) -> Self {
 		Self { node, entry: None }
 	}
@@ -83,7 +87,12 @@ pub fn create_remove_command(node: &NodeRef) -> UndoCommand {
 	box_command(RemoveNodeCommand::new(node.clone()))
 }
 
-/// `create_remove_command(Block)`.
+/// Build the undoable remove command for a block, without executing it.
+///
+/// A block is removed through its generic-node view, so this is
+/// [`create_remove_command`] with the block-typed argument: `redo` detaches
+/// the arena entry, `undo` re-inserts it. Check
+/// [`block_can_be_removed`] first when the block still has outputs.
 pub fn create_block_remove_command(block: &NodeRef) -> UndoCommand {
 	create_remove_command(block)
 }
@@ -95,7 +104,11 @@ pub fn create_and_run_remove_command(node: &NodeRef) -> UndoCommand {
 	command
 }
 
-/// `create_and_run_remove_command(Block)`.
+/// Build the block remove command and run its redo immediately.
+///
+/// The block is already detached when the command is returned, so the call
+/// site can treat the edit as applied and only needs to record the command for
+/// a later `undo`. Same as [`create_and_run_remove_command`], for blocks.
 pub fn create_and_run_block_remove_command(block: &NodeRef) -> UndoCommand {
 	create_and_run_remove_command(block)
 }
@@ -130,7 +143,12 @@ impl MultiUndoCommand {
 		}
 	}
 
-	/// Append a child command; ownership transfers to the group.
+	/// Append a child command to the group; ownership transfers to the group.
+	///
+	/// Children run in insertion order on `redo` and in reverse order on `undo`
+	/// (see the [`Command`] implementation of [`MultiUndoCommand`]), so a later
+	/// child may rely on an earlier one having run. Check
+	/// [`MultiUndoCommand::empty`] first when the group may have no children.
 	pub fn add_child(&mut self, command: Box<dyn Command>) {
 		self.commands.push(command);
 	}

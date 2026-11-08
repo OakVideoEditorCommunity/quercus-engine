@@ -165,6 +165,19 @@ impl EditorSession {
 	}
 
 	/// Opens any storage URI and binds the loaded project.
+	///
+	/// `uri` is resolved by the storage registry (a plain path opens the
+	/// default file backend). On success the session records the URI as the
+	/// project's file name, marks it unmodified, selects its first sequence
+	/// and restores markers/work area, then binds it for write-through
+	/// persistence (binding failure is ignored).
+	///
+	/// # Errors
+	///
+	/// `Err(StorageError(code))` with the engine's negative `QUERCUSSTORAGE_*`
+	/// code when the URI cannot be resolved, the file does not exist, the
+	/// backend fails to load it, or its version is unsupported (reported as
+	/// `QUERCUSSTORAGE_E_INVALID`).
 	pub fn open(uri: &str) -> Result<Self, StorageError> {
 		let mut info = 0;
 		let ptr = unsafe { quercus_editor_open(uri.as_ptr(), uri.len(), &mut info) };
@@ -177,6 +190,18 @@ impl EditorSession {
 	}
 
 	/// Opens the project identified by `uuid` in the configured default library.
+	///
+	/// The row is opened as `<default library>?project=<uuid>` through the
+	/// storage registry and then bound for write-through persistence with
+	/// [`Self::bind_project_to_library`] (its result is ignored, so a
+	/// non-persistent configuration still yields a usable session).
+	///
+	/// # Errors
+	///
+	/// `Err(StorageError(code))` carries the engine's negative
+	/// `QUERCUSSTORAGE_*` code: no default library configured, an empty
+	/// `uuid`, or a row that does not exist/cannot be loaded. A version-info
+	/// mismatch is reported as `QUERCUSSTORAGE_E_INVALID`.
 	pub fn open_project_from_library(uuid: &str) -> Result<Self, StorageError> {
 		let mut error = 0;
 		let ptr = unsafe {
@@ -360,7 +385,20 @@ impl EditorSession {
 	}
 
 	/// Imports an SRT file as Text clips on the current sequence and track.
-	/// Returns the cue count.
+	///
+	/// `path` is read and parsed as SubRip text; each cue becomes a Text clip
+	/// on `track_index` (a zero-based track position in the current sequence)
+	/// with the default style, timed at the cue's in/out seconds converted to
+	/// frames. The whole import is a single undo group, so the clips and their
+	/// style edits undo together. Returns the number of cues imported (`0` for
+	/// an SRT file with no cues).
+	///
+	/// # Errors
+	///
+	/// `Err(-1)` when `path` is not valid UTF-8 (checked first, before any
+	/// engine call), or `Err(code)` with the engine's negative code for a
+	/// missing current sequence, an invalid track index, an unreadable file or
+	/// malformed SRT.
 	pub fn import_subtitles(
 		&self,
 		path: &std::path::Path,
@@ -424,6 +462,11 @@ impl EditorSession {
 	}
 
 	/// Removes one entry of a clip's audio effect chain.
+	///
+	/// `index` is the zero-based chain position. The removal is one undo entry,
+	/// and later entries keep their relative order. Returns `false` for an
+	/// unknown clip, an `index` at/after the chain length, or an `index` too
+	/// large for `i32`.
 	pub fn remove_clip_audio_effect(&self, clip: NodeId, index: usize) -> bool {
 		let Ok(index) = i32::try_from(index) else {
 			return false;
@@ -431,7 +474,13 @@ impl EditorSession {
 		unsafe { quercus_editor_remove_clip_audio_effect(self.ptr, clip.raw(), index) }
 	}
 
-	/// Enables/disables one entry of a clip's audio effect chain.
+	/// Enables or disables one entry of a clip's audio effect chain.
+	///
+	/// `index` is the zero-based chain position and `enabled` the new state; a
+	/// disabled effect is bypassed by the mixer. Recorded as one undo entry,
+	/// and writing the stored value records nothing. Returns `false` for an
+	/// unknown clip, an out-of-range `index`, or an `index` that does not fit
+	/// `i32` (rejected before reaching the engine).
 	pub fn set_clip_audio_effect_enabled(&self, clip: NodeId, index: usize, enabled: bool) -> bool {
 		let Ok(index) = i32::try_from(index) else {
 			return false;
@@ -466,6 +515,18 @@ impl EditorSession {
 	}
 
 	/// Exports the current sequence's Text clips as an SRT file.
+	///
+	/// Walks the current sequence's video tracks, collects every clip whose
+	/// texture input resolves to text, and writes the cues sorted by in-point
+	/// (then out-point) to `path`, overwriting it. Returns the number of cues
+	/// written (`0` is a valid, empty result).
+	///
+	/// # Errors
+	///
+	/// `Err(-1)` when `path` is not valid UTF-8, or when the engine reports a
+	/// failure (null session, unreadable path, or an I/O error while writing).
+	/// The engine maps every failure onto `-1`, so the cases are not
+	/// distinguishable here.
 	pub fn export_subtitles(&self, path: &std::path::Path) -> Result<usize, i32> {
 		let path = path.to_str().ok_or(-1)?;
 		let count = unsafe {

@@ -18,10 +18,41 @@ use crate::handle::NativeMirror;
 // Color math
 // ---------------------------------------------------------------------------
 
-/// Applies the working→display transform in place over packed f32
-/// samples. Settings are the persisted strings (e.g. "acescg",
-/// "srgb", "srgb", ...). False on null data with a nonzero length or
-/// invalid strings.
+/// Applies the presentation transform in place over packed F32 RGBA pixels:
+/// working space → display target (the project's output spec).
+///
+/// With the ACEScg working space this runs the ACEScg→output chain (AP1→target
+/// gamut matrix, clamp to `[0, 1]`, then transfer encoding); with the legacy
+/// sRGB working space it is a pass-through because the content is already
+/// display-referred. Alpha is untouched and a trailing partial pixel is
+/// ignored. This is the C ABI behind the engine's output-node color transform,
+/// which the display-LUT and render paths share.
+///
+/// # Arguments
+///
+/// * `data` - Tightly packed RGBA samples, 4 `f32` per pixel; null is accepted
+///   only with `len == 0`.
+/// * `len` - Number of `f32` samples in `data`.
+/// * `working` - Persisted working-space setting: `"acescg"` (also the
+///   fallback) or `"srgb"`/`"srgb_legacy"`/`"legacy"`.
+/// * `working_len` - Length of `working` in bytes.
+/// * `gamut` - Persisted output gamut setting: `"srgb"` (also the fallback),
+///   `"displayp3"`/`"p3"`, `"bt2020"`/`"rec2020"`/`"2020"`.
+/// * `gamut_len` - Length of `gamut` in bytes.
+/// * `transfer` - Persisted output transfer setting: `"srgb"` (also the
+///   fallback), `"gamma22"`/`"2.2"`, `"pq"`/`"st2084"`, `"hlg"`.
+/// * `transfer_len` - Length of `transfer` in bytes.
+///
+/// # Returns
+///
+/// `true` when the transform ran; `false` when `data` is null with a nonzero
+/// `len` or any setting string is null/invalid UTF-8 (nothing is written in
+/// that case).
+///
+/// # Safety
+///
+/// `data` must be valid for writes of `len` `f32` values when non-null; the
+/// setting strings must be valid for their stated lengths when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_colormath_working_to_display_target(
 	data: *mut f32,
@@ -56,9 +87,34 @@ pub unsafe extern "C" fn quercus_core_colormath_working_to_display_target(
 	true
 }
 
-/// Converts packed f32 samples from the output spec into linear XYZ
-/// (D65) in place. False on null data with a nonzero length or invalid
-/// strings.
+/// Converts packed F32 RGBA pixels from the described output spec into linear
+/// CIE XYZ (D65) in place: linearizes per the transfer (sRGB EOTF, pure power
+/// 2.2, ST 2084/PQ or HLG), then applies the gamut's RGB→XYZ matrix. All output
+/// gamuts share the D65 white point, so no chromatic adaptation is applied.
+/// Alpha is untouched and a trailing partial pixel is ignored.
+///
+/// # Arguments
+///
+/// * `data` - Tightly packed RGBA samples, 4 `f32` per pixel; null is accepted
+///   only with `len == 0`.
+/// * `len` - Number of `f32` samples in `data`.
+/// * `gamut` - Persisted gamut setting: `"srgb"` (also the fallback),
+///   `"displayp3"`/`"p3"`, `"bt2020"`/`"rec2020"`/`"2020"`.
+/// * `gamut_len` - Length of `gamut` in bytes.
+/// * `transfer` - Persisted transfer setting: `"srgb"` (also the fallback),
+///   `"gamma22"`/`"2.2"`, `"pq"`/`"st2084"`, `"hlg"`.
+/// * `transfer_len` - Length of `transfer` in bytes.
+///
+/// # Returns
+///
+/// `true` when the conversion ran; `false` when `data` is null with a nonzero
+/// `len` or either setting string is null/invalid UTF-8 (nothing is written in
+/// that case).
+///
+/// # Safety
+///
+/// `data` must be valid for writes of `len` `f32` values when non-null; the
+/// setting strings must be valid for their stated lengths when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_colormath_output_spec_to_xyz_d65(
 	data: *mut f32,
@@ -113,7 +169,16 @@ pub extern "C" fn quercus_core_colormath_gamma_oetf(v: f32, gamma: f32) -> f32 {
 	colormath::gamma_oetf(v, gamma)
 }
 
-/// See [`quercus_core_colormath_gamma_oetf`].
+/// Decodes a pure-power gamma code value to linear light: `sign(v) * |v|^gamma`,
+/// so negatives are mirrored.
+///
+/// # Arguments
+///
+/// * `v` - Gamma-encoded component, nominally `[0, 1]`.
+/// * `gamma` - EOTF exponent (2.2 and 2.8 are the usual values).
+///
+/// Counterpart of `quercus_core_colormath_gamma_oetf` (which encodes with
+/// `1/gamma`).
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_colormath_gamma_eotf(v: f32, gamma: f32) -> f32 {
 	colormath::gamma_eotf(v, gamma)
@@ -178,8 +243,16 @@ impl NativeMirror for QuercusPrimaries {
 	}
 }
 
-/// The Bradford chromatic adaptation matrix between two white points.
-/// Mat3 is `[[f32; 3]; 3]` — plain C layout, returned by value.
+/// The Bradford chromatic adaptation matrix from `src_white` to `dst_white`,
+/// row-major as `[[f32; 3]; 3]` and returned by value.
+///
+/// # Arguments
+///
+/// * `src_white` - Source white point as CIE xy chromaticity.
+/// * `dst_white` - Destination white point as CIE xy chromaticity.
+///
+/// This is the cone-response scaling used by `quercus_core_colormath_rgb_to_rgb`
+/// when the two primary sets do not share a white point.
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_colormath_chromatic_adaptation(
@@ -189,14 +262,30 @@ pub extern "C" fn quercus_core_colormath_chromatic_adaptation(
 	colormath::chromatic_adaptation(src_white.to_native(), dst_white.to_native())
 }
 
-/// The RGB→XYZ matrix for a set of primaries.
+/// The RGB→CIE XYZ matrix for a set of primaries, row-major as
+/// `[[f32; 3]; 3]` and returned by value.
+///
+/// `p` supplies the red/green/blue chromaticities and the white point; the
+/// columns are the primaries' tristimulus scaled so the white point maps to
+/// unit luminance. Pair with `quercus_core_colormath_chromatic_adaptation` when
+/// converting between different white points.
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_colormath_rgb_to_xyz(p: QuercusPrimaries) -> [[f32; 3]; 3] {
 	colormath::rgb_to_xyz_matrix(p.to_native())
 }
 
-/// The direct RGB→RGB conversion matrix between two primary sets.
+/// The direct RGB→RGB conversion matrix between two primary sets, row-major as
+/// `[[f32; 3]; 3]` and returned by value.
+///
+/// # Arguments
+///
+/// * `src` - Source primaries (RGB tristimulus coordinates plus white point).
+/// * `dst` - Destination primaries.
+///
+/// This is `rgb_to_xyz(dst)^-1 * Bradford(src.white → dst.white) *
+/// rgb_to_xyz(src)`; the adaptation step is the identity when the white points
+/// match. Used by the ACEScg→output gamut conversion.
 #[allow(improper_ctypes_definitions)]
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_colormath_rgb_to_rgb(
@@ -235,8 +324,21 @@ pub extern "C" fn quercus_core_lut_display_edge() -> u32 {
 	Lut3d::DISPLAY_EDGE
 }
 
-/// The display LUT input domain: writes 3 floats to `lo` and 3 to `hi`.
-/// False when either pointer is null.
+/// Writes the display LUT's input domain: `lo` receives the 3 per-channel lower
+/// bounds (-0.25 each) and `hi` the 3 upper bounds (4.0 each).
+///
+/// Returns `false` without writing when either pointer is null. The lattice
+/// edge length comes from `quercus_core_lut_display_edge` (65).
+///
+/// # Arguments
+///
+/// * `lo` - Caller-owned output for 3 `f32` lower bounds.
+/// * `hi` - Caller-owned output for 3 `f32` upper bounds.
+///
+/// # Safety
+///
+/// `lo` and `hi` must each be valid for 3 `f32` writes when non-null; they must
+/// not alias each other.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_lut_display_domain(lo: *mut f32, hi: *mut f32) -> bool {
 	if lo.is_null() || hi.is_null() {
@@ -253,7 +355,22 @@ pub unsafe extern "C" fn quercus_core_lut_display_domain(lo: *mut f32, hi: *mut 
 // File functions
 // ---------------------------------------------------------------------------
 
-/// The default disk cache path, snprintf-style.
+/// The default disk cache directory, snprintf-style: the configured
+/// `DiskCachePath` override when set and not blank, otherwise
+/// `<configuration location>/mediacache`.
+///
+/// # Arguments
+///
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the path excluding the NUL; this entry point does
+/// not fail, so a negative value is never returned. A return value
+/// `>= buf_len` means the output was truncated to `buf_len - 1` bytes plus a
+/// NUL.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_file_default_disk_cache_path(buf: *mut u8, buf_len: usize) -> i32 {
 	copy_str_out(&default_disk_cache_path(), buf, buf_len)
@@ -281,8 +398,29 @@ export_path_getters! {
 	quercus_core_file_get_auto_recovery_root => get_auto_recovery_root,
 }
 
-/// The unique file identifier for `filename` (empty for missing files),
-/// snprintf-style; -1 on error.
+/// Computes a deterministic cache-key identifier for a file: FNV-1a hex over
+/// its absolute path (symlinks unresolved) plus its modification time in
+/// nanoseconds.
+///
+/// # Arguments
+///
+/// * `filename` - File path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the identifier excluding the NUL (0 for a missing or
+/// unstat-able file), or -1 when `filename` is null or not valid UTF-8. A
+/// return value `>= buf_len` means the output was truncated to `buf_len - 1`
+/// bytes plus a NUL.
+///
+/// # Safety
+///
+/// `filename` must be valid for `filename_len` bytes when non-null; `buf` must
+/// be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_get_unique_file_identifier(
 	filename: *const u8,
@@ -299,8 +437,31 @@ pub unsafe extern "C" fn quercus_core_file_get_unique_file_identifier(
 	}
 }
 
-/// Appends `extension` to `filename` when missing, snprintf-style;
-/// -1 on error.
+/// Appends `extension` to `filename` unless the name already ends with it,
+/// matching the suffix case-insensitively.
+///
+/// # Arguments
+///
+/// * `filename` - Input path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `extension` - Dotless extension bytes, e.g. `"mp4"` (a leading dot is not
+///   expected and would not be added); null or invalid UTF-8 fails.
+/// * `extension_len` - Length of `extension` in bytes.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the result excluding the NUL, or -1 when a string
+/// argument is null or not valid UTF-8. An empty `filename` or `extension`
+/// leaves the name unchanged; a return value `>= buf_len` means the output was
+/// truncated to `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// Both string arguments must be valid for their stated lengths when non-null;
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_ensure_filename_extension(
 	filename: *const u8,
@@ -322,8 +483,32 @@ pub unsafe extern "C" fn quercus_core_file_ensure_filename_extension(
 	}
 }
 
-/// Reads a whole text file, snprintf-style. Unreadable/missing files
-/// read as an empty string (C++ parity), so -1 means invalid input only.
+/// Reads the whole file at `filename` as text and copies it into `buf`
+/// snprintf-style.
+///
+/// A missing or unreadable file yields an empty string instead of an error
+/// (C++ parity), and invalid UTF-8 bytes are replaced with U+FFFD, so the
+/// caller cannot distinguish an empty file from a missing one by the result.
+///
+/// # Arguments
+///
+/// * `filename` - File path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the contents excluding the NUL, or -1 when
+/// `filename` is null or not valid UTF-8 (the only failure case). A return
+/// value `>= buf_len` means the output was truncated to `buf_len - 1` bytes
+/// plus a NUL.
+///
+/// # Safety
+///
+/// `filename` must be valid for `filename_len` bytes when non-null; `buf` must
+/// be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_read_file_as_string(
 	filename: *const u8,
@@ -340,8 +525,22 @@ pub unsafe extern "C" fn quercus_core_file_read_file_as_string(
 	}
 }
 
-/// Whether `dir` is a valid directory; with `try_to_create`, attempts to
-/// create it first.
+/// Whether `dir` names an existing directory.
+///
+/// # Arguments
+///
+/// * `dir` - Directory path bytes; null or invalid UTF-8 reports invalid.
+/// * `dir_len` - Length of `dir` in bytes.
+/// * `try_to_create` - When `true` and the directory does not exist, tries to
+///   create it (including missing parents) and reports whether that succeeded.
+///
+/// # Returns
+///
+/// `true` when the directory exists (or was created), `false` otherwise.
+///
+/// # Safety
+///
+/// `dir` must be valid for `dir_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_directory_is_valid(
 	dir: *const u8,
@@ -354,8 +553,31 @@ pub unsafe extern "C" fn quercus_core_file_directory_is_valid(
 	FileFunctions::new().directory_is_valid(dir, try_to_create)
 }
 
-/// A collision-free temporary filename derived from `original`,
-/// snprintf-style; -1 on error.
+/// Builds a non-existing temporary path next to `original`: same directory,
+/// name `<base>.tmp<counter><complete-suffix>`, where the suffix starts at the
+/// first dot of the file name and the counter starts at 0 and increments until
+/// the path does not exist.
+///
+/// # Arguments
+///
+/// * `original` - Path whose directory and base name seed the result; null or
+///   invalid UTF-8 fails.
+/// * `original_len` - Length of `original` in bytes.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the path excluding the NUL, or -1 when `original` is
+/// null or not valid UTF-8. The path is only computed, not created, so it can
+/// still be taken by a concurrent writer; a return value `>= buf_len` means the
+/// output was truncated to `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `original` must be valid for `original_len` bytes when non-null; `buf` must
+/// be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_get_safe_temporary_filename(
 	original: *const u8,
@@ -372,8 +594,28 @@ pub unsafe extern "C" fn quercus_core_file_get_safe_temporary_filename(
 	}
 }
 
-/// The platform-specific executable name for `unformatted` (e.g. adds
-/// ".exe" on Windows), snprintf-style; -1 on error.
+/// Applies the platform's executable-name convention to `unformatted`: appends
+/// `".exe"` on Windows and returns the name unchanged on other platforms.
+///
+/// # Arguments
+///
+/// * `unformatted` - Base executable name bytes, e.g. `"ffmpeg"`; null or
+///   invalid UTF-8 fails.
+/// * `unformatted_len` - Length of `unformatted` in bytes.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the result excluding the NUL, or -1 when
+/// `unformatted` is null or not valid UTF-8. A return value `>= buf_len` means
+/// the output was truncated to `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `unformatted` must be valid for `unformatted_len` bytes when non-null;
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_get_formatted_executable_for_platform(
 	unformatted: *const u8,
@@ -390,8 +632,25 @@ pub unsafe extern "C" fn quercus_core_file_get_formatted_executable_for_platform
 	}
 }
 
-/// Renames `from` to `to`, replacing `to` when it exists. False on
-/// failure or invalid input.
+/// Renames `from` to `to`, deleting an existing `to` first (overwrite).
+///
+/// # Arguments
+///
+/// * `from` - Source path bytes; expected to name an existing file.
+/// * `from_len` - Length of `from` in bytes.
+/// * `to` - Destination path bytes.
+/// * `to_len` - Length of `to` in bytes.
+///
+/// # Returns
+///
+/// `true` on success; `false` when either path is null or not valid UTF-8, when
+/// an existing `to` cannot be removed (only regular files are removed), or when
+/// the rename itself fails. Failures are also logged to stderr.
+///
+/// # Safety
+///
+/// `from`/`to` must be valid for their stated lengths when non-null. The helper
+/// object is stateless, so no further aliasing constraints apply.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_file_rename_file_allow_overwrite(
 	from: *const u8,

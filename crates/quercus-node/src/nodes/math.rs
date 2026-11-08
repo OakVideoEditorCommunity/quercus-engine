@@ -221,10 +221,12 @@ impl NodeBehavior for MathNode {
 /// Operation combo strings (C++ `MathNodeBase::retranslate` order).
 pub const OPERATION_NAMES: [&str; 5] = ["Add", "Subtract", "Multiply", "Divide", "Power"];
 
-/// Constructor (C++ `MathNode::MathNode()`): adds `method_in` as a
-/// not-connectable/not-keyframable combo, and `param_a_in`/
-/// `param_b_in` as float inputs defaulting to 0.0 with
-/// `decimalplaces = 8` and `autotrim = true`.
+/// Construct the Math node: one combo input plus two float operands.
+///
+/// No arguments. `method_in` is not connectable or keyframable and carries the
+/// five operation names; `param_a_in`/`param_b_in` are float inputs defaulting
+/// to `0.0` with `decimalplaces = 8` and `autotrim = true`. Returns the node
+/// core and behavior; pairs with [`register`].
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 	let mut method = crate::input::Input::new(
@@ -270,8 +272,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, MathNode::new())
 }
 
-/// Register this node type (C++ `k_math_node` in
-/// `factory.cpp::create_from_factory_index`).
+/// Register the Math node type in the factory's static entry list.
+///
+/// `meta` is the factory entry vector to append to (type id
+/// `org.olivevideoeditor.Olive.math`, display name "Math", category
+/// [`Category::Math`]). Called once at startup via `nodes::register_all`; the
+/// append order determines menu order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.math",

@@ -113,9 +113,20 @@ impl ProxyTask {
 		}
 	}
 
-	/// Build the `ffmpeg` command-line argument vector for the proxy
-	/// transcode. Mirrors `build_arguments` in proxy.cpp; the exact ordering
-	/// and flag spelling are parity-locked (golden test).
+	/// Build the `ffmpeg` argument vector for the pure-software proxy path.
+	///
+	/// `source_filename` is the media read, `stream_index` the source stream
+	/// mapped as `0:<index>`, `params` the proxy geometry/quality and
+	/// `output_filename` the destination written with `-f <container>` (mp4
+	/// when `params.extension` is empty). Geometry: a `divider > 1` scales by
+	/// `1/divider` and ignores `width`/`height`; otherwise the target size is
+	/// scaled down preserving aspect ratio. Output is H.264 (`libx264`,
+	/// `params.preset`, `params.crf`) at 4:2:0 with `+faststart`, audio is
+	/// 128 kbps AAC when `params.include_audio` and `-an` otherwise, and
+	/// progress goes to stdout via `-progress pipe:1`. The ordering and flag
+	/// spelling mirror `build_arguments` in `proxy.cpp` and are parity-locked by
+	/// a golden test; the vector that actually runs is
+	/// [`ProxyTask::build_transcode_arguments`].
 	///
 	/// CPP-PARITY: src/task/src/proxy/proxy.cpp (build_arguments)
 	pub fn build_arguments(
@@ -212,6 +223,17 @@ impl ProxyTask {
 		enc
 	}
 
+	/// Detect the hardware H.264 encoder to use, without the per-path cache.
+	///
+	/// Runs `ffmpeg -hide_banner -encoders` (stdout captured, console window
+	/// hidden) and walks a platform-priority list: macOS only VideoToolbox;
+	/// Windows/Linux NVENC → QSV → AMF (VAAPI is not attempted — it would need a
+	/// hwupload frame-upload chain). A candidate is accepted only when the
+	/// `-encoders` text lists it *and* [`ProxyTask::encoder_usable`] can encode
+	/// one 64x64 frame with it, because a full ffmpeg build advertises encoders
+	/// the machine may not support. Returns [`HwEncoder::Software`] when ffmpeg
+	/// cannot be spawned, lists nothing, or every candidate fails. Prefer the
+	/// cached [`ProxyTask::probe_hw_encoder`] in production.
 	fn probe_hw_encoder_uncached(ffmpeg_path: &str) -> HwEncoder {
 		let mut command = Command::new(ffmpeg_path);
 		command.args(["-hide_banner", "-encoders"]);
@@ -274,7 +296,13 @@ impl ProxyTask {
 		matches!(out, Ok(out) if out.status.success())
 	}
 
-	/// libx264 预设名 → NVENC p1..p7（NVENC 预设是编号）。
+	/// Map a libx264 preset name to NVENC's numbered preset `p1`..`p7`.
+	///
+	/// ultrafast → p1, superfast → p2, veryfast → p3, faster → p4, fast → p5,
+	/// medium → p6, and anything slower or unrecognized → p7. NVENC accepts only
+	/// these numbered names, so the libx264 spelling cannot be passed through.
+	/// Used by [`ProxyTask::hw_video_args`] when [`HwEncoder::Nvenc`] was
+	/// selected.
 	fn nvenc_preset(preset: &str) -> &'static str {
 		match preset {
 			"ultrafast" => "p1",
@@ -287,7 +315,11 @@ impl ProxyTask {
 		}
 	}
 
-	/// libx264 预设名 → AMF quality 档。
+	/// Map a libx264 preset name to an AMF `-quality` level.
+	///
+	/// ultrafast/…/fast → "speed", medium → "balanced", anything slower or
+	/// unrecognized → "quality". Used by [`ProxyTask::hw_video_args`] when
+	/// [`HwEncoder::Amf`] was selected.
 	fn amf_quality(preset: &str) -> &'static str {
 		match preset {
 			"ultrafast" | "superfast" | "veryfast" | "faster" | "fast" => "speed",
@@ -344,9 +376,19 @@ impl ProxyTask {
 		}
 	}
 
-	/// 实际转码用的参数：build_arguments 的软件路径 + 硬件加速与线程
-	/// 控制（解码 `-hwaccel auto`；编码按探测结果；`-threads` 限制
-	/// 解码/编码线程——后台任务不把机器打满）。
+	/// The arguments actually used for the proxy transcode: the parity-locked
+	/// software vector plus hardware selection and a thread limit.
+	///
+	/// Starts from [`ProxyTask::build_arguments`] and changes three things:
+	/// `threads > 0` prepends `-threads <n>`, a non-[`HwEncoder::Software`]
+	/// `enc` adds `-hwaccel auto` (hardware decode rides only with a hardware
+	/// encoder, since a d3d11va/vaapi surface cannot feed libx264 directly), and
+	/// the `-c:v libx264 … -pix_fmt` segment is replaced by
+	/// [`ProxyTask::hw_video_args`] for that encoder (quality mapped from
+	/// `params.crf` / `params.preset`). `source_filename`, `stream_index`,
+	/// `params` and `output_filename` mean the same as in `build_arguments`;
+	/// `enc` is the probed encoder and `threads` the per-task budget (0 = leave
+	/// ffmpeg's default).
 	pub fn build_transcode_arguments(
 		source_filename: &str,
 		stream_index: i32,
@@ -598,8 +640,13 @@ impl TaskBehavior for ProxyTask {
 	}
 }
 
-/// Probe the source duration via `ffprobe` next to ffmpeg; 0.0 when
-/// unavailable (in which case no intermediate progress is reported).
+/// Probe the source's duration in seconds with `ffprobe`, looked up next to
+/// `ffmpeg_path`.
+///
+/// `ffmpeg_path` is used only to locate the sibling `ffprobe` binary;
+/// `source_filename` is passed to it unchanged. Returns 0.0 when `ffprobe` is
+/// missing, exits unsuccessfully, or prints something that does not parse — the
+/// transcode then reports no intermediate progress, only the final 1.0.
 fn probe_source_duration_seconds(ffmpeg_path: &str, source_filename: &str) -> f64 {
 	let ffprobe = std::path::Path::new(ffmpeg_path).with_file_name("ffprobe");
 	if !ffprobe.exists() {

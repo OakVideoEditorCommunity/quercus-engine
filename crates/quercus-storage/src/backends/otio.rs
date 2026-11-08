@@ -203,7 +203,21 @@ impl crate::backend::StorageBackend for OtioBackend {
 // Project -> quercusotio
 // ---------------------------------------------------------------------------
 
-/// Walk the project graph and build one [`Timeline`] per sequence node.
+/// Build one [`Timeline`] per sequence node in `project`'s graph.
+///
+/// Iterates every node id (`Graph::node_ids`, so the output order is the
+/// graph's id order), keeps the ones whose behavior is a
+/// [`SequenceBehavior`], and for each one creates a timeline named after the
+/// sequence's core label (or `"Sequence"` when the label is empty). Tracks are
+/// appended in track-list order — video list first, then audio, then subtitle
+/// — and each track keeps its own block order; the frame rate comes from
+/// [`sequence_fps`], i.e. the first video stream's rate or [`DEFAULT_FPS`].
+///
+/// Skips are silent and partial: a sequence with a missing/stale track list,
+/// or a list with a missing/stale track, contributes only the parts that
+/// resolve. Returns an empty vector when the project has no sequences. The
+/// per-track geometry (gap insertion, clip references) is [`export_track`]'s
+/// job.
 fn project_to_timelines(project: &Project) -> Vec<Timeline> {
 	let graph = &project.graph;
 	let mut timelines = Vec::new();
@@ -358,9 +372,20 @@ fn clip_name(graph: &quercus_node::graph::Graph, footage: Option<NodeId>) -> Str
 	}
 }
 
-/// Resolve the footage behind a clip block: the block's `footage`
-/// field, else the first footage node reachable upstream (mirrors
-/// `quercusnode_node_find_input_footage`).
+/// Find the footage node behind the clip block `clip_id`.
+///
+/// `entry` must be the already-fetched node entry for `clip_id` (the caller
+/// has it from the track walk, so it is not looked up again). The clip's own
+/// `footage` field wins when it is set and still valid in `graph`; otherwise
+/// this searches *upstream* of `clip_id` — a stack-driven walk over
+/// [`quercus_node::graph::Graph::upstream`] (neighbours are pushed and popped,
+/// so it runs depth-first in practice) with a visited set, so cycles
+/// terminate — and returns the first node whose behavior is a
+/// [`FootageBehavior`]. Returns `None` when neither path finds one (the
+/// exporter then writes a `MissingReference`). The fallback mirrors the C++
+/// `quercusnode_node_find_input_footage`.
+///
+/// `graph` is only read; nothing is added or linked.
 fn clip_footage(
 	graph: &quercus_node::graph::Graph,
 	entry: &NodeEntry,
@@ -398,7 +423,17 @@ fn clip_footage(
 	None
 }
 
-/// Classify a block node into its kind plus its block core.
+/// Work out which kind of timeline block `entry` is, together with a borrow
+/// of its block core.
+///
+/// Downcasts the node's behavior: a [`ClipBlockBehavior`] gives `Clip`, a
+/// [`GapBlockBehavior`] gives `Gap`, a [`TransitionBlockBehavior`] gives
+/// `Transition`, and every other behavior (or none) gives `Other` with no
+/// core. The returned core borrows from `entry`, so it is valid only while
+/// the node entry is; callers that need the geometry read `in_`, `out`,
+/// `media_in` and `length` from it (see [`export_track`]). `Other` is the
+/// "skip this block" signal — it carries no position information, so an
+/// export cannot represent it.
 fn classify_block(
 	entry: &NodeEntry,
 ) -> (BlockKind, Option<&quercus_node::block::BlockCore>) {
@@ -428,7 +463,13 @@ enum BlockKind {
 	Other,
 }
 
-/// TrackType -> OTIO kind string.
+/// Map an internal [`TrackType`] to its OTIO track kind string.
+///
+/// The three quercus kinds map one-to-one: `Video` → `"Video"`, `Audio` →
+/// `"Audio"`, `Subtitle` → `"Subtitle"`. The inverse is
+/// [`track_kind_from_str`], which is deliberately lossy (unknown strings
+/// become subtitles); this direction is total because the enum is closed.
+/// Used by [`export_track`] when writing a track.
 fn track_kind_str(kind: TrackType) -> &'static str {
 	match kind {
 		TrackType::Video => "Video",
@@ -446,7 +487,18 @@ fn track_kind_from_str(kind: &str) -> TrackType {
 	}
 }
 
-/// Rational -> RationalTime at `fps` (seconds are preserved).
+/// Convert a seconds-valued [`Rational`] into an OTIO `RationalTime` at
+/// `fps` frames per second.
+///
+/// `r` is measured in seconds (quercus' internal time unit); `fps` is the
+/// sequence frame rate from [`sequence_fps`], so the result is expressed in
+/// frames at that rate. The conversion goes through
+/// [`quercus_otio::model::RationalTime::from_rational`]
+/// (`RationalTime::new(num, den).rescaled_to(fps)`): the duration in seconds
+/// is preserved, but the value is re-expressed as a floating-point frame
+/// count, so exact rational timebases are lost across the boundary (a
+/// documented interchange loss). `fps` comes from a positive frame rate
+/// (`sequence_fps` falls back to [`DEFAULT_FPS`]).
 fn to_rt(r: Rational, fps: f64) -> quercus_otio::model::RationalTime {
 	quercus_otio::model::RationalTime::from_rational(r, fps)
 }
@@ -460,12 +512,28 @@ fn to_file_uri(path: &str) -> String {
 	}
 }
 
-/// `file://` URL -> local path (strips the scheme).
+/// Convert a `file://` URL back into a local path by stripping the scheme.
+///
+/// Only the literal prefix is removed; anything else is returned unchanged,
+/// so an already-local path passes through and a non-`file` URL (e.g.
+/// `http://…`) is kept as-is. Percent-encoding is **not** decoded, which
+/// matches [`to_file_uri`] writing paths literally; a URL produced by another
+/// tool with `%20` style escapes therefore keeps them in the path. Used by
+/// [`import_timeline`] on a clip's external reference target.
 fn from_file_uri(url: &str) -> String {
 	url.strip_prefix("file://").unwrap_or(url).to_string()
 }
 
-/// Filename base (last path component, extension dropped).
+/// The filename base of `path`: the last `/`-separated component with a
+/// trailing extension removed.
+///
+/// Splits on `/` only, so a Windows-style `C:\dir\file.mov` is treated as one
+/// component and its backslashes are kept. The extension is whatever follows
+/// the last `.` in that component, but only when the part before it is
+/// non-empty — a dotfile such as `.gitignore` keeps its leading dot (no
+/// extension is stripped), and `name.` becomes `name`. `/dir/` (empty last
+/// component) yields an empty string. Used for the clip display name in
+/// [`clip_name`].
 fn file_base(path: &str) -> String {
 	let name = path.rsplit('/').next().unwrap_or(path);
 	match name.rsplit_once('.') {
@@ -478,10 +546,26 @@ fn file_base(path: &str) -> String {
 mod media_ref {
 	use super::*;
 
+	/// An `ExternalReference` pointing at the local file `path`.
+	///
+	/// `path` is a filesystem path (not a URL); it is wrapped by
+	/// [`to_file_uri`] with the `file://` scheme prepended unless it already
+	/// starts with it, and no percent-encoding is applied — so spaces and
+	/// non-ASCII characters are written literally into the target URL. The
+	/// available-range argument is `None`: the reference covers the whole
+	/// file. A clip with no usable footage uses [`missing`] instead.
 	pub fn external(path: &str) -> MediaReference {
 		MediaReference::ExternalReference(ExternalReference::new(to_file_uri(path), None))
 	}
 
+	/// A `MissingReference` media reference: the marker used when a clip
+	/// block has no resolvable footage.
+	///
+	/// The OTIO exporter substitutes this for a clip whose [`clip_footage`]
+	/// lookup yields no footage node or whose footage node has no filename,
+	/// so an unmappable clip is visible in the OTIO file instead of silently
+	/// referencing an empty URL. Pairs with [`external`], which builds the
+	/// normal case.
 	pub fn missing() -> MediaReference {
 		MediaReference::MissingReference(MissingReference::new())
 	}
@@ -491,8 +575,40 @@ mod media_ref {
 // quercusotio -> Project
 // ---------------------------------------------------------------------------
 
-/// Import one timeline into `project` as a sequence with its track
-/// lists, tracks, and blocks (footage nodes per clip).
+/// Import one OTIO timeline into `project` as a new sequence.
+///
+/// Creates the sequence (and its video/audio/subtitle track lists) with
+/// [`crate::nodeutil::create_sequence`] and applies `timeline`'s name as
+/// the sequence label when it is non-empty. Each OTIO track child becomes a
+/// [`TrackBehavior`] placed in the list matching its kind
+/// ([`track_kind_from_str`], anything not `"Video"`/`"Audio"` is treated as
+/// subtitle), with `track_list` pointing at that list and `index` counting
+/// per list in file order.
+///
+/// Block positions are reconstructed by accumulation: clips and gaps take
+/// the duration of their `source_range` (1 second when absent or null) and
+/// advance the track position, while a transition keeps its in/out offsets,
+/// gets a one-second range at the current position, and does not advance it
+/// (documented approximate mapping — see the module docs). A clip's
+/// `media_in` comes from its source range start, and when the clip has an
+/// external media reference a fresh footage node is created from the
+/// `file://` URL and linked through [`ClipBlockBehavior::footage`]; a clip
+/// with a missing reference or none at all keeps `footage = None`. Other
+/// composable kinds are ignored. Finally the block list is stored on the
+/// track and the track is appended to its list.
+///
+/// # Errors
+///
+/// Never returns `Err` today: it always ends with `Ok(())` after creating
+/// the nodes, so a partially mapped timeline still counts as imported. The
+/// `Result` exists for the backend trait's import path.
+///
+/// # Panics
+///
+/// Panics with `clip_create returns a clip block` / `gap_create returns a
+/// gap block` / `transition_create returns a transition block` only if a
+/// node constructor returned a behavior of the wrong type (an internal
+/// factory invariant, not reachable from timeline contents).
 fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 	let (seq_id, lists) = node::create_sequence(&mut project.graph);
 	if !timeline.name().is_empty() {

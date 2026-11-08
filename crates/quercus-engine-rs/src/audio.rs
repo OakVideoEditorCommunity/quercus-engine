@@ -123,7 +123,12 @@ pub struct AudioParams {
 }
 
 impl AudioParams {
-	/// Creates a new value.
+	/// Builds a parameter set from its three fields.
+	///
+	/// `sample_rate` is in Hz, `channel_layout` is an ffmpeg-style mask (0 =
+	/// unspecified) and `format` is stored as its raw discriminant. The struct
+	/// crosses the C ABI by value; read the format back with
+	/// [`AudioParams::format`].
 	pub fn new(sample_rate: i32, channel_layout: u64, format: SampleFormat) -> Self {
 		Self {
 			sample_rate,
@@ -132,7 +137,11 @@ impl AudioParams {
 		}
 	}
 
-	/// The `format` operation.
+	/// The sample format stored in these params.
+	///
+	/// The raw ABI discriminant is mapped back to [`SampleFormat`]; unknown
+	/// values yield [`SampleFormat::Invalid`] instead of an error, so they only
+	/// round-trip as `Invalid`. Counterpart of [`AudioParams::new`].
 	pub fn format(&self) -> SampleFormat {
 		match self.format {
 			0 => SampleFormat::U8Planar,
@@ -305,18 +314,30 @@ pub fn push_to_output(params: AudioParams, samples: &[u8]) -> Result<(), PushErr
 // Params conversions (pure functions)
 // ---------------------------------------------------------------------------
 
-/// Channel count of an ffmpeg-style channel layout mask.
+/// Channel count of an ffmpeg-style channel-layout mask.
+///
+/// The count is the number of set bits in `channel_layout`; an empty mask
+/// yields 0. Matches the engine's `AudioParams::channel_count`.
 pub fn channel_count(channel_layout: u64) -> i32 {
 	unsafe { quercus_audio_params_channel_count(channel_layout) }
 }
 
-/// Bytes per sample per channel for a [`SampleFormat`].
+/// Bytes per sample in one channel for a [`SampleFormat`].
+///
+/// Depends only on the format (e.g. 4 for `F32`, 2 for `S16`); an unknown or
+/// [`SampleFormat::Invalid`] discriminant yields 0. Multiply by the channel
+/// count and frame count for a frame's byte size.
 pub fn bytes_per_sample_per_channel(format: SampleFormat) -> i64 {
 	unsafe { quercus_audio_params_bytes_per_sample_per_channel(format as i32) }
 }
 
 impl AudioParams {
-	/// Byte count of `samples` frames in this format.
+	/// Byte count of `samples` frames across all channels in this format.
+	///
+	/// Computed as `samples * bytes_per_sample_per_channel(format) *
+	/// channel_count(layout)`; the sample rate does not affect the arithmetic.
+	/// Returns 0 when the layout is empty or the format is unknown; `samples`
+	/// may be negative.
 	pub fn samples_to_bytes(&self, samples: i64) -> i64 {
 		unsafe {
 			quercus_audio_params_samples_to_bytes(
@@ -329,12 +350,22 @@ impl AudioParams {
 	}
 }
 
-/// Frame count as rational seconds at `sample_rate`.
+/// Converts a frame count to rational seconds at `sample_rate`.
+///
+/// `frames` is a per-channel frame count and `sample_rate` the rate in Hz; the
+/// result is the exact reduced fraction `frames / sample_rate` with no
+/// rounding. A `sample_rate` of 0 produces the null sentinel (`0/0`), which
+/// [`rational_to_samples`] maps back to 0.
 pub fn frames_to_rational(frames: i64, sample_rate: i32) -> crate::types::Rational {
 	unsafe { quercus_audio_params_frames_to_rational(frames, sample_rate) }
 }
 
-/// Rational seconds as a frame count at `sample_rate`.
+/// Converts a rational time to a sample-frame count at `sample_rate`.
+///
+/// `time` is a duration in seconds and `sample_rate` the rate in Hz; the result
+/// is `round(seconds * sample_rate)`, rounded to nearest with ties away from
+/// zero (not truncated). Returns 0 for the null/NaN sentinel. Counterpart of
+/// [`frames_to_rational`].
 pub fn rational_to_samples(time: crate::types::Rational, sample_rate: i32) -> i64 {
 	unsafe { quercus_audio_params_rational_to_samples(time, sample_rate) }
 }

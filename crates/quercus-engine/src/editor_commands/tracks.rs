@@ -16,6 +16,20 @@ use super::{editing::*, generators::*, media::*, moving::*, project::*, sequence
 /// `quercusnode_node_disconnect_undoable` did not model this (documented
 /// deviation); the app retains the source node, so its effect-chain edits
 /// undo faithfully.
+///
+/// `p` is the project, `to` the node whose input is removed and `input_id`
+/// that input's id. The connected source is looked up under the project lock
+/// while the command is built, so undo restores exactly the edge that
+/// existed at that moment; disconnecting a second time replaces the captured
+/// edge, so the earlier command's undo has nothing left to reconnect.
+///
+/// Returns the command; the caller pushes it through the module's `push`
+/// helper so the removal becomes one undo row.
+///
+/// # Errors
+///
+/// `Err` when `to` has no input named `input_id` — including when `to` is a
+/// stale node — because there is then no edge to model.
 pub fn disconnect_command(
 	p: &ProjectRef,
 	to: NodeId,
@@ -146,7 +160,12 @@ pub fn track_muted(p: &ProjectRef, track: NodeId) -> Option<bool> {
 	track_behavior(&g.graph, track).map(|t| t.muted)
 }
 
-/// A track's locked flag (`None` when the id is stale).
+/// A track's locked flag, or `None` when the id is stale or not a track.
+///
+/// Timeline edit commands consult this flag before mutating a track, so
+/// treating `None` as unlocked is the caller's decision — the C ABI
+/// `quercus_track_locked` reports `false` for the same cases. Takes the
+/// project lock internally; no state is modified.
 pub fn track_locked(p: &ProjectRef, track: NodeId) -> Option<bool> {
 	let g = lock(p);
 	track_behavior(&g.graph, track).map(|t| t.locked)

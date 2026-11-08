@@ -66,12 +66,14 @@ macro_rules! define_vec {
 					Self { ptr }
 				}
 
-				/// The `len` operation.
+				/// The number of elements in the engine vector, queried
+				/// through the C ABI on every call (not cached).
 				pub fn len(&self) -> usize {
 					unsafe { len_raw(self.ptr) }
 				}
 
-				/// The `is_empty` operation.
+				/// Whether the vector contains no elements (`len() == 0`);
+				/// backed by the same ABI length call.
 				pub fn is_empty(&self) -> bool {
 					self.len() == 0
 				}
@@ -101,12 +103,17 @@ macro_rules! define_vec {
 					unsafe { clear_raw(self.ptr) };
 				}
 
-				/// The `iter` operation.
+				/// Iterates over borrowed `&str` views in index order. An
+				/// element whose engine bytes are not valid UTF-8 is skipped
+				/// (its `get` returns `None`), so the count can be smaller
+				/// than `len()`.
 				pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
 					(0..self.len()).filter_map(move |i| self.get(i))
 				}
 
-				/// The `to_vec` operation.
+				/// Copies every element into an owned `Vec<String>`, cloning
+				/// the borrowed views; invalid-UTF-8 elements are skipped,
+				/// like `iter`.
 				pub fn to_vec(&self) -> Vec<String> {
 					self.iter().map(str::to_owned).collect()
 				}
@@ -181,12 +188,14 @@ macro_rules! define_vec {
 					Self { ptr }
 				}
 
-				/// The `len` operation.
+				/// The number of elements in the engine vector, queried
+				/// through the C ABI on every call (not cached).
 				pub fn len(&self) -> usize {
 					unsafe { len_raw(self.ptr) }
 				}
 
-				/// The `is_empty` operation.
+				/// Whether the vector contains no elements (`len() == 0`);
+				/// backed by the same ABI length call.
 				pub fn is_empty(&self) -> bool {
 					self.len() == 0
 				}
@@ -202,7 +211,9 @@ macro_rules! define_vec {
 					}
 				}
 
-				/// The `push` operation.
+				/// Appends `value` to the end of the vector. Elements cross
+				/// the scalar ABI by value; the engine's push has no failure
+				/// return.
 				pub fn push(&mut self, value: $elem) {
 					unsafe { push_raw(self.ptr, value) };
 				}
@@ -218,12 +229,21 @@ macro_rules! define_vec {
 					unsafe { clear_raw(self.ptr) };
 				}
 
-				/// The `iter` operation.
+				/// Iterates over copies of the elements in index order. Each
+				/// item is read through `get`, which is expected to succeed
+				/// for every index below `len()`.
+				///
+				/// # Panics
+				///
+				/// Panics when `get` returns `None` inside `0..len()`, i.e.
+				/// when the engine's reported length and readable indices
+				/// disagree.
 				pub fn iter(&self) -> impl Iterator<Item = $elem> + '_ {
 					(0..self.len()).map(move |i| self.get(i).expect("index < len"))
 				}
 
-				/// The `to_vec` operation.
+				/// Copies every element, in order, into an owned
+				/// `Vec<$elem>` (elements cross the ABI by value).
 				pub fn to_vec(&self) -> Vec<$elem> {
 					self.iter().collect()
 				}

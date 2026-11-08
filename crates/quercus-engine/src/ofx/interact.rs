@@ -83,12 +83,18 @@ pub extern "C" fn quercus_ofx_interact_destroy(id: u64) {
 	interact.destroy();
 }
 
-/// The draw action: the plugin paints its overlay into the currently
-/// bound framebuffer of the current GL context (acquire the GL bridge
-/// first — see [`crate::ofx::gl`]). `viewport` is the viewport size in
-/// pixels, `pixel_scale` the canonical→pixel ratio. No background
-/// image is passed (the caller composites the overlay over the frame
-/// itself).
+/// Draw the interact overlay into the current GL framebuffer.
+///
+/// `id` is the opaque interact handle from [`quercus_ofx_interact_create`].
+/// `viewport_width`/`viewport_height` are the viewport size in pixels;
+/// `pixel_scale_x`/`pixel_scale_y` are the canonical-to-pixel scale factors;
+/// `time` is the timeline position in seconds. Draw acquires the current GL
+/// context through the GL bridge internally; the caller must bind the
+/// destination framebuffer first. No background image is passed because the
+/// caller composites the overlay itself. Returns an OFX status code
+/// (`kOfxStatOK` = 0 on success, `kOfxStatErrBadHandle` = 9 for an unknown
+/// interact id, `kOfxStatErrMissingHostFeature` = 4 when no GL bridge is
+/// available).
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_interact_draw(
 	id: u64,
@@ -125,7 +131,12 @@ pub extern "C" fn quercus_ofx_interact_pen_motion(
 	interact.pen_motion((x, y), pen_down, time)
 }
 
-/// The pen down action.
+/// Begin a pen (stylus) stroke at viewport coordinates `(x, y)`.
+///
+/// `id` is the interact handle; `x`/`y` are in viewport pixels; `time` is the
+/// timeline position in seconds. Returns an OFX status code
+/// (`kOfxStatErrBadHandle` for an unknown id). Pairs with
+/// [`quercus_ofx_interact_pen_up`] and [`quercus_ofx_interact_pen_motion`].
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_interact_pen_down(id: u64, x: f64, y: f64, time: f64) -> i32 {
 	let Some(interact) = interact(id) else {
@@ -134,7 +145,12 @@ pub extern "C" fn quercus_ofx_interact_pen_down(id: u64, x: f64, y: f64, time: f
 	interact.pen_down((x, y), time)
 }
 
-/// The pen up action.
+/// End a pen (stylus) stroke at viewport coordinates `(x, y)`.
+///
+/// `id` is the interact handle; `x`/`y` are in viewport pixels; `time` is the
+/// timeline position in seconds. Returns an OFX status code
+/// (`kOfxStatErrBadHandle` for an unknown id). Pairs with
+/// [`quercus_ofx_interact_pen_down`].
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_interact_pen_up(id: u64, x: f64, y: f64, time: f64) -> i32 {
 	let Some(interact) = interact(id) else {
@@ -143,6 +159,13 @@ pub extern "C" fn quercus_ofx_interact_pen_up(id: u64, x: f64, y: f64, time: f64
 	interact.pen_up((x, y), time)
 }
 
+/// Shared implementation of the key-down and key-up entry points.
+///
+/// `id` is the interact handle; `key_sym` is an ofxKeySyms value; `(key,
+/// key_len)` is the UTF-8 key text (a null pointer or invalid UTF-8 is treated
+/// as empty); `time` is the timeline position in seconds; `down` selects
+/// key-down versus key-up. Returns an OFX status code, or `kOfxStatErrBadHandle`
+/// for an unknown handle.
 fn key_action(id: u64, key_sym: i32, key: *const u8, key_len: usize, time: f64, down: bool) -> i32 {
 	let Some(interact) = interact(id) else {
 		return status::ERR_BAD_HANDLE;
@@ -155,9 +178,17 @@ fn key_action(id: u64, key_sym: i32, key: *const u8, key_len: usize, time: f64, 
 	}
 }
 
-/// The key down action. `key_sym` is an ofxKeySyms value (the SDK's
-/// `ofx::key` constants); `key_string` the character for printable
-/// keys (empty otherwise).
+/// Deliver a key-down event to the interact.
+///
+/// `id` is the interact handle; `key_sym` is an ofxKeySyms value (the SDK's
+/// `ofx::key` constants); `(key, key_len)` is the UTF-8 text for printable keys
+/// and may be empty; `time` is the timeline position in seconds. Returns an
+/// OFX status code (`kOfxStatErrBadHandle` for an unknown id).
+///
+/// # Safety
+///
+/// If `key_len` is non-zero, `key` must point to that many initialized bytes
+/// for the duration of the call (the bytes are borrowed, never stored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_interact_key_down(
 	id: u64,
@@ -169,7 +200,17 @@ pub unsafe extern "C" fn quercus_ofx_interact_key_down(
 	key_action(id, key_sym, key, key_len, time, true)
 }
 
-/// The key up action (see [`quercus_ofx_interact_key_down`]).
+/// Deliver a key-up event to the interact.
+///
+/// `id` is the interact handle; `key_sym` is an ofxKeySyms value (the SDK's
+/// `ofx::key` constants); `(key, key_len)` is the UTF-8 text for printable keys
+/// and may be empty; `time` is the timeline position in seconds. Returns an
+/// OFX status code (`kOfxStatErrBadHandle` for an unknown id).
+///
+/// # Safety
+///
+/// If `key_len` is non-zero, `key` must point to that many initialized bytes
+/// for the duration of the call (the bytes are borrowed, never stored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_interact_key_up(
 	id: u64,
@@ -191,8 +232,12 @@ pub extern "C" fn quercus_ofx_interact_idle(id: u64) -> i32 {
 	interact.idle()
 }
 
-/// The gain focus action (a prerequisite of pen/key actions,
-/// ofxInteract.h).
+/// Notify the interact that it gained focus.
+///
+/// `id` is the interact handle; `time` is the timeline position in seconds.
+/// Gain focus is a prerequisite for pen/key actions (ofxInteract.h). Returns an
+/// OFX status code (`kOfxStatErrBadHandle` for an unknown id). Pairs with
+/// [`quercus_ofx_interact_lose_focus`].
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_interact_gain_focus(id: u64, time: f64) -> i32 {
 	let Some(interact) = interact(id) else {
@@ -201,7 +246,11 @@ pub extern "C" fn quercus_ofx_interact_gain_focus(id: u64, time: f64) -> i32 {
 	interact.gain_focus(time)
 }
 
-/// The lose focus action.
+/// Notify the interact that it lost focus.
+///
+/// `id` is the interact handle; `time` is the timeline position in seconds.
+/// Returns an OFX status code (`kOfxStatErrBadHandle` for an unknown id). Pairs
+/// with [`quercus_ofx_interact_gain_focus`].
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_interact_lose_focus(id: u64, time: f64) -> i32 {
 	let Some(interact) = interact(id) else {

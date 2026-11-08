@@ -120,6 +120,27 @@ pub extern "C" fn quercus_render_gpu_mark_host() -> bool {
 	GpuContext::mark_host_context()
 }
 
+/// Installs the CPU-baked working-space → display-encoded 3D LUT on the
+/// host-adopted GPU context (the zero-copy present path).
+///
+/// `edge` is the cube edge (samples per axis), so `len` must be exactly
+/// `edge³ * 3`; `lo` and `hi` are the 3 working-space RGB values at the cube's
+/// first and last corner, and `data` is the flattened RGB table in the
+/// engine's red-major order. The table is uploaded as an `edge³` 3D texture
+/// and replaces any previous display LUT. Returns `false` when a pointer is
+/// null, `len` does not match `edge` (or `edge³ * 3` overflows), no
+/// host-adopted context exists — the CPU display transform then stays
+/// authoritative — or the GPU upload fails.
+///
+/// The safe wrapper is `quercus_engine_rs::render::gpu_set_display_lut` (the
+/// app calls it right after installing the shared device).
+///
+/// # Safety
+///
+/// `lo` and `hi` must be null or point to 3 readable `f32`s, and `data` must
+/// be null or point to `len` readable `f32`s. Null pointers are rejected
+/// with `false` before any dereference; non-null pointers are dereferenced
+/// for the duration of the call only (the table is copied).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_render_gpu_set_display_lut(
 	edge: u32,

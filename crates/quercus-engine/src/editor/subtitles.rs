@@ -65,7 +65,12 @@ impl Default for QuercusSubtitleStyle {
 }
 
 impl QuercusSubtitleStyle {
-	/// Builds the POD style from the engine style.
+	/// Build the C-ABI POD style from an engine [`ops::SubtitleStyle`].
+	///
+	/// `style` is the engine-side style; string fields are copied into
+	/// fixed-size arrays (`font_family` is truncated to 127 bytes plus a NUL).
+	/// The inverse is `QuercusSubtitleStyle::to_native`, which validates the NUL
+	/// terminator and UTF-8.
 	fn from_native(style: &ops::SubtitleStyle) -> Self {
 		let mut font_family = [0u8; 128];
 		let bytes = style.font_family.as_bytes();
@@ -145,9 +150,19 @@ pub unsafe extern "C" fn quercus_editor_set_subtitle_style(
 	ops::apply_subtitle_style(&project, clip, &style).is_ok()
 }
 
-/// Imports an SRT file as Text clips on the current sequence and
-/// `track_index`, applying the default subtitle style. Returns the cue
-/// count, or -1 on a null/invalid session, path or I/O/parse error.
+/// Import an SRT file as Text clips on the current sequence.
+///
+/// `session` is the editor session handle; `(path, path_len)` is the UTF-8
+/// SRT path (borrowed); `track_index` is the target video track index and
+/// must be non-negative. Returns the imported cue count, or `-1` for a
+/// null/invalid session or path, a negative track index, or an I/O/parse
+/// error. The clips get the default subtitle style; use the `_styled` variant
+/// for a custom style.
+///
+/// # Safety
+///
+/// A non-null `session` must point to a live editor session handle; a non-null
+/// `path` must point to `path_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_import_subtitles(
 	session: *const EditorSessionHandle,
@@ -219,8 +234,17 @@ pub unsafe extern "C" fn quercus_editor_import_subtitles_styled(
 	}
 }
 
-/// Exports Text clips on the current sequence's video tracks to an SRT
-/// file. Returns the cue count, or -1 on error.
+/// Export Text clips on the current sequence's video tracks to an SRT file.
+///
+/// `session` is the editor session handle; `(path, path_len)` is the UTF-8
+/// destination path (borrowed; the file is created/overwritten). Returns the
+/// exported cue count, or `-1` for a null/invalid session or path, or an
+/// I/O/encoding error.
+///
+/// # Safety
+///
+/// A non-null `session` must point to a live editor session handle; a non-null
+/// `path` must point to `path_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_export_subtitles(
 	session: *const EditorSessionHandle,
@@ -242,8 +266,17 @@ pub unsafe extern "C" fn quercus_editor_export_subtitles(
 	}
 }
 
-/// Sets a clip's audio gain (0..=4, 1 = unity) as one undo entry.
-/// Returns false on a null/invalid session, clip or gain.
+/// Set a clip's audio gain as one undoable command.
+///
+/// `session` is the editor session handle; `clip` is the clip node identity (a
+/// registry id, not a raw pointer); `gain` is the linear gain in `0..=4`
+/// (1.0 = unity). Returns `false` for a null/invalid session or clip, or an
+/// out-of-range gain; on success the edit is pushed to the undo stack as one
+/// entry.
+///
+/// # Safety
+///
+/// A non-null `session` must point to a live editor session handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_clip_gain(
 	session: *const EditorSessionHandle,
@@ -259,8 +292,17 @@ pub unsafe extern "C" fn quercus_editor_set_clip_gain(
 	crate::editor_commands::set_clip_gain(&project, clip, gain).is_ok()
 }
 
-/// Reads the subtitle style applied to a Text clip. Returns false for a
-/// null/invalid session or a non-Text clip.
+/// Read the subtitle style applied to a Text clip.
+///
+/// `session` is the editor session handle; `clip` is the clip node identity;
+/// `out` receives the POD style on success and is only written when the
+/// function returns `true`. Returns `false` for a null/invalid session, clip
+/// or out pointer, or a non-Text clip.
+///
+/// # Safety
+///
+/// A non-null `session` must point to a live editor session handle; a non-null
+/// `out` must point to writable `QuercusSubtitleStyle` storage.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_subtitle_style(
 	session: *const EditorSessionHandle,

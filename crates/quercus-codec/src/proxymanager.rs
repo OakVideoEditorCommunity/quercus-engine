@@ -147,6 +147,12 @@ impl ProxyManager {
 	}
 
 	/// State of a proxy file on disk.
+	///
+	/// `proxy_filename` is the final proxy path. Returns `Ready` when it
+	/// exists, `Generating` when its `.working.mp4` sibling exists
+	/// (generation in progress or interrupted), and `Missing` for an empty
+	/// path or when neither file exists. Never reports `Failed` — that state
+	/// only comes from a failed submit in [`Self::get_or_start`].
 	pub fn get_proxy_state(proxy_filename: &str) -> ProxyState {
 		if proxy_filename.is_empty() {
 			return ProxyState::Missing;
@@ -164,6 +170,11 @@ impl ProxyManager {
 	}
 
 	/// Human-readable string for a proxy state.
+	///
+	/// Maps the enum to the lowercase names used by the project file and the
+	/// UI ("missing"/"generating"/"ready"/"failed"); the inverse of
+	/// [`Self::proxy_state_from_string`], which accepts the same names plus
+	/// the legacy numeric forms.
 	pub fn proxy_state_to_string(state: ProxyState) -> String {
 		match state {
 			ProxyState::Missing => "missing".to_string(),
@@ -195,6 +206,10 @@ impl ProxyManager {
 	}
 
 	/// Proxy directory for a project cache path.
+	///
+	/// `cache_path` is the project's cache root; returns `<cache_path>/proxy`
+	/// as a lossily converted UTF-8 string. The directory is not created.
+	/// Kept fallible for the C++ signature but never errors today.
 	pub fn get_proxy_directory(cache_path: &str) -> crate::error::Result<String> {
 		Ok(Path::new(cache_path)
 			.join("proxy")
@@ -203,6 +218,21 @@ impl ProxyManager {
 	}
 
 	/// Deterministic proxy filename for a source stream.
+	///
+	/// `cache_path` is the project cache root — the file lands in its
+	/// `proxy` subdirectory; `source_filename` is hashed into the unique file
+	/// identifier; `stream_index` is appended verbatim; `params` supplies the
+	/// size tag (`divN` in divider mode, else `WxH`), the format version, the
+	/// audio flag and the container extension (default "mp4"). The same
+	/// inputs (path plus file mtime) always produce the same path, so a proxy
+	/// survives restarts; a missing/unreadable source file yields an empty
+	/// identifier, making the name start with the stream index. Neither the
+	/// file nor its parent directory is created here.
+	///
+	/// # Errors
+	///
+	/// Propagates the directory error from [`Self::get_proxy_directory`]
+	/// (currently never produced).
 	pub fn get_proxy_filename(
 		cache_path: &str,
 		source_filename: &str,
@@ -241,6 +271,12 @@ impl ProxyManager {
 	}
 
 	/// Working (in-progress) filename of a proxy.
+	///
+	/// Appends `.working.mp4` to `proxy_filename`: the intermediate the
+	/// transcode writes before renaming to the final name, with a standard
+	/// container extension so ffmpeg can infer the output format. Kept
+	/// fallible for the C++ signature, but never errors today; an empty
+	/// input yields ".working.mp4".
 	pub fn get_working_filename(proxy_filename: &str) -> crate::error::Result<String> {
 		// Append a recognizable suffix while keeping a standard container
 		// extension so ffmpeg can infer the output format.
@@ -249,6 +285,21 @@ impl ProxyManager {
 
 	/// Get or start generating a proxy for `source_filename`. With no task
 	/// registrar the state stays `Missing`.
+	///
+	/// `cache_path` is the project cache root (the proxy directory is
+	/// derived from it), `source_filename` is the media file, `stream_index`
+	/// selects the stream inside it, and `params` fixes both the filename tag
+	/// and the transcode size. If the final proxy exists the state is
+	/// `Ready`; otherwise a stale `.working.mp4` is removed and a proxy task
+	/// is submitted. Returns `(state, proxy_filename)`: `Ready` when the file
+	/// already exists (or the synchronous submit already produced it),
+	/// `Generating` after a successful submit, `Failed` when submission
+	/// errors, and `Missing` when no task registrar is installed.
+	///
+	/// # Errors
+	///
+	/// Propagates the filename error from [`Self::get_proxy_filename`]
+	/// (currently never produced).
 	pub fn get_or_start(
 		&self,
 		cache_path: &str,
@@ -304,7 +355,16 @@ impl ProxyManager {
 		Ok((ProxyState::Generating, filename))
 	}
 
-	/// Locate an ffmpeg executable (empty string when none found).
+	/// Locate an ffmpeg executable ("" when none is found).
+	///
+	/// `configured_path` is an explicit user setting: when non-empty and an
+	/// executable regular file it wins and is returned absolutized.
+	/// Otherwise the system PATH is searched (split per platform, see
+	/// `split_path_env`), then common install locations
+	/// (`<app dir>/ffmpeg`, Homebrew, `/usr/local/bin`, `/usr/bin`, plus the
+	/// official Windows installer and Quercus config directories on
+	/// Windows). The returned path is absolute; "" means no proxy
+	/// transcode can run.
 	pub fn find_ffmpeg(configured_path: &str) -> String {
 		// An explicitly configured path takes precedence if it is usable.
 		if !configured_path.is_empty()
@@ -379,12 +439,23 @@ fn cstr_slice(a: &[u8; 32]) -> &str {
 	std::str::from_utf8(&a[..end]).unwrap_or("")
 }
 
-/// `quercus_core_config_get_int` wrapper (null group).
+/// Read a global config key as an `i32`.
+///
+/// `key` is the setting name and `default` is returned when the key is
+/// absent or not an integer. Reads the null/global group, matching the C++
+/// `quercus_core_config_get_int` wrapper. Used by
+/// [`ProxyManager::proxy_params_from_config`].
 fn config_get_int(key: &str, default: i32) -> i32 {
 	ConfigStore::instance().get_int(None, key, default)
 }
 
-/// `quercus_core_config_get_bool` wrapper (null group).
+/// Read a global config key as a boolean flag (`0`/`1`, values passed
+/// through unchanged).
+///
+/// `key` is the setting name and `default` is returned as-is when the key is
+/// absent (the store has no type info, so flags are C-style `int`). Reads
+/// the null/global group, matching the C++ `quercus_core_config_get_bool`
+/// wrapper. Used by [`ProxyManager::proxy_params_from_config`].
 fn config_get_bool(key: &str, default: i32) -> i32 {
 	ConfigStore::instance().get_bool(None, key, default)
 }

@@ -318,6 +318,12 @@ pub fn unbind_project(project: CHandle) {
 }
 
 /// Whether `project` currently has a binding (status-bar / D5 surface).
+///
+/// `project` is the facade project handle; returns `false` for a null handle
+/// or one that does not resolve to a project, otherwise whether a binding
+/// exists for the project's identity. Lock poisoning is tolerated and the
+/// answer is a snapshot, not a reservation: the binding may change right
+/// after the call.
 pub fn is_bound(project: CHandle) -> bool {
 	if project.is_null() {
 		return false;
@@ -453,6 +459,11 @@ fn write_through(key: usize) -> bool {
 /// still-pending coalesced write keeps its pending flag so the debounce
 /// thread / flush retries it, but the debounce clock restarts so a dead
 /// backend is retried at most once per period.
+///
+/// `key` is the binding key (the project's `Arc` address) and `message` the
+/// error text stored verbatim in the binding's `last_error`, which
+/// [`last_error`] exposes to the status bar. Unbound keys are ignored; the
+/// function returns nothing and never propagates the error.
 fn record_error(key: usize, message: &str) {
 	let mut g = bindings().lock().unwrap_or_else(|e| e.into_inner());
 	if let Some(b) = g.get_mut(&key) {

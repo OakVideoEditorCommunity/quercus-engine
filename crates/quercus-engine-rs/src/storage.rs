@@ -257,18 +257,46 @@ pub trait TransportBackend: Send + Sync + 'static {
 		Err(StorageError(E_UNSUPPORTED))
 	}
 
-	/// Delete the row `uuid` from the library at `uri`.
+	/// Deletes the library row `uuid` from the library at `uri`.
+	///
+	/// `uri` names the library, `uuid` the row to remove together with its
+	/// stored document. Only called when [`Self::supports_library`] is
+	/// `true` (the library vtable slots are null otherwise). The default
+	/// implementation reports the capability as unsupported rather than
+	/// silently succeeding.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] with `E_UNSUPPORTED` in the default implementation;
+	/// real backends report their own code (e.g. an unknown row).
 	fn library_delete(&self, _uri: &str, _uuid: &str) -> Result<(), StorageError> {
 		Err(StorageError(E_UNSUPPORTED))
 	}
 
-	/// Rename the row `uuid` in the library at `uri`.
+	/// Renames the library row `uuid` at `uri` to `name`.
+	///
+	/// `uri` names the library, `uuid` the row and `name` the new display
+	/// name. Only called when [`Self::supports_library`] is `true` (the
+	/// library vtable slots are null otherwise). The default implementation
+	/// reports the capability as unsupported rather than silently
+	/// succeeding.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] with `E_UNSUPPORTED` in the default implementation;
+	/// real backends report their own code.
 	fn library_rename(&self, _uri: &str, _uuid: &str, _name: &str) -> Result<(), StorageError> {
 		Err(StorageError(E_UNSUPPORTED))
 	}
 
-	/// Snapshot the row `uuid` (whole-document transports can keep the
-	/// default no-op: every `save` is already a snapshot).
+	/// Snapshots the row `uuid` of the library at `uri`.
+	///
+	/// Asks the backend to capture a restore point for the row's stored
+	/// document, e.g. before a destructive edit. Whole-document transports
+	/// can keep the default no-op, because every `save` already stores a
+	/// complete document. `_uri`/`_uuid` are ignored by the default
+	/// implementation, which always succeeds and does not check that the
+	/// row exists.
 	fn library_snapshot(&self, _uri: &str, _uuid: &str) -> Result<(), StorageError> {
 		Ok(())
 	}
@@ -379,7 +407,19 @@ pub fn register_transport<B: TransportBackend>(
 	})
 }
 
-/// Type-erased drop for the registration guard.
+/// Type-erased drop for the registration guard: frees a `TransportBox<B>`.
+///
+/// Stored as `drop_userdata` in [`TransportRegistration`] and called
+/// exactly once from the guard's `Drop`, after the engine has
+/// unregistered the transport and drained in-flight callbacks. A null
+/// `userdata` is a no-op, so a partially built registration can be torn
+/// down safely.
+///
+/// # Safety
+///
+/// `userdata` must be null or the pointer produced by
+/// `Box::into_raw(Box<TransportBox<B>>)` in [`register_transport`] for the
+/// same `B`, and it must not have been freed already.
 unsafe fn drop_transport<B: TransportBackend>(userdata: *mut c_void) {
 	if userdata.is_null() {
 		return;
@@ -415,7 +455,21 @@ unsafe fn transport_error(err: *mut QuercusStorageError, code: i32, message: &st
 	err.set_message(message);
 }
 
-/// C trampoline for `can_handle`: panics never cross the ABI boundary.
+/// C trampoline for `can_handle`: reports whether the backend claims
+/// `uri` as `1` (claimed) or `0` (not claimed).
+///
+/// The `extern "C"` half of [`TransportBackend::can_handle`], installed
+/// for every registration. `uri` is a `(ptr, len)` pair borrowed for the
+/// call only. Bad arguments, a non-UTF-8 URI and a panicking `can_handle`
+/// all become `-1` with `err` filled, because panics must never cross the
+/// ABI boundary.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `err` must be null or point
+/// to a writable `QuercusStorageError`.
 unsafe extern "C" fn transport_can_handle<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -449,6 +503,25 @@ unsafe extern "C" fn transport_can_handle<B: TransportBackend>(
 
 /// C trampoline for `load`: hands a heap buffer to the engine, which
 /// releases it through [`transport_free_bytes`].
+///
+/// The `extern "C"` half of [`TransportBackend::load`]. On success it
+/// writes the payload pointer into `out_bytes`, its length into `out_len`
+/// (ownership moves to the engine) and, when `out_format` is non-null, the
+/// document format hint `0` = AUTO, letting the engine's codec pick (v1:
+/// XML). `uri` is a `(ptr, len)` pair borrowed for the call. A null
+/// `out_bytes` or `out_len` is rejected rather than dereferenced. Returns
+/// `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic); on failure no buffer is leaked
+/// to the caller.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `out_bytes` and `out_len`
+/// must point to writable `*mut u8`/`usize` storage; `out_format` may be
+/// null or writable; `err` must be null or point to a writable
+/// `QuercusStorageError`.
 unsafe extern "C" fn transport_load<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -503,8 +576,21 @@ unsafe extern "C" fn transport_load<B: TransportBackend>(
 	}
 }
 
-/// C trampoline for `free_bytes`: reclaims a buffer from
+/// C trampoline for `free_bytes`: reclaims a buffer handed out by
 /// [`transport_load`].
+///
+/// The `free_bytes` vtable slot; the engine calls it once per successful
+/// `load` with the exact `(bytes, len)` pair it received back, and the
+/// boxed slice is reconstructed and dropped here. `_userdata` is unused —
+/// the allocation is a plain `u8` box, not tied to the transport — and a
+/// null `bytes` is a no-op. Never reports an error and never panics across
+/// the ABI.
+///
+/// # Safety
+///
+/// `bytes` must be null or the pointer returned by [`transport_load`] for
+/// a [`TransportBackend`] of the same registration, with its original
+/// `len`, and must not be freed twice or read afterwards.
 unsafe extern "C" fn transport_free_bytes<B: TransportBackend>(
 	_userdata: *mut c_void,
 	bytes: *mut u8,
@@ -523,7 +609,24 @@ unsafe extern "C" fn transport_free_bytes<B: TransportBackend>(
 	}));
 }
 
-/// C trampoline for `save`.
+/// C trampoline for `save`: hands the engine-serialized project bytes to
+/// the backend.
+///
+/// The `extern "C"` half of [`TransportBackend::save`]. `uri` is a
+/// `(ptr, len)` pair and `bytes`/`bytes_len` is the payload, both borrowed
+/// only for the call; the backend must copy anything it keeps. `options`
+/// is passed through unchanged as the engine's save bitmask (0 =
+/// defaults), and a null payload is accepted only when `bytes_len == 0`.
+/// Returns `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `bytes` must be null or
+/// point to `bytes_len` readable bytes; `err` must be null or point to a
+/// writable `QuercusStorageError`.
 unsafe extern "C" fn transport_save<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -593,7 +696,26 @@ fn write_project_info_pod(
 	Ok(())
 }
 
-/// C trampoline for `library_list`: two-phase (NULL/0 queries the count).
+/// C trampoline for `library_list`: fills a caller-owned array with the
+/// library rows of `uri`.
+///
+/// Two-phase, like the other C string APIs: with a null `out` or
+/// `cap == 0` the intent is "how many rows?" and the backing backend is
+/// queried only to write that count into `out_count`; otherwise up to
+/// `cap` [`QuercusStorageProjectInfo`] PODs are written and `out_count`
+/// receives the number written. A uuid longer than 39 bytes or a name
+/// longer than 255 bytes is rejected instead of being silently truncated,
+/// and a backend that returns more rows than `cap` is an error after the
+/// rows that fit were written. Returns `0` on success, or `-1` after
+/// writing `err`.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`]; `uri` must be null or point to `uri_len`
+/// readable bytes; `out` must be null or point to `cap` writable
+/// `QuercusStorageProjectInfo`; `out_count` must be a writable `usize`;
+/// `err` must be null or point to a writable `QuercusStorageError`.
 unsafe extern "C" fn transport_library_list<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -648,7 +770,20 @@ unsafe extern "C" fn transport_library_list<B: TransportBackend>(
 	}
 }
 
-/// C trampoline for `library_delete`.
+/// C trampoline for `library_delete`: deletes the library row `uuid` at
+/// `uri`.
+///
+/// The `extern "C"` half of [`TransportBackend::library_delete`], put in
+/// the vtable only when `supports_library()` is true. Returns `0` on
+/// success, or `-1` after writing `err` (bad arguments, the backend's own
+/// code such as "no such row", or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` and
+/// `uuid` must be null or point to `uri_len`/`uuid_len` readable bytes;
+/// `err` must be null or point to a writable `QuercusStorageError`.
 unsafe extern "C" fn transport_library_delete<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -684,7 +819,23 @@ unsafe extern "C" fn transport_library_delete<B: TransportBackend>(
 	}
 }
 
-/// C trampoline for `library_rename`.
+/// C trampoline for `library_rename`: renames the library row `uuid` at
+/// `uri` to the UTF-8 string `name`.
+///
+/// The `extern "C"` half of [`TransportBackend::library_rename`], put in
+/// the vtable only when `supports_library()` is true. All three strings
+/// are `(ptr, len)` pairs borrowed for the call duration; a null pointer
+/// or invalid UTF-8 is reported as `E_TRANSPORT` rather than panicking.
+/// Returns `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri`, `uuid`
+/// and `name` must be null or point to `uri_len`/`uuid_len`/`name_len`
+/// readable bytes; `err` must be null or point to a writable
+/// `QuercusStorageError`.
 unsafe extern "C" fn transport_library_rename<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -724,7 +875,22 @@ unsafe extern "C" fn transport_library_rename<B: TransportBackend>(
 	}
 }
 
-/// C trampoline for `library_snapshot`.
+/// C trampoline for `library_snapshot`: asks the backend to capture the
+/// library row `uuid` at `uri` as a restore point.
+///
+/// The `extern "C"` half of [`TransportBackend::library_snapshot`], put in
+/// the vtable only when `supports_library()` is true. `uri` and `uuid`
+/// are `(ptr, len)` byte slices valid for the call only; the backend is
+/// expected to no-op when every save is already a snapshot. Returns `0` on
+/// success, or `-1` after writing `err` (bad arguments, the backend's own
+/// code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error). `uri` and
+/// `uuid` must be null or point to `uri_len`/`uuid_len` readable bytes.
+/// `err` must be null or point to a writable `QuercusStorageError`.
 unsafe extern "C" fn transport_library_snapshot<B: TransportBackend>(
 	userdata: *mut c_void,
 	uri: *const u8,
@@ -799,6 +965,16 @@ pub fn save(project: &Project, uri: &str, options: u32) -> Result<(), StorageErr
 }
 
 /// Whether `uri` parses as a storage URI.
+///
+/// Only the syntactic shape is checked: the empty string is rejected,
+/// while a bare filesystem path is accepted and treated as `file://` (see
+/// `StorageUri::parse`). Whether a backend actually claims the URI is a
+/// separate question — use [`backend_for_uri`] or [`library_supported`]
+/// for that. Used by [`ProjectLibrary::new`] before building a client.
+///
+/// # Returns
+///
+/// `true` for any non-empty URI; `false` only for the empty string.
 pub fn uri_is_valid(uri: &str) -> bool {
 	unsafe { quercus_storage_uri_is_valid(uri.as_ptr(), uri.len()) }
 }
@@ -861,7 +1037,17 @@ pub struct LibraryProject {
 	pub footage_count: i32,
 }
 
-/// The projects in the library at `uri` (an `quercusdb+sqlite:///…` URI).
+/// Lists the project rows of the library at `uri`.
+///
+/// `uri` is a library URI (`quercusdb+sqlite:///…`, or any scheme whose
+/// backend implements the project library), not a project document URI.
+/// Free function behind [`ProjectLibrary::projects`]; rows come back in
+/// backend order and the vector is empty for an empty library.
+///
+/// # Errors
+///
+/// [`StorageError`] when no backend claims `uri`, when the backend lacks
+/// the library capability, or when enumeration fails.
 pub fn library_projects(uri: &str) -> Result<Vec<LibraryProject>, StorageError> {
 	let count = unsafe { quercus_storage_library_count(uri.as_ptr(), uri.len()) };
 	if count < 0 {
@@ -887,12 +1073,32 @@ pub fn library_projects(uri: &str) -> Result<Vec<LibraryProject>, StorageError> 
 		.collect())
 }
 
-/// Deletes a project from the library.
+/// Deletes the library row `uuid` from the library at `uri`.
+///
+/// Free function behind [`ProjectLibrary::delete`]. `uri` names the
+/// library, `uuid` the row to remove along with its stored document.
+/// Deleting an unknown row is an error, not a no-op; close any session
+/// bound to the row first if the backend locks open rows.
+///
+/// # Errors
+///
+/// [`StorageError`] when `uri` is not a library URI or the row does not
+/// exist.
 pub fn library_delete(uri: &str, uuid: &str) -> Result<(), StorageError> {
 	check(unsafe { quercus_storage_library_delete(uri.as_ptr(), uri.len(), uuid.as_ptr(), uuid.len()) })
 }
 
-/// Renames a project in the library.
+/// Renames the library row `uuid` at `uri` to `new_name`.
+///
+/// Free function behind [`ProjectLibrary::rename`]. `uri` names the
+/// library (not the row), `uuid` is the row to rename and `new_name`
+/// replaces only its display name. Use [`library_projects`] to see the
+/// names.
+///
+/// # Errors
+///
+/// [`StorageError`] when `uri` is not a library URI, the row does not
+/// exist, or the backend rejects the name.
 pub fn library_rename(uri: &str, uuid: &str, new_name: &str) -> Result<(), StorageError> {
 	check(unsafe {
 		quercus_storage_library_rename(
@@ -916,6 +1122,20 @@ pub fn flush() {
 	unsafe { quercus_storage_flush() }
 }
 
+/// Runs a side-effecting library call that returns a string through one
+/// fixed-size buffer.
+///
+/// `f` is called exactly once with a 4096-byte scratch buffer and its
+/// length; it returns the number of bytes written, or a negative engine
+/// error code. A single call is deliberate: `create`, `duplicate` and
+/// `import` mutate the library, so the two-pass "query the size, then call
+/// again" convention used by read-only getters is not safe here.
+///
+/// # Errors
+///
+/// Returns `StorageError` carrying `f`'s code when it is negative, and
+/// `StorageError(-1)` when the result does not fit the buffer or is not
+/// valid UTF-8.
 fn string_result(f: impl Fn(*mut u8, usize) -> i32) -> Result<String, StorageError> {
 	// Unlike read-only getters, create/duplicate/import are side-effecting:
 	// never use the two-pass "query size, then call again" convention here.
@@ -950,22 +1170,59 @@ impl ProjectLibrary {
 		Ok(Self { uri })
 	}
 
-	/// The `configured` operation.
+	/// The project library configured for this session, if any.
+	///
+	/// Returns `Ok(Some(client))` when a default library URI is configured
+	/// (see [`default_library_uri`]), and `Ok(None)` when storage is
+	/// disabled (`Storage/Backend` = `off`) or no default URI is set.
+	/// Unlike [`Self::new`] the URI is not validated, so a client built
+	/// here trusts the configuration.
+	///
+	/// # Errors
+	///
+	/// Reserved for backend failures; the current implementation never
+	/// fails.
 	pub fn configured() -> Result<Option<Self>, StorageError> {
 		Ok(default_library_uri().map(|uri| Self { uri }))
 	}
 
-	/// The `uri` operation.
+	/// The library URI this client was built for.
+	///
+	/// Returned verbatim as passed to [`Self::new`] (no normalization) and
+	/// forwarded to every backend call. Useful for logging and for
+	/// comparing clients with `==`, since [`PartialEq`] compares this
+	/// field only.
 	pub fn uri(&self) -> &str {
 		&self.uri
 	}
 
-	/// The `projects` operation.
+	/// Lists every project row in this library.
+	///
+	/// Rows come back in the backend's own order (the sqlite backend orders
+	/// by last modification, most recent first) and the vector is empty for
+	/// an empty library. Each [`LibraryProject`] carries the uuid, display
+	/// name, timestamps and summary counters, so a browser UI needs no
+	/// further calls. Thin wrapper over [`library_projects`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when the backend cannot enumerate the library.
 	pub fn projects(&self) -> Result<Vec<LibraryProject>, StorageError> {
 		library_projects(&self.uri)
 	}
 
-	/// The `create` operation.
+	/// Creates a new, empty project row named `name` in this library.
+	///
+	/// `name` is the display name of the new row and must not be blank.
+	/// Returns the new row's uuid, which is the handle accepted by
+	/// [`Self::open`], [`Self::rename`], [`Self::delete`] and friends. The
+	/// row is created empty (no sequences or footages); it lives in the
+	/// library, not in a process session, until [`Self::open`] loads it.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when the backend rejects `name` (e.g. blank) or
+	/// cannot write the row.
 	pub fn create(&self, name: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_create(
@@ -979,17 +1236,47 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `delete` operation.
+	/// Deletes the library row `uuid`, dropping its stored document.
+	///
+	/// The row and its payload are removed from the library; this is not
+	/// undoable and not a no-op for a stale uuid — an unknown uuid is an
+	/// error. A session still bound to the row (see [`Self::open`]) should
+	/// be closed first where the backend locks open rows.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library.
 	pub fn delete(&self, uuid: &str) -> Result<(), StorageError> {
 		library_delete(&self.uri, uuid)
 	}
 
-	/// The `rename` operation.
+	/// Renames the library row `uuid` to `name`.
+	///
+	/// `uuid` is the row to rename and `name` is the new display name,
+	/// stored as given (no trimming or case folding). Only the name
+	/// changes: the uuid, the stored document and the timestamps used for
+	/// ordering are unaffected. Renaming an unknown row is an error.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library or the
+	/// backend rejects the name.
 	pub fn rename(&self, uuid: &str, name: &str) -> Result<(), StorageError> {
 		library_rename(&self.uri, uuid, name)
 	}
 
-	/// The `duplicate` operation.
+	/// Copies the library row `uuid` into a new row with a fresh uuid.
+	///
+	/// Returns the new row's uuid. The copy is independent of the source:
+	/// both rows share the same initial document, but subsequent edits to
+	/// either one do not affect the other (see [`Self::open`]). The source
+	/// row keeps its uuid and name; the copy starts out named
+	/// "`<source name> (copy)`" and can be renamed with [`Self::rename`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library or the
+	/// backend cannot write the copy.
 	pub fn duplicate(&self, uuid: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_duplicate(
@@ -1003,7 +1290,18 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `import` operation.
+	/// Imports the project document at `file_uri` into this library as a
+	/// new row.
+	///
+	/// `file_uri` is the source document URI; it is read, parsed and copied
+	/// into the library, so the source is left untouched. Returns the new
+	/// row's uuid (never empty), which the row operations below accept.
+	/// Counterpart of [`Self::export`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `file_uri` cannot be loaded or parsed, or the
+	/// backend cannot write the new row.
 	pub fn import(&self, file_uri: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_import(
@@ -1017,7 +1315,17 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `export` operation.
+	/// Exports the library row `uuid` to the project file at `file_uri`.
+	///
+	/// `file_uri` is the destination document URI and must be claimed by a
+	/// registered backend (normally `file:///…/name.ove`), because the engine
+	/// saves the document through that backend. Export copies: the library
+	/// row and its payload are left untouched. Pairs with [`Self::import`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library, no backend
+	/// claims `file_uri`, or the destination cannot be written.
 	pub fn export(&self, uuid: &str, file_uri: &str) -> Result<(), StorageError> {
 		check(unsafe {
 			quercus_storage_library_export(

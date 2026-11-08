@@ -14,100 +14,109 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! quercusnode 桥（single-lib unification）：节点值 POD、身份注册表与
-//! undoable 参数回写。
+//! quercusnode bridge (single-lib unification): node-value POD, identity
+//! registry, and undoable parameter write-back.
 //!
-//! ## Value 布局冻结
+//! ## Frozen `Value` layout
 //!
-//! [`Value`] 即 include/node/node.h:93 的 `quercusnode_value` POD，字段
-//! 逐字一致（type/num/den/f[4]；`type` 取值见 [`node_value_type`]）。
-//! 字符串族输入（k_file/k_text/k_font/k_str_combo，node.h:48-52）没有
-//! POD 表示——走 `*_input_string_*` 专用函数（本桥的
-//! [`set_input_string_undoable`]）；`QUERCUSNODE_VALUE_STRING` 的 POD 里
-//! 不携带字符串数据。
+//! [`Value`] is the `quercusnode_value` POD from include/node/node.h:93, with
+//! field-for-field identical layout (type/num/den/f[4]; the `type` values are
+//! listed in [`node_value_type`]).
+//! String-family inputs (k_file/k_text/k_font/k_str_combo, node.h:48-52) have
+//! no POD representation — they go through the dedicated `*_input_string_*`
+//! functions (this bridge's [`set_input_string_undoable`]); the
+//! `QUERCUSNODE_VALUE_STRING` POD does not carry string data.
 //!
-//! ## 身份注册表（单库化重建）
+//! ## Identity registry (rebuilt for the single library)
 //!
-//! quercusnode 的 C ABI 已删除（单库化）：节点对象是
-//! `quercus_node::project::Project`（Arc<Mutex<Project>>）里的
-//! `quercus_node::graph::Graph` 条目，按 [`quercus_node::id::NodeId`] 定位。
-//! 本 crate 的 [`NodeRef`] 即旧句柄盒
-//! `(Arc<Mutex<Project>>, NodeId)` 的值型复刻；进程级注册表
-//! [`register_node`]/[`node_from_identity`] 按
-//! [`quercus_node::id::NodeId::identity`] 的打包身份（u64）做弱引用
-//! 映射（project 释放后条目自然失效，升级失败 → None）——
-//! 对应 M9 C++ 版 `quercusnode_node_identity()` 注册表的地址语义。
-//! facade 装配期调 [`register_node`] 登记节点，把返回身份写进
-//! [`crate::instance::Instance::bind_node`]（`node_identity`）。
+//! quercusnode's C ABI has been removed (single-lib unification): a node
+//! object is a `quercus_node::graph::Graph` entry inside
+//! `quercus_node::project::Project` (Arc<Mutex<Project>>), addressed by
+//! [`quercus_node::id::NodeId`]. This crate's [`NodeRef`] is a value-type
+//! replica of the old handle box `(Arc<Mutex<Project>>, NodeId)`; the
+//! process-wide registry [`register_node`]/[`node_from_identity`] keeps a weak
+//! mapping keyed by the packed identity (u64) of
+//! [`quercus_node::id::NodeId::identity`] (entries die once the project is
+//! released, and a failed upgrade yields None) — the counterpart of the address
+//! semantics of the M9 C++ `quercusnode_node_identity()` registry. During
+//! facade assembly [`register_node`] registers the node, and the returned
+//! identity is written into [`crate::instance::Instance::bind_node`]
+//! (`node_identity`).
 //!
-//! ## undoable 回写
+//! ## Undoable write-back
 //!
-//! [`set_input_undoable`]/[`set_input_string_undoable`] 按
-//! `quercus_node::ops::set_value_at_time_command` 的同一 closure
-//! 模式（`command_from_closures`）构造未执行的
-//! `quercus_undo::undocommand::UndoCommand`：redo 闭包锁 project、
-//! `graph.get_mut(id)`、`NodeCore::set_standard_value` 写标准值；
-//! undo 闭包回放创建期快照的旧值。命令由调用方
-//! （[`crate::param::notify_instance_changed`] →
-//! [`crate::instance::Instance::submit_undo_command`]）提交。
+//! [`set_input_undoable`]/[`set_input_string_undoable`] build an unexecuted
+//! `quercus_undo::undocommand::UndoCommand` with the same closure pattern as
+//! `quercus_node::ops::set_value_at_time_command`
+//! (`command_from_closures`): the redo closure locks project, calls
+//! `graph.get_mut(id)` and `NodeCore::set_standard_value` to write the standard
+//! value; the undo closure replays the old value snapshotted at creation time.
+//! The command is submitted by the caller
+//! ([`crate::param::notify_instance_changed`] →
+//! [`crate::instance::Instance::submit_undo_command`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use quercus_undo::undocommand::UndoCommand;
 
-/// quercusnode 节点引用（single-lib）：旧 C ABI 句柄盒
-/// `(Arc<Mutex<Project>>, NodeId)` 的值型复刻。
+/// A quercusnode node reference (single-lib): a value-type replica of the old
+/// C ABI handle box `(Arc<Mutex<Project>>, NodeId)`.
 #[derive(Clone)]
 pub struct NodeRef {
-	/// 所属 project（节点生命周期随 project）。
+/// Owning project (the node's lifetime follows the project).
 	pub project: Arc<Mutex<quercus_node::project::Project>>,
-	/// 节点在 project.graph 里的 id。
+/// The node's id inside project.graph.
 	pub id: quercus_node::id::NodeId,
 }
 
-/// quercusnode_value_type 的取值（node.h:74）。
+/// Values of quercusnode_value_type (node.h:74).
 pub mod node_value_type {
-	/// QUERCUSNODE_VALUE_NONE。
+/// QUERCUSNODE_VALUE_NONE.
 	pub const NONE: i32 = 0;
-	/// QUERCUSNODE_VALUE_INT。
+/// QUERCUSNODE_VALUE_INT.
 	pub const INT: i32 = 1;
-	/// QUERCUSNODE_VALUE_FLOAT。
+/// QUERCUSNODE_VALUE_FLOAT.
 	pub const FLOAT: i32 = 2;
-	/// QUERCUSNODE_VALUE_BOOL。
+/// QUERCUSNODE_VALUE_BOOL.
 	pub const BOOL: i32 = 3;
-	/// QUERCUSNODE_VALUE_RATIONAL。
+/// QUERCUSNODE_VALUE_RATIONAL.
 	pub const RATIONAL: i32 = 4;
-	/// QUERCUSNODE_VALUE_COLOR。
+/// QUERCUSNODE_VALUE_COLOR.
 	pub const COLOR: i32 = 5;
-	/// QUERCUSNODE_VALUE_VEC2。
+/// QUERCUSNODE_VALUE_VEC2.
 	pub const VEC2: i32 = 6;
-	/// QUERCUSNODE_VALUE_VEC3。
+/// QUERCUSNODE_VALUE_VEC3.
 	pub const VEC3: i32 = 7;
-	/// QUERCUSNODE_VALUE_VEC4。
+/// QUERCUSNODE_VALUE_VEC4.
 	pub const VEC4: i32 = 8;
-	/// QUERCUSNODE_VALUE_COMBO。
+/// QUERCUSNODE_VALUE_COMBO.
 	pub const COMBO: i32 = 9;
-	/// QUERCUSNODE_VALUE_STRING。
+/// QUERCUSNODE_VALUE_STRING.
 	pub const STRING: i32 = 10;
 }
 
-/// quercusnode_value（include/node/node.h:93，字段逐字一致）。
+/// quercusnode_value (include/node/node.h:93, field-for-field identical).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Value {
-	/// 类型（[`node_value_type`]）。
+/// Type ([`node_value_type`]).
 	pub r#type: i32,
-	/// INT/COMBO 值、BOOL 0/1、RATIONAL 分子。
+/// INT/COMBO value, BOOL 0/1, RATIONAL numerator.
 	pub num: i64,
-	/// RATIONAL 分母。
+/// RATIONAL denominator.
 	pub den: i64,
-	/// FLOAT f[0]；VEC2/3/4 f[0..n-1]；COLOR r,g,b,a。
+/// FLOAT f[0]; VEC2/3/4 f[0..n-1]; COLOR r,g,b,a.
 	pub f: [f64; 4],
 }
 
 impl Value {
-	/// 类型化构造：整数 / choice 索引。
+	/// Construct an INT value POD: `num = v`, `den = 0`, `f` all zeros.
+	///
+	/// `v` is an `i64` integer with no range check (the consumer interprets it
+	/// according to the declared input type). Converted by
+	/// [`Value::to_node_value`] into [`quercus_node::value::NodeValue::Int`], the
+	/// inverse of the `NV::Int` branch of [`Value::from_node_value`].
 	pub const fn int(v: i64) -> Self {
 		Self {
 			r#type: node_value_type::INT,
@@ -117,7 +126,12 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：浮点。
+	/// Construct a FLOAT value POD: `f[0] = v`; the remaining components and
+	/// `num`/`den` are 0.
+	///
+	/// `v` is an `f64` scalar with no range or precision check. Converted by
+	/// [`Value::to_node_value`] into
+	/// [`quercus_node::value::NodeValue::Float`] (only `f[0]` is read).
 	pub const fn float(v: f64) -> Self {
 		Self {
 			r#type: node_value_type::FLOAT,
@@ -127,7 +141,12 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：布尔。
+	/// Construct a BOOL value POD: `num = v as i64` (`false` → 0, `true` → 1),
+	/// `den` is 0, `f` is all zeros.
+	///
+	/// Converted by [`Value::to_node_value`] into
+	/// [`quercus_node::value::NodeValue::Boolean`] (the conversion tests
+	/// `num != 0`).
 	pub const fn bool_(v: bool) -> Self {
 		Self {
 			r#type: node_value_type::BOOL,
@@ -137,7 +156,12 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：choice（COMBO）。
+	/// Construct a COMBO value POD: `num = v`, `den = 0`, `f` all zeros.
+	///
+	/// `v` is a 0-based choice index, i.e. the position in the input's
+	/// `combo_strings`; there is no range check (an out-of-range index is treated as
+	/// invalid by the consumer). Converted by [`Value::to_node_value`] into
+	/// [`quercus_node::value::NodeValue::Combo`].
 	pub const fn combo(v: i64) -> Self {
 		Self {
 			r#type: node_value_type::COMBO,
@@ -147,7 +171,13 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：颜色。
+	/// Construct a COLOR value POD: `f = [r, g, b, a]`, `num`/`den` are 0.
+	///
+	/// The four components are written as-is, with no clamp, gamma or colour space
+	/// conversion (the POD is only a carrier; the consumer decides how to interpret
+	/// it). Converted by [`Value::to_node_value`] into
+	/// [`quercus_node::value::NodeValue::Color`], the inverse of the `NV::Color`
+	/// branch of [`Value::from_node_value`].
 	pub const fn color(r: f64, g: f64, b: f64, a: f64) -> Self {
 		Self {
 			r#type: node_value_type::COLOR,
@@ -157,7 +187,13 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：vec2/3/4（长度按 f 数组尾部 0 判定）。
+	/// Construct a VEC2/VEC3/VEC4 value POD.
+	///
+	/// The length of `v` selects the type: 2 → VEC2, 3 → VEC3, anything else
+	/// (0/1/4/more than 4) → VEC4. At most the first 4 elements are copied, the
+	/// remaining `f` components are 0, and elements beyond 4 are silently dropped;
+	/// there is no range check. Converted by [`Value::to_node_value`] into
+	/// [`quercus_node::value::NodeValue::Vec2`]/`Vec3`/`Vec4`.
 	pub const fn vec(v: &[f64]) -> Self {
 		let t = match v.len() {
 			2 => node_value_type::VEC2,
@@ -178,8 +214,8 @@ impl Value {
 		}
 	}
 
-	/// 类型化构造：字符串族（POD 不携带数据；值经
-	/// [`set_input_string_undoable`] 传递）。
+	/// Typed constructor for the string family (the POD carries no data; the value
+	/// travels through [`set_input_string_undoable`]).
 	pub const fn string() -> Self {
 		Self {
 			r#type: node_value_type::STRING,
@@ -189,10 +225,10 @@ impl Value {
 		}
 	}
 
-	/// POD → [`quercus_node::value::NodeValue`]，按 POD kind 映射（与
-	/// `quercus_node::value::QuercusNodeValue::to_node_value` 的 kind 分支一致，
-	/// 不按声明类型重量化）。`STRING` 族 POD 不携带数据 → `None`；
-	/// `NONE` → [`quercus_node::value::NodeValue::None`]。
+	/// POD → [`quercus_node::value::NodeValue`], mapped by POD kind (matching the
+	/// kind branches of `quercus_node::value::QuercusNodeValue::to_node_value`, not
+	/// requantised by the declared type). A `STRING`-family POD carries no data →
+	/// `None`; `NONE` → [`quercus_node::value::NodeValue::None`].
 	pub fn to_node_value(&self) -> Option<quercus_node::value::NodeValue> {
 		use quercus_node::value::NodeValue as NV;
 		match self.r#type {
@@ -212,8 +248,9 @@ impl Value {
 		}
 	}
 
-	/// [`quercus_node::value::NodeValue`] → POD（`ValueType::to_quercus` 的逆）。
-	/// 无 POD 表达的类型（字符串族/纹理/采样/矩阵等）→ `None`。
+/// [`quercus_node::value::NodeValue`] → POD (the inverse of
+/// `ValueType::to_quercus`). Types with no POD representation (string
+/// family/texture/sample/matrix, ...) → `None`.
 	pub fn from_node_value(v: &quercus_node::value::NodeValue) -> Option<Value> {
 		use quercus_node::value::NodeValue as NV;
 		Some(match v {
@@ -244,29 +281,31 @@ impl Value {
 
 // ---- 身份注册表 -----------------------------------------------------------
 
-/// 注册表条目：弱 project 引用（project 释放后升级失败，条目变死）
-/// + 节点 id。
+/// Registry entry: a weak project reference (once the project is released the
+/// upgrade fails and the entry goes dead) + the node id.
 struct RegistryEntry {
-	/// 所属 project（弱引用；强引用由调用方/节点持有）。
+	/// Owning project (weak reference; strong references are held by callers/nodes).
 	project: Weak<Mutex<quercus_node::project::Project>>,
-	/// 节点 id。
+	/// The node id.
 	id: quercus_node::id::NodeId,
 }
 
-/// 进程级身份注册表（OnceLock 惰性初始化；测试进程内可重复 register）。
+/// Process-wide identity registry (lazily initialised OnceLock; registration may repeat within a test process).
 static NODE_REGISTRY: OnceLock<Mutex<HashMap<u64, RegistryEntry>>> = OnceLock::new();
 
 fn registry() -> &'static Mutex<HashMap<u64, RegistryEntry>> {
 	NODE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 登记 quercusnode 节点（facade 装配期调用；对应 M9 C++ 版
-/// `quercusnode_node_identity()` 注册表的登记侧）。返回的注册表键是打包
-/// 身份 +1（[`quercus_node::id::NodeId::identity`]）：身份 0 是合法的首
-/// 节点，而 `Instance::node_identity` 以 0 为未绑定哨兵，移位后二者
-/// 永不冲突。键写入 [`crate::instance::Instance::bind_node`]，摘除与
-/// 查找（[`node_from_identity`]）用同一键。同一身份重复登记覆盖旧
-/// 条目（重绑定）。
+/// Register a quercusnode node (called during facade assembly; the registration
+/// side of the M9 C++ `quercusnode_node_identity()` registry). The returned
+/// registry key is the packed identity + 1
+/// ([`quercus_node::id::NodeId::identity`]): identity 0 is a valid first node
+/// while `Instance::node_identity` uses 0 as the unbound sentinel, so the
+/// shifted values never collide. The key is written into
+/// [`crate::instance::Instance::bind_node`], and removal and lookup
+/// ([`node_from_identity`]) use the same key. Registering the same identity
+/// again overwrites the old entry (re-binding).
 pub fn register_node(
 	project: Arc<Mutex<quercus_node::project::Project>>,
 	id: quercus_node::id::NodeId,
@@ -286,7 +325,13 @@ pub fn register_node(
 	identity
 }
 
-/// 摘除身份（节点销毁路径调用；未知身份 no-op）。
+/// Remove the entry for `identity` from the process-wide identity registry.
+///
+/// Called from the node destruction path; an unregistered identity is ignored
+/// (a no-op, not an error). Uses the same key as [`register_node`]
+/// (`NodeId::identity() + 1`). Only the weak-reference entry is removed; the
+/// project and the node itself are untouched, and a [`NodeRef`] already obtained
+/// stays usable.
 pub fn unregister_node(identity: u64) {
 	registry()
 		.lock()
@@ -294,12 +339,12 @@ pub fn unregister_node(identity: u64) {
 		.remove(&identity);
 }
 
-/// 身份 → 节点引用（param 回写入口）。
+/// Identity → node reference (the param write-back entry point).
 ///
-/// `None`：身份未登记，或 project 已释放（弱引用升级失败——旧 C
-/// ABI 对悬垂句柄的可解释失败路径）。调用方
-/// （[`crate::param::notify_instance_changed`]）按 "未绑定节点 →
-/// no-op" 处理。
+/// `None`: the identity is not registered, or the project has been released
+/// (the weak upgrade fails — the explainable failure path the old C ABI had for
+/// dangling handles). The caller ([`crate::param::notify_instance_changed`])
+/// treats it as "unbound node → no-op".
 pub fn node_from_identity(identity: usize) -> Option<NodeRef> {
 	let (project, id) = {
 		let reg = registry()
@@ -314,30 +359,36 @@ pub fn node_from_identity(identity: usize) -> Option<NodeRef> {
 
 // ---- 桥调用面（undoable 回写）---------------------------------------------
 
-/// quercusnode 桥错误（set_input* 的失败原因；调用方按失败跳过提交）。
+/// quercusnode bridge error (why a set_input* failed; the caller skips submission on failure).
 #[derive(Debug, thiserror::Error)]
 pub enum NodeBridgeError {
-	/// 节点 id 已失效（图内无此节点）。
+	/// The node id is stale (no such node in the graph).
 	#[error("node id is stale or not present in the graph")]
 	StaleNode,
-	/// 节点上无该输入。
+	/// The node has no such input.
 	#[error("node has no input '{0}'")]
 	UnknownInput(String),
-	/// 值 POD 无法转换（STRING 族 POD 不携带数据；数值族恒可转换）。
+	/// The value POD cannot be converted (STRING-family PODs carry no data; the numeric family always converts).
 	#[error("value POD of type {0} cannot be converted to a node value")]
 	InvalidValue(i32),
-	/// 输入不是字符串族类型（string setter 限定 Text/StrCombo）。
+	/// The input is not a string-family type (the string setter is limited to Text/StrCombo).
 	#[error("input '{0}' is not a string-family input")]
 	NotStringInput(String),
 }
 
-/// 取锁（毒锁接管，一次 panic 不级联）。
+/// Take the mutex; on poisoning, adopt the inner value and keep using it (`PoisonError::into_inner`).
+///
+/// Shared by every short critical section in this module: one panic will not
+/// cascade into later call failures, at the cost of possibly observing state
+/// written just before the panic. The only difference from
+/// [`std::sync::Mutex::lock`] is that it never returns `Err`, so callers need no
+/// poisoned-lock branch.
 fn lock_any<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 从 redo/undo 闭包构造未执行的 [`UndoCommand`]（closure 模式，与
-/// `quercus_node::ops::command_from_closures` 同构）。
+/// Build an unexecuted [`UndoCommand`] from redo/undo closures (closure pattern,
+/// isomorphic to `quercus_node::ops::command_from_closures`).
 fn command_from_closures(
 	redo: impl FnMut() + Send + 'static,
 	undo: impl FnMut() + Send + 'static,
@@ -345,15 +396,16 @@ fn command_from_closures(
 	UndoCommand::from_closures(redo, undo)
 }
 
-/// 以 undoable 方式设置节点的标准输入值（POD 路径；数值族输入）。
+/// Set a node's standard input value undoably (POD path; numeric-family inputs).
 ///
-/// 返回**未执行**的 [`UndoCommand`]（调用方
-/// [`crate::instance::Instance::submit_undo_command`] 提交）：redo
-/// 锁 project、`graph.get_mut(id)`、`NodeCore::set_standard_value`
-/// 写新值；undo 回放创建期快照的旧值（与
-/// `quercus_node::ops::set_value_at_time_command` 的 standard-value 分支
-/// 同构，element = -1 整值）。节点/输入失效时返回
-/// [`NodeBridgeError`]（不产出命令）。
+/// Returns an **unexecuted** [`UndoCommand`] (the caller
+/// [`crate::instance::Instance::submit_undo_command`] submits it): redo locks
+/// project, calls `graph.get_mut(id)` and `NodeCore::set_standard_value` to write
+/// the new value; undo replays the old value snapshotted at creation time
+/// (isomorphic to the standard-value branch of
+/// `quercus_node::ops::set_value_at_time_command`, element = -1 for the whole
+/// value). When the node or input is stale it returns [`NodeBridgeError`] and
+/// produces no command.
 pub fn set_input_undoable(
 	node: &NodeRef,
 	input: &str,
@@ -403,15 +455,15 @@ pub fn set_input_undoable(
 	))
 }
 
-/// 以 undoable 方式设置节点的标准输入值（字符串族输入：Text /
-/// StrCombo / Parametric——POD 不携带字符串数据）。
+/// Set a node's standard input value undoably (string-family inputs: Text /
+/// StrCombo / Parametric — the POD carries no string data).
 ///
-/// 按输入的声明类型（[`quercus_node::value::ValueType`]）选存储变体：
-/// `StrCombo` → [`quercus_node::value::NodeValue::StrCombo`]，
-/// `Text` / `Parametric`（值 = 曲线 JSON 文本）→
-/// [`quercus_node::value::NodeValue::Text`]。声明类型不是字符串族 →
-/// [`NodeBridgeError::NotStringInput`]。命令语义与
-/// [`set_input_undoable`] 相同。
+/// The storage variant follows the input's declared type
+/// ([`quercus_node::value::ValueType`]): `StrCombo` →
+/// [`quercus_node::value::NodeValue::StrCombo`], `Text` / `Parametric` (the value
+/// is curve JSON text) → [`quercus_node::value::NodeValue::Text`]. A declared
+/// type outside the string family → [`NodeBridgeError::NotStringInput`]. Command
+/// semantics are the same as [`set_input_undoable`].
 pub fn set_input_string_undoable(
 	node: &NodeRef,
 	input: &str,
@@ -477,7 +529,7 @@ mod tests {
 		&LOCK
 	}
 
-	/// 建一个含 Text/StrCombo/Float 输入的测试节点。
+	/// Build a test node with Text/StrCombo/Float inputs.
 	fn test_project() -> (Arc<Mutex<quercus_node::project::Project>>, quercus_node::id::NodeId) {
 		let project = quercus_node::project::Project::new();
 		let mut guard = project.lock().unwrap();
@@ -507,7 +559,7 @@ mod tests {
 		(project, id)
 	}
 
-	/// 注册表：register → node_from_identity → unregister 全链。
+	/// Registry: the full register → node_from_identity → unregister chain.
 	#[test]
 	fn identity_register_roundtrip() {
 		let _guard = identity_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -524,8 +576,9 @@ mod tests {
 		assert!(node_from_identity(identity as usize).is_none());
 	}
 
-	/// project 释放后弱条目升级失败 → None（悬垂语义）；重复登记
-	/// 覆盖死条目后重新解析到新 project。
+	/// Once the project is released the weak entry fails to upgrade → None
+	/// (dangling semantics); re-registering the same slot overwrites the dead entry
+	/// and resolves to the new project.
 	#[test]
 	fn identity_project_dropped() {
 		let _guard = identity_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -542,7 +595,7 @@ mod tests {
 		assert!(alive);
 	}
 
-	/// Value POD ↔ NodeValue 全类型映射；STRING 族 POD 无数据。
+	/// Full Value POD ↔ NodeValue mapping; STRING-family PODs carry no data.
 	#[test]
 	fn pod_node_value_roundtrip() {
 		use quercus_node::value::NodeValue as NV;
@@ -580,7 +633,7 @@ mod tests {
 		assert_eq!(Value::from_node_value(&NV::Matrix([0.0; 16])), None);
 	}
 
-	/// set_input_undoable：redo 写标准值、undo 回放旧值；错误路径。
+	/// set_input_undoable: redo writes the standard value, undo replays the old value; error paths.
 	#[test]
 	fn set_input_undoable_applies_and_undoes() {
 		let (project, id) = test_project();
@@ -645,7 +698,7 @@ mod tests {
 		));
 	}
 
-	/// set_input_string_undoable：Text/StrCombo 变体选择与回放。
+	/// set_input_string_undoable: Text/StrCombo variant selection and replay.
 	#[test]
 	fn set_input_string_undoable_variants() {
 		let (project, id) = test_project();

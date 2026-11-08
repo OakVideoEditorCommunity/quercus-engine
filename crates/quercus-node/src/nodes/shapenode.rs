@@ -359,8 +359,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ShapeNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.shape`).
+/// Registers the shape generator in the factory menu list.
+///
+/// Pushes one [`NodeMeta`] entry (type id
+/// `org.olivevideoeditor.Olive.shape`, display name "Shape", the
+/// Generator category, and the `create` constructor) into `meta`. Called
+/// from `nodes::register_all`, which installs the list into the global
+/// factory; `meta` is appended to, never cleared.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.shape",

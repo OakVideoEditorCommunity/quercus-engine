@@ -257,7 +257,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ColorBarsNode))
 }
 
-/// Register this node type.
+/// Append the Color Bars generator to the factory metadata list.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.colorbars`, display name `Color Bars`, the
+/// [`Category::Generator`] category and [`create`] as constructor. Called by
+/// [`crate::nodes::register_all`] while building the built-in factory table;
+/// the order of the pushes defines the create-menu order.
+///
+/// # Arguments
+///
+/// * `meta` - metadata list being assembled; the entry is appended in place.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.colorbars",

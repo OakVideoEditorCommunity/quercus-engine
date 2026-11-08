@@ -14,13 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! suite 层 round-trip 测试：宿主 suite 表 ⇄ 最小测试插件。
+//! Suite-layer round-trip tests: host suite tables ⇄ a minimal test plugin.
 //!
-//! 声明文档原计划"每个用例让测试插件在 describe/render 期间真实
-//! 回调对应 suite"（"插件视角"的 HostSupport 兼容性背书）。最小
-//! 测试插件（tests/fixtures/quercus-test-plugin.ofx.bundle）是第 0 期
-//! 交付物，尚未构建——插件无关的断言直接执行；依赖插件的用例经
-//! [`common::skip`] 门，插件落地后补全（用例内 `// TODO(plugin)`）。
+//! The declaration document originally planned that "each test case has the test
+//! plugin genuinely call back into the corresponding suite during describe/render"
+//! (a "plugin's-eye" endorsement of HostSupport compatibility). The minimal test
+//! plugin (tests/fixtures/quercus-test-plugin.ofx.bundle) is a phase-0 deliverable
+//! that has not been built yet — plugin-independent assertions run directly; cases
+//! that need the plugin go through the [`common::skip`] gate and will be completed
+//! once the plugin lands (marked `// TODO(plugin)` inside the case).
 
 mod common;
 
@@ -41,7 +43,7 @@ use quercus_ofx_plugin::suites::property::suite_v1 as property_suite;
 use quercus_ofx_plugin::suites::tag;
 use quercus_ofx_plugin::suites::timeline::suite_v1 as timeline_suite;
 
-/// OFX 状态码的本地别名（SDK ofxCore.h）。
+/// Local aliases for OFX status codes (SDK ofxCore.h).
 const OK: c_int = 0;
 const UNKNOWN: c_int = 3;
 const UNSUPPORTED: c_int = 5;
@@ -52,12 +54,12 @@ fn cs(s: &str) -> CString {
 	CString::new(s).unwrap()
 }
 
-/// 未打标属性集句柄（宿主内部直用路径）。
+/// Untagged property-set handle (the host's internal direct-use path).
 fn props_handle(s: &PropertySet) -> *mut c_void {
 	s as *const PropertySet as *mut c_void
 }
 
-/// 假插件（仅喂给 Instance；describe 之外的字段不被触碰）。
+/// A fake plugin (fed to `Instance` only; fields beyond describe are never touched).
 fn dummy_plugin(descriptor: EffectDescriptor) -> std::sync::Arc<quercus_ofx_plugin::host::Plugin> {
 	unsafe extern "C" fn dummy_entry(
 		_: *const c_char,
@@ -80,7 +82,7 @@ fn dummy_plugin(descriptor: EffectDescriptor) -> std::sync::Arc<quercus_ofx_plug
 	})
 }
 
-/// 用 param suite 的 paramDefine 造一个含 6 参数的实例。
+/// Builds an instance with 6 parameters via the param suite's `paramDefine`.
 fn make_instance() -> (std::sync::Arc<Instance>, *mut c_void) {
 	let desc = EffectDescriptor::new();
 	let s = param_suite();
@@ -130,8 +132,9 @@ fn make_instance() -> (std::sync::Arc<Instance>, *mut c_void) {
 	(inst, h)
 }
 
-/// fetch_suite：第 1 期承诺的八张表按名按版本可取（v 不符返回
-/// 空）；不认识的 suite 返回空。覆盖 M11 §3.1 清单逐个断言。
+/// fetch_suite: the eight tables promised for phase 1 are reachable by name and
+/// version (a mismatched v returns empty); unknown suites return empty. Covers the
+/// M11 §3.1 list with one assertion each.
 #[test]
 fn fetch_suite_registry() {
 	for (name, version) in [
@@ -156,12 +159,14 @@ fn fetch_suite_registry() {
 	assert!(fetch_suite("OfxBogusSuite", 1).is_none());
 }
 
-/// property suite：define→set→get→getDimension→reset 全链路；
-/// 越界读返回 kOfxStatErrBadIndex；未定义属性 → ErrUnknown。
+/// property suite: define→set→get→getDimension→reset end to end; an out-of-range
+/// read returns kOfxStatErrBadIndex; an undefined property → ErrUnknown.
 ///
-/// 声明原含"写只读宿主能力属性 → kOfxStatErrReadOnly"：SDK 无此
-/// 状态码、HostSupport 也不在 suite 层拦截写（见 suites/property.rs
-/// 模块文档的偏差说明）——本测试随之改为断言 reset 的明确行为。
+/// The declaration originally had "writing a read-only host capability property →
+/// kOfxStatErrReadOnly": the SDK has no such status code and HostSupport does not
+/// intercept writes at the suite layer either (see the deviation note in
+/// suites/property.rs's module docs) — this test therefore asserts reset's defined
+/// behavior instead.
 #[test]
 fn property_suite_roundtrip() {
 	let set = PropertySet::new();
@@ -210,12 +215,12 @@ fn property_suite_roundtrip() {
 	}
 }
 
-/// memory suite：alloc/free 正常；free(NULL) no-op；未知指针
-/// free → BadHandle；零尺寸分配可往返。
+/// memory suite: alloc/free work; free(NULL) is a no-op; an unknown pointer
+/// free → BadHandle; zero-size allocation round-trips.
 ///
-/// 声明原含"实例销毁后账本无残留"：sweep 是 pub(crate) 钩子
-/// （destroyInstance 路径），属 host 生命周期测试（lifecycle_test）
-/// ——此处只验 suite 契约。
+/// The declaration originally had "no ledger residue after instance destruction":
+/// sweep is a pub(crate) hook (the destroyInstance path) and belongs to the host
+/// lifecycle tests (lifecycle_test) — only the suite contract is checked here.
 #[test]
 fn memory_suite_ledger() {
 	let s = memory_suite();
@@ -245,11 +250,11 @@ fn memory_suite_ledger() {
 	}
 }
 
-/// image effect suite：describe 期 clipDefine/clipGetPropertySet 与
-/// 属性读写；实例期 clipGetHandle。
+/// image effect suite: clipDefine/clipGetPropertySet and property read/write
+/// during describe; clipGetHandle during the instance phase.
 ///
-/// clipGetImage/clipReleaseImage 配对经
-/// [`quercus_ofx_plugin::clip::ClipInstance::fetch_image`] 与存活表记账验证。
+/// The clipGetImage/clipReleaseImage pairing is verified through
+/// [`quercus_ofx_plugin::clip::ClipInstance::fetch_image`] and the liveness ledger.
 #[test]
 fn image_effect_clip_image_pairing() {
 	let desc = EffectDescriptor::new();
@@ -373,13 +378,13 @@ fn image_effect_clip_image_pairing() {
 	}
 }
 
-/// param suite：describe 期 define→getHandle→getValue（默认值）；
-/// 实例期 int/double/bool/choice/string/RGBA/2D/3D 的
-/// setValue/getValue round-trip；AtTime == 当前值。
+/// param suite: define→getHandle→getValue (default value) during describe;
+/// setValue/getValue round-trip for int/double/bool/choice/string/RGBA/2D/3D during
+/// the instance phase; AtTime == current value.
 ///
-/// 声明含"paramSetValue 触发 instanceChanged"：通知走
-/// [`quercus_ofx_plugin::param::notify_instance_changed`]，插件自改经 undo
-/// 命令写回绑定节点的输入。
+/// The declaration had "paramSetValue triggers instanceChanged": the notification
+/// goes through [`quercus_ofx_plugin::param::notify_instance_changed`], and plugin
+/// self-edits are written back to the bound node's input by an undo command.
 #[test]
 fn param_suite_roundtrip_and_change_action() {
 	// describe 期。
@@ -490,9 +495,9 @@ fn param_suite_roundtrip_and_change_action() {
 	// `suites::param::tests::set_value_writes_back_to_bound_node` 覆盖。
 }
 
-/// paramGetValueAtTime/paramSetValueAtTime 与关键帧族
-/// （GetNumKeys/GetKeyTime/GetKeyIndex/DeleteKey/DeleteAllKeys）：
-/// 第 1 期无动画 → keys 恒 0、key 查询 BadIndex、删除 no-op OK。
+/// paramGetValueAtTime/paramSetValueAtTime and the keyframe family
+/// (GetNumKeys/GetKeyTime/GetKeyIndex/DeleteKey/DeleteAllKeys): phase 1 has no
+/// animation → keys are always 0, key queries BadIndex, deletion a no-op OK.
 #[test]
 fn param_keyframe_family() {
 	let (_inst, ih) = make_instance();
@@ -532,12 +537,13 @@ fn param_keyframe_family() {
 	}
 }
 
-/// message suite：v1 变长参数经 C shim 格式化后落到注册的捕获器
-/// （%d/%s/%f 三种格式逐字一致）；headless 默认（question 答"否"）。
+/// message suite: v1 varargs are formatted by the C shim and land in the registered
+/// catcher (%d/%s/%f match verbatim for all three formats); headless default
+/// (question answers "no").
 ///
-/// v2 的 va_list 入口无法从 Rust 构造调用（platform ABI），格式化
-/// 路径与 v1 共用同一 C 函数（forward）——由测试插件从 C 侧覆盖
-/// （`// TODO(plugin)`）。
+/// v2's va_list entry point cannot be constructed and called from Rust (platform
+/// ABI), and the formatting path shares the same C function (forward) with v1 — it
+/// is covered from the C side by the test plugin (`// TODO(plugin)`).
 #[test]
 fn message_suite_v1_v2() {
 	use quercus_ofx_plugin::suites::message::set_handler;
@@ -630,8 +636,8 @@ fn message_suite_v1_v2() {
 	}
 }
 
-/// progress suite：start/update/end 序列转发到 ProgressReporter；
-/// 回调返回 false 时 update 向插件返回取消状态。
+/// progress suite: the start/update/end sequence is forwarded to ProgressReporter;
+/// when the callback returns false, update returns a cancelled status to the plugin.
 #[test]
 fn progress_suite_forwarding() {
 	use quercus_ofx_plugin::progress::ProgressReporter;
@@ -670,8 +676,8 @@ fn progress_suite_forwarding() {
 	set_current(None);
 }
 
-/// timeline suite：getTime/getTimeBounds 返回渲染上下文注入的值；
-/// 无上下文 → 0 / (0,0) 的 headless 默认。
+/// timeline suite: getTime/getTimeBounds return the values injected by the render
+/// context; with no context → 0 / (0,0), the headless default.
 #[test]
 fn timeline_suite_values() {
 	use quercus_ofx_plugin::instance::{OfxRangeD, RenderScale};
@@ -710,9 +716,9 @@ fn timeline_suite_values() {
 	set_render_ctx(None);
 }
 
-/// multithread suite：插件（此处以测试自身的工作线程模拟）起 8 线程
-/// 各回调 property suite 一千次；无数据竞争、index/isSpawnedThread
-/// 语义正确、join 完整。
+/// multithread suite: the plugin (here simulated by the test's own worker threads)
+/// starts 8 threads that each call back into the property suite a thousand times;
+/// no data races, index/isSpawnedThread semantics are correct, join completes.
 #[test]
 fn multithread_suite_spawned_callbacks() {
 	let s = multithread_suite();

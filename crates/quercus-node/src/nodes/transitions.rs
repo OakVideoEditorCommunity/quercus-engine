@@ -403,7 +403,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TransitionNode))
 }
 
-/// Register this node type.
+/// Adds the timeline transition node to the node factory table.
+///
+/// `meta` is the vector `register_all` collects and hands to the factory; the new
+/// entry registers type id `org.olivevideoeditor.Olive.transition`, display name
+/// "Transition", the Timeline category, and the `create` constructor. This is
+/// the generic cross-fade block that timeline transitions instantiate; the id
+/// must match `TransitionNode::type_id` so serialized transitions resolve back to
+/// it.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.transition",

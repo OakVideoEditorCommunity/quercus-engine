@@ -87,7 +87,20 @@ pub fn split_preserving_links(project: &Project, blocks: &[NodeId], point: Ratio
 	unsafe { quercus_timeline_split_preserving_links(project.as_raw(), ids.as_ptr(), ids.len(), point) }
 }
 
-/// Splits every block of a track at `point`.
+/// Splits every block of a track at `point` into two blocks. One undoable
+/// edit step.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the track.
+/// * `track` - Track whose blocks are scanned for the split point.
+/// * `point` - Split position in seconds ([`Rational`]); blocks spanning the
+///   point are split, blocks entirely before/after it are left alone.
+///
+/// # Returns
+///
+/// `true` when the edit was pushed; `false` for an unknown track or a
+/// rejected edit.
 pub fn track_split_at(project: &Project, track: NodeId, point: Rational) -> bool {
 	unsafe { quercus_timeline_track_split_at(project.as_raw(), track.raw(), point) }
 }
@@ -103,7 +116,18 @@ pub fn ripple_remove_area(
 	unsafe { quercus_timeline_ripple_remove_area(project.as_raw(), timeline.raw(), in_, out) }
 }
 
-/// Resizes a block (out point moves, in anchored).
+/// Resizes a block by moving its out point while keeping the in point
+/// anchored. One undoable edit step.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the block.
+/// * `block` - Block node id to resize.
+/// * `new_length` - New length in seconds ([`Rational`]).
+///
+/// # Returns
+///
+/// `true` when applied; `false` for an unknown block or a rejected edit.
 pub fn block_resize(project: &Project, block: NodeId, new_length: Rational) -> bool {
 	unsafe { quercus_timeline_block_resize(project.as_raw(), block.raw(), new_length) }
 }
@@ -113,12 +137,38 @@ pub fn block_resize_media_in(project: &Project, block: NodeId, new_length: Ratio
 	unsafe { quercus_timeline_block_resize_media_in(project.as_raw(), block.raw(), new_length) }
 }
 
-/// Sets a clip's media in point.
+/// Sets a clip's media in point. One undoable edit step.
+///
+/// The media in point selects which source frame aligns with the block's
+/// start; it is expressed in the source media's timebase.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the block.
+/// * `block` - Clip block node id.
+/// * `media_in` - Media in point as seconds ([`Rational`]).
+///
+/// # Returns
+///
+/// `true` when applied; `false` for an unknown block or a rejected edit.
 pub fn block_set_media_in(project: &Project, block: NodeId, media_in: Rational) -> bool {
 	unsafe { quercus_timeline_block_set_media_in(project.as_raw(), block.raw(), media_in) }
 }
 
-/// Enables/disables a block.
+/// Enables or disables a block without removing it. One undoable edit step.
+///
+/// Disabling keeps the block in the timeline but suppresses its video/audio
+/// output; enabling restores it.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the block.
+/// * `block` - Block node id to toggle.
+/// * `enabled` - `true` to enable, `false` to disable.
+///
+/// # Returns
+///
+/// `true` when applied; `false` for an unknown block or a rejected edit.
 pub fn block_set_enabled(project: &Project, block: NodeId, enabled: bool) -> bool {
 	unsafe { quercus_timeline_block_set_enabled(project.as_raw(), block.raw(), enabled) }
 }
@@ -136,7 +186,27 @@ pub enum TrimMode {
 	TrimOut,
 }
 
-/// Trims a block to `new_length` with trim semantics.
+/// Trims a block to `new_length` with explicit trim semantics. One undoable
+/// edit step.
+///
+/// `mode` selects what moves: [`TrimMode::Move`] slides the block,
+/// [`TrimMode::TrimIn`] / [`TrimMode::TrimOut`] trim the corresponding edge,
+/// and [`TrimMode::None`] applies the length change without a movement mode.
+/// The owning `track` is required so the engine can find the compensating
+/// neighbour block.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the block.
+/// * `track` - Track the block belongs to.
+/// * `block` - Block node id being trimmed.
+/// * `new_length` - New length in seconds ([`Rational`]).
+/// * `mode` - Trim semantics (see [`TrimMode`]).
+///
+/// # Returns
+///
+/// `true` when the edit was pushed; `false` for an invalid node/track or a
+/// rejected edit.
 pub fn block_trim(
 	project: &Project,
 	track: NodeId,
@@ -193,9 +263,20 @@ pub fn block_move(
 	}
 }
 
-/// Adds a track to a track list (a sequence's video/audio/subtitle
-/// list node — see [`Project::sequence_track_list_at`]). Returns the
-/// new track.
+/// Adds an empty track to a track list. One undoable edit step.
+///
+/// `track_list` is a sequence's video/audio/subtitle track-list node, as
+/// returned by [`Project::sequence_track_list_at`]; the new track is
+/// appended to that list.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the track list.
+/// * `track_list` - Track-list node the track is appended to.
+///
+/// # Returns
+///
+/// The new track node id, or `None` when the engine rejects the edit.
 pub fn add_track(project: &Project, track_list: NodeId) -> Option<NodeId> {
 	let id = unsafe { quercus_timeline_add_track(project.as_raw(), track_list.raw()) };
 	if id == 0 {
@@ -205,12 +286,38 @@ pub fn add_track(project: &Project, track_list: NodeId) -> Option<NodeId> {
 	}
 }
 
-/// Removes a track (its blocks go with it).
+/// Removes a track and every block it owns. One undoable edit step.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the track.
+/// * `track` - Track node id to remove.
+///
+/// # Returns
+///
+/// `true` when removed; `false` for an unknown node or a rejected edit.
 pub fn remove_track(project: &Project, track: NodeId) -> bool {
 	unsafe { quercus_timeline_remove_track(project.as_raw(), track.raw()) }
 }
 
-/// Sets a transition's in/out offsets.
+/// Sets a transition block's in/out offsets and keeps it pinned to its seam.
+///
+/// `in_offset`/`out_offset` are durations in the timeline's time unit
+/// (seconds): the transition then spans `seam - in_offset .. seam +
+/// out_offset`. The stored range is moved with the offsets so the block does
+/// not drift off the seam. One undoable edit step.
+///
+/// # Arguments
+///
+/// * `project` - Project owning the transition.
+/// * `block` - Transition block node id.
+/// * `in_offset` - Duration before the seam.
+/// * `out_offset` - Duration after the seam.
+///
+/// # Returns
+///
+/// `true` when the edit was pushed; `false` for an unknown block or a
+/// rejected edit.
 pub fn transition_set_offsets(
 	project: &Project,
 	block: NodeId,

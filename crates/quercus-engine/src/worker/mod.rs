@@ -151,7 +151,20 @@ static WORKER_PLUGIN_CANCEL: AtomicBool = AtomicBool::new(false);
 /// Buffered `plugin_progress` events awaiting the next flush.
 static WORKER_PROGRESS_EVENTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
-/// Queue one `plugin_progress` NDJSON event for the main loop to flush.
+/// Queue one `plugin_progress` NDJSON event for the main process.
+///
+/// OFX plugin rendering runs in the worker process, so plugin progress is
+/// forwarded instead of shown: the event is serialized now and pushed onto the
+/// shared buffer that the main loop drains after each control message (see
+/// `flush_worker_progress`). Called from the loop thread only, which makes the
+/// plain mutex sufficient; a poisoned lock is recovered rather than failing.
+///
+/// # Arguments
+///
+/// * `fraction` - Progress in the range 0.0..=1.0 (1.0 signals completion).
+/// * `label` - Plugin/step label shown next to the progress bar.
+/// * `message` - Detail line for the progress dialog; both strings are copied
+///   into the event.
 fn push_worker_progress(fraction: f64, label: &str, message: &str) {
 	let event = PluginProgressMsg {
 		label: label.to_string(),
@@ -273,7 +286,21 @@ impl Renderer {
 		Self::init_inner(renderer, "direct OpenGL")
 	}
 
-	/// Initialize a freshly created renderer.
+	/// Initialize a freshly created display renderer and wrap it in a
+	/// [`Renderer`].
+	///
+	/// `renderer` is the value returned by `DisplayRenderer::new` for the
+	/// backend chosen by `create` (dynamic backend or the direct OpenGL
+	/// fallback). `what` is only a human-readable label for the error message
+	/// (`"dynamic vulkan"`, `"direct OpenGL"`), not a backend selector. Init is
+	/// called with a null GL context so the backend uses its default
+	/// device/context path — the same call the C++ `create_renderer()` makes.
+	///
+	/// # Errors
+	///
+	/// Returns `"failed to initialize {what} renderer ({e})"` when
+	/// `DisplayRenderer::init` fails; `Renderer::create` logs that message and
+	/// then retries the direct OpenGL backend.
 	fn init_inner(mut renderer: DisplayRenderer, what: &str) -> Result<Renderer, String> {
 		// NULL gl_context makes the backend use its default device/context
 		// path.
@@ -819,7 +846,22 @@ impl WorkerSession {
 		Ok(())
 	}
 
-	/// The crash-mode test hook (see [`Self::handle_render_batch_stream`]).
+	/// Deliberately crash the worker process when the crash-isolation test hook
+	/// asks for this ticket.
+	///
+	/// Reads `QUERCUS_WORKER_CRASH_ON_TICKET` (an `i64` ticket number) and
+	/// `QUERCUS_WORKER_CRASH_MARKER` (a file path) from the environment on every
+	/// call, so a test can arm/disarm the hook per process. It crashes only when
+	/// the variable is set, parses, and equals `ticket`; when a marker path is
+	/// given and the file already exists the hook is considered spent and the
+	/// call returns, which makes the crash one-shot so the restarted worker
+	/// renders the frame for real. Otherwise it writes the marker, raises
+	/// `SIGSEGV` (to look like a real plugin crash) and falls back to
+	/// `std::process::abort`, so it never returns once it decides to crash.
+	///
+	/// `ticket` is the wire ticket id of the frame about to be rendered. This
+	/// runs before every render in the video and audio batch loops and is a
+	/// no-op in production, where neither variable is set.
 	fn maybe_crash_for_testing(&self, ticket: i64) {
 		let Ok(want) = std::env::var("QUERCUS_WORKER_CRASH_ON_TICKET") else {
 			return;
@@ -869,8 +911,27 @@ impl WorkerSession {
 		}
 	}
 
-	/// Render one batch ticket into its main-assigned slot (acquire,
-	/// render, publish). Returns the published slot index.
+	/// Render one batch ticket into its main-assigned output slot.
+	///
+	/// Clones the pool view (cheap, shared mapping) so the render path can still
+	/// borrow `self` mutably for its scratch buffer and frame cache, acquires a
+	/// slot from the free ring, verifies that the popped slot equals `spec.slot`
+	/// (main seeds the ring in assignment order, so anything else is a protocol
+	/// violation), renders the pixels via `render_spec_pixels`, and publishes the
+	/// slot to the ready ring.
+	///
+	/// # Returns
+	///
+	/// The published slot index, i.e. `spec.slot`.
+	///
+	/// # Errors
+	///
+	/// Returns a printable message when no valid output pool is attached, when
+	/// the acquire times out or shutdown was requested, when the popped slot does
+	/// not match the assignment, when rendering fails (the message is prefixed by
+	/// the producer, e.g. `footage decode: ...`), or when the ready ring is full
+	/// at publish time. On error the slot is not published; the main process
+	/// recycles it after seeing `frame_failed`.
 	fn render_ticket_to_slot(&mut self, spec: &BatchTicketSpec) -> Result<u32, String> {
 		// Clone the pool view (a cheap mapping-shared copy) so the render
 		// path below can borrow `self` mutably (scratch buffer).
@@ -971,8 +1032,30 @@ impl WorkerSession {
 		Ok(())
 	}
 
-	/// Mix one audio range pull into its main-assigned slot (acquire,
-	/// mix, publish). Returns the published slot index.
+	/// Mix one audio range pull into its main-assigned shared-memory slot.
+	///
+	/// The flow mirrors `render_ticket_to_slot`: acquire a slot from the free
+	/// ring, check it is the one `spec.slot` assigned, convert the spec to eval
+	/// audio params, verify that the range's byte length fits the slot, mix
+	/// interleaved F32 samples into the slot's data block and publish it. The meta
+	/// is written using the video field layout, with `width` holding the sample
+	/// rate, `channel_count`/`linesize` describing the interleaved layout,
+	/// `height` 0, format `SLOT_FORMAT_AUDIO_F32` and `data_size` the byte count
+	/// actually mixed.
+	///
+	/// # Returns
+	///
+	/// The published slot index (always `spec.slot`) for the `frame_ready`
+	/// response.
+	///
+	/// # Errors
+	///
+	/// Returns a printable message when no valid output pool is attached, when
+	/// the acquire times out or shutdown is requested, when the popped slot does
+	/// not match `spec.slot` (a protocol violation), when the mixed range needs
+	/// more bytes than the slot holds, when `audio_ticket_params` rejects the
+	/// geometry, when the mix itself fails, or when the ready ring is full. The
+	/// slot stays unpublished on error and is recycled by the main process.
 	fn render_audio_ticket_to_slot(&mut self, spec: &AudioTicketSpec) -> Result<u32, String> {
 		let pool = match self.output_pool.clone() {
 			Some(p) if p.is_valid() => p,
@@ -1035,6 +1118,18 @@ impl WorkerSession {
 	}
 
 	/// Map a wire audio ticket spec to the eval producer's audio params.
+	///
+	/// `spec` carries the pull range as a start rational plus a duration
+	/// rational, the sample rate, the channel layout bitmask, and the montage
+	/// clips/effects. The range is built as `[start, start + duration)`, and
+	/// `viewer` is the loaded project's copy id (0 when no graph is loaded).
+	///
+	/// # Errors
+	///
+	/// Returns a printable message when the geometry is degenerate: a
+	/// non-positive `time_den`, `duration_den` or `sample_rate`. These would make
+	/// the range rational or the sample count meaningless, so validation happens
+	/// here rather than in the render call.
 	fn audio_ticket_params(&self, spec: &AudioTicketSpec) -> Result<AudioTicketParams, String> {
 		if spec.time_den <= 0 || spec.duration_den <= 0 || spec.sample_rate <= 0 {
 			return Err(format!(
@@ -1091,7 +1186,27 @@ impl WorkerSession {
 		true
 	}
 
-	/// Render `spec` into the slot's data block and fill the slot meta.
+	/// Render one ticket's pixels into the slot's data block and fill in the
+	/// slot meta.
+	///
+	/// `spec.slot` must already have been acquired by `render_ticket_to_slot`;
+	/// this function only writes the slot's data and meta, it never publishes.
+	/// The picture is produced in F32 RGBA and, for `SLOT_FORMAT_BGRA8`
+	/// requests, run through the output color node and quantized at the end of
+	/// the pipe. Pipeline color settings are resynced from the loaded project
+	/// first, and a change clears the F32 frame cache because its bytes were
+	/// rendered under the old settings; otherwise a cache hit is copied instead
+	/// of re-rendering. The meta written is: ticket id, time rational, width and
+	/// height, the requested slot format, `max(channels, 4)` channel count,
+	/// row size in bytes and total data size.
+	///
+	/// # Errors
+	///
+	/// Returns a printable message (surfaced as `frame_failed`) when
+	/// `spec.width`/`spec.height` is not positive, when the slot's data block is
+	/// too small for `height` rows of the requested format, or when the
+	/// underlying graph/montage/footage render fails. The slot is left
+	/// unpublished in every error case; the main process recycles it.
 	fn render_spec_pixels(
 		&mut self,
 		spec: &BatchTicketSpec,
@@ -1216,7 +1331,21 @@ impl WorkerSession {
 		Ok(())
 	}
 
-	/// Map a wire ticket spec to the eval producer's ticket params.
+	/// Map a wire batch ticket spec to the eval producer's video ticket params.
+	///
+	/// `spec` carries the ticket's delivery fields plus the render
+	/// description; `time` is the already-built rational from
+	/// `spec.time_num`/`spec.time_den` (the caller needs it separately, so it is
+	/// not rebuilt here). The viewer identity is `spec.viewer_node` when
+	/// non-zero, otherwise the loaded project's copy id (0 when no graph has
+	/// been loaded) — the montage/footage paths do not use it. A non-empty
+	/// `spec.footage_file` becomes `Some((file, stream))`; montage clips and
+	/// adjustments are converted from their wire form.
+	///
+	/// The returned params force the full ticket size and `PixelFormat::F32`:
+	/// the pipeline always renders F32 and any BGRA8 conversion happens at the
+	/// end of the pipe, and the frame cache is left disabled because the worker
+	/// keeps its own memo (`frame_cache`).
 	fn ticket_params(&self, spec: &BatchTicketSpec, time: Rational) -> VideoTicketParams {
 		let footage = if spec.footage_file.is_empty() {
 			None
@@ -3488,8 +3617,32 @@ mod tests {
 // C ABI used by the thin `quercus-worker` launcher through the Rust SDK
 // ---------------------------------------------------------------------------
 
-/// Runs the ticket worker loop with `backend` (`opengl`, `vulkan`, `cpu`,
-/// `none`, ...). Returns the process exit code.
+/// Run the ticket worker loop for the given render backend and return the
+/// process exit code.
+///
+/// This is the C entry point the thin `quercus-worker` launcher calls. The
+/// backend bytes are decoded to a string (null or empty becomes `"opengl"`,
+/// the same default as the launcher), then `worker_main` runs the NDJSON
+/// control loop on the current thread — it blocks until the parent closes the
+/// pipe or sends a shutdown message. Panics are caught so they cannot unwind
+/// across the C ABI.
+///
+/// # Arguments
+///
+/// * `backend` - Backend name bytes: `"opengl"`, `"vulkan"`, `"cpu"`, `"none"`
+///   etc. May be null, in which case `"opengl"` is used; not NUL-terminated,
+///   not retained.
+/// * `backend_len` - Length of `backend` in bytes; ignored when it is null.
+///
+/// # Returns
+///
+/// `worker_main`'s exit code, or `1` when it panicked.
+///
+/// # Safety
+///
+/// `backend` must be null or valid for reading `backend_len` bytes for the
+/// whole call. Invalid UTF-8 is replaced (lossy conversion) rather than
+/// rejected, so the backend name may silently change; pass ASCII names.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_worker_run(
 	backend: *const u8,
@@ -3511,8 +3664,31 @@ pub unsafe extern "C" fn quercus_worker_run(
 	std::panic::catch_unwind(|| worker_main(&backend)).unwrap_or(1)
 }
 
-/// Runs the single OpenFX host loop. `args` is newline-separated argv
-/// (including the program name) for the crash-hook test flags.
+/// Run the single OpenFX host loop in this process and return its exit code.
+///
+/// This is the C entry point the thin `quercus-worker` launcher calls when the
+/// worker is used as an OFX host: it decodes `args` into argv (the first entry
+/// is the program name, which the crash-hook test flags parse around), calls
+/// `ofx_host::ofx_host_main`, and catches panics so they cannot unwind across
+/// the C ABI.
+///
+/// # Arguments
+///
+/// * `args` - Newline-separated argv bytes, argv[0] included. May be null, in
+///   which case it is treated as an empty argument list; the buffer does not
+///   have to be NUL-terminated and is neither retained nor modified.
+/// * `args_len` - Length of `args` in bytes; ignored when `args` is null.
+///
+/// # Returns
+///
+/// The exit code produced by the host loop (`0` for success), or `1` when the
+/// loop panicked.
+///
+/// # Safety
+///
+/// `args` must be null or valid for reading `args_len` bytes for the whole
+/// call. The bytes are interpreted as UTF-8 on a lossy basis, so invalid
+/// sequences are replaced rather than rejected.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_worker_ofx_host(args: *const u8, args_len: usize) -> i32 {
 	let text = if args.is_null() {

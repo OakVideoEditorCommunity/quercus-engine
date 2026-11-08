@@ -14,14 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 测试公共件：最小测试插件定位、快照/golden 文件路径、夹具。
+//! Test common items: minimal test-plugin location, snapshot/golden file paths, fixtures.
 //!
-//! 最小测试插件（cbits/quercus_test_plugin.c，build.rs 编译为共享库，
-//! 运行时装配成 quercus-test-plugin.ofx.bundle）：filter 上下文、
-//! Double 参数 gain、双 clip（Source/Output）。插件未构建时相关
-//! 用例经 [`skip`] 提前返回。
-//! 单库化后像素路径经 quercusrender 值模型（`quercus_core::texture::Texture`）
-//! 驱动；渲染 goldens 待该迁移落地。
+//! The minimal test plugin (cbits/quercus_test_plugin.c, compiled by build.rs into a shared library,
+//! assembled at runtime into quercus-test-plugin.ofx.bundle): filter context,
+//! a Double parameter gain, two clips (Source/Output). When the plugin is not built, the relevant
+//! cases return early through [`skip`].
+//! After the single-library change the pixel path is driven by the quercusrender value model (`quercus_core::texture::Texture`);
+//! render goldens await that migration.
 
 // 每个集成测试二进制都会独立编译本模块，只用到自己需要的那部分辅助件，
 // 因此某个二进制里未用到的条目仍属于共享夹具 API。
@@ -29,12 +29,12 @@
 
 use std::path::PathBuf;
 
-/// 构建系统注入插件路径的环境变量名。
+/// Name of the environment variable through which the build system injects the plugin path.
 pub const TEST_PLUGIN_ENV: &str = "QUERCUS_TEST_PLUGIN_DIR";
 
-/// 测试插件 bundle 的绝对路径（由构建系统经环境变量注入；
-/// 未注入时用 build.rs 编的共享库现场装配 bundle 目录；均不可用
-/// 时返回 None，调用方 skip）。
+/// Absolute path of the test-plugin bundle (injected by the build system via an environment variable;
+/// when not injected, the bundle directory is assembled on the spot from the shared library built by build.rs; when neither is usable
+/// it returns None and the caller skips).
 pub fn test_plugin_dir() -> Option<PathBuf> {
 	if let Some(p) = std::env::var_os(TEST_PLUGIN_ENV) {
 		return Some(PathBuf::from(p));
@@ -78,7 +78,7 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 		.clone()
 }
 
-/// 测试插件 bundle 的父目录（host_scan 的入参）。
+/// Parent directory of the test-plugin bundle (the input of host_scan).
 pub fn test_plugin_scan_dir() -> Option<PathBuf> {
 	let bundle = test_plugin_dir()?;
 	let parent = bundle.parent()?;
@@ -86,27 +86,27 @@ pub fn test_plugin_scan_dir() -> Option<PathBuf> {
 	Some(parent.to_path_buf())
 }
 
-/// golden master 目录（tests/ofx/）。描述符快照 JSON 与 EXR 帧都在这。
+/// Golden master directory (tests/ofx/). The descriptor snapshot JSON and the EXR frames live here.
 pub fn golden_dir() -> PathBuf {
 	PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/ofx")
 }
 
-/// 当前平台是否有 GPU（GL golden 用例的门：无 GPU 一律 skip）。
+/// Whether the current platform has a GPU (the gate for GL golden cases: without a GPU, always skip).
 ///
-/// 第 1 期无 GL 用例：显式环境变量开启（GL 验收需人工本机确认，
-/// CI 一律跳过）。
+/// There are no GL cases in phase 1: enabled by an explicit environment variable (GL acceptance needs manual local confirmation;
+/// CI always skips).
 pub fn gpu_available() -> bool {
 	std::env::var_os("QUERCUS_GPU_TESTS").is_some()
 }
 
-/// 通用 skip 宏的函数形态：前置条件不满足时打印原因并提前返回。
-/// （cargo 没有 GTEST_SKIP，约定为 `return`，并在输出里打印 SKIP。）
+/// Function form of the common skip macro: prints the reason and returns early when a precondition is not met.
+/// (cargo has no GTEST_SKIP; the convention is `return`, with SKIP printed in the output.)
 pub fn skip(reason: &str) {
 	println!("SKIP: {reason}");
 }
 
-/// 宿主单例测试串行化：同一二进制的测试并行跑会互相踩
-/// init/shutdown/scan（进程单例无锁）；所有触碰宿主面的用例经它。
+/// Serialize host-singleton tests: tests in the same binary would otherwise trample each other's
+/// init/shutdown/scan (the process singleton has no lock); every case that touches the host surface goes through this.
 pub fn with_host(f: impl FnOnce()) {
 	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());

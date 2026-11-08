@@ -276,6 +276,10 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.swirl`).
+///
+/// Appends one [`NodeMeta`] for `org.olivevideoeditor.Olive.swirl` ("Swirl",
+/// [`Category::Distort`]) with [`create`] as the factory; the node registry
+/// calls this once at startup.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.swirl",

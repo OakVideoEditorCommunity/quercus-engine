@@ -151,6 +151,11 @@ pub fn set_footage_proxy_params(
 	)
 }
 
+/// The [`FootageBehavior`] of `footage` as a mutable reference, for in-place
+/// edits.
+///
+/// Returns `None` when the node id is unknown or the node is not footage; the
+/// mutable counterpart of `footage_behavior`.
 fn footage_behavior_mut(
 	graph: &mut quercus_node::graph::Graph,
 	footage: NodeId,
@@ -268,7 +273,11 @@ pub fn release_handle(h: &mut CHandle) {
 	h.ctx = std::ptr::null_mut();
 }
 
-/// One marker as the timeline shows it: in-point, name, color index.
+/// Snapshot every marker in `list` as `(in-point, name, color index)`.
+///
+/// The list is read under its mutex and the values are copied out, so the
+/// result is a detached snapshot; order follows the list's storage order. A
+/// null or foreign handle yields an empty vector instead of an error.
 pub fn markers_of(list: &CHandle) -> Vec<(Rational, String, i32)> {
 	if list.is_null() {
 		return Vec::new();
@@ -289,7 +298,11 @@ pub fn markers_of(list: &CHandle) -> Vec<(Rational, String, i32)> {
 		.collect()
 }
 
-/// The index of the first marker whose in-point equals `time`.
+/// The index of the first marker whose in-point equals `time`, in list order.
+///
+/// Comparison is exact rational equality, not a range test, so a time between
+/// two markers finds neither. Returns `None` for a null/foreign handle or when
+/// no marker starts at `time`. Counterpart of [`markers_of`].
 pub fn marker_index_at(list: &CHandle, time: Rational) -> Option<usize> {
 	if list.is_null() {
 		return None;
@@ -304,7 +317,10 @@ pub fn marker_index_at(list: &CHandle, time: Rational) -> Option<usize> {
 	(0..l.size()).find(|&i| l.at(i).map(|m| m.time().in_()) == Some(time))
 }
 
-/// The workarea's `(enabled, range)`.
+/// Read the workarea's `(enabled, range)` pair.
+///
+/// The range is the in/out span of the enabled workarea. Returns `None` when
+/// `wa` is null or not a workarea handle. Counterpart of [`workarea_set`].
 pub fn workarea_state(wa: &CHandle) -> Option<(bool, TimeRange)> {
 	if wa.is_null() {
 		return None;
@@ -320,7 +336,11 @@ pub fn workarea_state(wa: &CHandle) -> Option<(bool, TimeRange)> {
 	Some((w.enabled(), *w.range()))
 }
 
-/// Live (non-undoable) workarea write: enable flag plus range.
+/// Overwrite the workarea state in place: enable flag and range.
+///
+/// This is a live, non-undoable mutation (like the playback policy flags): no
+/// history entry is pushed, and the caller drives it from the UI thread, which
+/// is the only writer. Null handles are ignored.
 pub fn workarea_set(wa: &CHandle, enabled: bool, range: TimeRange) {
 	if wa.is_null() {
 		return;
@@ -416,7 +436,14 @@ pub fn library_delete(uuid: &str) -> Result<(), String> {
 	library_client()?.delete(uuid).map_err(|e| e.to_string())
 }
 
-/// Rename the library row `uuid` (the manager's list name).
+/// Rename the library row `uuid` to `name` (the label the manager lists).
+///
+/// `name` is trimmed before the write, so surrounding whitespace is not stored.
+///
+/// # Errors
+///
+/// `"invalid uuid or name"` when `uuid` is empty or the trimmed name is empty;
+/// otherwise the backend's message.
 pub fn library_rename(uuid: &str, name: &str) -> Result<(), String> {
 	if uuid.is_empty() || name.trim().is_empty() {
 		return Err("invalid uuid or name".to_string());
@@ -525,7 +552,17 @@ pub fn storage_flush() {
 // pushes exactly one undo row (composite edits assemble a multi command).
 // ---------------------------------------------------------------------------
 
-/// Push one command onto the global undo stack (redo then record).
+/// Push `cmd` onto the global undo stack under the display name `name`.
+///
+/// The command's redo runs first, then it is recorded as the current entry and
+/// any redo tail is discarded; an empty multi command is dropped instead of
+/// recorded. The stack keeps a bounded history, so the oldest entries are
+/// trimmed as new ones arrive. Subscribers are notified so the write-through
+/// layer can persist the change.
+///
+/// # Errors
+///
+/// A message string when the stack rejects the command.
 pub fn push_command(cmd: quercus_undo::undocommand::UndoCommand, name: &str) -> Result<(), String> {
 	quercus_undo::global::push(cmd, name).map_err(|e| e.to_string())
 }
@@ -556,9 +593,20 @@ pub(crate) fn push_multi(children: Vec<quercus_undo::undocommand::UndoCommand>, 
 	push_multi_command(children, name)
 }
 
-/// An undoable edge add (the module's `quercusnode_node_connect_undoable`
-/// semantics): validated at creation (existence, connectability, not
-/// already connected); the redo connects, the undo disconnects the input.
+/// Build the undoable "add edge" command connecting `from` to `to`'s
+/// `input_id`.
+///
+/// Validation runs eagerly so a bad call fails before the undo stack is
+/// touched: both nodes must exist, `input_id` must name an input of `to`, that
+/// input must accept connections, and it must not already be connected
+/// (single-input semantics: the checked slot is `-1`, i.e. the only one). The
+/// returned command's redo connects and its undo disconnects that input; the
+/// caller pushes it with [`push_command`] (or as part of a multi command).
+///
+/// # Errors
+///
+/// A message string when a node is missing, the input is unknown, not
+/// connectable, or already connected.
 pub fn connect_command(
 	p: &ProjectRef,
 	from: NodeId,

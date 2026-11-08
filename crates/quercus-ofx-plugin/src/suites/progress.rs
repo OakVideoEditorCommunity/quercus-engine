@@ -14,15 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxProgressSuite v1/v2：进度 → 当前渲染的
-//! [`crate::progress::ProgressReporter`]。
+//! OfxProgressSuite v1/v2: progress → the current render's
+//! [`crate::progress::ProgressReporter`].
 //!
-//! 定位方式：TLS（render 驱动在调用插件 action 前
-//! [`set_current`]，action 返回后清除）——进度只在渲染期内有意义，
-//! 不设全局状态（progress.rs 文档）。
-//! 语义：update 返回 false（取消）→ kOfxStatReplyNo
-//! （HS: ofxhImageEffect.cpp gProgressSuite）；无报告器（渲染外
-//! 调用）→ 静默 OK。start/end 为括号，OK。
+//! Location: TLS (the render driver calls [`set_current`] before invoking a
+//! plugin action and clears it after the action returns) — progress is only
+//! meaningful during rendering, so there is no global state (progress.rs docs).
+//! Semantics: update returns false (cancelled) → kOfxStatReplyNo
+//! (HS: ofxhImageEffect.cpp gProgressSuite); no reporter (called outside
+//! rendering) → silent OK. start/end are the brackets, OK.
 
 use std::ffi::{c_char, c_double, c_int, c_void};
 
@@ -33,18 +33,33 @@ thread_local! {
 	static CURRENT: std::cell::RefCell<Option<ProgressReporter>> = const { std::cell::RefCell::new(None) };
 }
 
-/// 设置/清除当前报告器（render 驱动调用；公开：render 驱动在
-/// host 层，测试也直接注入）。
+/// Sets or clears the current thread's progress reporter (`None` = clear).
+///
+/// The render driver installs it before invoking a plugin action and clears it
+/// afterwards; every progress-suite entry point reads it through thread-local
+/// storage (TLS), so there is no global state and parallel render threads do not
+/// affect each other. It is public because the render driver lives at the host
+/// layer and tests inject it directly. Ownership of `reporter` moves into TLS;
+/// replacing or clearing it drops the old value without notifying the UI.
 pub fn set_current(reporter: Option<ProgressReporter>) {
 	CURRENT.with(|c| *c.borrow_mut() = reporter);
 }
 
-/// 读取当前报告器的取消状态（image effect suite 的 abort 用）。
+/// Reads the current reporter's cancellation state (used for the image effect suite's abort).
 pub(crate) fn is_cancelled() -> bool {
 	CURRENT.with(|c| c.borrow().as_ref().is_some_and(|r| r.is_cancelled()))
 }
 
-/// 进度更新：取消 → kOfxStatReplyNo；无报告器/未取消 → OK。
+/// Forwards one progress value to the current TLS reporter and converts it to an OFX status code.
+///
+/// `progress` is the SDK's 0.0–1.0 completion fraction; this layer does not clamp
+/// it, and out-of-range values are passed to the reporter as-is. With a reporter,
+/// its `update` return value decides cancellation; without one (a call outside
+/// rendering) it counts as not cancelled.
+///
+/// # Returns
+///
+/// Cancelled → kOfxStatReplyNo (the plugin then aborts), otherwise kOfxStatOK.
 fn progress_update(progress: f64) -> c_int {
 	let cancelled = CURRENT.with(|c| match c.borrow().as_ref() {
 		Some(r) => !r.update(progress),
@@ -57,23 +72,28 @@ fn progress_update(progress: f64) -> c_int {
 	}
 }
 
-/// 公共入口模板：panic 兜底。
+/// Common entry-point template: runs `f` inside `catch_unwind`, turning a panic
+/// into kOfxStatFailed.
+///
+/// Plugins are C ABI callers and a panic crossing an `extern "C"` boundary is
+/// undefined behavior, so every progress-suite entry point goes through here; the
+/// OFX status code `f` returns is passed through unchanged.
 fn caught(f: impl FnOnce() -> c_int) -> c_int {
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
 }
 
-/// 函数表布局（OfxProgressSuiteV1）。
+/// Function-table layout (OfxProgressSuiteV1).
 #[repr(C)]
 pub struct ProgressSuiteV1 {
 	/// progressStart
 	pub start: unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int,
-	/// progressUpdate（返回非 kOfxStatOK 即取消）
+	/// progressUpdate (a non-kOfxStatOK return means cancelled)
 	pub update: unsafe extern "C" fn(*mut c_void, c_double) -> c_int,
 	/// progressEnd
 	pub end: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
 
-/// 函数表布局（OfxProgressSuiteV2：start 带 label + message）。
+/// Function-table layout (OfxProgressSuiteV2: start takes label + message).
 #[repr(C)]
 pub struct ProgressSuiteV2 {
 	/// progressStart
@@ -84,7 +104,18 @@ pub struct ProgressSuiteV2 {
 	pub end: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
 
-/// C 字符串解码（空指针/非法 UTF-8 → 空串）。
+/// Decodes a C string into `&str`, for optional text such as label/message.
+///
+/// A null pointer and invalid UTF-8 both degrade to an empty string, so callers
+/// need no null check. The returned borrow lives as long as the storage `p` points
+/// to, so callers must use it before the original C string goes away (this file
+/// copies it immediately with `to_string()`).
+///
+/// # Safety
+///
+/// `p` must be a valid NUL-terminated C string when non-null, and must stay valid
+/// for the lifetime of the returned borrow (the pointer usually comes from the
+/// plugin's FFI call arguments).
 unsafe fn decode<'a>(p: *const c_char) -> &'a str {
 	if p.is_null() {
 		return "";
@@ -94,9 +125,20 @@ unsafe fn decode<'a>(p: *const c_char) -> &'a str {
 		.unwrap_or("")
 }
 
-/// progressStart：括号起点；携 label（v2 另携 message）经
-/// [`crate::progress`] 工厂现造 UI 报告器（无工厂/已有报告器时
-/// no-op），状态恒 OK。
+/// progressStart (v1): opens the progress bracket, carrying only `label`.
+///
+/// With a TLS reporter it calls [`ProgressReporter::install_ui`] (`label` as the
+/// title, message as an empty string) and the app's factory builds the progress UI;
+/// without a reporter, with an existing C callback, or with the UI already
+/// installed (nested brackets) it is a silent no-op. `label` is decoded up to the
+/// first NUL; NULL/invalid UTF-8 count as an empty string. Always returns
+/// kOfxStatOK (panic fallback → kOfxStatFailed). Version 2,
+/// [`progress_start_v2`], adds a message.
+///
+/// # Safety
+///
+/// `_handle` is ignored and may be NULL (TLS lookup); `label` must be a valid
+/// NUL-terminated C string when non-null.
 unsafe extern "C" fn progress_start_v1(_handle: *mut c_void, label: *const c_char) -> c_int {
 	caught(|| {
 		let label = unsafe { decode(label) }.to_string();
@@ -109,10 +151,32 @@ unsafe extern "C" fn progress_start_v1(_handle: *mut c_void, label: *const c_cha
 	})
 }
 
+/// progressUpdate (v1): forwards `progress` to the current reporter and returns
+/// whether the plugin should abort.
+///
+/// Shares [`progress_update`] with v2: reporter says cancelled → kOfxStatReplyNo;
+/// no reporter (outside rendering) or not cancelled → kOfxStatOK; panic fallback →
+/// kOfxStatFailed. `progress` is a 0.0–1.0 completion fraction; this layer does no
+/// range validation.
+///
+/// # Safety
+///
+/// `_handle` is ignored and may be NULL (TLS lookup); `progress` is a plain number,
+/// so there are no other preconditions.
 unsafe extern "C" fn progress_update_v1(_handle: *mut c_void, progress: c_double) -> c_int {
 	caught(|| progress_update(progress))
 }
 
+/// progressEnd (v1): closes the progress bracket, calling the reporter's
+/// [`ProgressReporter::end_ui`] to retract the progress UI.
+///
+/// It is a silent no-op without a TLS reporter (a call outside rendering); always
+/// returns kOfxStatOK (panic fallback → kOfxStatFailed). Paired with
+/// [`progress_start_v1`] and called in pairs by the render driver.
+///
+/// # Safety
+///
+/// `_handle` is ignored and may be NULL; there are no other preconditions.
 unsafe extern "C" fn progress_end_v1(_handle: *mut c_void) -> c_int {
 	caught(|| {
 		CURRENT.with(|c| {
@@ -124,6 +188,20 @@ unsafe extern "C" fn progress_end_v1(_handle: *mut c_void) -> c_int {
 	})
 }
 
+/// progressStart (v2): opens the progress bracket, carrying two optional texts,
+/// `label` (title) and `message` (subtext), handed to the app's UI factory.
+///
+/// With a TLS reporter it calls [`ProgressReporter::install_ui`] and the factory
+/// builds the progress UI; without a reporter, with an existing C callback, or with
+/// the UI already installed (nested brackets) it is a silent no-op. Both strings are
+/// decoded up to the first NUL; NULL/invalid UTF-8 count as an empty string. Always
+/// returns kOfxStatOK (panic fallback → kOfxStatFailed): the SDK contract requires
+/// that start cannot be interrupted by cancellation.
+///
+/// # Safety
+///
+/// `_handle` is ignored and may be NULL (TLS lookup); `label` and `message` must be
+/// valid NUL-terminated C strings when non-null.
 unsafe extern "C" fn progress_start_v2(
 	_handle: *mut c_void,
 	label: *const c_char,
@@ -141,15 +219,38 @@ unsafe extern "C" fn progress_start_v2(
 	})
 }
 
+/// progressUpdate (v2): forwards `progress` to the current reporter and returns
+/// whether the plugin should abort.
+///
+/// Fully shares [`progress_update`] with v1: reporter says cancelled →
+/// kOfxStatReplyNo; no reporter (outside rendering) or not cancelled → kOfxStatOK;
+/// panic fallback → kOfxStatFailed. `progress` is a 0.0–1.0 completion fraction;
+/// this layer does no range validation.
+///
+/// # Safety
+///
+/// `_handle` is the plugin's progress handle, ignored by this implementation (TLS
+/// lookup), and may be NULL; `progress` is a plain number, so there are no other
+/// preconditions.
 unsafe extern "C" fn progress_update_v2(_handle: *mut c_void, progress: c_double) -> c_int {
 	caught(|| progress_update(progress))
 }
 
+/// progressEnd (v2): closes the progress bracket and always returns kOfxStatOK.
+///
+/// Unlike v1, v2's end does not call [`ProgressReporter::end_ui`]; this
+/// implementation only provides the panic fallback (failure → kOfxStatFailed) and
+/// does not touch the UI.
+///
+/// # Safety
+///
+/// `_handle` is the plugin's progress handle, ignored by this implementation (TLS
+/// lookup), and may be NULL; there are no other preconditions.
 unsafe extern "C" fn progress_end_v2(_handle: *mut c_void) -> c_int {
 	caught(|| status::OK)
 }
 
-/// 静态函数表实例（v1）。
+/// Static function-table instance (v1).
 pub fn suite_v1() -> &'static ProgressSuiteV1 {
 	static SUITE: std::sync::OnceLock<ProgressSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| ProgressSuiteV1 {
@@ -159,7 +260,7 @@ pub fn suite_v1() -> &'static ProgressSuiteV1 {
 	})
 }
 
-/// 静态函数表实例（v2）。
+/// Static function-table instance (v2).
 pub fn suite_v2() -> &'static ProgressSuiteV2 {
 	static SUITE: std::sync::OnceLock<ProgressSuiteV2> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| ProgressSuiteV2 {
@@ -173,13 +274,13 @@ pub fn suite_v2() -> &'static ProgressSuiteV2 {
 mod tests {
 	use super::*;
 
-	/// 取消型出口（头文件契约：非 0 = 中止）。
+	/// Cancelling exit (header contract: non-zero = abort).
 	unsafe extern "C" fn cancel_cb(_p: f64, _userdata: *mut c_void) -> c_int {
 		1
 	}
 
-	/// 静默：update 恒 OK；带取消回调：update → REPLY_NO 且 abort
-	/// 查询为真（粘滞）。
+	/// Silent: update always OK; with a cancelling callback: update → REPLY_NO and
+	/// the abort query is true (sticky).
 	#[test]
 	fn update_cancel_and_abort() {
 		// 无报告器（渲染外）：静默 OK。

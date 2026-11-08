@@ -363,7 +363,14 @@ impl MediaStream for ForeignStream {
 	}
 }
 
-/// Map a provider error record to the codec's error type for `open`.
+/// Map a provider error record to the codec's `MediaIoError` for `open`.
+///
+/// `err` is the record the foreign provider filled in (`code` plus a
+/// NUL-terminated message), `fallback` the message used when it wrote no text.
+/// An empty message yields `E_INVALID` with `fallback`; a message with
+/// `code == 0` (provider left it unspecified) yields `E_INVALID` with that
+/// message; otherwise the provider's non-zero code is preserved next to the
+/// message.
 fn provider_error(err: &QuercusMediaIoError, fallback: &str) -> MediaIoError {
 	let message = err.message();
 	if message.is_empty() {
@@ -376,6 +383,11 @@ fn provider_error(err: &QuercusMediaIoError, fallback: &str) -> MediaIoError {
 }
 
 /// Map a provider error record to an `io::Error` for `read`/`seek`.
+///
+/// `err` is the record the foreign provider filled in (`code` plus a
+/// NUL-terminated message), `fallback` the message used when it wrote no text.
+/// The provider code is dropped — `io::Error::other` carries only the message —
+/// so callers can report the text but not the errno-style value.
 fn stream_error(err: &QuercusMediaIoError, fallback: &str) -> io::Error {
 	let message = err.message();
 	if message.is_empty() {

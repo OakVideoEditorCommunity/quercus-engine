@@ -86,7 +86,17 @@ pub struct MontageAudioEffect {
 }
 
 impl MontageAudioEffect {
-	/// The static value of `input`, if this effect carries one.
+	/// The static value of the input named `input`, if this effect carries
+	/// one.
+	///
+	/// `input` is a node input id such as `volume_in` or `threshold_db`
+	/// (exact, case-sensitive match). Only parameters stored as static values
+	/// in `params` are found — an animated or absent parameter yields `None`,
+	/// and when the same id appears twice the first entry wins. The caller
+	/// interprets the [`quercus_node::value::NodeValue`] (normally a float);
+	/// this lookup does no conversion or clamping. Pairs with the mixer's
+	/// per-effect parameter reads and with the facade-side
+	/// `set_audio_bus_effect_param`.
 	pub fn param(&self, input: &str) -> Option<&quercus_node::value::NodeValue> {
 		self.params
 			.iter()
@@ -404,6 +414,21 @@ struct TicketSlot {
 }
 
 impl TicketSlot {
+	/// Publish the ticket's outcome and deliver its completion exactly once.
+	///
+	/// Called by the worker job's `done` (or inline by the submit path when
+	/// the backend is gone). If the slot's cancel flag is set, payloads that
+	/// still own a worker shm slot are recycled through the dispatch
+	/// (`release_frame`/`release_audio_frame`) before the result is replaced
+	/// with `Error::State`, so a cancelled ticket cannot leak a slot that the
+	/// consumer will never see.
+	///
+	/// The result is stored before the state flips to `Finished` under the
+	/// same state lock, so a [`TicketArena::wait`] caller can never observe
+	/// `Finished` with an unreadable result. A second `finish` for the same
+	/// slot returns early (the `Finished` check) and the completion is taken
+	/// under an atomic swap, so `done` runs at most once even if finish is
+	/// entered again. Waiters are woken only after the result is published.
 	fn finish(&self, mut result: TicketResult) {
 		if self.cancel.load(Ordering::Acquire) {
 			// A cancelled ticket still holds its shm slot when the render
@@ -472,7 +497,16 @@ pub struct TicketArena {
 }
 
 impl TicketArena {
-	/// Arena dispatching video and audio through the same backend.
+	/// Create an arena that dispatches video and audio through the same
+	/// backend.
+	///
+	/// `dispatch` is cloned: one clone becomes the video dispatcher and the
+	/// other the audio dispatcher, so a single threading backend serves both
+	/// kinds. `producer` renders video frames ([`Producer`]); audio goes
+	/// through `eval::render_audio_samples` instead. No inline audio fallback
+	/// is installed (see [`TicketArena::new_with_audio_fallback`] for the
+	/// teardown-safe variant). Ticket ids start at 1 and the arena starts
+	/// without shutdown requested.
 	pub fn new(dispatch: Arc<dyn JobDispatch>, producer: Producer) -> Self {
 		Self::new_with_audio(dispatch.clone(), dispatch, producer)
 	}
@@ -659,8 +693,17 @@ impl TicketArena {
 		)
 	}
 
-	/// Submit a Background-priority frame (M15 S2 exports/precache): the
-	/// scheduler renders it whenever no Seek/Playback work is pending.
+	/// Submit a frame at Background priority so exports and pre-caches do not
+	/// compete with interactive rendering.
+	///
+	/// The job joins the scheduler with [`JobSchedule::background`]: it is
+	/// rendered whenever no Seek/Playback work is pending, which is how M15
+	/// S2 export/precache runs stay responsive. The id comes from
+	/// [`TicketArena::next_id`] and the ticket is completion-only
+	/// (`poll_after == false`), so a finished slot is reaped at the next
+	/// `allocate()`; the export loop instead reserves ids itself and calls
+	/// [`TicketArena::submit_video_background_with_id`]. `done` fires exactly
+	/// once, with `Error::State` on cancellation or a dead backend.
 	pub fn submit_video_background(&self, params: VideoTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_video_background_with_id(id, params, done)
@@ -677,8 +720,22 @@ impl TicketArena {
 		self.submit_video_impl(id, params, done, JobSchedule::background(), false)
 	}
 
-	/// Submit a video ticket; completion fires exactly once, including
-	/// on cancellation (with `Error::State`).
+	/// Submit one video frame at [`JobSchedule::seek`] priority and return
+	/// its freshly allocated id.
+	///
+	/// `params` describes the viewer, project, frame time, force size/format
+	/// and the footage or montage to render; `done` is consumed by the ticket
+	/// and called exactly once — with `TicketPayload::Video`/`ShmFrame` on
+	/// success, and with `Error::State` on cancellation or when the backend is
+	/// already gone (a shutdown race finishes the slot inline instead of
+	/// posting). The frame is delivered from the dispatcher's poll loop, so a
+	/// caller that blocks must pump/wait through [`TicketArena::wait`].
+	///
+	/// This is the completion-only variant (`poll_after == false`): once
+	/// finished, the slot is reaped at the next `allocate()`. Use
+	/// [`TicketArena::submit_video_with_id`] when the caller reserves the id
+	/// and polls [`TicketArena::wait`]/[`TicketArena::result`], or
+	/// [`TicketArena::submit_video_background`] for export/precache priority.
 	pub fn submit_video(&self, params: VideoTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_video_impl(id, params, done, JobSchedule::seek(), false)
@@ -698,8 +755,27 @@ impl TicketArena {
 		self.submit_audio_impl(id, params, done, true)
 	}
 
-	/// The shared audio-ticket submit path (`poll_after` 语义同
-	/// [`TicketArena::submit_video_impl`]).
+	/// The shared audio-ticket submit path behind
+	/// [`TicketArena::submit_audio`] and [`TicketArena::submit_audio_with_id`].
+	///
+	/// Registers a slot for `id` with kind [`ticket_kind::AUDIO`], the
+	/// range's in-point as its time and the full `range`, then builds the
+	/// worker job: the producer ignores the video params and calls
+	/// `eval::render_audio_samples` with a clone of `params`, the schedule is
+	/// [`JobSchedule::seek`], and the cancellation closure reads the slot's
+	/// cancel flag. `done` is moved into the slot and taken (so called at
+	/// most once) when the job finishes. Posting goes to `audio_dispatch`;
+	/// when it refuses (shutting down) the job is rebuilt and posted to
+	/// `audio_fallback`, and if that also refuses, `slot.finish` is called
+	/// directly on the caller thread so the completion still fires exactly
+	/// once — with `Error::State`.
+	///
+	/// `poll_after` selects the reaping policy, mirroring
+	/// [`TicketArena::submit_video_impl`]: `true` keeps the slot after
+	/// finishing until [`TicketArena::result`] reaps it (sync wheel: the
+	/// caller polls `wait`/`result`), `false` lets the next `allocate()`
+	/// reap it (fire-and-forget). Always returns `id`; submission failures
+	/// are delivered through `done`, not returned.
 	fn submit_audio_impl(
 		&self,
 		id: TicketId,
@@ -785,14 +861,36 @@ impl TicketArena {
 		id
 	}
 
-	/// Submit an audio ticket (range pull; C++ render_audio). The
-	/// completion fires exactly once.
+	/// Submit an audio range pull and return its freshly allocated ticket id.
+	///
+	/// `params` carries the sequence identity, the half-open range, the
+	/// sample rate/channel layout, the montage and the master-bus chain;
+	/// `done` is consumed by the ticket and called exactly once. The job is
+	/// posted at [`JobSchedule::seek`] priority to the arena's audio backend,
+	/// falling back to the inline main-process dispatcher when that backend
+	/// is gone, and finishing immediately with `Error::State` if neither
+	/// accepts it (shutdown). Cancellation also delivers `Error::State`
+	/// rather than nothing.
+	///
+	/// Ids come from [`TicketArena::next_id`]. This variant is
+	/// completion-only (`poll_after == false`): once finished, the slot is
+	/// reaped at the next `allocate()`. A caller that later needs
+	/// [`TicketArena::wait`]/[`TicketArena::result`] must use
+	/// [`TicketArena::submit_audio_with_id`], which keeps the slot until
+	/// `result()` reaps it.
 	pub fn submit_audio(&self, params: AudioTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_audio_impl(id, params, done, false)
 	}
 
-	/// True when the ticket has finished.
+	/// Whether the ticket's slot is in the finished state.
+	///
+	/// `true` once [`TicketSlot::finish`] has published its result — including
+	/// the cancelled case, which finishes with `Error::State`. Returns
+	/// `false` both for a running ticket and for an unknown or already reaped
+	/// id, so it cannot distinguish "still rendering" from "no such ticket";
+	/// callers that must tell those apart use [`TicketArena::result`] or keep
+	/// the id alive by polling (`submit_*_with_id`).
 	pub fn is_finished(&self, id: TicketId) -> bool {
 		match lock(&self.slots).get(&id) {
 			Some(slot) => slot.is_finished(),
@@ -834,22 +932,47 @@ impl TicketArena {
 		lock(&self.slots).remove(&id).and_then(|s| s.result())
 	}
 
-	/// Ticket metadata query (C++ property()).
+	/// The ticket's metadata record (the C++ `property()` query).
+	///
+	/// Returns a clone of the [`TicketMeta`] captured at submit time: `kind`
+	/// (`Some(0)`/`Some(1)`) and `time` are set for both kinds; the
+	/// `cache_dir`/`cache_id`/`cache_timebase` fields are filled only for
+	/// video tickets that were submitted with cache parameters, and stay
+	/// `None` otherwise. The record is a fixed struct, not a general property
+	/// bag, so no other keys exist. Returns `None` for an unknown or reaped
+	/// id.
 	pub fn meta(&self, id: TicketId) -> Option<TicketMeta> {
 		lock(&self.slots).get(&id).map(|s| lock(&s.meta).clone())
 	}
 
-	/// The ticket's kind.
+	/// The ticket's kind as one of the [`ticket_kind`] constants:
+	/// `0` for a video ticket, `1` for an audio ticket.
+	///
+	/// The kind is fixed when the ticket is submitted, so it stays readable
+	/// after the ticket finishes (until the slot is reaped). Returns `None`
+	/// for an unknown or reaped id — distinct from a valid ticket, because
+	/// both constants are non-negative.
 	pub fn kind(&self, id: TicketId) -> Option<i32> {
 		lock(&self.slots).get(&id).map(|s| s.kind)
 	}
 
-	/// The ticket's time (video tickets).
+	/// The ticket's timestamp.
+	///
+	/// For video tickets this is the frame's time passed to the submit; for
+	/// audio tickets it is the range's in-point (the range itself is
+	/// [`TicketArena::range`]). Both are in the sequence timebase. Returns
+	/// `None` when the id is unknown or already reaped.
 	pub fn time(&self, id: TicketId) -> Option<Rational> {
 		lock(&self.slots).get(&id).map(|s| s.time)
 	}
 
-	/// The ticket's range (audio tickets).
+	/// The time range this ticket represents.
+	///
+	/// Audio tickets store the pulled range (`params.range`, half-open), while
+	/// video tickets have no range of their own and store the degenerate
+	/// `time..time`; use [`TicketArena::time`] to get the frame time for
+	/// either kind. Returns `None` when the id is unknown or has already been
+	/// reaped (see [`TicketArena::result`]).
 	pub fn range(&self, id: TicketId) -> Option<TimeRange> {
 		lock(&self.slots).get(&id).map(|s| s.range)
 	}

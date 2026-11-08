@@ -65,6 +65,11 @@ impl ShapeNodeBase {
 	/// corners/edge centers and the polygon gizmo on the four corners
 	/// in top-left, top-right, bottom-right, bottom-left order.
 	///
+	/// `core` is the node core whose `gizmos` would receive the placements, and
+	/// `row` is the evaluated input row the rect is read from (`pos_in`/`size_in`);
+	/// the per-axis coordinates themselves are derived from the square resolution,
+	/// which neither parameter carries.
+	///
 	/// The C++ writes the resulting points into its `PointGizmo` /
 	/// `PolygonGizmo` objects; the Rust `NodeCore::gizmos` records only
 	/// each gizmo's tracked input references and drag position, so the

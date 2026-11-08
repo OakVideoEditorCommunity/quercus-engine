@@ -332,7 +332,17 @@ pub fn scan() -> Option<usize> {
 	(n >= 0).then_some(n as usize)
 }
 
-/// Scans one extra plugin directory. False on failure.
+/// Scans one extra plugin directory on top of the standard OFX search
+/// paths, loading any bundles found into the discovered set.
+///
+/// Returns `false` only on invalid input (a path that is not valid UTF-8
+/// or contains NUL); a path that is not a directory, or one already
+/// scanned, is a silent no-op returning `true`. Check
+/// [`plugins`]/[`plugin_count`] for the resulting list.
+///
+/// # Arguments
+///
+/// * `path` - filesystem path of the directory to scan, as UTF-8 text.
 pub fn scan_path(path: &str) -> bool {
 	unsafe { quercus_ofx_scan_path(path.as_ptr(), path.len()) }
 }
@@ -357,7 +367,16 @@ pub fn plugin_count() -> usize {
 	unsafe { quercus_ofx_plugin_count() }.max(0) as usize
 }
 
-/// The metadata of the plugin at `index`; None when out of range.
+/// The metadata of the plugin at `index` in scan order, or `None` when
+/// `index` is out of range or one of its metadata fields cannot be
+/// read.
+///
+/// Queries the engine once per field; use [`plugins`] to fetch them all
+/// at once.
+///
+/// # Arguments
+///
+/// * `index` - zero-based index into the discovered-plugin list.
 pub fn plugin_at(index: usize) -> Option<PluginInfo> {
 	if index >= plugin_count() {
 		return None;
@@ -383,7 +402,12 @@ pub fn plugin_at(index: usize) -> Option<PluginInfo> {
 	})
 }
 
-/// All discovered plugins.
+/// All discovered plugins in scan order, built by calling [`plugin_at`]
+/// for every index.
+///
+/// Plugins whose metadata cannot be read are skipped rather than
+/// failing the whole list; run [`scan`] or [`scan_path`] first so there
+/// is something to enumerate.
 pub fn plugins() -> Vec<PluginInfo> {
 	(0..plugin_count()).filter_map(plugin_at).collect()
 }
@@ -411,8 +435,18 @@ pub fn install_render_executor() {
 	unsafe { quercus_ofx_install_render_executor() }
 }
 
-/// Pushes the project extent the OFX normalised-coordinate default
-/// conversion uses.
+/// Pushes the project extent (canvas size in canonical pixels) that the
+/// OFX normalised-coordinate default conversion maps the `[0, 1]` range
+/// onto.
+///
+/// Call it whenever the project resolution changes; this only affects
+/// plugin parameters whose normalised-coordinate defaults still need
+/// converting. Each component is clamped to at least `1.0`.
+///
+/// # Arguments
+///
+/// * `width` - project width in canonical pixels.
+/// * `height` - project height in canonical pixels.
 pub fn set_project_extent(width: f64, height: f64) {
 	unsafe { quercus_ofx_set_project_extent(width, height) }
 }
@@ -451,6 +485,20 @@ struct ProgressCallbacks {
 // Send closure pair and the slot is mutex-guarded.)
 static PROGRESS_CALLBACKS: Mutex<Option<usize>> = Mutex::new(None);
 
+/// C-ABI callback the engine invokes on every plugin `progressUpdate`,
+/// decoding the label/message strings and forwarding them to the
+/// registered `on_progress` closure.
+///
+/// Returns the closure's `true` to continue the render or `false` to
+/// request cancellation; a null `userdata` (no registration) returns
+/// `true`.
+///
+/// # Safety
+///
+/// `userdata` must be null or the `*mut ProgressCallbacks` registered
+/// with the engine via [`set_progress_handler`], and must stay alive for
+/// the whole registration. `label` and `message` must be null or valid
+/// NUL-terminated C strings for the duration of the call.
 unsafe extern "C" fn progress_trampoline(
 	label: *const std::ffi::c_char,
 	message: *const std::ffi::c_char,
@@ -478,6 +526,15 @@ unsafe extern "C" fn progress_trampoline(
 	(cb.on_progress)(label, message, fraction)
 }
 
+/// C-ABI callback the engine invokes when a plugin render sequence ends
+/// (`progressEnd`), forwarding to the registered `on_end` closure.
+///
+/// # Safety
+///
+/// `userdata` must be null or the `*mut ProgressCallbacks` registered
+/// with the engine via [`set_progress_handler`]; a non-null pointer must
+/// stay alive for the whole registration (it is owned by
+/// `PROGRESS_CALLBACKS` until the handler is replaced or cleared).
 unsafe extern "C" fn end_trampoline(userdata: *mut c_void) {
 	if userdata.is_null() {
 		return;
@@ -512,7 +569,12 @@ pub fn set_progress_handler(
 	};
 }
 
-/// Clears the progress handler.
+/// Unregisters the progress handler installed by
+/// [`set_progress_handler`] and drops the stored callbacks.
+///
+/// Safe to call when no handler is registered; afterwards the engine
+/// reports no further `progressUpdate`/`progressEnd` events to this
+/// process.
 pub fn clear_progress_handler() {
 	unsafe { quercus_ofx_set_progress_handler(None, None, std::ptr::null_mut()) };
 	if let Some(old) = PROGRESS_CALLBACKS
@@ -599,7 +661,15 @@ impl Instance {
 		(n >= 0).then_some(n as usize)
 	}
 
-	/// The parameter name at `index` (definition order).
+	/// The internal name of the parameter at `index`, in definition
+	/// order; this is the key accepted by the `param_*`/`set_param_*`
+	/// accessors.
+	///
+	/// Returns `None` when `index` is out of range.
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based parameter index in definition order.
 	pub fn param_name_at(&self, index: usize) -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_ofx_param_name_at(self.id, index as i32, buf, len) })
 	}
@@ -609,7 +679,15 @@ impl Instance {
 		string_out(|buf, len| unsafe { quercus_ofx_param_type_at(self.id, index as i32, buf, len) })
 	}
 
-	/// The parameter's display label at `index`.
+	/// The display label (`kOfxPropLabel`) of the parameter at `index`, as
+	/// shown in the inspector.
+	///
+	/// Returns `None` when `index` is out of range. Use
+	/// [`param_name_at`] for the stable internal name.
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based parameter index in definition order.
 	pub fn param_label_at(&self, index: usize) -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_ofx_param_label_at(self.id, index as i32, buf, len) })
 	}
@@ -650,7 +728,14 @@ impl Instance {
 		}
 	}
 
-	/// Reads a double-family parameter (Double/Double2D/Double3D).
+	/// Reads a double-family parameter (Double/Double2D/Double3D),
+	/// returning one value per dimension in component order.
+	///
+	/// Returns `None` on an unknown parameter name or a type mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_double(&self, name: &str) -> Option<Vec<f64>> {
 		let dim = unsafe {
 			quercus_ofx_param_get_double(self.id, name.as_ptr(), name.len(), std::ptr::null_mut(), 0)
@@ -671,7 +756,16 @@ impl Instance {
 		Some(out)
 	}
 
-	/// Writes a double-family parameter.
+	/// Writes a double-family parameter (Double/Double2D/Double3D) from
+	/// `values`; the length must equal the parameter's arity (1..=3).
+	///
+	/// Returns `false` on an unknown parameter name or a type/arity
+	/// mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `values` - one value per dimension, in component order.
 	pub fn set_param_double(&self, name: &str, values: &[f64]) -> bool {
 		unsafe {
 			quercus_ofx_param_set_double(
@@ -685,6 +779,13 @@ impl Instance {
 	}
 
 	/// Reads a boolean parameter.
+	///
+	/// Returns `None` on an unknown parameter name or a type mismatch
+	/// (the ABI's `-1` sentinel).
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_bool(&self, name: &str) -> Option<bool> {
 		match unsafe { quercus_ofx_param_get_bool(self.id, name.as_ptr(), name.len()) } {
 			0 => Some(false),
@@ -694,22 +795,52 @@ impl Instance {
 	}
 
 	/// Writes a boolean parameter.
+	///
+	/// Returns `false` on an unknown parameter name or a type mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `value` - new boolean state.
 	pub fn set_param_bool(&self, name: &str, value: bool) -> bool {
 		unsafe { quercus_ofx_param_set_bool(self.id, name.as_ptr(), name.len(), value) }
 	}
 
-	/// Reads a choice parameter (the option index).
+	/// Reads a choice parameter as its zero-based option index.
+	///
+	/// Returns `None` on an unknown parameter name or a type mismatch
+	/// (the underlying ABI reports `-1`).
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_choice(&self, name: &str) -> Option<i32> {
 		let v = unsafe { quercus_ofx_param_get_choice(self.id, name.as_ptr(), name.len()) };
 		(v >= 0).then_some(v)
 	}
 
-	/// Writes a choice parameter (the option index).
+	/// Writes a choice parameter by option index (the position in the
+	/// parameter's option menu, not its string).
+	///
+	/// Returns `false` on an unknown parameter name or a type mismatch;
+	/// `index` is passed through without range checking here.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `index` - zero-based selected option index.
 	pub fn set_param_choice(&self, name: &str, index: i32) -> bool {
 		unsafe { quercus_ofx_param_set_choice(self.id, name.as_ptr(), name.len(), index) }
 	}
 
-	/// Reads a color parameter (RGB/RGBA → 3/4 components).
+	/// Reads a color parameter, returning 3 components for RGB and 4 for
+	/// RGBA (the parameter's arity).
+	///
+	/// Returns `None` on an unknown parameter name or a type mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_color(&self, name: &str) -> Option<Vec<f64>> {
 		let dim = unsafe {
 			quercus_ofx_param_get_color(self.id, name.as_ptr(), name.len(), std::ptr::null_mut(), 0)
@@ -730,8 +861,16 @@ impl Instance {
 		Some(out)
 	}
 
-	/// Writes a color parameter (3 or 4 components, matching the
-	/// parameter's arity).
+	/// Writes a color parameter from `values` (3 components for RGB, 4 for
+	/// RGBA, matching the parameter's arity).
+	///
+	/// Returns `false` on an unknown parameter name or a type/arity
+	/// mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `values` - red, green, blue[, alpha] components.
 	pub fn set_param_color(&self, name: &str, values: &[f64]) -> bool {
 		unsafe {
 			quercus_ofx_param_set_color(
@@ -744,14 +883,28 @@ impl Instance {
 		}
 	}
 
-	/// Reads a string-family parameter (String/StrChoice).
+	/// Reads a string-family parameter (String/StrChoice) as UTF-8 text.
+	///
+	/// Returns `None` on an unknown parameter name or a type mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_string(&self, name: &str) -> Option<String> {
 		string_out(|buf, len| unsafe {
 			quercus_ofx_param_get_string(self.id, name.as_ptr(), name.len(), buf, len)
 		})
 	}
 
-	/// Writes a string-family parameter.
+	/// Writes a string-family parameter (String/StrChoice), replacing its
+	/// current text.
+	///
+	/// Returns `false` on an unknown parameter name or a type mismatch.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `value` - UTF-8 text to store; borrowed only for the call.
 	pub fn set_param_string(&self, name: &str, value: &str) -> bool {
 		unsafe {
 			quercus_ofx_param_set_string(
@@ -764,7 +917,15 @@ impl Instance {
 		}
 	}
 
-	/// Reads a parametric parameter as a curve set.
+	/// Reads a parametric parameter as a curve set, parsed from the
+	/// canonical curve-set JSON the plugin returns.
+	///
+	/// Returns `None` on an unknown parameter name, a type mismatch, or
+	/// JSON that fails to parse. Counterpart of [`set_param_curves`].
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
 	pub fn param_curves(&self, name: &str) -> Option<CurveSet> {
 		let json = string_out(|buf, len| unsafe {
 			quercus_ofx_param_get_curves_json(self.id, name.as_ptr(), name.len(), buf, len)
@@ -772,7 +933,17 @@ impl Instance {
 		CurveSet::from_json(&json)
 	}
 
-	/// Writes a parametric parameter from a curve set.
+	/// Writes a parametric parameter from `curves`, serialising them to
+	/// the canonical curve-set JSON that the plugin's `set` action reads.
+	///
+	/// Returns `false` on an unknown parameter name, a type mismatch, or
+	/// JSON the plugin rejects.
+	///
+	/// # Arguments
+	///
+	/// * `name` - internal parameter name (not its display label).
+	/// * `curves` - curve set to store, one curve per parametric
+	///   dimension; slopes are serialised too.
 	pub fn set_param_curves(&self, name: &str, curves: &CurveSet) -> bool {
 		let json = curves.to_json();
 		unsafe {
@@ -792,7 +963,11 @@ impl Instance {
 		(n >= 0).then_some(n as usize)
 	}
 
-	/// Clears the persistent messages.
+	/// Clears the instance's persistent messages (the badge/message data
+	/// the inspector shows), e.g. when the instance is released or the
+	/// host shuts down.
+	///
+	/// Unknown instance ids are a silent no-op.
 	pub fn clear_persistent_messages(&self) {
 		unsafe { quercus_ofx_instance_clear_persistent_messages(self.id) }
 	}
@@ -844,13 +1019,31 @@ impl Instance {
 		unsafe { quercus_ofx_instance_begin_sequence(self.id, min, max) }
 	}
 
-	/// The endSequenceRender bracket, pairing
-	/// [`Instance::begin_sequence`].
+	/// Closes the `endSequenceRender` bracket opened by
+	/// [`begin_sequence`], reporting the rendered `[min, max]` range so
+	/// the plugin can flush per-sequence caches and resources.
+	///
+	/// Returns `false` on an unknown instance or a plugin error; call it
+	/// once per successful `begin_sequence`.
+	///
+	/// # Arguments
+	///
+	/// * `min` - first frame time of the rendered range, in seconds.
+	/// * `max` - last frame time of the rendered range, in seconds.
 	pub fn end_sequence(&self, min: f64, max: f64) -> bool {
 		unsafe { quercus_ofx_instance_end_sequence(self.id, min, max) }
 	}
 
-	/// The region of definition at `time` (canonical coordinates).
+	/// The instance's region of definition at `time` — the canonical
+	/// (render-scale 1:1) rectangle the plugin renders into, used to size
+	/// and position the node's output.
+	///
+	/// Returns `None` for an unknown instance or when the plugin fails the
+	/// `getRegionOfDefinition` action.
+	///
+	/// # Arguments
+	///
+	/// * `time` - timeline position in seconds at which to query.
 	pub fn region_of_definition(&self, time: f64) -> Option<RectD> {
 		let mut out = QuercusOfxRectD::default();
 		unsafe { quercus_ofx_instance_get_rod(self.id, time, &mut out) }.then(|| out.into())
@@ -957,12 +1150,32 @@ impl Interact {
 		unsafe { quercus_ofx_interact_pen_motion(self.id, position.0, position.1, pen_down, time) }
 	}
 
-	/// The pen down action.
+	/// The pen down action: tells the plugin the pen was pressed at
+	/// `position` and `time` (OFX `kOfxInteractActionPenDown`), reporting
+	/// full pressure `1.0`.
+	///
+	/// Returns the plugin's OFX status code. Pair with [`pen_up`].
+	///
+	/// # Arguments
+	///
+	/// * `position` - pen position in viewport pixels (`x`, `y`), in the
+	///   coordinate space of the last [`draw`] viewport.
+	/// * `time` - timeline position in seconds of the event.
 	pub fn pen_down(&self, position: (f64, f64), time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_pen_down(self.id, position.0, position.1, time) }
 	}
 
-	/// The pen up action.
+	/// The pen up action: tells the plugin the pen was lifted at
+	/// `position` and `time` (OFX `kOfxInteractActionPenUp`), closing the
+	/// pair opened by [`pen_down`].
+	///
+	/// Returns the plugin's OFX status code.
+	///
+	/// # Arguments
+	///
+	/// * `position` - pen position in viewport pixels (`x`, `y`), in the
+	///   coordinate space of the last [`draw`] viewport.
+	/// * `time` - timeline position in seconds of the event.
 	pub fn pen_up(&self, position: (f64, f64), time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_pen_up(self.id, position.0, position.1, time) }
 	}
@@ -981,7 +1194,19 @@ impl Interact {
 		}
 	}
 
-	/// The key up action.
+	/// The key up action: tells the plugin a key was released at `time`
+	/// (OFX `kOfxInteractActionKeyUp`), completing the pair opened by
+	/// [`key_down`].
+	///
+	/// Returns the plugin's OFX status code.
+	///
+	/// # Arguments
+	///
+	/// * `key_sym` - `ofxKeySyms` code of the released key, the same
+	///   value passed to the matching `key_down`.
+	/// * `key_string` - UTF-8 text of the printable character, empty for
+	///   keys that have none.
+	/// * `time` - timeline position in seconds of the event.
 	pub fn key_up(&self, key_sym: i32, key_string: &str, time: f64) -> i32 {
 		unsafe {
 			quercus_ofx_interact_key_up(
@@ -999,12 +1224,29 @@ impl Interact {
 		unsafe { quercus_ofx_interact_idle(self.id) }
 	}
 
-	/// The gain focus action (a prerequisite of pen/key actions).
+	/// Notifies the plugin that its overlay gained viewer focus at
+	/// `time`; the pen and key actions are only meaningful while the
+	/// interact holds focus.
+	///
+	/// Returns the plugin's OFX status code. Pair with [`lose_focus`];
+	/// the interact must already exist ([`create_interact`]).
+	///
+	/// # Arguments
+	///
+	/// * `time` - timeline position in seconds at which focus was gained.
 	pub fn gain_focus(&self, time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_gain_focus(self.id, time) }
 	}
 
-	/// The lose focus action.
+	/// Notifies the plugin that its overlay lost viewer focus at `time`,
+	/// so it can dismiss transient UI. Pair with [`gain_focus`].
+	///
+	/// Returns the plugin's OFX status code (`kOfxStatErrBadHandle` for
+	/// an unknown interact).
+	///
+	/// # Arguments
+	///
+	/// * `time` - timeline position in seconds at which focus was lost.
 	pub fn lose_focus(&self, time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_lose_focus(self.id, time) }
 	}
@@ -1072,13 +1314,22 @@ impl CurveSet {
 		}
 	}
 
-	/// Parses curve-set JSON. None on malformed JSON.
+	/// Parses curve-set JSON (as produced by [`to_json`] or the C++/node
+	/// side) into a new refcounted set.
+	///
+	/// Returns `None` when the text is not valid curve-set JSON; `json`
+	/// is borrowed and need not be NUL-terminated.
 	pub fn from_json(json: &str) -> Option<Self> {
 		let ptr = unsafe { quercus_ofx_curveset_from_json(json.as_ptr(), json.len()) };
 		(!ptr.is_null()).then_some(Self { ptr })
 	}
 
-	/// Serializes to JSON.
+	/// Serializes the whole set — every curve and control point, slopes
+	/// included — to the engine's canonical curve-set JSON, the payload
+	/// node values and project files store.
+	///
+	/// Returns an empty string when the handle is invalid or encoding
+	/// fails.
 	pub fn to_json(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_ofx_curveset_to_json(self.ptr, buf, len) })
 			.unwrap_or_default()
@@ -1102,13 +1353,26 @@ impl CurveSet {
 		(i >= 0).then_some(i as usize)
 	}
 
-	/// Number of control points of a curve.
+	/// Number of control points in `curve`, or `None` when `curve` is out
+	/// of range.
+	///
+	/// # Arguments
+	///
+	/// * `curve` - zero-based curve index within this set.
 	pub fn point_count(&self, curve: usize) -> Option<usize> {
 		let n = unsafe { quercus_ofx_curveset_point_count(self.ptr, curve as i32) };
 		(n >= 0).then_some(n as usize)
 	}
 
-	/// The control point at `index` of a curve.
+	/// Copies the control point at `index` of `curve`, including its
+	/// explicit Hermite `slope`.
+	///
+	/// Returns `None` when `curve` or `index` is out of range.
+	///
+	/// # Arguments
+	///
+	/// * `curve` - zero-based curve index within this set.
+	/// * `index` - zero-based position within the curve, in key order.
 	pub fn point_at(&self, curve: usize, index: usize) -> Option<ControlPoint> {
 		let mut out = QuercusOfxCurvePoint::default();
 		unsafe { quercus_ofx_curveset_point_at(self.ptr, curve as i32, index as i32, &mut out) }.then(
@@ -1126,7 +1390,19 @@ impl CurveSet {
 		unsafe { quercus_ofx_curveset_upsert_point(self.ptr, curve as i32, key, value) }
 	}
 
-	/// Inserts a control point while preserving its explicit Hermite slope.
+	/// Inserts `point` into `curve` at its `key` position, or overwrites
+	/// the point already stored at that exact key, keeping the explicit
+	/// Hermite `slope` (unlike [`upsert_point`], which recomputes
+	/// slopes).
+	///
+	/// Returns `false` when `curve` is out of range, leaving the set
+	/// unchanged.
+	///
+	/// # Arguments
+	///
+	/// * `curve` - zero-based curve index within this set.
+	/// * `point` - key (parametric position), value and slope to store;
+	///   the slope is copied verbatim, not recalculated.
 	pub fn push_point(&self, curve: usize, point: ControlPoint) -> bool {
 		unsafe {
 			quercus_ofx_curveset_push_point(
@@ -1141,7 +1417,16 @@ impl CurveSet {
 		}
 	}
 
-	/// Deletes the control point at `index`.
+	/// Removes the control point at `index` from `curve` and recomputes
+	/// the remaining slopes; later points shift down one index.
+	///
+	/// Returns `false` when `curve` or `index` is out of range, leaving
+	/// the set unchanged.
+	///
+	/// # Arguments
+	///
+	/// * `curve` - zero-based curve index within this set.
+	/// * `index` - zero-based position within the curve, in key order.
 	pub fn delete_point(&self, curve: usize, index: usize) -> bool {
 		unsafe { quercus_ofx_curveset_delete_point(self.ptr, curve as i32, index as i32) }
 	}
@@ -1209,6 +1494,11 @@ impl Curve {
 	}
 }
 
+/// Copies every control point of curve `index` in `set` into an owned
+/// [`Curve`], dropping points the engine reports as invalid.
+///
+/// An out-of-range `index` yields an empty curve rather than an error.
+/// Used by [`curves_from_json`] and the `Curve` constructors.
 fn curve_from_set(set: &CurveSet, index: usize) -> Curve {
 	let count = set.point_count(index).unwrap_or(0);
 	Curve {
@@ -1218,7 +1508,12 @@ fn curve_from_set(set: &CurveSet, index: usize) -> Curve {
 	}
 }
 
-/// Parses curve-set JSON into an owned UI-independent DTO.
+/// Parses curve-set JSON into owned, UI-independent [`Curve`] values,
+/// one per curve in the set.
+///
+/// Returns `None` when the JSON is malformed; otherwise points are
+/// copied in key order with their slopes intact. Counterpart of
+/// [`curves_to_json`].
 pub fn curves_from_json(json: &str) -> Option<Vec<Curve>> {
 	let set = CurveSet::from_json(json)?;
 	Some(
@@ -1228,7 +1523,13 @@ pub fn curves_from_json(json: &str) -> Option<Vec<Curve>> {
 	)
 }
 
-/// Serializes owned curves through the engine's canonical JSON codec.
+/// Serializes owned curves to the engine's canonical curve-set JSON —
+/// the same format [`CurveSet::to_json`] emits and that node values and
+/// project files store.
+///
+/// Curves are written in slice order with their explicit slopes
+/// preserved. Encoding failures collapse to an empty string (the
+/// handle used internally is always valid).
 pub fn curves_to_json(curves: &[Curve]) -> String {
 	let set = CurveSet::new();
 	for curve in curves {
@@ -1278,7 +1579,18 @@ pub mod gl {
 		unsafe { quercus_ofx_gl_acquire() }.then_some(GlGuard { _private: () })
 	}
 
-	/// Creates an RGBA32F output texture, returning its GL name.
+	/// Creates an RGBA32F render-target texture of `width` x `height`
+	/// pixels and returns its GL name. The texture is not attached to any
+	/// FBO yet; use [`create_fbo`] to make it renderable and
+	/// [`delete_texture`] to free it.
+	///
+	/// Returns `None` when GL is unavailable or texture creation fails.
+	/// Requires an acquired context ([`acquire`]).
+	///
+	/// # Arguments
+	///
+	/// * `width` - texture width in pixels.
+	/// * `height` - texture height in pixels.
 	pub fn create_output_texture(width: i32, height: i32) -> Option<i32> {
 		let t = unsafe { quercus_ofx_gl_create_output_texture(width, height) };
 		(t >= 0).then_some(t)
@@ -1294,7 +1606,18 @@ pub mod gl {
 		(t >= 0).then_some(t)
 	}
 
-	/// Deletes a GL texture.
+	/// Deletes the GL texture `texture`, as returned by
+	/// [`create_output_texture`] or [`create_input_texture`]. The caller
+	/// must first detach it from any live FBO and must not use the name
+	/// afterwards.
+	///
+	/// Requires an acquired context ([`acquire`]); a silent no-op when GL
+	/// is unavailable.
+	///
+	/// # Arguments
+	///
+	/// * `texture` - GL texture name to free; `0` names no texture, so
+	///   deleting it has no effect.
 	pub fn delete_texture(texture: i32) {
 		unsafe { quercus_ofx_gl_delete_texture(texture) }
 	}
@@ -1305,22 +1628,57 @@ pub mod gl {
 		(f >= 0).then_some(f)
 	}
 
-	/// Binds an FBO (0 = the default framebuffer).
+	/// Binds `fbo` as the framebuffer used by subsequent draws and
+	/// readbacks; `0` selects the default framebuffer. Pair with
+	/// [`create_fbo`] and restore `0` before handing control back to the
+	/// host.
+	///
+	/// Requires an acquired context ([`acquire`]); a silent no-op when GL
+	/// is unavailable.
 	pub fn bind_fbo(fbo: i32) {
 		unsafe { quercus_ofx_gl_bind_fbo(fbo) }
 	}
 
-	/// Deletes an FBO.
+	/// Deletes a framebuffer object previously returned by
+	/// [`create_fbo`]. The attached texture is not deleted; release it
+	/// separately with [`delete_texture`] once no FBO references it.
+	///
+	/// Requires an acquired context ([`acquire`]); a silent no-op when GL
+	/// is unavailable or `fbo` names nothing.
 	pub fn delete_fbo(fbo: i32) {
 		unsafe { quercus_ofx_gl_delete_fbo(fbo) }
 	}
 
-	/// Sets the GL viewport.
+	/// Sets the GL viewport to the `width` x `height` pixel rectangle at
+	/// the framebuffer's lower-left origin, which is the region later
+	/// draws and [`read_pixels_f32`] operate on.
+	///
+	/// Requires an acquired context ([`acquire`]); a silent no-op when GL
+	/// is unavailable.
+	///
+	/// # Arguments
+	///
+	/// * `width` - viewport width in pixels; must be positive for anything
+	///   to be drawn.
+	/// * `height` - viewport height in pixels; must be positive for
+	///   anything to be drawn.
 	pub fn set_viewport(width: i32, height: i32) {
 		unsafe { quercus_ofx_gl_set_viewport(width, height) }
 	}
 
-	/// Sets the clear color.
+	/// Sets the color written by [`clear`] into the currently bound
+	/// framebuffer, as normalised RGBA components (`0.0..=1.0`, values
+	/// outside that range are clamped by GL).
+	///
+	/// Requires an acquired context ([`acquire`]); a silent no-op when GL
+	/// is unavailable.
+	///
+	/// # Arguments
+	///
+	/// * `r` - red component, `0.0..=1.0`.
+	/// * `g` - green component, `0.0..=1.0`.
+	/// * `b` - blue component, `0.0..=1.0`.
+	/// * `a` - alpha component, `0.0..=1.0`.
 	pub fn clear_color(r: f32, g: f32, b: f32, a: f32) {
 		unsafe { quercus_ofx_gl_clear_color(r, g, b, a) }
 	}
@@ -1341,7 +1699,13 @@ pub mod gl {
 		Some(needed as usize)
 	}
 
-	/// The GL version string.
+	/// The version string of the offscreen GL context (the
+	/// `GL_VERSION` text reported by the GL bridge), for diagnostics and
+	/// logging.
+	///
+	/// Returns `None` when GL is unavailable or the query fails. Use
+	/// [`available`] — not this string — to decide whether to fall back
+	/// to CPU rendering.
 	pub fn version() -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_ofx_gl_version(buf, len) })
 	}

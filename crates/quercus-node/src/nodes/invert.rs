@@ -220,7 +220,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(InvertNode))
 }
 
-/// Register this node type.
+/// Append the Invert node descriptor to `meta`.
+///
+/// The entry carries the type id `org.olivevideoeditor.Olive.invert`, the display
+/// name "Invert", the [`Category::Color`] category and [`create`] as the
+/// constructor. `meta` is the factory table assembled by
+/// `crate::nodes::register_all`; the push order there is the create-menu order, and
+/// this only appends (it does not deduplicate). Registering does not build a node:
+/// instances are created on demand through [`create`].
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.invert",

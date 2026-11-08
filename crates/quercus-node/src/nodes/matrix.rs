@@ -212,8 +212,23 @@ impl MatrixGenerator {
 	}
 }
 
-/// Post-multiply `a` by `b` (C++ `Matrix4x4::operator*`; row-major
-/// `m[r*4+c]` storage).
+/// Multiplies two row-major 4x4 matrices (`out = a * b`), i.e.
+/// post-multiplies `a`'s transform by `b`'s, matching C++
+/// `Matrix4x4::operator*`.
+///
+/// Indexing is `m[r*4 + c]` as used throughout this crate, with the
+/// translation column at indices `3`, `7`, `11`. With column-vector
+/// convention `b` is applied first, so `matrix_mul(translate, scale)`
+/// scales before translating.
+///
+/// # Arguments
+///
+/// * `a` - left operand, row-major 4x4.
+/// * `b` - right operand, row-major 4x4.
+///
+/// # Returns
+///
+/// The product `a * b` (row-major 4x4).
 pub fn matrix_mul(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
 	let mut out = [0.0f64; 16];
 	for r in 0..4 {
@@ -236,7 +251,20 @@ pub fn matrix_translate(m: [f64; 16], x: f64, y: f64) -> [f64; 16] {
 	matrix_mul(m, t)
 }
 
-/// Post-multiply a scale (C++ `Matrix4x4::scale(x, y, z)`).
+/// Returns `m * S`, where `S` is the diagonal scale matrix
+/// `diag(x, y, z, 1)` in row-major `m[r*4 + c]` layout.
+///
+/// With column vectors this scales inside `m`'s local space before `m`'s
+/// own rotation/translation, so order relative to
+/// [`matrix_translate`] matters. A zero `x`/`y` makes an affine
+/// transform singular (see [`matrix_invert_2d`]).
+///
+/// # Arguments
+///
+/// * `m` - existing 4x4 matrix, row-major.
+/// * `x` - scale factor along the local X axis.
+/// * `y` - scale factor along the local Y axis.
+/// * `z` - scale factor along the local Z axis.
 pub fn matrix_scale(m: [f64; 16], x: f64, y: f64, z: f64) -> [f64; 16] {
 	let mut s = super::mathbase::identity_matrix();
 	s[0] = x;
@@ -406,8 +434,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(MatrixGenerator))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.ortho`).
+/// Registers the orthographic-matrix generator
+/// (`org.olivevideoeditor.Olive.ortho`, shown as "Orthographic Matrix")
+/// in the node factory.
+///
+/// The factory entry's `create` builds a transform node whose inputs are
+/// Position, Rotation, Scale, Uniform Scale and Anchor Point and whose
+/// output is the composed 4x4 matrix. Call once during node
+/// registration; the function does not deduplicate.
+///
+/// # Arguments
+///
+/// * `meta` - factory metadata registry to append the entry to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.ortho",

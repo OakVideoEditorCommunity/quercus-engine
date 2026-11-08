@@ -29,6 +29,13 @@ use quercus_node::value::NodeValue;
 use quercus_render::audio::{load_bus_effects, store_bus_effects, AUDIO_BUS_EFFECTS_SETTING};
 use quercus_render::ticket::MontageAudioEffect;
 
+/// Write the raw bus-chain settings value, or remove the key when `None`.
+///
+/// Shared by the redo and undo closures of [`update_bus_effects`]: `Some`
+/// stores the JSON-encoded chain list under [`AUDIO_BUS_EFFECTS_SETTING`] and
+/// `None` removes the key (the state before the first edit of any sequence).
+/// Either way the project is marked modified, which is what makes the chain
+/// survive a save.
 fn set_bus_setting(project: &ProjectRef, value: Option<String>) {
 	let mut guard = lock(project);
 	match value {
@@ -44,7 +51,13 @@ fn set_bus_setting(project: &ProjectRef, value: Option<String>) {
 	guard.set_modified(true);
 }
 
-/// Read the sequence's current master-bus chain.
+/// Read the sequence's current master-bus effect chain.
+///
+/// Loads the chain stored in the project settings under
+/// [`AUDIO_BUS_EFFECTS_SETTING`], keyed by the sequence's identity. Preview,
+/// export and the render worker all read through here, so this list is the
+/// single source of truth. An invalid `sequence` id, or a sequence that has
+/// never been edited, yields an empty vector.
 pub fn audio_bus_effects(project: &ProjectRef, sequence: NodeId) -> Vec<MontageAudioEffect> {
 	if !sequence.valid() {
 		return Vec::new();
@@ -125,7 +138,17 @@ pub fn add_audio_bus_effect(
 	})
 }
 
-/// Remove one bus effect as one undo row.
+/// Remove one master-bus effect as one undo row.
+///
+/// `sequence` must be the current sequence and `index` a valid position in
+/// its bus chain; later effects shift down by one. The undo label is
+/// "Remove Master Audio Effect". Undo restores the whole settings value, so
+/// every sequence's chain returns to the state it had before the edit.
+///
+/// # Errors
+///
+/// `Err` with a user-facing message when `sequence` is stale or not a
+/// sequence, or `index` is out of range.
 pub fn remove_audio_bus_effect(
 	project: &ProjectRef,
 	sequence: NodeId,
@@ -140,7 +163,17 @@ pub fn remove_audio_bus_effect(
 	})
 }
 
-/// Enable/disable one bus effect as one undo row.
+/// Enable or disable one master-bus effect as one undo row.
+///
+/// `sequence` must be the current sequence, `index` a valid position in its
+/// bus chain and `enabled` the new state. Setting the state the effect is
+/// already in is a no-op and pushes no undo row. The undo label is
+/// "Set Master Audio Effect Enabled".
+///
+/// # Errors
+///
+/// `Err` with a user-facing message when `sequence` is stale or not a
+/// sequence, or `index` is out of range.
 pub fn set_audio_bus_effect_enabled(
 	project: &ProjectRef,
 	sequence: NodeId,
@@ -164,7 +197,18 @@ pub fn set_audio_bus_effect_enabled(
 	)
 }
 
-/// Set one static float parameter of a bus effect as one undo row.
+/// Set one static parameter of a master-bus effect as one undo row.
+///
+/// `sequence` must be the current sequence, `index` addresses the effect in
+/// its chain, `input_id` is the parameter's node input id (trimmed, must not
+/// be empty) and `value` is the new `f64` (must be finite). An existing entry
+/// for `input_id` is replaced and all other parameters are kept. Writing the
+/// value the parameter already has is a no-op and pushes no undo row.
+///
+/// # Errors
+///
+/// `Err` with a user-facing message when `sequence` is stale or not a
+/// sequence, `index` is out of range, or `input_id`/`value` is invalid.
 pub fn set_audio_bus_effect_param(
 	project: &ProjectRef,
 	sequence: NodeId,
@@ -200,7 +244,14 @@ pub fn set_audio_bus_effect_param(
 	)
 }
 
-/// Read one static scalar bus-effect parameter.
+/// Read one static parameter of a master-bus effect.
+///
+/// `sequence` is the sequence whose bus chain is read (a stale id reads as
+/// an empty chain); `index` is the position in that chain and `input_id` the
+/// parameter's node input id, as stored by [`set_audio_bus_effect_param`].
+/// Returns `None` when the sequence, the effect slot or that parameter is
+/// missing; otherwise the value is coerced to `f64` by `NodeValue::to_double`
+/// (non-numeric values coerce to 0.0).
 pub fn audio_bus_effect_param(
 	project: &ProjectRef,
 	sequence: NodeId,

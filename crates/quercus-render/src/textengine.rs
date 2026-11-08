@@ -170,6 +170,25 @@ pub fn measure(req: &TextLayoutRequest) -> TextLayoutSize {
 
 /// Render hook: paints the request into `target` (C++
 /// `QAbstractTextDocumentLayout::draw()`).
+///
+/// Shapes the request, then rasterizes each glyph with swash and blends it
+/// into the target: a document point `p` lands at
+/// `((p.x + draw_offset_x) * scale, (p.y + draw_offset_y) * scale)`, clipped
+/// to the scaled clip rect. Glyphs that cannot touch the clip rect are
+/// skipped before rasterization so swash never caches them. Painting returns
+/// early (nothing drawn) when the target has a non-positive size/linesize or
+/// a channel count other than 1/4, when `scale` is non-finite or `<= 0`,
+/// when the flattened text is empty, or when the clip rect is empty.
+/// Existing target content is blended over, never cleared.
+///
+/// # Arguments
+///
+/// * `req` - the layout request; `Html`/`OliveHtml` are flattened to plain
+///   text first.
+/// * `transform` - painter transform (uniform scale, draw offset, optional
+///   clip), all in pre-scale document coordinates.
+/// * `target` - destination buffer and geometry; `channel_count == 1` is
+///   8-bit grayscale coverage, `4` is premultiplied RGBA.
 pub fn render(req: &TextLayoutRequest, transform: &TextRenderTransform, target: TextRenderTarget) {
 	let TextRenderTarget {
 		data,
@@ -433,6 +452,20 @@ fn request_text(req: &TextLayoutRequest) -> Cow<'_, str> {
 }
 
 /// Lays a request out into a shaped [`Buffer`].
+///
+/// The buffer uses `LINE_HEIGHT_SCALE * font_px` line spacing, the request's
+/// family when non-empty, centered alignment when `center_horizontally` is
+/// set, and `Wrap::WordOrGlyph` so CJK text also breaks inside a run. The
+/// wrap width is applied only when finite and positive, clamped to
+/// `MAX_WRAP_PX`. The caller passes the already-flattened text and owns the
+/// font-system lock.
+///
+/// # Arguments
+///
+/// * `font_system` - shaping backend; the returned buffer belongs to it.
+/// * `req` - the layout request (family, point size, dots-per-meter, wrap
+///   width, horizontal centering).
+/// * `text` - flattened text to shape (`request_text(req)`).
 fn layout(font_system: &mut FontSystem, req: &TextLayoutRequest, text: &str) -> Buffer {
 	let metrics = Metrics::relative(font_px(req), LINE_HEIGHT_SCALE);
 	let mut buffer = Buffer::new(font_system, metrics);
@@ -489,6 +522,15 @@ fn font_px(req: &TextLayoutRequest) -> f32 {
 /// block end tag would add are dropped.
 fn html_to_plain(html: &str) -> String {
 	/// Whether `chars` starts with the (ASCII) `entity` text.
+	///
+	/// Compares as many leading characters as the entity has, so an entity longer
+	/// than `chars` yields `false`. Only the literal character sequence is
+	/// matched: no case folding, trimming or entity normalization happens.
+	///
+	/// # Arguments
+	///
+	/// * `chars` - remaining input as `char`s (the caller's cursor position).
+	/// * `entity` - spelling to match, e.g. `"&amp;"`.
 	fn starts_with(chars: &[char], entity: &str) -> bool {
 		let mut it = chars.iter();
 		entity.chars().all(|c| it.next() == Some(&c))

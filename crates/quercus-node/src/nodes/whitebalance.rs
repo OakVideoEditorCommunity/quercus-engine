@@ -259,8 +259,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(WhiteBalanceNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.whitebalance`).
+/// Registers the White Balance node type with the factory table.
+///
+/// Appends a [`crate::factory::NodeMeta`] for `org.olivevideoeditor.Olive.whitebalance` (display
+/// name "White Balance", category Color, constructor [`create`]) to `meta`. This is
+/// the Rust replacement for the C++ factory entry with the same type id;
+/// [`register_all`](crate::nodes::register_all) installs the collected table into
+/// the global factory.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.whitebalance",

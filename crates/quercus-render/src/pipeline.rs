@@ -488,8 +488,18 @@ fn pop_command(shared: &DecodeShared) -> Option<DecodeCommand> {
 	}
 }
 
-/// The decode thread: one command at a time, LRU in a plain `HashMap`
-/// keyed by [`DecodeRequest`] with a monotonic recency tick.
+/// The decode thread body: consume decode commands until shutdown.
+///
+/// `shared` is the bounded command queue, `inner` the counters and `lru_capacity`
+/// the frame-cache size (0 disables caching). Foreground requests go through
+/// [`serve`] and prefetches through [`prefetch_into`]; both share one plain
+/// `HashMap` LRU keyed by [`DecodeRequest`], with a monotonic `tick` as the
+/// recency clock (the LRU is only ever touched from this thread, so it needs no
+/// lock). A `Sync` command replies immediately, making it a barrier for
+/// everything queued before it. The loop ends only when the queue is empty and
+/// shutdown was requested; commands still in flight are dropped by the service
+/// teardown, whose disconnected reply senders make blocked requesters see
+/// `None` and fall back to inline decode. `lru_len` is reset to 0 on exit.
 fn decode_loop(shared: Arc<DecodeShared>, inner: Arc<DecodeInner>, lru_capacity: usize) {
 	let mut lru: HashMap<DecodeRequest, (Texture, u64)> = HashMap::new();
 	let mut tick: u64 = 1;
@@ -515,6 +525,18 @@ fn decode_loop(shared: Arc<DecodeShared>, inner: Arc<DecodeInner>, lru_capacity:
 	inner.lru_len.store(0, Ordering::Relaxed);
 }
 
+/// Serve one foreground decode request: cache lookup first, then decode.
+///
+/// Counts the request and returns a clone of the cached frame on an LRU hit
+/// (counting `lru_hits` and refreshing recency). On a miss it decodes, inserts
+/// the frame into the LRU under `lru_capacity`, publishes the new length and
+/// returns the frame. `tick` is the recency clock; `inner` carries the counters
+/// and the shared `lru_len`.
+///
+/// # Errors
+///
+/// Propagates the decode error from [`decode`]. Nothing is cached in that case
+/// and `lru_len` is left unchanged.
 fn serve(
 	request: &DecodeRequest,
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
@@ -540,6 +562,14 @@ fn serve(
 	Ok(texture)
 }
 
+/// Speculatively decode `request` into the LRU, ignoring failures.
+///
+/// A cache hit just refreshes recency and returns (nothing is decoded). On a
+/// miss the frame is decoded and inserted under `lru_capacity`; a decode error
+/// is swallowed because no ticket is waiting on it — the foreground request
+/// that follows reports the same error through its own channel. `tick` is the
+/// recency clock and `inner` carries the counters (decodes, errors,
+/// evictions).
 fn prefetch_into(
 	request: &DecodeRequest,
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
@@ -563,8 +593,18 @@ fn prefetch_into(
 	}
 }
 
-/// The real decode: the same producer code the inline path runs, on the
-/// decode thread.
+/// Decode one frame on the decode thread.
+///
+/// `request` supplies the footage filename, stream index, media time (the frame
+/// containing it is decoded), target size/format and the zero-copy import flag;
+/// `inner` is used only for the `decodes`/`errors` counters. Runs the same
+/// producer the inline path uses (`render_footage_frame_inner_opts`), so a
+/// frame decoded here is byte-for-byte what the render thread expects.
+///
+/// # Errors
+///
+/// Propagates the producer's decode/import error unchanged, after bumping the
+/// `errors` counter; there is no retry or inline fallback at this level.
 fn decode(request: &DecodeRequest, inner: &DecodeInner) -> Result<Texture> {
 	inner.counters.decodes.fetch_add(1, Ordering::Relaxed);
 	let result = crate::eval::render_footage_frame_inner_opts(
@@ -581,10 +621,13 @@ fn decode(request: &DecodeRequest, inner: &DecodeInner) -> Result<Texture> {
 	result
 }
 
-/// LRU read + recency refresh. Returns the cached frame; the clone is the
-/// price of handing a texture to the render thread while keeping the
-/// service's copy (a GPU-handle texture makes this a token in M2 — the
-/// texture type is already the seam for it).
+/// Look `key` up in the decode service's frame LRU and refresh its recency.
+///
+/// Returns a clone of the cached [`Texture`] and `None` on a miss (nothing is
+/// decoded here). The clone is the price of handing a frame to the render
+/// thread while the service keeps its copy — a GPU-handle texture makes this a
+/// token in M2. `tick` is the monotonic recency clock, advanced on every hit;
+/// the caller counts the hit separately in `inner.counters.lru_hits`.
 fn lru_get(
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
 	key: &DecodeRequest,
@@ -597,7 +640,15 @@ fn lru_get(
 	Some(texture)
 }
 
-/// LRU insert under the capacity, evicting the least recently used entry.
+/// Insert a decoded frame into the LRU, evicting the least recently used
+/// entries so the cache stays within `capacity`.
+///
+/// `capacity == 0` disables caching (nothing is inserted and `inner` is left
+/// alone). `key` is the full [`DecodeRequest`] (so size/format/import mode are
+/// part of the identity), `texture` is the frame to cache and `tick` is the
+/// monotonic recency clock, bumped after the insert. Re-inserting a key that is
+/// already present just refreshes its recency; otherwise the oldest entry is
+/// evicted (counting `inner.counters.evictions`) until there is room.
 fn lru_insert(
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
 	key: DecodeRequest,
@@ -646,8 +697,12 @@ pub fn install_decode_service(service: Option<Arc<DecodeService>>) {
 	*lock(decode_service_slot()) = service;
 }
 
-/// The installed decode service, if any. `eval` consults this per footage
-/// frame; `None` means "decode inline as before".
+/// The process-wide decode service, if one is installed.
+///
+/// `eval` consults this for every footage frame; `None` means "decode inline as
+/// before" (no backend is installed, or its shutdown already uninstalled the
+/// service). The `Arc` is cloned out of the slot, so callers may hold the
+/// service across a decode without keeping it installed.
 pub fn decode_service() -> Option<Arc<DecodeService>> {
 	lock(decode_service_slot()).clone()
 }
@@ -699,7 +754,20 @@ struct PipelineInner {
 }
 
 impl PipelineBackend {
-	/// Start the render and decode threads and install the decode service.
+	/// Start the pipeline: spawn the render thread, create the decode service
+	/// and install it process-wide.
+	///
+	/// The render queue starts empty and is bounded by [`RENDER_QUEUE_CAP`]; the
+	/// decode service gets [`DECODE_LRU_CAP`] cached frames and a prefetch gate
+	/// that permits speculation only while the render queue has free slots, so
+	/// speculative decodes never delay the frames being rendered. Returns a
+	/// shared backend whose thread is named `quercus-render`. Because the decode
+	/// service is installed in a process-wide slot, only one live backend is
+	/// supported per process (production keeps one via the manager).
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::Failed`] when the render thread cannot be spawned.
 	pub fn new() -> Result<Arc<Self>> {
 		let depth = Arc::new(AtomicUsize::new(0));
 		// Prefetch is allowed only while the render queue has room: it must
@@ -771,6 +839,18 @@ impl PipelineBackend {
 		self.push(job, false)
 	}
 
+	/// Enqueue `job` on the render queue, optionally waiting for room.
+	///
+	/// `blocking == false` refuses a full queue instead of waiting (the
+	/// `try_post` path); `blocking == true` waits while the queue is at
+	/// [`RENDER_QUEUE_CAP`], with two exceptions: a post made from the render
+	/// thread itself, which is the only thread that drains the queue and would
+	/// deadlock by waiting, and a [`FramePriority::Seek`] job, which may
+	/// over-admit so a backlog of playback/export work cannot stall the UI.
+	/// Playback jobs first queue speculative footage decodes through the decode
+	/// service. Returns `false` when the backend is stopping or the
+	/// non-blocking queue is full; `posted` is bumped and the render thread
+	/// notified only when a job was actually queued.
 	fn push(&self, job: Job, blocking: bool) -> bool {
 		// M4 playback read-ahead: queue the job's footage decodes before it
 		// reaches the render thread, so the decode thread works on frame
@@ -825,6 +905,17 @@ impl PipelineBackend {
 		}
 	}
 
+	/// Stop the backend: drain the render queue, stop the decode service and
+	/// join both threads.
+	///
+	/// Idempotent — `stopping` is swapped first, so a second call returns
+	/// immediately and a concurrent one cannot drain twice. Jobs still queued
+	/// are removed and completed with [`Error::State`] (counted in `drained`);
+	/// the job already running on the render thread is allowed to finish. Waits
+	/// for the render thread unless called *from* that thread. The decode
+	/// service is uninstalled from the process-wide slot before it is shut down,
+	/// so no new request can be routed to a service that is going away, and the
+	/// decode thread is joined last.
 	fn shutdown_impl(&self) {
 		let inner = &self.inner;
 		if inner.stopping.swap(true, Ordering::AcqRel) {
@@ -932,9 +1023,16 @@ fn queue_debug_enabled() -> bool {
 	})
 }
 
-/// Print one pipeline sample. Called only from the render thread, so it does
-/// not perturb the UI submit path; the decode-queue lock is taken only when
-/// the debug switch is on.
+/// Print one `[queues]` telemetry line for the pipeline.
+///
+/// Called only from the render thread, so it does not perturb the UI submit
+/// path. Does nothing at all unless `OAK_DEBUG_QUEUES` (or
+/// `QUERCUS_DEBUG_QUEUES`) is set, and without `force` only every tenth
+/// execution is sampled. `inner` supplies the render-queue depth and the decode
+/// service's stats; the decode-queue lock is taken only when the debug switch
+/// is on (through `queue_depth`). `executed` is the job sequence number, and
+/// `job_ms`/`gap_ms` are the job's run time and the idle gap before it, in
+/// milliseconds.
 fn log_queue_sample(
 	inner: &PipelineInner,
 	executed: u64,
@@ -982,8 +1080,17 @@ fn log_queue_sample(
 	);
 }
 
-/// The render thread body: take a job, run it, repeat. Exits when the
-/// queue is empty *and* shutdown has been requested.
+/// The render thread body: pop jobs off the render queue and run them until
+/// shutdown drains the queue.
+///
+/// Records the thread id first so [`PipelineBackend::push`] can recognise
+/// re-posts made from this thread. Each iteration takes a job under the queue
+/// lock (waiting on the `work` condvar while empty) and exits only when the
+/// queue is empty *and* `stopping` is set; otherwise it runs [`execute_job`]
+/// outside the lock, bumps the `executed` counter and, with
+/// `OAK_DEBUG_QUEUES`/`QUERCUS_DEBUG_QUEUES` set, prints the queue sample plus
+/// a slow-job line for jobs of 50 ms or more. All GPU work of the pipeline
+/// backend happens on this thread.
 fn render_loop(inner: Arc<PipelineInner>) {
 	let _ = inner.render_thread.set(std::thread::current().id());
 	let mut last_start = std::time::Instant::now();

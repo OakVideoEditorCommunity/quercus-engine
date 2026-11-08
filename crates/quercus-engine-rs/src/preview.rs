@@ -143,6 +143,15 @@ pub struct PreviewSession {
 
 impl PreviewSession {
 	/// Creates a source preview over one video-footage node.
+	///
+	/// `session` is taken by value; `footage` must be a [`NodeKind::Footage`]
+	/// with a video stream on stream 0 (its frame rate is used), and `size`
+	/// is the output pixel size. The initial time is 0.
+	///
+	/// # Errors
+	///
+	/// "source viewer is not footage", "source footage has no video stream",
+	/// or the dimension/frame-rate errors from [`Self::new`].
 	pub fn source(
 		session: EditorSession,
 		footage: NodeId,
@@ -165,6 +174,16 @@ impl PreviewSession {
 	}
 
 	/// Creates a program preview over one sequence node.
+	///
+	/// `session` is taken by value; `sequence` must be a [`NodeKind::Sequence`]
+	/// mounted in the session snapshot (the snapshot supplies the frame
+	/// rate), and `size` is the output pixel size. The initial time is the
+	/// sequence playhead.
+	///
+	/// # Errors
+	///
+	/// "program viewer is not a sequence", "program sequence is not mounted",
+	/// or the dimension/frame-rate errors from [`Self::new`].
 	pub fn program(
 		session: EditorSession,
 		sequence: NodeId,
@@ -188,6 +207,20 @@ impl PreviewSession {
 		)
 	}
 
+	/// Create a preview session over an already validated viewer.
+	///
+	/// `session` is taken by value (it owns the project); `kind`/`viewer`
+	/// name the domain and node; `frame_rate` must be a valid positive
+	/// rational and `size` a non-zero pixel size — both checked here.
+	/// `frame_rate` drives [`Self::step`]; a source preview starts at time 0,
+	/// a program preview at the sequence playhead. Transport starts paused at
+	/// rate 1.0 with generation 0. [`Self::source`] and [`Self::program`] are
+	/// the validating constructors callers should use.
+	///
+	/// # Errors
+	///
+	/// "preview dimensions must be positive" or "preview has no valid frame
+	/// rate".
 	fn new(
 		session: EditorSession,
 		kind: PreviewKind,
@@ -277,6 +310,11 @@ impl PreviewSession {
 	}
 
 	/// Pushes one owned audio block to the output device as interleaved F32.
+	///
+	/// `block` supplies the sample rate and channel layout; its f32 samples
+	/// are converted to little-endian bytes and handed to the audio output in
+	/// F32 format as a borrowed slice. The output layer must already be
+	/// initialized; its failure is returned as the error message string.
 	pub fn push_audio_output(
 		&self,
 		block: &crate::preview_audio::AudioBlock,
@@ -329,6 +367,18 @@ impl PreviewSession {
 	}
 
 	/// Seeks to an absolute nonnegative time and pauses transport.
+	///
+	/// `time` is in sequence seconds; a NaN or negative value is rejected
+	/// with "preview time must be nonnegative" and leaves the session
+	/// untouched. On success transport pauses, the generation counter is
+	/// bumped (making outstanding frame/audio requests stale), running audio
+	/// output is flushed and re-anchored, and the program playhead is synced
+	/// through `sync_playhead`.
+	///
+	/// # Errors
+	///
+	/// The nonnegative-time error above, or an audio/playhead sync error
+	/// propagated as a string.
 	pub fn seek(&mut self, time: Rational) -> Result<(), String> {
 		if time.is_nan() || time.to_f64() < 0.0 {
 			return Err("preview time must be nonnegative".into());
@@ -365,6 +415,12 @@ impl PreviewSession {
 	}
 
 	/// Changes the playback-rate multiplier.
+	///
+	/// `rate` is a positive finite multiplier (1.0 = normal, 0.5 = half
+	/// speed). Zero, negative, NaN or infinite values return "playback rate
+	/// must be finite and positive" without changing state. When audio output
+	/// is anchored, the anchor is re-based to the current time so the device
+	/// clock does not jump; the call does not pause or advance the playhead.
 	pub fn set_rate(&mut self, rate: f64) -> Result<(), String> {
 		if !rate.is_finite() || rate <= 0.0 {
 			return Err("playback rate must be finite and positive".into());

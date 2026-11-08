@@ -425,11 +425,19 @@ impl RenderManager {
 	}
 
 	/// Announce the current frame size to the manager (a sequence
-	/// resolution change). The process dispatcher re-evaluates the
-	/// GPU-vram-aware worker count for the new size and resizes the pool
-	/// (1080p can run the CPU-bound count; 4K only a vram-bounded
-	/// fraction — see [`crate::procpool::worker_count_for_size`]).
-	/// No-op on backends that hold no process pool.
+	/// resolution change).
+	///
+	/// The process dispatcher re-evaluates the GPU-vram-aware worker count for
+	/// the new size and resizes the pool: 1080p can run the full CPU-bound count,
+	/// 4K only a vram-bounded fraction (see
+	/// [`crate::procpool::worker_count_for_size`]). No-op on backends that hold
+	/// no process pool.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - frame size in pixels; non-positive values are
+	///   clamped to 1 before the per-slot byte size is computed.
+	/// * `fps` - frame rate used by the GPU-capacity estimate.
 	pub fn set_workspace_size(&self, width: i32, height: i32, fps: u32) {
 		let Some(pool) = &self.process_pool else {
 			return;
@@ -473,17 +481,45 @@ impl RenderManager {
 	}
 
 	/// Aggressive-GC toggle (C++ `SetAggressiveGarbageCollection`).
+	///
+	/// Stores `on` in an atomic flag read by `aggressive_gc`. The port is a plain
+	/// boolean, unlike the C++ counter that allows nested enable/disable pairs: a
+	/// disable here always clears it. Note that no in-tree render path consults
+	/// the flag yet; it exists for ABI/feature parity and tests.
+	///
+	/// # Arguments
+	///
+	/// * `on` - the new toggle value; no allocation or GC happens in this call.
 	pub fn set_aggressive_gc(&self, on: bool) {
 		self.aggressive_gc.store(on, Ordering::Release);
 	}
 
 	/// The aggressive-GC toggle.
+	///
+	/// Returns the flag last stored by `set_aggressive_gc` (`false` at manager
+	/// creation). Reading it does not trigger a collection pass.
 	pub fn aggressive_gc(&self) -> bool {
 		self.aggressive_gc.load(Ordering::Acquire)
 	}
 
 	/// Submit a video ticket through the manager's arena (used by the
 	/// auto-cacher and the FFI request path).
+	///
+	/// Allocates a fresh [`TicketId`], posts the render job to the active
+	/// backend and arranges exactly-once completion: `done` fires with the
+	/// rendered frame on success, and with `Error::State` when the ticket is
+	/// cancelled, the pool shuts down, or the backend is already gone. The
+	/// callback runs on the ticket delivery thread, so it must not block.
+	///
+	/// # Arguments
+	///
+	/// * `params` - the frame request (viewer node, time, size, format, cache
+	///   keys).
+	/// * `done` - `FnOnce` completion; consumed when the ticket finishes.
+	///
+	/// # Returns
+	///
+	/// The id of the submitted ticket, usable for cancellation/matching.
 	pub fn submit_video(
 		&self,
 		params: crate::ticket::VideoTicketParams,
@@ -721,6 +757,17 @@ fn prune_dir(dir: &std::path::Path, max_bytes: i64) -> Result<i64> {
 }
 
 /// Recursively walk a directory (files only).
+///
+/// Yields every non-directory entry under `dir`, in filesystem order (not
+/// sorted), depth-first. Read errors are swallowed: an unreadable or missing
+/// directory contributes nothing, and an entry whose metadata cannot be read
+/// is returned as a file. Used by the disk-cache size/clear paths, which
+/// filter the result by extension.
+///
+/// # Arguments
+///
+/// * `dir` - root directory; symlinked directories are followed because the
+///   directory test uses `Path::is_dir` (as are symlinked files).
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 	let mut out = Vec::new();
 	if let Ok(rd) = std::fs::read_dir(dir) {

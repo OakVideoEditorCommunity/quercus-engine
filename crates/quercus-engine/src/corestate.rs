@@ -86,8 +86,26 @@ pub unsafe extern "C" fn quercus_core_log_write(level: i32, msg: *const u8, len:
 // Config store
 // ---------------------------------------------------------------------------
 
-/// Parses the nullable group argument: null pointer → `None` (no group),
-/// invalid UTF-8 → error (the whole call fails).
+/// Parses the nullable group argument into `Option<group name>`.
+///
+/// A null pointer means "no group" (`Some(None)`). A non-null pointer is
+/// borrowed as UTF-8 for `len` bytes; invalid UTF-8 returns `None`, which
+/// makes the whole call fail. The returned string borrows the caller's
+/// memory; its lifetime is the caller's responsibility.
+///
+/// # Arguments
+///
+/// * `ptr` - Group string pointer; may be null.
+/// * `len` - Readable bytes at `ptr`; ignored when `ptr` is null.
+///
+/// # Returns
+///
+/// `Some(None)` = no group, `Some(Some(&str))` = group name, `None` =
+/// invalid UTF-8 (the call must fail).
+///
+/// # Safety
+///
+/// When `ptr` is non-null it must point to `len` readable bytes.
 unsafe fn group_arg<'a>(ptr: *const u8, len: usize) -> Option<Option<&'a str>> {
 	if ptr.is_null() {
 		return Some(None);
@@ -95,7 +113,28 @@ unsafe fn group_arg<'a>(ptr: *const u8, len: usize) -> Option<Option<&'a str>> {
 	unsafe { str_arg(ptr, len) }.map(Some)
 }
 
-/// Sets a string config value; false on invalid input.
+/// Sets a string config value.
+///
+/// A new key is created as a string. If the key already holds another type,
+/// `value` is parsed into that type and an unparsable value leaves the entry
+/// unchanged. An empty `key` is ignored, and a null `group` means the global
+/// (ungrouped) scope.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name `(ptr, len)`; null means no group.
+/// * `key` - Config key; an empty key is ignored.
+/// * `value` - String value; must parse when the key already has a type.
+///
+/// # Returns
+///
+/// `true` when the call was handed to the ConfigStore; `false` when `key`/
+/// `value` is null or not valid UTF-8 (or `group` is non-null but invalid).
+///
+/// # Safety
+///
+/// Non-null pointers must be readable for `group_len`/`key_len`/`value_len`
+/// bytes respectively.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_set(
 	group: *const u8,
@@ -116,8 +155,28 @@ pub unsafe extern "C" fn quercus_core_config_set(
 	true
 }
 
-/// Reads a string config value, snprintf-style; -1 when the key does
-/// not exist (or the input is invalid).
+/// Reads a string config value (snprintf-style, see `copy_str_out`).
+///
+/// Numeric and boolean entries are formatted into their string form. Returns
+/// -1 when the key is missing/empty or the input is invalid.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key; must not be empty.
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// The byte length of the full value excluding the NUL; `ret >= buf_len`
+/// means the output was truncated. Returns -1 for a missing key or invalid
+/// input.
+///
+/// # Safety
+///
+/// Non-null input pointers must be readable for their lengths; `buf` must be
+/// writable for `buf_len` bytes when non-null and `buf_len > 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_get(
 	group: *const u8,
@@ -139,7 +198,24 @@ pub unsafe extern "C" fn quercus_core_config_get(
 	}
 }
 
-/// Reads a boolean config value (0/1), `fallback` when unset.
+/// Reads a boolean config value.
+///
+/// Only an entry stored as `Bool` is returned; a missing key, a different
+/// stored type, an empty key or invalid input returns `fallback`.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key; must not be empty.
+/// * `fallback` - Value returned when unset, of another type or invalid.
+///
+/// # Returns
+///
+/// `1` for true, `0` for false, or `fallback`.
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_get_bool(
 	group: *const u8,
@@ -157,7 +233,24 @@ pub unsafe extern "C" fn quercus_core_config_get_bool(
 	ConfigStore::instance().get_bool(group, key, fallback)
 }
 
-/// Writes a boolean config value (0/1); false on invalid input.
+/// Writes a boolean config value.
+///
+/// `value != 0` is stored as true, otherwise false. An empty key is ignored.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key.
+/// * `value` - Any integer; non-zero means true.
+///
+/// # Returns
+///
+/// `true` when handed to the ConfigStore; `false` on invalid input (null
+/// pointer or invalid UTF-8).
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_set_bool(
 	group: *const u8,
@@ -176,7 +269,24 @@ pub unsafe extern "C" fn quercus_core_config_set_bool(
 	true
 }
 
-/// Reads an i64 config value, `fallback` when unset.
+/// Reads an i64 config value.
+///
+/// Only an entry stored as `Int` is returned; a missing key, a different
+/// stored type, an empty key or invalid input returns `fallback`.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key; must not be empty.
+/// * `fallback` - Value returned when unset, of another type or invalid.
+///
+/// # Returns
+///
+/// The stored i64, or `fallback`.
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_get_int64(
 	group: *const u8,
@@ -194,7 +304,23 @@ pub unsafe extern "C" fn quercus_core_config_get_int64(
 	ConfigStore::instance().get_int64(group, key, fallback)
 }
 
-/// Writes an i64 config value; false on invalid input.
+/// Writes an i64 config value.
+///
+/// An empty key is ignored. Non-null `group`/`key` must be valid UTF-8.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key.
+/// * `value` - 64-bit integer to store.
+///
+/// # Returns
+///
+/// `true` when handed to the ConfigStore; `false` on invalid input.
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_set_int64(
 	group: *const u8,
@@ -213,7 +339,24 @@ pub unsafe extern "C" fn quercus_core_config_set_int64(
 	true
 }
 
-/// Reads an f64 config value, `fallback` when unset.
+/// Reads an f64 config value.
+///
+/// Only an entry stored as `Double` is returned; a missing key, a different
+/// stored type, an empty key or invalid input returns `fallback`.
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key; must not be empty.
+/// * `fallback` - Value returned when unset, of another type or invalid.
+///
+/// # Returns
+///
+/// The stored f64, or `fallback`.
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_get_double(
 	group: *const u8,
@@ -231,7 +374,24 @@ pub unsafe extern "C" fn quercus_core_config_get_double(
 	ConfigStore::instance().get_double(group, key, fallback)
 }
 
-/// Writes an f64 config value; false on invalid input.
+/// Writes an f64 config value.
+///
+/// An empty key is ignored. Non-null `group`/`key` must be valid UTF-8. The
+/// value is not range-checked (NaN/Inf are stored as-is).
+///
+/// # Arguments
+///
+/// * `group` - Optional group name.
+/// * `key` - Config key.
+/// * `value` - Floating-point value to store.
+///
+/// # Returns
+///
+/// `true` when handed to the ConfigStore; `false` on invalid input.
+///
+/// # Safety
+///
+/// Non-null group/key pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_config_set_double(
 	group: *const u8,
@@ -317,9 +477,26 @@ pub extern "C" fn quercus_core_config_has_source() -> bool {
 // Color pipeline (process-wide)
 // ---------------------------------------------------------------------------
 
-/// Sets the pipeline color settings from their persisted setting
-/// strings ("acescg"/"srgb_legacy", "srgb"/"displayp3"/"bt2020",
-/// transfer names); false on invalid UTF-8 input.
+/// Sets the process-wide pipeline color settings.
+///
+/// All three strings are persisted setting names (case-insensitive).
+/// `working` accepts "acescg"/"srgb_legacy" (anything else falls back to
+/// ACEScg); `gamut` accepts "srgb"/"displayp3"/"bt2020" (fallback sRGB);
+/// `transfer` accepts "srgb"/"gamma22"/"pq"/"hlg" (fallback sRGB).
+///
+/// # Arguments
+///
+/// * `working` - Working color-space setting name.
+/// * `gamut` - Output gamut setting name.
+/// * `transfer` - Output transfer-function setting name.
+///
+/// # Returns
+///
+/// `true` when applied; `false` when any pointer is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// Non-null pointers must be readable for their lengths.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_color_set_pipeline_settings(
 	working: *const u8,
@@ -343,19 +520,52 @@ pub unsafe extern "C" fn quercus_core_color_set_pipeline_settings(
 	true
 }
 
-/// The working color space's setting string, snprintf-style.
+/// Reads the working color space's persisted setting name (e.g. "acescg").
+///
+/// # Arguments
+///
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style: the full byte length excluding the NUL; `ret >= buf_len`
+/// means truncation.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_color_get_working_space(buf: *mut u8, buf_len: usize) -> i32 {
 	copy_str_out(color::pipeline_working_space().as_setting(), buf, buf_len)
 }
 
-/// The output gamut's setting string, snprintf-style.
+/// Reads the output gamut's persisted setting name (e.g. "srgb").
+///
+/// # Arguments
+///
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style: the full byte length excluding the NUL; `ret >= buf_len`
+/// means truncation.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_color_get_output_gamut(buf: *mut u8, buf_len: usize) -> i32 {
 	copy_str_out(color::pipeline_output_spec().gamut.as_setting(), buf, buf_len)
 }
 
-/// The output transfer's setting string, snprintf-style.
+/// Reads the output transfer function's persisted setting name (e.g. "srgb").
+///
+/// # Arguments
+///
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style: the full byte length excluding the NUL; `ret >= buf_len`
+/// means truncation.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_color_get_output_transfer(buf: *mut u8, buf_len: usize) -> i32 {
 	copy_str_out(color::pipeline_output_spec().transfer.as_setting(), buf, buf_len)
@@ -368,8 +578,25 @@ pub extern "C" fn quercus_core_color_set_up_default_config() -> bool {
 	color::set_up_default_config().is_ok()
 }
 
-/// Loads the default OCIO config from an explicit path (null = the
-/// bundled default); false on failure.
+/// Loads the default OCIO config from an explicit path.
+///
+/// A null `path` loads the bundled default config and ignores `path_len`.
+/// It does not consult `$OCIO`; that is
+/// [`quercus_core_color_set_up_default_config`].
+///
+/// # Arguments
+///
+/// * `path` - OCIO config file path (UTF-8), or null for the bundled default.
+/// * `path_len` - Path byte length; ignored when `path` is null.
+///
+/// # Returns
+///
+/// `true` when loaded successfully; `false` when `path` is not valid UTF-8 or
+/// loading fails.
+///
+/// # Safety
+///
+/// When `path` is non-null it must point to `path_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_color_set_up_default_config_from(
 	path: *const u8,
@@ -386,7 +613,21 @@ pub unsafe extern "C" fn quercus_core_color_set_up_default_config_from(
 	color::set_up_default_config_from(path).is_ok()
 }
 
-/// The active OCIO config path, snprintf-style; -1 when none is loaded.
+/// Reads the active OCIO config path.
+///
+/// Returns a non-empty `$OCIO` when set, otherwise the loaded default config
+/// path; -1 when no config is loaded.
+///
+/// # Arguments
+///
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style length (`ret >= buf_len` means truncation); -1 when no
+/// config is loaded.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_color_config_path(buf: *mut u8, buf_len: usize) -> i32 {
 	match color::config_path() {
@@ -406,8 +647,21 @@ pub extern "C" fn quercus_core_displayicc_windows_acm_active() -> bool {
 	displayicc::windows_acm_active()
 }
 
-/// The system display ICC profile path, snprintf-style; -1 when
-/// unavailable (headless, unsupported platform).
+/// Reads the system/primary display's ICC profile path.
+///
+/// Returns -1 on headless/unsupported platforms or when no profile is
+/// available.
+///
+/// # Arguments
+///
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style length (`ret >= buf_len` means truncation); -1 when
+/// unavailable.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_displayicc_system_display_icc(buf: *mut u8, buf_len: usize) -> i32 {
 	match displayicc::system_display_icc() {
@@ -416,8 +670,28 @@ pub extern "C" fn quercus_core_displayicc_system_display_icc(buf: *mut u8, buf_l
 	}
 }
 
-/// The display ICC profile path for the monitor identified by
-/// `fingerprint`, snprintf-style; -1 when unknown/unavailable.
+/// Reads the ICC profile path for the monitor identified by `fingerprint`.
+///
+/// `fingerprint` is typically a value returned by
+/// `windows_monitor_fingerprint` or `x11_monitor_fingerprint_at`. Returns -1
+/// when the fingerprint cannot be resolved, the platform is unsupported or no
+/// profile is available.
+///
+/// # Arguments
+///
+/// * `fingerprint` - Monitor fingerprint string (UTF-8).
+/// * `fingerprint_len` - Fingerprint byte length.
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// snprintf-style length; -1 for unknown/unavailable/invalid input.
+///
+/// # Safety
+///
+/// When non-null, `fingerprint` must be readable for `fingerprint_len` bytes
+/// and `buf` must be writable for `buf_len` bytes (when `buf_len > 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_displayicc_system_display_icc_for_monitor(
 	fingerprint: *const u8,
@@ -436,8 +710,21 @@ pub unsafe extern "C" fn quercus_core_displayicc_system_display_icc_for_monitor(
 	}
 }
 
-/// The monitor fingerprint for a Windows HMONITOR (cast to u64),
-/// snprintf-style; -1 when unavailable.
+/// Reads the fingerprint for a Windows HMONITOR (Windows builds only).
+///
+/// `hmonitor` is the caller's `HMONITOR` handle cast to `u64`, which keeps the
+/// opaque handle transportable across the C ABI.
+///
+/// # Arguments
+///
+/// * `hmonitor` - Numeric form of a Windows `HMONITOR` handle.
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes; when non-zero and `buf` is
+///   non-null the buffer must be writable.
+///
+/// # Returns
+///
+/// snprintf-style length; -1 when the fingerprint cannot be queried.
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_displayicc_windows_monitor_fingerprint(
@@ -844,7 +1131,21 @@ pub extern "C" fn quercus_core_cancelatom_new() -> *mut CancelAtom {
 	into_ffi(CancelAtom::new()) as *mut CancelAtom
 }
 
-/// Sets the cancel flag.
+/// Sets the cancellation flag (idempotent). A null pointer is a no-op.
+///
+/// Only the flag is set; waiters are not woken and readers poll through
+/// [`quercus_core_cancelatom_is_cancelled`]. Safe to call from any thread
+/// (internally synchronized with a `Mutex`).
+///
+/// # Arguments
+///
+/// * `this` - Cancellation token from `quercus_core_cancelatom_new`/`add_ref`;
+///   may be null.
+///
+/// # Safety
+///
+/// `this` must be null or point to a live `CancelAtom` (reference count not
+/// dropped to zero).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_cancelatom_cancel(this: *const CancelAtom) {
 	if this.is_null() {
@@ -853,14 +1154,44 @@ pub unsafe extern "C" fn quercus_core_cancelatom_cancel(this: *const CancelAtom)
 	unsafe { &*this }.cancel();
 }
 
-/// Reads the cancel flag (reading a set flag records the cancellation
-/// as heard).
+/// Reads the cancellation flag; reading a set flag also records it as heard.
+///
+/// A null pointer returns `false`. Once a read observes true, a later
+/// [`quercus_core_cancelatom_heard_cancel`] also returns true.
+///
+/// # Arguments
+///
+/// * `this` - Cancellation token; may be null.
+///
+/// # Returns
+///
+/// `true` when cancellation was requested; `false` for null or not cancelled.
+///
+/// # Safety
+///
+/// `this` must be null or point to a live `CancelAtom`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_cancelatom_is_cancelled(this: *const CancelAtom) -> bool {
 	!this.is_null() && unsafe { &*this }.is_cancelled()
 }
 
-/// Whether any consumer has observed the cancel flag.
+/// Returns whether any consumer has observed the cancellation.
+///
+/// Only a read through [`quercus_core_cancelatom_is_cancelled`] that saw the
+/// set flag counts as observed; calling `cancel` alone does not. A null
+/// pointer returns `false`.
+///
+/// # Arguments
+///
+/// * `this` - Cancellation token; may be null.
+///
+/// # Returns
+///
+/// `true` when at least one reader has seen the cancellation.
+///
+/// # Safety
+///
+/// `this` must be null or point to a live `CancelAtom`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_cancelatom_heard_cancel(this: *const CancelAtom) -> bool {
 	!this.is_null() && unsafe { &*this }.heard_cancel()

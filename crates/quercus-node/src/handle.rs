@@ -69,9 +69,19 @@ struct RefBoxHeader {
 /// here so the facade's handle scaffolding stays source-compatible.
 pub use quercus_core::handle::CHandle;
 
-/// addref implementation: atomic +1. Shared by owned and facade boxes —
-/// a borrowed copy only extends the box's lifetime, never the borrowed
+/// Increment a box's reference count by one.
+///
+/// Installed as the `addref` routine of every [`CHandle`] created by
+/// [`make_owned`]/[`make_owned_with`]. Relaxed ordering suffices because the
+/// count protects the box's lifetime, not the payload's contents. A borrowed
+/// copy obtained this way only extends the box's lifetime, never the borrowed
 /// object's.
+///
+/// # Safety
+///
+/// `ctx` must be a non-null pointer to a live `RefBox<T>` whose count has not
+/// reached zero yet. Once the last release has run, the pointer dangles and
+/// must not be passed here.
 unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	unsafe {
 		let rb = ctx as *const RefBox<T>;
@@ -81,8 +91,20 @@ unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	}
 }
 
-/// release implementation (owned): atomic -1, frees the box and destroys
-/// the boxed value at zero.
+/// Drop one reference to a box, destroying it when the count reaches zero.
+///
+/// This is the `release` routine that [`make_owned`] installs. The decrement
+/// uses `AcqRel` so the thread that observes zero sees every write made through
+/// earlier references (including state the payload's destructor needs); at zero
+/// the box and its payload are freed. Release is not idempotent and does not
+/// return whether the box was destroyed.
+///
+/// # Safety
+///
+/// `ctx` must be a non-null pointer to a live `RefBox<T>` created by
+/// [`make_owned`] with a count of at least 1. The same reference must not be
+/// released twice, and no other reference may be used after the call that drops
+/// the count to zero — that call invalidates `ctx`.
 unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	unsafe {
 		let rb = ctx as *mut RefBox<T>;
@@ -94,7 +116,20 @@ unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_v
 	}
 }
 
-/// Owned handle with count 1; empty on allocation failure.
+/// Box `value` behind a new owned [`CHandle`] with a reference count of 1.
+///
+/// `T` must be `Any + Send`: the box records `TypeId` so `get_checked` can
+/// reject handles that box a different payload type (the render seam probes
+/// texture channels for plugin-job payloads that way), and `Send` because
+/// handles cross threads through the C ABI. The handle carries
+/// [`QUERCUSNODE_ABI_VERSION`] and the box's own addref/release routines.
+///
+/// # Returns
+///
+/// A non-null handle; allocation failure aborts the process rather than
+/// returning an empty handle. The caller owns the single reference and must call
+/// the `release` routine exactly once, using `get`/`get_checked` to borrow the
+/// payload while the reference is alive.
 pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 	let rb = Box::into_raw(Box::new(RefBox {
 		refs: AtomicU32::new(1),
@@ -109,9 +144,29 @@ pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 	}
 }
 
-/// Owned handle with count 1 and a caller-provided release routine
-/// (used by the facade for the alive-counted project boxes, where the
-/// release must also update the debug counter).
+/// Box `value` behind a new owned [`CHandle`] whose `release` routine is
+/// supplied by the caller.
+///
+/// Everything except `release` matches [`make_owned`]: count 1, type-stamped
+/// payload, [`QUERCUSNODE_ABI_VERSION`], and the same `addref`. It exists for
+/// boxes that need extra bookkeeping when the last reference goes away (the
+/// facade's alive-counted project boxes update a debug counter in their release
+/// routine), so the supplied function must perform the refcount decrement and
+/// destruction itself.
+///
+/// # Arguments
+///
+/// * `value` - Payload to box; ownership moves into the handle.
+/// * `release` - Routine the owner calls to drop one reference; it receives the
+///   box pointer from `CHandle::ctx`.
+///
+/// # Safety
+///
+/// `release` must interpret `ctx` as a live `RefBox<T>` for this call's `T`,
+/// decrement `refs` (for example `fetch_sub` with `AcqRel`), drop the box
+/// exactly when the count reaches zero, and be callable once per acquired
+/// reference from any thread. It must not free early, run twice for the same
+/// reference, or assume the payload has no destructor work left to do.
 pub fn make_owned_with<T: Any + Send>(
 	value: T,
 	release: unsafe extern "C" fn(*mut std::ffi::c_void),

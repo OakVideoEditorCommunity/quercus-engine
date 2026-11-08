@@ -73,12 +73,20 @@ pub const DISABLE_LABEL: &str = "Multi-Cam Disabled On %1 Clip(s)";
 /// `tr("Switched Multi-Camera Source")`).
 pub const SWITCH_LABEL: &str = "Switched Multi-Camera Source";
 
-/// Format [`ENABLE_LABEL`] with a clip count.
+/// Fills [`ENABLE_LABEL`] with `clip_count`, yielding e.g. "Multi-Cam Enabled On
+/// 3 Clip(s)".
+///
+/// Pass the number of clips the enable command covers; only the `%1` placeholder
+/// is substituted. Counterpart of [`disable_label`].
 pub fn enable_label(clip_count: usize) -> String {
 	ENABLE_LABEL.replace("%1", &clip_count.to_string())
 }
 
-/// Format [`DISABLE_LABEL`] with a clip count.
+/// Fills [`DISABLE_LABEL`] with `clip_count`, yielding e.g. "Multi-Cam Disabled
+/// On 3 Clip(s)".
+///
+/// Pass the number of clips the disable command covers; only the `%1` placeholder
+/// is substituted. Counterpart of [`enable_label`].
 pub fn disable_label(clip_count: usize) -> String {
 	DISABLE_LABEL.replace("%1", &clip_count.to_string())
 }
@@ -152,7 +160,10 @@ fn find_input_node_internal(graph: &Graph, node: NodeId, maximum: usize, list: &
 	}
 }
 
-/// Whether `id` names a `MultiCamNode`.
+/// Whether `id` resolves to a `MultiCamNode` in `graph`.
+///
+/// Used while walking input connections to find the nodes feeding a clip, so a
+/// missing or non-multicam id simply answers `false`; this never panics.
 fn is_multicam(graph: &Graph, id: NodeId) -> bool {
 	graph
 		.get(id)
@@ -196,8 +207,13 @@ fn find_ways_node_arrives_here(
 	}
 }
 
-/// The `current_in` value of a multicam node (its currently selected
-/// source; `-1` when the node is stale).
+/// Reads the selected angle of a multicam node.
+///
+/// Returns the node's `current_in` standard value as an `i32` — a zero-based
+/// index into the sequence's track list — or `-1` when `mc` is missing from
+/// `graph` (stale id) or the value is unavailable. Pairs with
+/// `multicam_set_current`, whose undo path stores the value returned here.
+/// Consumers treat `-1` as "no angle selected".
 fn multicam_current_source(graph: &Graph, mc: NodeId) -> i32 {
 	graph
 		.get(mc)
@@ -205,7 +221,14 @@ fn multicam_current_source(graph: &Graph, mc: NodeId) -> i32 {
 		.unwrap_or(-1)
 }
 
-/// Set the `current_in` standard value of a multicam node.
+/// Selects the angle of a multicam node by writing its `current_in` standard
+/// value.
+///
+/// `graph` is the project graph, `mc` the multicam node, and `source` the
+/// zero-based angle index into the node's selected track list; `-1` means "no
+/// selection", which is also what a stale node reads as (see
+/// `multicam_current_source`). Does nothing when `mc` is not in the graph.
+/// `current_in` is a single-value input, so the element index is `-1`.
 fn multicam_set_current(graph: &mut Graph, mc: NodeId, source: i32) {
 	if let Some(entry) = graph.get_mut(mc) {
 		entry
@@ -302,7 +325,12 @@ pub struct MultiCamEnableCommand {
 }
 
 impl MultiCamEnableCommand {
-	/// Construct from clips + sequence.
+	/// Creates the enable command for `clips`, capturing nothing yet.
+	///
+	/// `clips` are the clips to wrap in a `MultiCamNode` (already-enabled ones are
+	/// skipped at redo time) and `sequence` is the sequence whose track list supplies
+	/// the angles and which gets re-routed through each node. Nodes and edges are
+	/// created lazily by `prepare` on the first `redo`.
 	pub fn new(clips: Vec<NodeRef>, sequence: NodeRef) -> Self {
 		Self {
 			clips,
@@ -311,8 +339,15 @@ impl MultiCamEnableCommand {
 		}
 	}
 
-	/// `prepare`: plan each clip — create its multicam node and record the
-	/// sequence-fed inputs to re-route.
+	/// Plans each clip: creates its `MultiCamNode` and records the sequence-fed
+	/// inputs to re-route.
+	///
+	/// For each clip without an existing multicam it adds the node to the project
+	/// graph, stores the clip's track type (video/audio) as `sequence_type_in`, and
+	/// collects every `(target, input, element)` slot the command's `sequence`
+	/// currently reaches along the clip's chain. Runs once — later calls return early
+	/// while state exists. Already-enabled clips are skipped, so `state` need not be
+	/// index-aligned with `clips`.
 	fn prepare(&mut self) {
 		if !self.state.is_empty() {
 			return;
@@ -351,8 +386,14 @@ impl MultiCamEnableCommand {
 		}
 	}
 
-	/// `redo`: (re-)insert the multicam nodes and re-route the sequence
-	/// edges through them.
+	/// Inserts the planned multicam nodes and re-routes the sequence edges through
+	/// them.
+	///
+	/// Calls `prepare` first, then for each planned clip: re-attaches the node if a
+	/// previous `undo` detached it, sets `sequence_type_in`, moves the sequence-fed
+	/// inputs over to the node, connects `sequence_in`, and syncs the node's cached
+	/// sequence state. Safe to call after both `undo` and the first execution; the
+	/// return values of the individual graph connects are ignored.
 	pub fn redo(&mut self) {
 		self.prepare();
 		let project = self.sequence.project.clone();
@@ -437,7 +478,15 @@ impl crate::undocommon::Command for MultiCamEnableCommand {
 	}
 }
 
-/// Build the enable command (C++ `multicam_enabled_triggered(true)`).
+/// Builds the undo command that turns multi-cam on for `clips`
+/// (C++ `multicam_enabled_triggered(true)`).
+///
+/// One fresh `MultiCamNode` is inserted per clip: every input the `sequence` fed
+/// along the clip's dependency chain is re-routed through the node,
+/// `sequence_in` is connected to `sequence`, and `sequence_type_in` mirrors the
+/// clip's track type. Clips that already have a multicam are skipped, so the
+/// command never nests a second node. Push with [`enable_label`]; pairs with
+/// [`multicam_disable`].
 pub fn multicam_enable(clips: Vec<NodeRef>, sequence: NodeRef) -> UndoCommand {
 	MultiCamEnableCommand::new(clips, sequence).to_command()
 }
@@ -472,7 +521,10 @@ pub struct MultiCamDisableCommand {
 }
 
 impl MultiCamDisableCommand {
-	/// Construct from clips.
+	/// Creates the disable command for `clips`, capturing nothing yet.
+	///
+	/// The multicam nodes, their sequences, and the output edges are discovered
+	/// lazily by `prepare` on the first `redo`, so the clips must still be live then.
 	pub fn new(clips: Vec<NodeRef>) -> Self {
 		Self {
 			clips,
@@ -480,7 +532,13 @@ impl MultiCamDisableCommand {
 		}
 	}
 
-	/// `prepare`: locate each clip's multicam and the outputs to re-wire.
+	/// Plans each clip: records its multicam node, the sequence that node reads from
+	/// (`sequence_in`), and the node's output edges to re-wire.
+	///
+	/// Runs once — later calls return early while state exists, which makes `redo`
+	/// idempotent across undo/redo cycles. Clips without a multicam, or whose
+	/// `sequence_in` is unconnected, contribute no state and are left untouched.
+	/// Called by `redo`.
 	fn prepare(&mut self) {
 		if !self.state.is_empty() {
 			return;
@@ -595,7 +653,14 @@ impl crate::undocommon::Command for MultiCamDisableCommand {
 	}
 }
 
-/// Build the disable command (C++ `multicam_enabled_triggered(false)`).
+/// Builds the undo command that removes multi-cam from `clips`
+/// (C++ `multicam_enabled_triggered(false)`).
+///
+/// For every clip the `MultiCamNode` feeding its effect input is bypassed: the
+/// node's outputs are connected straight to the sequence it pulled angles from
+/// and the node is detached from the graph, with `undo` wiring it back. Clips
+/// without a multicam, or whose multicam has no `sequence_in` edge, are skipped.
+/// Push with [`disable_label`]; pairs with [`multicam_enable`].
 pub fn multicam_disable(clips: Vec<NodeRef>) -> UndoCommand {
 	MultiCamDisableCommand::new(clips).to_command()
 }
@@ -632,7 +697,12 @@ pub struct MultiCamSwitchCommand {
 }
 
 impl MultiCamSwitchCommand {
-	/// Construct from clip + source + split flag + playhead.
+	/// Creates the switch command without touching the graph.
+	///
+	/// `clip` is the multi-cam clip to switch, `source` the new angle index
+	/// (`current_in`), `split_clip` whether to cut at `playhead`, and `playhead` the
+	/// split time in project time. Nothing is captured until the first
+	/// `MultiCamSwitchCommand::redo`, so the clip must still be live at that point.
 	pub fn new(clip: NodeRef, source: i32, split_clip: bool, playhead: Rational) -> Self {
 		Self {
 			clip,
@@ -733,7 +803,18 @@ impl crate::undocommon::Command for MultiCamSwitchCommand {
 	}
 }
 
-/// Build the switch command (C++ `MulticamWidget::Switch`).
+/// Builds the undo command that switches a multi-cam clip to another source
+/// (C++ `MulticamWidget::Switch`).
+///
+/// With `split_clip` true and `playhead` strictly inside the clip
+/// (`in < playhead < out`), the clip and its linked blocks are split first, so
+/// only the post-playhead halves switch: each half owns its own copy of the
+/// multicam node. Without a split the whole clip and its links switch.
+/// `source` is the new `current_in` index into the sequence's track list; it is
+/// written to every multicam found on the clip and its linked clips.
+///
+/// The command is a no-op when the clip has no multicam. Push it with
+/// [`SWITCH_LABEL`]; `undo` restores the previous sources and reverts the split.
 pub fn multicam_switch(
 	clip: NodeRef,
 	source: i32,

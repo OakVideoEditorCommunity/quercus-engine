@@ -444,13 +444,18 @@ impl NodeBehavior for MaskDistortNode {
 	}
 }
 
-/// Constructor (C++ `MaskDistortNode::MaskDistortNode()`): hides the
-/// inherited `color_in` input (the mask is always white so the multiply
-/// works), then adds `invert_in` and `feather_in` with the defaults and
-/// properties documented on the constants. Note: unlike the other
-/// distort nodes, the C++ constructor does NOT set the video-effect
-/// flag or an effect input here — that state comes from the
-/// `PolygonGenerator`/`GeneratorWithMerge` base.
+/// Builds the Mask distort node: a polygon generator whose white shape is
+/// multiplied over the base texture, optionally inverted or feathered.
+///
+/// Inputs, in registration order: `base_in` (texture, not keyframable — the
+/// effect input and what sets the video-effect flag), `points_in` (5 Vec2
+/// points, default pentagon in the polygon's normalized space), `color_in`
+/// (hidden, fixed white so the multiply works), `invert_in` (bool, default
+/// false) and `feather_in` (float, default 0, minimum 0). The base inputs are
+/// mirrored here because the GeneratorWithMerge/PolygonGenerator base
+/// constructors are not callable from the Rust model.
+///
+/// Returns the new core and its behavior, ready to be added to a graph.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
@@ -530,8 +535,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.mask`).
+/// Appends the Mask node's factory entry to `meta`.
+///
+/// Called by `crate::nodes::register_all` while it assembles the global node
+/// table. The entry registers the type id
+/// `org.olivevideoeditor.Olive.mask`, the display name "Mask", the `Distort`
+/// menu category and this module's `create` constructor. Registration only
+/// adds the table entry; no node instance is created here.
+///
+/// # Arguments
+///
+/// * `meta` - factory table under construction; the entry is appended in
+///   registration order, which is also the create-menu order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.mask",

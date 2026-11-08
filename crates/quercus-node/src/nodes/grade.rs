@@ -261,7 +261,15 @@ fn add_float_input(core: &mut NodeCore, id: &str, default: f64) {
 	));
 }
 
-/// Register this node type.
+/// Registers the Grade (color-correction) node with the node registry by
+/// appending a [`NodeMeta`]: type id
+/// `org.olivevideoeditor.Olive.grade`, display name "Grade", the
+/// [`Category::Color`] category, and [`create`] as the factory.
+///
+/// # Arguments
+///
+/// * `meta` - the registry vector to append to (registration is not
+///   idempotent).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.grade",

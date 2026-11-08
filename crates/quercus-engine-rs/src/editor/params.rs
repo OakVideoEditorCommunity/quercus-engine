@@ -64,6 +64,14 @@ pub enum ParameterValueType {
 }
 
 impl ParameterValueType {
+	/// Maps the C ABI's integer discriminant onto the owned enum: 0 = None,
+	/// 1..7 = Int/Float/Rational/Boolean/Color/Matrix/Text, 10/11 =
+	/// Texture/Samples, 12..14 = Vec2/Vec3/Vec4, 16/17 = Combo/StrCombo,
+	/// 18/19 = VideoParams/AudioParams, 21..24 =
+	/// Binary/PushButton/NodeRef/Parametric. Any other value (including gaps
+	/// such as 8, 9, 15, 20) is preserved as `Other(raw)` so a newer engine's
+	/// vocabulary survives a round trip. `raw` is the discriminant from
+	/// `ParamRaw::value_type`.
 	fn from_raw(raw: i32) -> Self {
 		match raw {
 			0 => Self::None,
@@ -162,6 +170,11 @@ impl Parameter {
 	}
 
 	/// Returns the keyframe track for `element`, if one exists.
+	///
+	/// `element` is the input element index as stored by the domain (the same
+	/// key used in `values`; scalar inputs conventionally use `-1`). The track
+	/// is returned in the domain's stored order — keys are not re-sorted here —
+	/// or `None` when this element has no keyframes.
 	pub fn track(&self, element: i32) -> Option<&[ParameterKeyframe]> {
 		self.keyframes
 			.iter()
@@ -181,6 +194,11 @@ pub struct ParameterSnapshot {
 
 impl ParameterSnapshot {
 	/// Finds a parameter by its stable input ID.
+	///
+	/// `input_id` is the node input's stable id (e.g. `shadows_color_in`),
+	/// matched exactly against `Parameter::input_id`; the first match wins.
+	/// Returns `None` when this node has no parameter with that id (including
+	/// hidden inputs, which never reach the snapshot).
 	pub fn get(&self, input_id: &str) -> Option<&Parameter> {
 		self.params.iter().find(|param| param.input_id == input_id)
 	}
@@ -194,6 +212,14 @@ impl Drop for ParamsHandle {
 	}
 }
 
+/// Converts one C-side value record into an owned [`ParameterValue`].
+///
+/// `raw` carries the POD payload plus a `has_pod` flag (set by the C side when
+/// the value has a POD representation); `text` is the text representation,
+/// passed as `None` by callers when the record's `has_text` flag is clear.
+/// `pod` is `Some` only when `has_pod` is set, while `text` is copied through
+/// unchanged. No validation of the two representations against the declared
+/// value type happens here.
 fn convert_value(raw: ValueRaw, text: Option<String>) -> ParameterValue {
 	ParameterValue {
 		pod: raw.has_pod.then_some(raw.pod),
@@ -202,6 +228,23 @@ fn convert_value(raw: ValueRaw, text: Option<String>) -> ParameterValue {
 }
 
 impl ParameterSnapshot {
+	/// Reads an owned snapshot out of a C-side parameter handle.
+	///
+	/// `handle` owns the pointer returned by `quercus_editor_params_snapshot`;
+	/// its [`Drop`] impl releases it, so the handle is consumed exactly once.
+	/// Reads the revision, then walks every parameter, property, static value
+	/// and keyframe track through the C ABI; a parameter/property/value/key
+	/// whose accessor fails is skipped rather than aborting the snapshot, and
+	/// an empty keyframe track is dropped. Interpolation comes from the raw
+	/// code: 0 = [`KeyframeInterpolation::Hold`], 2 = `Bezier`, anything else
+	/// (including 1) = `Linear`. Counts are clamped to >= 0.
+	///
+	/// # Safety
+	///
+	/// `handle.0` must be a live, non-null snapshot pointer from
+	/// `quercus_editor_params_snapshot` for the same session and node, valid
+	/// for the duration of this call; it is released when `handle` drops, so
+	/// it must not be used or released afterwards.
 	unsafe fn from_handle(handle: ParamsHandle) -> Self {
 		let revision = unsafe { quercus_editor_params_revision(handle.0) };
 		let params = (0..unsafe { quercus_editor_params_count(handle.0) }.max(0))

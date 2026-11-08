@@ -25,6 +25,24 @@ pub struct QuercusEditorClipSyncInfo {
 /// Source footage is resolved through the block's upstream input graph. Blocks
 /// without footage still return their timeline range but report no source start.
 #[unsafe(no_mangle)]
+/// Reads one block's synchronization metadata without exposing graph nodes.
+///
+/// Resolves the first upstream footage node through the block's input graph and
+/// fills `out` with the block's timeline range (in/out), its media-in point, the
+/// footage's source start time plus a `has_source_start_time` flag, and the block's
+/// duration in seconds. Blocks without footage still return their timeline range
+/// but report no source start time.
+///
+/// # Returns
+///
+/// `false` when `session`, `out`, or `clip` is invalid, or when the node is not a
+/// timeline block with a known range; `true` when the struct was fully written.
+///
+/// # Safety
+///
+/// `session` must be null or point to a live [`EditorSessionHandle`]; `out` must be
+/// null or point to a writable [`QuercusEditorClipSyncInfo`]. Both must stay valid
+/// for the call.
 pub unsafe extern "C" fn quercus_editor_clip_sync_info(
 	session: *const EditorSessionHandle,
 	clip: u64,
@@ -63,6 +81,19 @@ pub unsafe extern "C" fn quercus_editor_clip_sync_info(
 
 /// Returns the media filename of the first upstream footage node.
 #[unsafe(no_mangle)]
+/// Copies the media filename of the first upstream footage node of `clip` into
+/// `buf` and returns its byte length; -1 when the session or clip is invalid or the
+/// block has no upstream footage.
+///
+/// The filename is resolved through the block's input graph and copied
+/// `snprintf`-style: NUL-terminated, truncated to `buf_len - 1` bytes, with the
+/// full length returned even on truncation; a null `buf` or `buf_len == 0` queries
+/// the length.
+///
+/// # Safety
+///
+/// `session` must be null or point to a live [`EditorSessionHandle`]; `buf` must be
+/// null or point to `buf_len` writable bytes valid for the call.
 pub unsafe extern "C" fn quercus_editor_clip_media_filename(
 	session: *const EditorSessionHandle,
 	clip: u64,

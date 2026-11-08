@@ -49,6 +49,17 @@ impl NativeMirror for QuercusOfxRectD {
 	}
 }
 
+/// Creates an F32 RGBA texture over caller-provided pixel bytes.
+///
+/// # Arguments
+///
+/// * `width` / `height` - texture size in pixels.
+/// * `pixels` - tightly packed RGBA F32 data (`width*height*4` values, i.e.
+///   `width*height*16` bytes); borrowed only for the upload.
+///
+/// Returns `None` when creation fails (invalid size, unsupported format, or a
+/// backend error). Used by `quercus_ofx_instance_render_frame` for both the
+/// input and output frames.
 fn f32_texture(width: i32, height: i32, pixels: &[u8]) -> Option<render::Texture> {
 	let mut params = VideoParams::default();
 	params.width = width;
@@ -63,6 +74,21 @@ fn f32_texture(width: i32, height: i32, pixels: &[u8]) -> Option<render::Texture
 /// RGBA F32, `dst_w`×`dst_h`; the buffer must hold
 /// `dst_w*dst_h*4` floats). False on any failure: unknown instance,
 /// invalid buffers, a cancelled render, or a plugin error.
+///
+/// # Arguments
+///
+/// * `id` - instance handle from `quercus_ofx_instance_create`; parameters
+///   should already be applied with `quercus_ofx_param_set_*`.
+/// * `time` - frame time in seconds.
+/// * `src` / `src_w` / `src_h` - input frame and its size in pixels; a null
+///   `src` renders a source/generator effect.
+/// * `dst` / `dst_w` / `dst_h` - output frame and its size in pixels.
+///
+/// # Safety
+///
+/// A non-null `src` must point to at least `src_w*src_h*4` readable `f32`
+/// values; `dst` must be null or point to at least `dst_w*dst_h*4` writable
+/// `f32` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_instance_render_frame(
 	id: u64,
@@ -145,8 +171,17 @@ pub extern "C" fn quercus_ofx_instance_begin_sequence(id: u64, min: f64, max: f6
 	render_driver::begin_sequence(&inst.value, OfxRangeD { min, max }, None).is_ok()
 }
 
-/// The endSequenceRender bracket (CPU mode), pairing
-/// [`quercus_ofx_instance_begin_sequence`].
+/// Ends the sequence-render bracket opened by
+/// [`quercus_ofx_instance_begin_sequence`] on the same instance.
+///
+/// # Arguments
+///
+/// * `id` - instance handle from `quercus_ofx_instance_create`.
+/// * `min` / `max` - bracket bounds in seconds; pass the values used for the
+///   matching begin call.
+///
+/// Returns false on an unknown instance or a plugin error. The begin/end pair
+/// is mandatory for plugins that allocate per-sequence resources.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_instance_end_sequence(id: u64, min: f64, max: f64) -> bool {
 	let Some(inst) = node_factory::instance_from_id(id) else {
@@ -155,9 +190,23 @@ pub extern "C" fn quercus_ofx_instance_end_sequence(id: u64, min: f64, max: f64)
 	render_driver::end_sequence(&inst.value, OfxRangeD { min, max }, None).is_ok()
 }
 
-/// The instance's region of definition at `time` (canonical
-/// coordinates; render scale 1:1). False on unknown instance or a
-/// plugin error.
+/// Reads the instance's region of definition (RoD) at `time`.
+///
+/// The rectangle is expressed in canonical/project coordinates at render
+/// scale 1:1, the same space used by the overlay actions.
+///
+/// # Arguments
+///
+/// * `id` - instance handle from `quercus_ofx_instance_create`.
+/// * `time` - timeline time in seconds.
+/// * `out` - receives the RoD; must be writable for one `QuercusOfxRectD`.
+///
+/// Returns false when `out` is null, the instance is unknown, or the plugin
+/// fails.
+///
+/// # Safety
+///
+/// `out` must be null or point to a writable `QuercusOfxRectD`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_instance_get_rod(
 	id: u64,

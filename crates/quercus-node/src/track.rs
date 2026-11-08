@@ -43,6 +43,10 @@ impl TrackType {
 	}
 
 	/// From a C ABI value; `None` for anything outside 0..=2.
+	///
+	/// `v` is a `QuercusNodeTrackType` integer (VIDEO=0, AUDIO=1,
+	/// SUBTITLE=2); `-1` (NONE) and any other value yield `None`. Inverse of
+	/// [`TrackType::to_c`].
 	pub fn from_c(v: i32) -> Option<TrackType> {
 		match v {
 			0 => Some(TrackType::Video),
@@ -96,17 +100,32 @@ pub const MINIMUM_HEIGHT_INTERNAL: f64 = 1.5;
 pub const DEFAULT_FONT_HEIGHT: f64 = 13.0;
 
 /// Internal -> pixel height (C++ `Track::internal_height_to_pixel_height`).
+///
+/// `h` is a height in internal units (see [`DEFAULT_HEIGHT_INTERNAL`]); the
+/// result is `h * DEFAULT_FONT_HEIGHT` (13.0) rounded to the nearest pixel and
+/// returned as `i32`. Negative input is not clamped. Counterpart of
+/// [`pixel_height_to_internal_height`].
 pub fn internal_height_to_pixel_height(h: f64) -> i32 {
 	(h * DEFAULT_FONT_HEIGHT).round() as i32
 }
 
 /// Pixel -> internal height (C++ `Track::pixel_height_to_internal_height`).
+///
+/// `h` is a pixel height; the result is `h / DEFAULT_FONT_HEIGHT` (13.0) with
+/// no rounding. Inverse of [`internal_height_to_pixel_height`], which rounds —
+/// so a pixel round-trip is exact but an internal round-trip lands on the
+/// nearest 1/13th step.
 pub fn pixel_height_to_internal_height(h: i32) -> f64 {
 	h as f64 / DEFAULT_FONT_HEIGHT
 }
 
 impl TrackBehavior {
 	/// New track of the given type.
+	///
+	/// `kind` sets the media type. The track starts empty: no blocks, not
+	/// muted, not locked, [`DEFAULT_HEIGHT_INTERNAL`] high, index 0 and not
+	/// attached to a track list (the owning list sets `index` and
+	/// `track_list` when it inserts the track).
 	pub fn new(kind: TrackType) -> Self {
 		TrackBehavior {
 			kind,
@@ -128,21 +147,38 @@ impl TrackBehavior {
 	}
 
 	/// Block at `index` (None out of range).
+	///
+	/// `index` is a position in the track's ordering vector (0 = first block
+	/// in timeline order); returns its node id, or `None` when the track has
+	/// fewer blocks. Counterpart of [`Self::block_index`].
 	pub fn block_at(&self, index: usize) -> Option<NodeId> {
 		self.blocks.get(index).copied()
 	}
 
 	/// Index of `block` in the block list.
+	///
+	/// `block` is a block node id; the track's ordering vector is scanned
+	/// linearly, so the result is its position in timeline order. Returns
+	/// `None` when the block is not on this track.
 	pub fn block_index(&self, block: NodeId) -> Option<usize> {
 		self.blocks.iter().position(|b| *b == block)
 	}
 
 	/// Append a block (C++ `Track::append_block`).
+	///
+	/// `block` is pushed onto the end of `blocks` (the track's ordering
+	/// vector); the block's own in/out times are not touched, so callers place
+	/// it on the timeline separately. No duplicate check; counterpart of
+	/// [`Self::prepend_block`] and [`Self::insert_block_after`].
 	pub fn append_block(&mut self, block: NodeId) {
 		self.blocks.push(block);
 	}
 
 	/// Prepend a block (C++ `Track::prepend_block`).
+	///
+	/// `block` becomes the first entry of `blocks`, shifting every existing
+	/// block one position later. No duplicate check and no timeline re-layout;
+	/// counterpart of [`Self::append_block`].
 	pub fn prepend_block(&mut self, block: NodeId) {
 		self.blocks.insert(0, block);
 	}
@@ -154,6 +190,13 @@ impl TrackBehavior {
 	}
 
 	/// Insert `block` after `before` (C++ `insert_block_after`).
+	///
+	/// `block` is the id to insert and `before` is the existing block it
+	/// should follow (the C++ argument names the anchor, not the new block).
+	/// Returns `true` when `before` was found and `block` was inserted
+	/// immediately after it, `false` (list unchanged) when `before` is not in
+	/// this track. No duplicate check and no timeline re-layout; only the
+	/// ordering vector changes.
 	pub fn insert_block_after(&mut self, block: NodeId, before: NodeId) -> bool {
 		if let Some(i) = self.block_index(before) {
 			self.blocks.insert(i + 1, block);
@@ -164,6 +207,14 @@ impl TrackBehavior {
 	}
 
 	/// Insert `block` before `after` (C++ `insert_block_before`).
+	///
+	/// `block` is the id to insert and `after` is the existing block it should
+	/// precede (the parameter is named after the C++ argument, which names the
+	/// anchor, not the new block). Returns `true` when `after` was found and
+	/// `block` was inserted immediately before it, `false` (list unchanged)
+	/// when `after` is not in this track. The new block is not checked for
+	/// duplicates and no timeline positions are touched; only the ordering
+	/// vector changes.
 	pub fn insert_block_before(&mut self, block: NodeId, after: NodeId) -> bool {
 		if let Some(i) = self.block_index(after) {
 			self.blocks.insert(i, block);
@@ -255,16 +306,32 @@ pub trait BlockRange {
 	/// Out-point of `block`.
 	fn out(&self, block: NodeId) -> quercus_core::Rational;
 	/// True when `time` is strictly inside the block.
+	///
+	/// Unlike [`Self::contains`], both endpoints are excluded, so the in-point
+	/// and out-point of the block do not count. Used when picking a block a
+	/// cut belongs to (see [`TrackBehavior::block_containing_time`]), where a
+	/// time sitting exactly on a boundary must not select either neighbour.
 	fn contains_strict(&self, block: NodeId, time: quercus_core::Rational) -> bool {
 		let (in_, out) = (self.in_(block), self.out(block));
 		time > in_ && time < out
 	}
 	/// True when `time` is visible on the block (in <= t < out).
+	///
+	/// `time` is a timeline time and `block` a block known to the accessor;
+	/// the span is half-open, so a time exactly on the in-point counts but one
+	/// on the out-point (the first instant after the block) does not. This is
+	/// the test behind [`TrackBehavior::visible_block_at_time`].
 	fn contains(&self, block: NodeId, time: quercus_core::Rational) -> bool {
 		let (in_, out) = (self.in_(block), self.out(block));
 		time >= in_ && time < out
 	}
 	/// True when the block's span overlaps `range`.
+	///
+	/// Compares the block's half-open `[in, out)` span with `range` (also
+	/// half-open): returns `false` when the block ends at or before the
+	/// range's in-point, or starts at or after its out-point, so merely
+	/// touching endpoints are not an overlap. `block` must be a block known to
+	/// the accessor.
 	fn overlaps(&self, block: NodeId, range: quercus_core::TimeRange) -> bool {
 		let (in_, out) = (self.in_(block), self.out(block));
 		!(out <= range.in_() || in_ >= range.out())
@@ -273,6 +340,11 @@ pub trait BlockRange {
 
 impl TrackListBehavior {
 	/// New empty list.
+	///
+	/// `kind` is the media type every track in the list must share; the list
+	/// starts with no tracks, no owning sequence and `array_base == 0` (the
+	/// caller re-bases it when the sequence owns several lists of one type).
+	/// Used by [`Self::create`] for deserialization.
 	pub fn new(kind: TrackType) -> Self {
 		TrackListBehavior {
 			kind,
@@ -290,11 +362,19 @@ impl TrackListBehavior {
 	}
 
 	/// Track at `index`.
+	///
+	/// `index` is the position in `tracks` (stack order, 0 at the bottom);
+	/// returns the track's node id, or `None` when the index is out of range.
+	/// Counterpart of [`Self::track_index`].
 	pub fn track_at(&self, index: usize) -> Option<NodeId> {
 		self.tracks.get(index).copied()
 	}
 
 	/// Index of `track` in the list.
+	///
+	/// `track` is the track node id to look up; the list is scanned in stack
+	/// order, so the result is the track's position in `tracks` (and its
+	/// timeline row). Returns `None` when the id is not part of this list.
 	pub fn track_index(&self, track: NodeId) -> Option<usize> {
 		self.tracks.iter().position(|t| *t == track)
 	}

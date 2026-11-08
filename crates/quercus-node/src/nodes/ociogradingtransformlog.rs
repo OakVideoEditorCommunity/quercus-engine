@@ -668,8 +668,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(node))
 }
 
-/// Register this node type (C++ factory entry for
+/// Registers the OCIO Log grading transform node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.OCIO_NAMESPACEgradingtransformlog`).
+///
+/// `meta` is the crate-wide node registry; one [`NodeMeta`] is appended with the
+/// stable `type_id` above, the display name "OCIO Color Grading (Log)", the
+/// `Color` category and the [`create`] factory. Call once during registry
+/// construction — pushing twice would register the type twice.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.OCIO_NAMESPACEgradingtransformlog",

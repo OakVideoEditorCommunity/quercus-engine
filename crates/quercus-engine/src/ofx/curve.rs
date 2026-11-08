@@ -68,8 +68,21 @@ pub extern "C" fn quercus_ofx_curveset_new() -> *mut OfxCurveSet {
 	}) as *mut OfxCurveSet
 }
 
-/// Parses curve-set JSON (the payload node values and project files
-/// carry). Null on invalid input or malformed JSON.
+/// Parses curve-set JSON (the payload node values and project files carry).
+///
+/// `json`/`json_len` name a UTF-8 byte slice — not NUL-terminated — holding a
+/// document produced by [`quercus_ofx_curveset_to_json`].
+///
+/// # Returns
+///
+/// A new handle with reference count 1 (balanced by one
+/// `quercus_ofx_curveset_release`), or null on a null or invalid-UTF-8 input,
+/// or on malformed JSON.
+///
+/// # Safety
+///
+/// `json` must be null or point to `json_len` readable bytes; the slice is
+/// only borrowed for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_from_json(
 	json: *const u8,
@@ -86,8 +99,24 @@ pub unsafe extern "C" fn quercus_ofx_curveset_from_json(
 	}) as *mut OfxCurveSet
 }
 
-/// Serializes the curve set to JSON, snprintf-style; -1 on a null
-/// handle.
+/// Serializes the curve set to JSON, snprintf-style.
+///
+/// Writes a UTF-8, NUL-terminated document into `buf`, truncated to
+/// `buf_len - 1` bytes when the buffer is too small; a null `buf` (or
+/// `buf_len == 0`) queries the size without writing anything. This is the
+/// payload node values and project files carry.
+///
+/// # Returns
+///
+/// The full JSON byte length excluding the NUL terminator, so a caller can
+/// size its buffer first and detect truncation with `ret >= buf_len`; `-1` on
+/// a null handle.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. `buf` must be null or valid for writing `buf_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_to_json(
 	set: *const OfxCurveSet,
@@ -106,7 +135,18 @@ pub unsafe extern "C" fn quercus_ofx_curveset_to_json(
 	copy_str_out(&json, buf, buf_len)
 }
 
-/// Number of curves in the set; -1 on a null handle.
+/// Number of curves in the set, one per dimension of the parametric
+/// parameter.
+///
+/// # Returns
+///
+/// The count, or `-1` on a null handle.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_curve_count(set: *const OfxCurveSet) -> i32 {
 	if set.is_null() {
@@ -119,7 +159,21 @@ pub unsafe extern "C" fn quercus_ofx_curveset_curve_count(set: *const OfxCurveSe
 		.len() as i32
 }
 
-/// Appends an empty curve, returning its index; -1 on a null handle.
+/// Appends an empty curve to the set.
+///
+/// The new curve has no control points, so it evaluates as identity (see
+/// [`quercus_ofx_curveset_evaluate`]) until
+/// `quercus_ofx_curveset_upsert_point`/`_push_point` adds some.
+///
+/// # Returns
+///
+/// The index of the new curve, or `-1` on a null handle.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_add_curve(set: *const OfxCurveSet) -> i32 {
 	if set.is_null() {
@@ -133,8 +187,22 @@ pub unsafe extern "C" fn quercus_ofx_curveset_add_curve(set: *const OfxCurveSet)
 	(curves.len() - 1) as i32
 }
 
-/// Appends an identity curve over `[lo, hi]` (the parametric default),
-/// returning its index; -1 on a null handle.
+/// Appends an identity curve over `[lo, hi]` — the parametric default.
+///
+/// `lo`/`hi` are the parameter's value range; the new curve gets the two
+/// endpoint control points (`lo → lo`, `hi → hi`) and evaluates as `y = x`
+/// between them. Used when a parametric parameter is created without a stored
+/// curve.
+///
+/// # Returns
+///
+/// The index of the new curve, or `-1` on a null handle.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_add_identity_curve(
 	set: *const OfxCurveSet,
@@ -152,8 +220,18 @@ pub unsafe extern "C" fn quercus_ofx_curveset_add_identity_curve(
 	(curves.len() - 1) as i32
 }
 
-/// Number of control points in curve `curve`; -1 on a null handle or
-/// out-of-range curve.
+/// Number of control points in curve `curve`.
+///
+/// # Returns
+///
+/// `0` for an empty curve, or `-1` on a null handle or an out-of-range
+/// `curve` index.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_point_count(set: *const OfxCurveSet, curve: i32) -> i32 {
 	if set.is_null() || curve < 0 {
@@ -168,8 +246,23 @@ pub unsafe extern "C" fn quercus_ofx_curveset_point_count(set: *const OfxCurveSe
 		.unwrap_or(-1)
 }
 
-/// Reads control point `index` of curve `curve`. False on a null
-/// handle/output or an out-of-range index.
+/// Reads control point `index` of curve `curve` into `out`.
+///
+/// `index` is the position in the curve's key-sorted point list; on success
+/// `*out` receives the point's key/value/slope as the `repr(C)` mirror of the
+/// native `ControlPoint`. `out` is left untouched on failure.
+///
+/// # Returns
+///
+/// `true` when `*out` was written; `false` on a null handle or `out`, or when
+/// `curve`/`index` is negative or out of range.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released, and `out` must be null or valid for writing one
+/// `QuercusOfxCurvePoint`. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_point_at(
 	set: *const OfxCurveSet,
@@ -194,9 +287,23 @@ pub unsafe extern "C" fn quercus_ofx_curveset_point_at(
 	true
 }
 
-/// Inserts or overwrites the control point at `key` (key order is
-/// maintained; slopes are recomputed). False on a null handle or an
-/// out-of-range curve.
+/// Inserts or overwrites the control point at `key` in curve `curve`.
+///
+/// `key` is the parametric position and `value` the curve value there. Key
+/// order is maintained and the neighbouring slopes are recomputed (unlike
+/// [`quercus_ofx_curveset_push_point`], which keeps an explicit slope); this
+/// is what the curve editor calls while dragging a point.
+///
+/// # Returns
+///
+/// `true` when the point was stored; `false` on a null handle or an
+/// out-of-range `curve` index.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_upsert_point(
 	set: *const OfxCurveSet,
@@ -219,6 +326,22 @@ pub unsafe extern "C" fn quercus_ofx_curveset_upsert_point(
 }
 
 /// Inserts a control point with its explicit Hermite slope preserved.
+///
+/// `point.key` keeps the curve's points sorted and `point.slope` is stored
+/// as-is (unlike [`quercus_ofx_curveset_upsert_point`], which recomputes
+/// slopes); a point with the same key is overwritten. `curve` is the curve
+/// index.
+///
+/// # Returns
+///
+/// `true` when the point was inserted or replaced; `false` on a null handle or
+/// an out-of-range `curve` index.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_push_point(
 	set: *const OfxCurveSet,
@@ -245,8 +368,21 @@ pub unsafe extern "C" fn quercus_ofx_curveset_push_point(
 	true
 }
 
-/// Deletes control point `index` of curve `curve` (slopes are
-/// recomputed). False on a null handle or an out-of-range index.
+/// Deletes control point `index` of curve `curve`.
+///
+/// `index` is the position in the curve's key-sorted point list; the
+/// neighbouring slopes are recomputed afterwards.
+///
+/// # Returns
+///
+/// `true` when the point was deleted; `false` on a null handle, a negative
+/// `curve`/`index`, or when either is out of range.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_delete_point(
 	set: *const OfxCurveSet,
@@ -266,9 +402,21 @@ pub unsafe extern "C" fn quercus_ofx_curveset_delete_point(
 	c.delete_nth(index as usize).is_ok()
 }
 
-/// Removes all control points of curve `curve` (the curve then
-/// evaluates as identity). False on a null handle or an out-of-range
-/// curve.
+/// Removes all control points of curve `curve`.
+///
+/// The curve then evaluates as identity (`y = x`); this is how a curve is
+/// reset to the parametric default without removing the curve itself.
+///
+/// # Returns
+///
+/// `true` when the curve was cleared; `false` on a null handle or an
+/// out-of-range `curve` index.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_clear_curve(set: *const OfxCurveSet, curve: i32) -> bool {
 	if set.is_null() || curve < 0 {
@@ -285,9 +433,23 @@ pub unsafe extern "C" fn quercus_ofx_curveset_clear_curve(set: *const OfxCurveSe
 	true
 }
 
-/// Evaluates curve `curve` at `x` (cubic Hermite; out-of-range keys
-/// clamp to the endpoint values, an empty curve is identity). NaN on a
-/// null handle or an out-of-range curve.
+/// Evaluates curve `curve` of the set at `x` (cubic Hermite).
+///
+/// Keys outside the curve's key range clamp to the endpoint values and an
+/// empty curve evaluates as identity (`x`), matching
+/// `quercus_ofx_plugin::param_curve`. The parametric-parameter widget uses
+/// this to sample the curve it draws.
+///
+/// # Returns
+///
+/// The curve's value at `x`, or `NaN` on a null handle or an out-of-range
+/// `curve` index.
+///
+/// # Safety
+///
+/// `set` must be null or a live curve-set handle obtained from
+/// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
+/// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_curveset_evaluate(
 	set: *const OfxCurveSet,

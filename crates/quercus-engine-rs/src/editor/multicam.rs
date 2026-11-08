@@ -72,7 +72,13 @@ pub struct MulticamSource {
 	pub current: bool,
 }
 impl EditorSession {
-	/// Resolves a clip's multicam state, or `None` when multicam is not enabled.
+	/// Resolve a clip's multicam state: its source sequence, the multicam node,
+	/// the angle count and the current angle.
+	///
+	/// Returns `None` when the clip is invalid or multicam is not enabled on it
+	/// (the C ABI returns `false`). The state is copied into an owned
+	/// [`MulticamState`] of plain [`NodeId`]s, so the result does not borrow the
+	/// session.
 	pub fn multicam_state(&self, clip: NodeId) -> Option<MulticamState> {
 		let mut raw = RawMulticamState::default();
 		unsafe { quercus_editor_multicam_state(self.ptr, clip.raw(), &mut raw) }.then(|| {
@@ -94,7 +100,13 @@ impl EditorSession {
 		id.is_valid().then_some(id)
 	}
 
-	/// Whether a clip's direct texture source is a multicam node.
+	/// Whether a clip's *direct* texture source is a multicam node.
+	///
+	/// Only the immediate source is inspected: a clip whose multicam node sits
+	/// behind another node reports `false`. Use
+	/// [`EditorSession::multicam_connected_sequence`] to walk the whole texture
+	/// chain instead, or [`EditorSession::multicam_state`] for the resolved
+	/// state.
 	pub fn multicam_is_clip(&self, clip: NodeId) -> bool {
 		unsafe { quercus_editor_multicam_is_clip(self.ptr, clip.raw()) }
 	}
@@ -107,7 +119,12 @@ impl EditorSession {
 		id.is_valid().then_some(id)
 	}
 
-	/// Returns the source sequence connected to a multicam node.
+	/// The source sequence connected to a multicam node, if it resolves.
+	///
+	/// Returns `None` when `multicam` is invalid or is not a multicam node (the
+	/// C side reports an invalid id). The sequence holds the angles' tracks;
+	/// look up one angle with [`EditorSession::multicam_source_track`] or list
+	/// them all with [`EditorSession::multicam_sources`].
 	pub fn multicam_sequence(&self, multicam: NodeId) -> Option<NodeId> {
 		let id =
 			NodeId::from_raw(unsafe { quercus_editor_multicam_sequence(self.ptr, multicam.raw()) });
@@ -168,15 +185,27 @@ impl EditorSession {
 			.then_some((rows, cols))
 	}
 
-	/// Hit-tests normalized display coordinates (`0..=1`) against the angle
-	/// grid, returning the source index or `None` outside it / on an empty
-	/// cell.
+	/// Hit-test normalized display coordinates against the angle grid.
+	///
+	/// `sources` is the angle count the grid was built for (see
+	/// [`EditorSession::multicam_grid`]); `x`/`y` are pointer coordinates
+	/// normalized to `0..=1` with the origin at the top-left of the viewer.
+	/// Returns the zero-based index of the angle under the pointer, or `None`
+	/// outside the grid or on a cell with no angle (the C side reports a
+	/// negative index).
 	pub fn multicam_source_at(sources: i32, x: f64, y: f64) -> Option<i32> {
 		let index = unsafe { quercus_editor_multicam_source_at(sources, x, y) };
 		(index >= 0).then_some(index)
 	}
 
-	/// Queries an angle's display name through the C ABI.
+	/// Query one angle's display name through the C ABI.
+	///
+	/// `multicam` is the multicam node and `source` the zero-based angle index.
+	/// Calls the C function twice: first with a null buffer to measure, then
+	/// with a `measured + 1` byte buffer, truncating to the reported length and
+	/// decoding as UTF-8. Returns `None` when the C side reports a negative
+	/// length (invalid node or angle) or when the bytes are not valid UTF-8;
+	/// used by [`EditorSession::multicam_sources`].
 	fn multicam_source_name(&self, multicam: NodeId, source: i32) -> Option<String> {
 		let len = unsafe {
 			quercus_editor_multicam_source_name(
@@ -574,7 +603,12 @@ mod tests {
 		let _ = std::fs::remove_file(media_b);
 	}
 }
-/// Square-ish grid layout for `sources` source angles.
+/// Choose a near-square angle grid for `sources` cells, as `(rows, cols)`.
+///
+/// Grows the smaller dimension alternately, so `rows * cols >= sources` (1 →
+/// `(1, 1)`, 4 → `(2, 2)`, 5 → `(2, 3)`); a non-positive count yields
+/// `(1, 1)`. Pairs with [`rows_cols_to_index`] for layout and hit-testing of
+/// the multicam angle grid.
 pub fn rows_and_columns(sources: i32) -> (i32, i32) {
 	let mut rows = 1;
 	let mut cols = 1;
@@ -588,7 +622,12 @@ pub fn rows_and_columns(sources: i32) -> (i32, i32) {
 	(rows, cols)
 }
 
-/// Converts a grid row/column to a source index.
+/// Convert a grid row/column into the index of the angle it displays.
+///
+/// Row-major arithmetic: `col + row * total_cols`. `total_rows` is accepted for
+/// symmetry with [`rows_and_columns`] but is not needed by the formula and is
+/// ignored. Cells past the angle count still produce an index, so callers must
+/// bound-check the result against the number of angles before using it.
 pub fn rows_cols_to_index(row: i32, col: i32, total_rows: i32, total_cols: i32) -> i32 {
 	let _ = total_rows;
 	col + row * total_cols

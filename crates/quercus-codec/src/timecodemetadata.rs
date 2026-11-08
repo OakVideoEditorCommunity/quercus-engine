@@ -119,7 +119,13 @@ fn timecode_to_time(timecode: &str, timebase: &Rational, drop_frame: bool) -> Op
 	Some(time)
 }
 
-/// Signed Euclidean GCD on absolute values (mirrors `i64_gcd`).
+/// Returns the greatest common divisor of the magnitudes `a` and `b`.
+///
+/// Uses the Euclidean algorithm on `u64` values, so callers must pass
+/// absolute values (this is the unsigned counterpart of the signed
+/// `i64_gcd` helper). `gcd(0, 0)` is `0`; `gcd(a, 0)` is `a`; otherwise
+/// the result divides both inputs. Called to reduce the sample-count /
+/// sample-rate fraction to lowest terms.
 fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
 	while b != 0 {
 		let t = a % b;

@@ -162,19 +162,36 @@ impl ColorProcessor {
 		unsafe { quercus_core_colorproc_is_valid(self.ptr) }
 	}
 
-	/// The processor's cache id.
+	/// Returns the engine's cache id for this processor's OCIO transform.
+	///
+	/// The id identifies the OCIO processor in the engine cache, so equal ids mean the
+	/// same conversion. It is empty for a pass-through processor (which carries no
+	/// OCIO transform) and `None` when the engine reports a failure, e.g. for an
+	/// invalid handle. Each call copies the string out of the engine, so the result
+	/// is owned.
 	pub fn cache_id(&self) -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_core_colorproc_cache_id(self.ptr, buf, len) })
 	}
 
-	/// Converts one RGBA color.
+	/// Converts one RGBA color through the processor.
+	///
+	/// `rgba` holds straight RGBA values (normally `0..=1`, alpha last) and is passed
+	/// by value, so the caller's array is untouched. Returns the converted color as a
+	/// new array; a pass-through processor (or an invalid handle) returns the input
+	/// unchanged.
 	pub fn convert_color(&self, rgba: [f64; 4]) -> [f64; 4] {
 		let mut out = rgba;
 		unsafe { quercus_core_colorproc_convert_color(self.ptr, out.as_mut_ptr()) };
 		out
 	}
 
-	/// Converts `pixels * 4` f32 RGBA samples in place.
+	/// Converts `pixels` RGBA f32 pixels in place to the processor's output.
+	///
+	/// `samples` is a tightly packed RGBA f32 buffer (4 floats per pixel) and
+	/// `pixels` is the pixel count — `samples.len()` must be at least `pixels * 4`,
+	/// since the engine converts `pixels * 4` elements. A pass-through processor
+	/// leaves the samples unchanged. Returns `Err(Error)` when the engine reports an
+	/// OCIO apply failure; the buffer contents are then unspecified.
 	pub fn convert_f32_rgba(&self, samples: &mut [f32], pixels: i64) -> Result<(), Error> {
 		if unsafe { quercus_core_colorproc_convert_f32_rgba(self.ptr, samples.as_mut_ptr(), pixels) } {
 			Ok(())
@@ -183,7 +200,14 @@ impl ColorProcessor {
 		}
 	}
 
-	/// Converts `pixels * 4` u8 BGRA samples in place.
+	/// Converts `pixels` BGRA8 pixels in place to the processor's output.
+	///
+	/// `data` is a tightly packed BGRA8 buffer (4 bytes per pixel; the R/B swizzle
+	/// belongs to the processor chain, so it must have been built by a `*_bgra8`
+	/// constructor) and `pixels` is the pixel count — `data.len()` must be at least
+	/// `pixels * 4`, since the engine derives the length from `pixels`. A pass-through
+	/// processor leaves the bytes unchanged. Returns `Err(Error)` when the engine
+	/// reports an OCIO apply failure; the buffer contents are then unspecified.
 	pub fn convert_bgra8(&self, data: &mut [u8], pixels: i64) -> Result<(), Error> {
 		if unsafe { quercus_core_colorproc_convert_bgra8(self.ptr, data.as_mut_ptr(), pixels) } {
 			Ok(())
@@ -216,14 +240,27 @@ unsafe impl Send for ColorTransform {}
 unsafe impl Sync for ColorTransform {}
 
 impl ColorTransform {
-	/// An output-colorspace transform.
+	/// Creates an output-colorspace transform descriptor.
+	///
+	/// `output` names the destination colorspace (copied into the engine, so the
+	/// argument is only borrowed for the call); `is_display()` is `false` and the
+	/// display/view/look getters read back empty. Because the name is a `&str` the
+	/// returned handle is always valid. `Clone` adds a reference and `Drop` releases
+	/// it.
 	pub fn new_output(output: &str) -> Self {
 		Self {
 			ptr: unsafe { quercus_core_colortransform_new_output(output.as_ptr(), output.len()) },
 		}
 	}
 
-	/// A display/view/look transform.
+	/// Creates a display/view/look transform descriptor.
+	///
+	/// `display` is the engine's display name (e.g. `"sRGB"`), `view` the display
+	/// view (e.g. `"Standard"`) and `look` the optional look (empty for none). The
+	/// names are copied into the engine, so the arguments are only borrowed for the
+	/// call; the result reports `is_display() == true` and `output()` reads back
+	/// empty. Because all three arguments are `&str` the returned handle is always
+	/// valid. `Clone` adds a reference and `Drop` releases it.
 	pub fn new_display(display: &str, view: &str, look: &str) -> Self {
 		Self {
 			ptr: unsafe {
@@ -256,13 +293,23 @@ impl ColorTransform {
 			.unwrap_or_default()
 	}
 
-	/// The view name.
+	/// Returns the transform's view name.
+	///
+	/// The view is the second component of a display/view/look transform (e.g.
+	/// `"Standard"`); an output-colorspace transform returns an empty string. The
+	/// name is copied out of the engine handle, so the result is owned; an invalid
+	/// handle also reads back as empty.
 	pub fn view(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_core_colortransform_view(self.ptr, buf, len) })
 			.unwrap_or_default()
 	}
 
-	/// The look name.
+	/// Returns the transform's look name.
+	///
+	/// The look is the optional third component of a display/view/look transform
+	/// (`"none"` or empty when no look is applied); an output-colorspace transform
+	/// returns an empty string. The name is copied out of the engine handle, so the
+	/// result is owned; an invalid handle also reads back as empty.
 	pub fn look(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_core_colortransform_look(self.ptr, buf, len) })
 			.unwrap_or_default()

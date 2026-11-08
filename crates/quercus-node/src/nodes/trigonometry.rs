@@ -213,8 +213,12 @@ pub const OPERATION_NAMES: [&str; 9] = [
 	"Hyperbolic Tangent",
 ];
 
-/// Register this node type (C++ `k_trigonometry_node` in
-/// `factory.cpp::create_from_factory_index`).
+/// Add the Trigonometry node type to the factory registry.
+///
+/// `meta` is the registry list (the factory's global table); the appended entry
+/// uses type id `org.olivevideoeditor.Olive.trigonometry`, display name
+/// "Trigonometry" and the Math category. Mirrors the C++ `k_trigonometry_node`
+/// entry in `factory.cpp::create_from_factory_index`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.trigonometry",

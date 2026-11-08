@@ -84,6 +84,13 @@ impl SubtitleStyle {
 		}
 	}
 
+	/// Converts the style to its POD C mirror, or `None` when the font family
+	/// cannot be represented.
+	///
+	/// The font family must fit the 128-byte NUL-terminated field (at most 127
+	/// bytes) and must not contain a NUL byte; every other field is copied
+	/// through unchanged. The returned struct is passed by value across the C
+	/// ABI. Counterpart of [`SubtitleStyle::from_raw`].
 	fn to_raw(&self) -> Option<QuercusSubtitleStyle> {
 		let bytes = self.font_family.as_bytes();
 		if bytes.len() >= 128 || bytes.contains(&0) {

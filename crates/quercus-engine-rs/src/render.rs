@@ -109,7 +109,11 @@ pub fn render_frame_f32(
 	Some(dst)
 }
 
-/// The disk cache directory.
+/// Returns the disk cache directory currently in use.
+///
+/// That is the override installed by `disk_cache_set_path`, or the platform
+/// default location when none was set. The path is copied out as an owned string
+/// and is empty when the engine cannot produce it.
 pub fn disk_cache_path() -> String {
 	string_out(|buf, len| unsafe { quercus_render_disk_cache_path(buf, len) }).unwrap_or_default()
 }
@@ -120,7 +124,12 @@ pub fn disk_cache_size() -> Option<i64> {
 	(size >= 0).then_some(size)
 }
 
-/// Clears the disk cache.
+/// Clears the disk cache, deleting every cached file rather than only entries
+/// over the configured budget.
+///
+/// Returns `false` when the cache directory cannot be removed or recreated (an
+/// I/O failure) and `true` on success; the directory is recreated empty, so a
+/// missing directory simply becomes an empty one.
 pub fn disk_cache_clear() -> bool {
 	unsafe { quercus_render_disk_cache_clear() }
 }
@@ -193,7 +202,12 @@ pub fn manager_poll() {
 	unsafe { quercus_render_manager_poll() }
 }
 
-/// Sizes the worker pool's workspace for the current sequence resolution.
+/// Sizes the worker pool's per-frame workspace for the current sequence.
+///
+/// `width`/`height` are the output dimensions in pixels (both must be positive)
+/// and `fps` the sequence frame rate (must be non-zero); the per-worker slot size
+/// and worker target grow with the pixel count. A no-op for non-positive sizes,
+/// zero `fps`, or when no render manager has been initialized.
 pub fn manager_set_workspace_size(width: i32, height: i32, fps: u32) {
 	unsafe { quercus_render_manager_set_workspace_size(width, height, fps) }
 }
@@ -313,7 +327,14 @@ pub fn gpu_set_display_transform_required(required: bool) {
 	unsafe { quercus_render_gpu_set_display_transform_required(required) };
 }
 
-/// Installs the CPU-baked working-space to display LUT on the adopted GPU.
+/// Installs the CPU-baked working-space to display 3D LUT on the adopted GPU.
+///
+/// `edge` is the cube edge (samples per axis), `lo`/`hi` are the working-space RGB
+/// values at the cube's first/last corner and `data` is the flattened `edge^3 * 3`
+/// f32 table in the engine's red-major order. Returns `false` when the table
+/// length does not match `edge` (or `edge^3 * 3` overflows), when no host-adopted
+/// GPU context exists (nothing is installed and the CPU path stays authoritative),
+/// or when the GPU upload fails.
 pub fn gpu_set_display_lut(
 	edge: u32,
 	lo: &[f32; 3],
@@ -368,7 +389,12 @@ pub fn font_families() -> Vec<String> {
 		.collect()
 }
 
-/// Swizzles BGRA8 pixels to RGBA8 (buffers may not overlap).
+/// Swizzles BGRA8 pixels to RGBA8 (B/G/R/A -> R/G/B/A; alpha passes through).
+///
+/// `src` and `dst` must have equal lengths, a multiple of 4, and must not
+/// overlap; `dst` is written in full. Returns `false` without writing when the
+/// lengths differ, when the length is not a multiple of 4, or when the engine
+/// reports a null buffer; an empty pair of buffers is a successful no-op.
 pub fn swizzle_bgra8_to_rgba8(src: &[u8], dst: &mut [u8]) -> bool {
 	if src.len() != dst.len() || !src.len().is_multiple_of(4) {
 		return false;

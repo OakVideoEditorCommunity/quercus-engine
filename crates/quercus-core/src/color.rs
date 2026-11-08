@@ -82,12 +82,19 @@ unsafe impl Send for ColorProcessor {}
 unsafe impl Sync for ColorProcessor {}
 
 impl ColorProcessor {
-	/// Create from two colorspace names on the default config
+	/// Creates a processor from two colorspace names on the default config
 	/// (C++ `ColorProcessor::create(config, input, dest)`).
 	///
-	/// Role names (e.g. "scene_linear") are resolved to canonical names.
-	/// OCIO failures are non-fatal: a processor with `inner == None` is
-	/// returned and conversions pass through.
+	/// `src_space` is the input colorspace or role (e.g. "scene_linear");
+	/// `dst_transform` is the destination colorspace or role name.
+	/// `Direction::Inverse` builds the same pair in the opposite order, so
+	/// the processor runs dst → src.
+	///
+	/// Role names are resolved to canonical names before building. OCIO
+	/// failures are non-fatal: a processor with `inner == None` is returned
+	/// and conversions pass through, so callers that must know check
+	/// [`Self::is_valid`]. Returns `None` only when no default config is
+	/// loaded.
 	pub fn create(src_space: &str, dst_transform: &str, dir: Direction) -> Option<Self> {
 		let config = default_config()?;
 		let src = if config.has_role(src_space) {
@@ -113,8 +120,15 @@ impl ColorProcessor {
 		})
 	}
 
-	/// Create from a LUT file (C++ `create_lut` semantics): an OCIO
-	/// FileTransform with linear interpolation on the default config.
+	/// Creates a processor from a LUT file on the default config (C++
+	/// `create_lut` semantics).
+	///
+	/// `path` is the LUT file, read by OCIO's `FileTransform` (any format
+	/// OCIO supports: .cube, .spi3d, …); `dir` selects forward or inverse
+	/// evaluation. Interpolation is linear. Returns `None` when the default
+	/// config is missing or OCIO cannot open the file; when the transform
+	/// builds but the processor is rejected, a pass-through processor is
+	/// returned instead (check [`Self::is_valid`]).
 	pub fn create_lut(path: &str, dir: Direction) -> Option<Self> {
 		let config = default_config()?;
 		let transform = ocio_rs::transform::FileTransform::create().ok()?;
@@ -189,6 +203,12 @@ impl ColorProcessor {
 	/// chain with R/B-swapping matrices baked around it, so BGRA bytes are
 	/// transformed in place through OCIO's RGBA entry points (swap∘chain∘swap
 	/// is the identity-wrapped chain evaluated on swapped channels).
+	///
+	/// `src_space` is a colorspace or role of the default config (the
+	/// pipeline reference, e.g. "scene_linear") and `icc_path` is the
+	/// display ICC profile. Returns `None` when the default config is
+	/// missing or the group cannot be created. Pair with
+	/// [`Self::convert_bgra8`], which requires this chain.
 	pub fn create_display_icc_bgra8(src_space: &str, icc_path: &str) -> Option<Self> {
 		Self::create_display_icc_impl(src_space, icc_path, true)
 	}
@@ -220,6 +240,14 @@ impl ColorProcessor {
 		Self::create_display_icc_xyz_impl(icc_path, true)
 	}
 
+	/// Shared builder behind the XYZ-input `create_display_icc_xyz*`
+	/// wrappers.
+	///
+	/// Runs [`Self::create_display_icc_impl`] with the config's
+	/// `cie_xyz_d65_interchange` role as the source space (`bgra` is
+	/// forwarded) and returns `None` instead of a pass-through processor
+	/// when the resulting chain is invalid, so callers can fall back to the
+	/// sRGB chain rather than pushing XYZ values through a no-op.
 	fn create_display_icc_xyz_impl(icc_path: &str, bgra: bool) -> Option<Self> {
 		let p = Self::create_display_icc_impl("cie_xyz_d65_interchange", icc_path, bgra)?;
 		// A failed OCIO lookup yields a pass-through processor (the
@@ -229,7 +257,19 @@ impl ColorProcessor {
 		p.is_valid().then_some(p)
 	}
 
-	/// Shared builder: `bgra` wraps the chain in R/B swap matrices.
+	/// Shared builder behind the `create_display_icc*` family.
+	///
+	/// Builds the group transform `src_space → Linear Rec.709 → CIE XYZ
+	/// D65 → ICC forward` and, when `bgra` is true, brackets it with R/B
+	/// swap matrices so a BGRA8 buffer can be pushed through OCIO's RGBA
+	/// entry point (swap∘chain∘swap). `src_space` is a colorspace name or
+	/// role of the default config; `icc_path` is a display-class ICC profile
+	/// read by OCIO's ICC reader.
+	///
+	/// Returns `None` when the default config is missing or any OCIO object
+	/// cannot be built. The returned processor may still be a pass-through
+	/// (`inner == None`) when the group itself is rejected — the XYZ
+	/// wrappers turn that into `None` via [`Self::is_valid`].
 	fn create_display_icc_impl(src_space: &str, icc_path: &str, bgra: bool) -> Option<Self> {
 		let config = default_config()?;
 		// Leg 1: pipeline space -> linear Rec.709 (sRGB primaries, D65).
@@ -300,7 +340,13 @@ impl ColorProcessor {
 		self.inner.as_ref()
 	}
 
-	/// Convert one RGBA color (C++ `convert_color`).
+	/// Converts one RGBA color.
+	///
+	/// `rgba` is R,G,B,A as `f64`; alpha is converted too but normally
+	/// stays 1.0. The conversion runs at `f32` precision, matching OCIO's
+	/// CPU processor, then widens back to `f64`. A pass-through processor
+	/// returns `rgba` unchanged. Used for single samples such as swatch
+	/// previews; bulk image data goes through [`Self::convert_frame`].
 	pub fn convert_color(&self, rgba: [f64; 4]) -> [f64; 4] {
 		match &self.cpu {
 			Some(cpu) => {
@@ -317,7 +363,18 @@ impl ColorProcessor {
 		}
 	}
 
-	/// Convert a whole F32 frame in place (row-major RGBA).
+	/// Converts a whole frame in place (row-major, tightly packed RGBA).
+	///
+	/// `frame` must carry `PixelFormat::F32`; every pixel is rewritten
+	/// through OCIO with a stride of 4 floats, so the data must be tightly
+	/// packed. A pass-through processor returns `Ok(())` without touching
+	/// the frame, so callers need no special case.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when the frame is not F32; `Error::Failed` when the
+	/// byte buffer cannot be viewed as `f32` (length not a multiple of 4) or
+	/// OCIO rejects the apply.
 	pub fn convert_frame(&self, frame: &mut Frame) -> Result<()> {
 		let Some(cpu) = &self.cpu else {
 			return Ok(()); // pass-through
@@ -349,16 +406,26 @@ impl ColorProcessor {
 		}
 	}
 
-	/// Convert a packed BGRA8 buffer in place (the viewer wire format).
-	/// The processor must have been built with
-	/// [`create_display_icc_bgra8`](Self::create_display_icc_bgra8) — the
+	/// Converts `pixels` packed BGRA8 pixels in place (the viewer's wire
+	/// format).
+	///
+	/// `data` holds `pixels * 4` bytes in B,G,R,A order and `pixels` counts
+	/// pixels. The processor must have been built with
+	/// [`create_display_icc_bgra8`](Self::create_display_icc_bgra8): the
 	/// R/B swizzle is baked into the chain, so the bytes go through OCIO's
-	/// RGBA entry point unchanged. A pass-through processor is a no-op.
+	/// RGBA entry point unchanged. A pass-through processor is a no-op
+	/// (`Ok(())`, buffer untouched).
 	///
 	/// The conversion detours through F32: the default CPU processor is
 	/// F32-finalized and rejects packed u8 buffers with a bit-depth
 	/// mismatch, and the ocio-rs binding exposes no Uint8-finalized CPU
-	/// processor. The round-trip cost is one small staging buffer.
+	/// processor. Bytes are un-scaled to 0..1, converted, then clamped and
+	/// rounded back to u8; the round-trip cost is one small staging buffer.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `data` is shorter than `pixels * 4` bytes;
+	/// `Error::Failed` when OCIO rejects the apply.
 	pub fn convert_bgra8(&self, data: &mut [u8], pixels: i64) -> Result<()> {
 		let Some(cpu) = &self.cpu else {
 			return Ok(());
@@ -376,8 +443,19 @@ impl ColorProcessor {
 		Ok(())
 	}
 
-	/// Convert an F32 RGBA buffer in place (tightly packed, 4 floats per
-	/// pixel). A pass-through processor is a no-op.
+	/// Converts `pixels` tightly packed RGBA `f32` pixels in place.
+	///
+	/// `samples` holds `pixels * 4` interleaved R,G,B,A values and is
+	/// rewritten with the converted values; `pixels` counts pixels, not
+	/// floats, and is passed straight to OCIO as the pixel count. A
+	/// pass-through processor (or one whose CPU processor failed to build)
+	/// leaves the buffer untouched and returns `Ok(())`.
+	///
+	/// # Errors
+	///
+	/// `Error::Failed` when the OCIO CPU processor rejects the buffer (for
+	/// example a length/stride mismatch between `samples` and `pixels`),
+	/// with OCIO's message in the payload.
 	pub fn convert_f32_rgba(&self, samples: &mut [f32], pixels: i64) -> Result<()> {
 		let Some(cpu) = &self.cpu else {
 			return Ok(());
@@ -447,7 +525,12 @@ pub fn set_pipeline_color_settings(
 	*PIPELINE_COLOR.lock().unwrap_or_else(|e| e.into_inner()) = (working, output);
 }
 
-/// The pipeline working colorspace.
+/// The pipeline working colorspace (ACEScg unless the project says
+/// otherwise).
+///
+/// Reads the process-wide settings installed by
+/// [`set_pipeline_color_settings`]; render and export paths use it to know
+/// which space their pixels are in. Read counterpart of that setter.
 pub fn pipeline_working_space() -> crate::colormath::WorkingColorSpace {
 	PIPELINE_COLOR.lock().unwrap_or_else(|e| e.into_inner()).0
 }
@@ -586,7 +669,16 @@ pub fn display_transform_result(
 	Ok(processor.cache_id())
 }
 
-/// [`display_transform_result`] as a plain option (unknown → None).
+/// The display transform's cache id for (`display`, `view`), if it exists.
+///
+/// `display` is an OCIO display name (e.g. "sRGB") and `view` is one of
+/// that display's views (e.g. "ACES 1.0 SDR-video"). The id is OCIO's
+/// processor cache id, not a displayable name, and is meant for keying
+/// caches.
+///
+/// Convenience wrapper over [`display_transform_result`] that collapses the
+/// error case into `None`: `None` means no default config is loaded, the
+/// display/view pair is unknown, or the transform could not be built.
 pub fn display_transform(display: &str, view: &str) -> Option<String> {
 	display_transform_result(display, view).ok().flatten()
 }

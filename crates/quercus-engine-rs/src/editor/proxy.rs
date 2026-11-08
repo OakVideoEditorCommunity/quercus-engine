@@ -68,10 +68,19 @@ pub struct ProxyStatus {
 }
 
 impl EditorSession {
-	/// Starts an asynchronous proxy transcode and returns its pollable task.
+	/// Start an asynchronous proxy transcode for `footage`.
 	///
-	/// No transcoding runs on the caller's thread. Completion must be applied with
-	/// [`EditorSession::complete_proxy`] after the task reaches a terminal state.
+	/// `footage` is the source footage node and `cache_path` the path the proxy is
+	/// written under; both are forwarded to the C ABI, so `footage` must belong to
+	/// this session's project. Returns a [`Task`] running on a background worker
+	/// that the caller polls; no transcoding runs on the caller's thread. The task
+	/// only reports progress: once it reaches a terminal state, pass it to
+	/// [`EditorSession::complete_proxy`] to record the result.
+	///
+	/// # Errors
+	///
+	/// Returns the C ABI's error message as a `String` when no task could be
+	/// started (for example invalid footage or a refused request).
 	pub fn generate_proxy(&self, footage: NodeId, cache_path: &str) -> Result<Task, String> {
 		let mut error = [0u8; 1024];
 		let id = unsafe {

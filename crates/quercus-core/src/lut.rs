@@ -88,11 +88,22 @@ impl Lut3d {
 	}
 
 	/// Index of the sample `(r, g, b)` in [`Lut3d::data`].
+	///
+	/// Lattice indices with red varying fastest:
+	/// `((b * edge + g) * edge + r) * 3`. Not range-checked (callers pass
+	/// valid indices); [`Lut3d::sample`] reads three values from the returned
+	/// offset.
 	fn index(&self, r: u32, g: u32, b: u32) -> usize {
 		(((b * self.edge + g) * self.edge + r) * 3) as usize
 	}
 
 	/// One sample (panics if the LUT data is malformed).
+	///
+	/// `r`/`g`/`b` are lattice indices, each in `[0, edge)`, with red varying
+	/// fastest; returns the packed RGB triple at that corner. Indices are not
+	/// range-checked — use [`Lut3d::eval`] for domain-space lookups. Panics
+	/// when `data` is shorter than the index implies (a LUT not produced by
+	/// [`Lut3d::build`]/[`Lut3d::identity`]).
 	pub fn sample(&self, r: u32, g: u32, b: u32) -> [f32; 3] {
 		let i = self.index(r, g, b);
 		[self.data[i], self.data[i + 1], self.data[i + 2]]
@@ -100,6 +111,14 @@ impl Lut3d {
 
 	/// CPU trilinear evaluation (the reference for tests; the GPU pass
 	/// implements the same interpolation in WGSL).
+	///
+	/// `rgb` is a working-space color: each axis is normalized to
+	/// `(rgb[a] - lo[a]) / (hi[a] - lo[a])` and clamped to `[0, 1]`, so
+	/// out-of-domain colors return the nearest boundary sample. The result is
+	/// the trilinear blend of the surrounding lattice samples, per component;
+	/// a zero-width domain axis maps to its low sample. Panics only if `data`
+	/// is shorter than `edge³ * 3` (see [`Lut3d::sample`]) — [`Lut3d::build`]
+	/// and [`Lut3d::identity`] always produce well-formed data.
 	pub fn eval(&self, rgb: [f32; 3]) -> [f32; 3] {
 		let last = self.edge - 1;
 		let mut p = [0.0f32; 3];
@@ -155,12 +174,20 @@ impl Lut3d {
 		})
 	}
 
-	/// The LUT domain as `(lo, hi)`.
+	/// The LUT's input domain as `(lo, hi)`.
+	///
+	/// Both corners are per-axis arrays; values outside the domain are clamped
+	/// to the nearest boundary by [`Lut3d::eval`], whose samples were baked
+	/// over exactly this cube. The returned arrays are copies.
 	pub fn domain(&self) -> ([f32; 3], [f32; 3]) {
 		(self.lo, self.hi)
 	}
 }
 
+/// Linear interpolation between `a` and `b` at parameter `t`.
+///
+/// Returns `a + (b - a) * t`; `t` is not clamped here, so callers pass a
+/// fraction in `[0, 1]` for an in-range blend. Used by [`Lut3d::eval`].
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
 	a + (b - a) * t
 }

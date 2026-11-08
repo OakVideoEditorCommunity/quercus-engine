@@ -45,7 +45,13 @@ pub struct ColorTransform {
 }
 
 impl ColorTransform {
-	/// New output-colorspace transform.
+	/// Creates an output-colorspace transform.
+	///
+	/// `output` is the target colorspace name (copied verbatim; it may be
+	/// empty, which still yields an output transform). The display, view and
+	/// look fields start empty and [`Self::is_display`] is `false`.
+	/// Counterpart of [`Self::new_display`]; read the name back with
+	/// [`Self::output`].
 	pub fn new_output(output: &str) -> Self {
 		Self {
 			output: output.to_string(),
@@ -56,7 +62,16 @@ impl ColorTransform {
 		}
 	}
 
-	/// New display/view/look transform.
+	/// Creates a display/view/look transform.
+	///
+	/// `display` is the display (monitor) colorspace name, `view` the view
+	/// transform name within it, and `look` an optional look name (pass `""`
+	/// for none). All three are copied verbatim and may be empty. The
+	/// transform is marked as a display transform via the private
+	/// `is_display` flag, so an empty `display` name still reports
+	/// [`Self::is_display`] as `true`; the output colorspace stays empty.
+	/// Counterpart of [`Self::new_output`]; paired with [`Self::display`],
+	/// [`Self::view`] and [`Self::look`].
 	pub fn new_display(display: &str, view: &str, look: &str) -> Self {
 		// CPP-PARITY: the C++ display constructor stores the display name in
 		// the shared `output_` member and sets `is_display_ = true`; here the
@@ -86,12 +101,23 @@ impl ColorTransform {
 		&self.output
 	}
 
-	/// View name.
+	/// The view name of a display/view/look transform (e.g. `"standard"`,
+	/// `"ACES"`), borrowed from the transform.
+	///
+	/// Always empty for output-colorspace transforms (see
+	/// [`Self::new_output`]). The value is stored verbatim at construction and
+	/// is not validated against the display's available views.
 	pub fn view(&self) -> &str {
 		&self.view
 	}
 
-	/// Look name.
+	/// The look name of a display/view/look transform (e.g. `"none"`,
+	/// `"soft"`), borrowed from the transform.
+	///
+	/// Always empty for output-colorspace transforms (see
+	/// [`Self::new_output`]) and for display transforms built without a look.
+	/// The value is stored verbatim at construction; it is not validated
+	/// against any list of available looks.
 	pub fn look(&self) -> &str {
 		&self.look
 	}

@@ -119,7 +119,20 @@ impl CustomCacheTask {
 		self.state.finish();
 	}
 
-	/// Install the callback invoked when the task is cancelled.
+	/// Replaces the callback invoked when this task is actually cancelled.
+	///
+	/// The callback lives in the shared [`CustomCacheState`] and fires from the
+	/// cancel hook only for cancellation, not when the cache completes through
+	/// [`CustomCacheTask::finish`]. It runs on the thread that triggers the
+	/// cancellation while the stored callback lock is held, so it must not call
+	/// back into this task's cancellation state (for example
+	/// [`CustomCacheState::cancel`]).
+	///
+	/// # Arguments
+	///
+	/// * `cb` - Callback taking no arguments and owned by the task. It must be
+	///   `Send` because cancellation can be triggered from another thread; any
+	///   previously installed callback is dropped.
 	pub fn set_cancelled_callback(&mut self, cb: Box<dyn FnMut() + Send>) {
 		*self.state.cancelled_callback.lock().unwrap() = Some(cb);
 	}

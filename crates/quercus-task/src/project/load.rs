@@ -47,7 +47,18 @@ pub struct ProjectLoadBaseTask {
 }
 
 impl ProjectLoadBaseTask {
-	/// Create a base load task for the given filename.
+	/// Creates the shared base of a project-load task.
+	///
+	/// `base` is the generic [`Task`] used for progress/error reporting and
+	/// scheduling; `filename` is the path of the `.quercusproj` file read on a
+	/// worker thread. Construction only stores the inputs — file I/O and XML
+	/// deserialization happen in `TaskBehavior::run`, and the loaded project is
+	/// retrieved with [`ProjectLoadBaseTask::take_project`].
+	///
+	/// # Arguments
+	///
+	/// * `base` - task handle tracking progress and cancellation.
+	/// * `filename` - project-file path; read as UTF-8 XML by `run`.
 	pub fn new(base: Task, filename: String) -> ProjectLoadBaseTask {
 		ProjectLoadBaseTask {
 			base,

@@ -93,11 +93,19 @@ pub struct PairingCalculator {
 }
 
 impl PairingCalculator {
-	/// Build from the two operand tables (C++ `PairingCalculator()`
-	/// constructor): per-table `get_pair_likelihood` weight vectors are
-	/// combined (longer table gets a weight bonus), and the highest
-	/// non-negative combined likelihood wins; the winning operands are
-	/// copied out of the tables.
+	/// Build from the two operand tables.
+	///
+	/// Computes each table's per-pairing likelihood with `get_pair_likelihood`,
+	/// adds a weight bonus for the longer table, and picks the highest non-negative
+	/// combined score (ties go to the lower pairing index, matching the C++ strict
+	/// `>` comparison). The chosen operands are copied out of the tables into
+	/// `most_likely_value_a`/`b` when their row indexes are in range; otherwise
+	/// they stay `NodeValue::None`.
+	///
+	/// # Arguments
+	///
+	/// * `table_a` - values produced for operand A.
+	/// * `table_b` - values produced for operand B.
 	pub fn new(table_a: &NodeValueTable, table_b: &NodeValueTable) -> Self {
 		let likelihood_a = get_pair_likelihood(table_a);
 		let likelihood_b = get_pair_likelihood(table_b);
@@ -278,14 +286,22 @@ impl MathNodeBase {
 		}
 	}
 
-	/// Shared shader generator (C++ `get_shader_code_internal()`):
-	/// parses the `"<op>.<pairing>.<type_a>.<type_b>"` shader id,
-	/// builds a fragment shader declaring both operands as uniforms and
-	/// applying the GLSL operator (`pow()` for power, with a vec4-wrapped
-	/// exponent for texture-number); the texture*matrix multiply case
-	/// instead emits a no-op fragment plus a vertex shader that
-	/// multiplies `gl_Position` by the matrix uniform. Returns
-	/// `(frag, vert)`.
+	/// Shared shader generator for a binary math node.
+	///
+	/// Parses `shader_id` as `"<op>.<pairing>.<type_a>.<type_b>"` (numeric
+	/// discriminants) and emits a fragment shader that declares both operands as
+	/// uniforms and applies the GLSL operator, using `pow()` for power (the
+	/// `TextureNumber` power case wraps the exponent in `vec4`). Returns `(frag,
+	/// vert)`; `vert` is non-empty only for the `TextureMatrix` multiply case,
+	/// where the fragment is a plain texture sample and the vertex shader
+	/// multiplies `gl_Position` by the matrix uniform. Malformed ids (fewer than
+	/// four dot-separated components) return two empty strings.
+	///
+	/// # Arguments
+	///
+	/// * `shader_id` - encoded operation, pairing and operand types.
+	/// * `param_a_in` - uniform name for operand A.
+	/// * `param_b_in` - uniform name for operand B.
 	pub fn shader_code_internal(
 		shader_id: &str,
 		param_a_in: &str,
@@ -781,7 +797,11 @@ fn retrieve_vector(val: &NodeValue) -> [f32; 4] {
 	}
 }
 
-/// C++ `push_vector`: narrow a `[f32; 4]` back into the target vec type.
+/// Narrow a `[f32; 4]` back into the target vector type.
+///
+/// Pushes a `Vec2`, `Vec3` or `Vec4` value (dropping unused lanes, widening to
+/// `f64`) onto `output`; a non-vector `ty` pushes nothing. Pairs with
+/// `retrieve_vector`, which widens vectors for arithmetic.
 fn push_vector(output: &mut NodeValueTable, ty: ValueType, vec: [f32; 4]) {
 	match ty {
 		ValueType::Vec2 => output.push(
@@ -803,8 +823,12 @@ fn push_vector(output: &mut NodeValueTable, ty: ValueType, vec: [f32; 4]) {
 	}
 }
 
-/// The larger of two vec value types by C++ enum discriminant
-/// (Vec2 < Vec3 < Vec4; used for the vec pairing output type).
+/// The larger of two vector value types.
+///
+/// Compares C++ enum discriminants so `Vec2 < Vec3 < Vec4`; the result is the
+/// type of the wider operand (or `a`'s type when they rank equal). Used to
+/// choose the output type of a vector pairing; non-vector inputs are compared
+/// by the same numeric rule.
 fn vec_max_type(a: &NodeValue, b: &NodeValue) -> ValueType {
 	if a.value_type().to_cpp_discriminant() >= b.value_type().to_cpp_discriminant() {
 		a.value_type()
@@ -813,7 +837,11 @@ fn vec_max_type(a: &NodeValue, b: &NodeValue) -> ValueType {
 	}
 }
 
-/// `perform_add_sub_mult_div<Vector4D, Vector4D>` — element-wise.
+/// Element-wise arithmetic on two 4-component vectors.
+///
+/// Add, subtract, multiply and divide are applied per component; power is not
+/// part of this pairing and returns `a` unchanged. Components are raw `f32`
+/// values, so padding lanes are computed too.
 fn add_sub_mult_div_vec(operation: Operation, a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 	let mut out = a;
 	for i in 0..4 {
@@ -828,8 +856,11 @@ fn add_sub_mult_div_vec(operation: Operation, a: [f32; 4], b: [f32; 4]) -> [f32;
 	out
 }
 
-/// `perform_mult_div<Vector4D, float>` — multiply/divide only; other
-/// operations return the vector unchanged.
+/// Multiply or divide a vector by a scalar.
+///
+/// `a` is a 4-component vector, `b` the scalar; each component is scaled
+/// independently. Other operations (add/subtract/power) return `a` unchanged,
+/// matching the pairing dispatch.
 fn mult_div_vec_number(operation: Operation, a: [f32; 4], b: f32) -> [f32; 4] {
 	let mut out = a;
 	for i in 0..4 {
@@ -842,7 +873,11 @@ fn mult_div_vec_number(operation: Operation, a: [f32; 4], b: f32) -> [f32; 4] {
 	out
 }
 
-/// `perform_add_sub<Color, Color>` — add/subtract only.
+/// Add or subtract two RGBA colors.
+///
+/// Both operands are `[f64; 4]`; the result is channel-wise (`a[i] +- b[i]`).
+/// Multiply, divide and power return `a` unchanged, matching the pairing
+/// dispatch.
 fn add_sub_color(operation: Operation, a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 	match operation {
 		Operation::Add => [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]],
@@ -851,7 +886,11 @@ fn add_sub_color(operation: Operation, a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 	}
 }
 
-/// `perform_mult<Color, float>` — multiply/divide only.
+/// Multiply or divide a color by a scalar.
+///
+/// `a` is the RGBA color and `b` the scalar factor (each channel is handled
+/// independently, alpha included). Add, subtract and power return `a`
+/// unchanged, matching the pairing dispatch.
 fn mult_color_number(operation: Operation, a: [f64; 4], b: f64) -> [f64; 4] {
 	match operation {
 		Operation::Multiply => [a[0] * b, a[1] * b, a[2] * b, a[3] * b],
@@ -860,7 +899,11 @@ fn mult_color_number(operation: Operation, a: [f64; 4], b: f64) -> [f64; 4] {
 	}
 }
 
-/// Matrix operand -> row-major `[f64; 16]` (identity default).
+/// Matrix operand -> row-major `[f64; 16]`.
+///
+/// Returns the matrix stored in `val`; for a non-matrix value (including
+/// `NodeValue::None`) returns the 4x4 identity from [`identity_matrix`], so
+/// callers can treat a missing operand as "no transform".
 fn matrix_value(val: &NodeValue) -> [f64; 16] {
 	match val {
 		NodeValue::Matrix(m) => *m,
@@ -885,8 +928,12 @@ pub fn matrix_is_identity(m: [f64; 16]) -> bool {
 	m == identity_matrix()
 }
 
-/// `perform_add_sub_mult<Matrix4x4, Matrix4x4>` — add/subtract
-/// element-wise, multiply as a matrix product.
+/// Matrix algebra for binary math nodes.
+///
+/// Add and subtract work element-wise on the row-major `[f64; 16]`; multiply is
+/// the usual 4x4 matrix product (`out[r][c] = sum_k a[r][k] * b[k][c]`). Every
+/// other operation returns `a` unchanged. Value-level callers reach this
+/// through the pairing dispatch in [`MathNodeBase::value_internal`].
 fn add_sub_mult_matrix(operation: Operation, a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
 	match operation {
 		Operation::Add => {
@@ -948,7 +995,11 @@ fn is_scalar(val: Option<&NodeValue>) -> bool {
 	}
 }
 
-/// C++ `get_shader_uniform_type`.
+/// GLSL type name for an operand's value type.
+///
+/// Textures become `sampler2D`, colors `vec4`, matrices `mat4`, and every other
+/// type (numbers, vectors, samples) `float`. Used when declaring operand
+/// uniforms in [`MathNodeBase::shader_code_internal`].
 fn shader_uniform_type(ty: ValueType) -> &'static str {
 	match ty {
 		ValueType::Texture => "sampler2D",
@@ -958,7 +1009,12 @@ fn shader_uniform_type(ty: ValueType) -> &'static str {
 	}
 }
 
-/// C++ `get_shader_variable_call`: textures sample at the texcoord.
+/// GLSL expression that reads one shader operand.
+///
+/// Texture operands are sampled at `ove_texcoord` (`texture(input_id,
+/// ove_texcoord)`); for every other type the expression is just `input_id`, the
+/// uniform name. Used by [`MathNodeBase::shader_code_internal`] to build the
+/// operand expressions.
 fn shader_variable_call(input_id: &str, ty: ValueType) -> String {
 	if ty == ValueType::Texture {
 		format!("texture({}, ove_texcoord)", input_id)

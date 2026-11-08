@@ -45,6 +45,14 @@ impl Default for QuercusClipAudioEffectInfo {
 	}
 }
 
+/// Reads a clip's audio mix core: gain, pan, fade-in/out and a snapshot of
+/// its effect chain.
+///
+/// Returns `None` for a `0`/malformed `clip` identity, an identity that is not
+/// a node in the session's project, or a node without clip behavior (for
+/// example a folder or sequence). The effect chain is cloned, so mutations to
+/// the project after this call do not affect the returned vector. Shared by
+/// the `quercus_editor_clip_audio_*` queries in this module.
 fn clip_core(
 	session: &EditorSessionHandle,
 	clip: u64,
@@ -66,7 +74,24 @@ fn clip_core(
 	))
 }
 
-/// Reads a clip's gain/pan/fade fields and effect count.
+/// Reads a clip's gain/pan/fade fields and effect count into `out`.
+///
+/// `out` is overwritten with the clip's current audio mix settings: `gain`
+/// (`1.0` = unity), `pan` (`-1..1`), the fade-in/fade-out durations as
+/// rational numerator/denominator pairs in timeline seconds, and the number
+/// of entries in the clip's audio effect chain. A null `out` or a node that is
+/// not a clip fails without writing.
+///
+/// # Returns
+///
+/// `true` when `out` was filled; `false` for a null/invalid session or clip,
+/// a `0`/malformed clip identity, a null `out`, or a node with no clip
+/// behavior.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `out` must be
+/// null or point to one writable [`QuercusClipAudioState`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_clip_audio_state(
 	session: *const EditorSessionHandle,
@@ -91,7 +116,22 @@ pub unsafe extern "C" fn quercus_editor_clip_audio_state(
 	true
 }
 
-/// Reads one audio effect-chain entry's type id and enabled flag.
+/// Reads one clip audio effect-chain entry's type id and enabled flag.
+///
+/// `index` is the zero-based position in the clip's audio effect chain. On
+/// success `out.type_id` is NUL-filled and then holds the NUL-terminated type
+/// id, and `out.enabled` mirrors the chain entry.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session or clip, a negative or out-of-range
+/// `index`, a null `out`, or a type id that does not fit the 128-byte
+/// `type_id` buffer (it must be shorter, to leave room for the NUL).
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `out` must be
+/// null or point to one writable [`QuercusClipAudioEffectInfo`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_clip_audio_effect_info(
 	session: *const EditorSessionHandle,
@@ -121,7 +161,26 @@ pub unsafe extern "C" fn quercus_editor_clip_audio_effect_info(
 	true
 }
 
-/// Reads a static scalar parameter of one audio effect-chain entry.
+/// Reads a static scalar parameter of one entry in a clip's audio effect
+/// chain into `out`.
+///
+/// `index` is the zero-based chain position and `input` names the parameter
+/// (e.g. `volume_in` for the built-in `Volume` kernel). The stored node value
+/// is converted to `f64` the same way the mixer converts it.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session or clip, a negative or out-of-range
+/// `index`, a null/non-UTF-8 `input`, a parameter that is not stored on the
+/// effect, or a null `out`. Parameters never written explicitly are absent
+/// (the mixer's built-in defaults, such as Volume 1.0 / Pan 0.0, are not
+/// reported).
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, `input` must be
+/// null or point to `input_len` readable bytes of valid UTF-8, and `out` must
+/// be null or point to one writable `f64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_clip_audio_effect_param(
 	session: *const EditorSessionHandle,
@@ -195,6 +254,13 @@ fn current_sequence(session: &EditorSessionHandle) -> Option<NodeId> {
 /// range or output, no current sequence, or a failed audio render.
 ///
 /// [`QuercusTimeRange`]: crate::coretypes::QuercusTimeRange
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, `range` must be
+/// null or point to one readable [`crate::coretypes::QuercusTimeRange`], and
+/// `out` must be null or point to one writable [`QuercusLoudness`]. The
+/// session must not be used concurrently from another thread during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_measure_loudness(
 	session: *const EditorSessionHandle,
@@ -230,7 +296,14 @@ pub unsafe extern "C" fn quercus_editor_measure_loudness(
 }
 
 /// Number of entries in the current sequence's master-bus effect chain.
-/// Returns 0 for a null session or no current sequence.
+///
+/// Returns 0 for a null session or no current sequence, so `0` also covers
+/// "no sequence selected" rather than only an empty chain.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI; it is dereferenced
+/// only for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_audio_bus_effect_count(
 	session: *const EditorSessionHandle,
@@ -244,7 +317,22 @@ pub unsafe extern "C" fn quercus_editor_audio_bus_effect_count(
 	crate::editor_commands::audio_bus_effects(&session.project(), sequence).len() as i32
 }
 
-/// Reads one master-bus effect entry's type id and enabled flag.
+/// Reads one master-bus effect entry's type id and enabled flag into `out`.
+///
+/// `index` is the zero-based position in the current sequence's master-bus
+/// chain. On success `out.type_id` is NUL-filled and then holds the
+/// NUL-terminated type id, and `out.enabled` mirrors the chain entry.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a negative or
+/// out-of-range `index`, a null `out`, or a type id that does not fit the
+/// 128-byte `type_id` buffer (it must be shorter, to leave room for the NUL).
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `out` must be
+/// null or point to one writable [`QuercusClipAudioEffectInfo`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_audio_bus_effect_info(
 	session: *const EditorSessionHandle,
@@ -274,7 +362,25 @@ pub unsafe extern "C" fn quercus_editor_audio_bus_effect_info(
 	true
 }
 
-/// Reads one static scalar parameter of a master-bus effect entry.
+/// Reads one static scalar parameter of a master-bus effect entry into `out`.
+///
+/// `index` is the zero-based position in the current sequence's master-bus
+/// chain and `input` names the parameter; the stored node value is converted
+/// to `f64` (the same conversion the mixer uses).
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a negative or
+/// out-of-range `index`, a null/non-UTF-8 `input`, a parameter that is not
+/// stored on the effect, or a null `out` (nothing is written). Parameters
+/// never written explicitly are absent (the mixer's built-in defaults, such
+/// as Volume 1.0 / Pan 0.0, are not reported).
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, `input` must be
+/// null or point to `input_len` readable bytes of valid UTF-8, and `out` must
+/// be null or point to one writable `f64`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_audio_bus_effect_param(
 	session: *const EditorSessionHandle,
@@ -310,6 +416,23 @@ pub unsafe extern "C" fn quercus_editor_audio_bus_effect_param(
 
 /// Appends an effect to the current sequence's master-bus chain at `index`
 /// (clamped to the chain length) as one undo entry.
+///
+/// `index` is the zero-based insertion position; values past the end append.
+/// The type id is trimmed and stored even when the renderer does not know it
+/// yet: unknown entries are bypassed with a warning rather than rejected, so
+/// adding a not-yet-supported effect is non-destructive. The new entry starts
+/// enabled with no parameters.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a null/non-UTF-8
+/// `type_id`, an empty (or whitespace-only) type id, or a negative `index`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `type_id` must
+/// be null or point to `type_id_len` readable bytes of valid UTF-8. The
+/// session must not be used concurrently from another thread during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_add_audio_bus_effect(
 	session: *const EditorSessionHandle,
@@ -338,7 +461,21 @@ pub unsafe extern "C" fn quercus_editor_add_audio_bus_effect(
 	.is_ok()
 }
 
-/// Removes one entry of the current sequence's master-bus chain.
+/// Removes one entry of the current sequence's master-bus effect chain.
+///
+/// `index` is the zero-based chain position and must be in `0..chain_len`.
+/// The removal is recorded as one "Remove Master Audio Effect" undo entry;
+/// on failure no undo entry is recorded.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a negative
+/// `index`, or an `index` at/after the chain length.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_remove_audio_bus_effect(
 	session: *const EditorSessionHandle,
@@ -356,7 +493,22 @@ pub unsafe extern "C" fn quercus_editor_remove_audio_bus_effect(
 	crate::editor_commands::remove_audio_bus_effect(&session.project(), sequence, index).is_ok()
 }
 
-/// Enables/disables one entry of the current sequence's master-bus chain.
+/// Enables or disables one entry of the current sequence's master-bus chain.
+///
+/// `index` is the zero-based chain position; a disabled effect stays in the
+/// chain but is bypassed by the mixer. The change is recorded as one
+/// "Set Master Audio Effect Enabled" undo entry; writing the already stored
+/// state records nothing.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a negative or
+/// out-of-range `index`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_audio_bus_effect_enabled(
 	session: *const EditorSessionHandle,
@@ -381,7 +533,26 @@ pub unsafe extern "C" fn quercus_editor_set_audio_bus_effect_enabled(
 	.is_ok()
 }
 
-/// Sets one static float parameter of a master-bus effect entry.
+/// Sets one static float parameter of a master-bus effect entry, as one undo
+/// entry.
+///
+/// `index` is the zero-based position in the current sequence's master-bus
+/// chain and `input_id` names the parameter (leading/trailing whitespace is
+/// trimmed; an empty id is rejected). Recording a value that is already stored
+/// records no undo entry. The parameter is stored as a float node value, so a
+/// non-finite `value` is rejected.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session, no current sequence, a negative or
+/// out-of-range `index`, a null/non-UTF-8 `input_id`, an empty input id, or a
+/// non-finite `value`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `input_id` must
+/// be null or point to `input_id_len` readable bytes of valid UTF-8. The
+/// session must not be used concurrently from another thread during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_audio_bus_effect_param(
 	session: *const EditorSessionHandle,

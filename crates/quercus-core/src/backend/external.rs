@@ -109,15 +109,26 @@ pub struct GlMemoryExport {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 impl GlMemoryExport {
-	/// Texture width.
+	/// Width in pixels of the exported texture.
+	///
+	/// This is the extent the GL memory object is created with (via the
+	/// `glImportMemory*` call), so it must match the image the plugin renders
+	/// into.
 	pub fn width(&self) -> u32 {
 		self.external.width
 	}
-	/// Texture height.
+	/// Height in pixels of the exported texture.
+	///
+	/// This is the extent the GL memory object is created with (via the
+	/// `glImportMemory*` call), so it must match the image the plugin renders
+	/// into.
 	pub fn height(&self) -> u32 {
 		self.external.height
 	}
-	/// Texture format.
+	/// The `wgpu::TextureFormat` of the exported texture.
+	///
+	/// The GL bridge maps it to the matching internal format when creating the
+	/// imported GL texture; it is the format requested at creation.
 	pub fn format(&self) -> wgpu::TextureFormat {
 		self.external.format
 	}
@@ -218,6 +229,14 @@ unsafe impl Send for AshDispatch {}
 unsafe impl Sync for AshDispatch {}
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
+/// Lazily creates the process-wide Vulkan instance used for external-memory
+/// handle queries.
+///
+/// The instance is created once (guarded by a `OnceLock`) with API version 1.1
+/// and kept for the process lifetime; later calls return the same dispatch
+/// table. Returns `None` when the Vulkan loader cannot be loaded or instance
+/// creation fails, in which case callers import the memory without the
+/// handle-extension query and fail cleanly instead of panicking.
 fn ash_dispatch() -> Option<&'static AshDispatch> {
 	static DISPATCH: OnceLock<Option<AshDispatch>> = OnceLock::new();
 	DISPATCH
@@ -446,10 +465,31 @@ impl GpuContext {
 	}
 
 	/// Import one plane of an opaque Linux FD (CUDA VMM / driver-private
-	/// handle) as a linear Vulkan image. The FD is duplicated and owned by
-	/// Vulkan after a successful allocation; the image is registered like
-	/// the DMA-BUF path. `pitch` is retained for layout diagnostics; linear
-	/// image addressing is driven by the image extents.
+	/// handle) as a linear Vulkan image.
+	///
+	/// The FD is duplicated and owned by Vulkan after a successful allocation;
+	/// the image is registered like the DMA-BUF path and addressed by the linear
+	/// image extents.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - plane size in pixels; must be non-zero.
+	/// * `format` - plane format; 16-bit normalized formats additionally require
+	///   the device's 16-bit-normalized feature.
+	/// * `fd` - opaque Linux file descriptor; duplicated internally, so the
+	///   caller keeps ownership of `fd`.
+	/// * `offset` - byte offset into the exported allocation.
+	/// * `_pitch` - retained for layout diagnostics only; linear image addressing
+	///   is driven by the image extents.
+	/// * `keep_alive` - optional guard dropped when the imported texture is
+	///   released, keeping the producer's memory alive while GL reads it.
+	///
+	/// # Errors
+	///
+	/// `Error::State` for a non-Vulkan context, a zero size, or a 16-bit
+	/// normalized format the device does not support; `Error::Invalid` for a
+	/// format with no Vulkan equivalent; `Error::Failed` when the fd duplication
+	/// or image/memory creation fails.
 	#[cfg(target_os = "linux")]
 	pub fn import_opaque_fd_plane(
 		&self,
@@ -869,9 +909,17 @@ impl GpuContext {
 		)
 	}
 
-	/// Register a texture created through `create_texture_from_hal` in the
-	/// registry (M5 external imports; also the shared tail of every
-	/// platform import).
+	/// Registers a texture created through `create_texture_from_hal` and returns
+	/// its registry token.
+	///
+	/// Shared tail of every platform import path (Linux dma-buf/opaque FD,
+	/// Windows OPAQUE_WIN32, macOS IOSurface); the token is what later calls such
+	/// as `texture_view` use to find the texture.
+	///
+	/// # Arguments
+	///
+	/// * `hal_texture` - hal texture produced by the platform importer.
+	/// * `desc` - size/format/aspect/layer metadata for the registry entry.
 	fn register_imported_texture<A: wgpu::hal::Api>(
 		&self,
 		hal_texture: A::Texture,
@@ -881,10 +929,20 @@ impl GpuContext {
 			.map(|(token, _)| token)
 	}
 
-	/// The shared registration body; returns the token plus the owning
-	/// `wgpu::Texture` so multi-plane/array imports (one texture, several
-	/// plane aspects or slices) can register aliases without recreating
-	/// the texture.
+	/// Creates the wgpu texture from `hal_texture`, registers it, and returns
+	/// `(token, texture)`.
+	///
+	/// The returned `Arc` lets multi-plane/array importers register aliases for a
+	/// single GPU texture (different plane aspects or layer ranges) without
+	/// recreating it. Marks the context as used.
+	///
+	/// # Arguments
+	///
+	/// * `hal_texture` - hal texture produced by the platform importer.
+	/// * `desc` - size/format/aspect/layer metadata for the registry entry.
+	///
+	/// The `Result` is part of the shared call shape used by every platform
+	/// importer; this implementation currently never returns `Err`.
 	fn register_imported_texture_shared<A: wgpu::hal::Api>(
 		&self,
 		hal_texture: A::Texture,
@@ -914,7 +972,18 @@ impl GpuContext {
 		Ok((token, texture))
 	}
 
-	/// Insert one registry entry for `texture`.
+	/// Inserts one registry entry for `texture` and returns its new token.
+	///
+	/// The token is a monotonically increasing `u64` (relaxed atomic) and is the
+	/// handle later texture-API calls use to look the texture up. The entry takes
+	/// one `Arc<wgpu::Texture>` reference and stores the caller-reported
+	/// dimensions, format, aspect and array-layer range.
+	///
+	/// # Arguments
+	///
+	/// * `texture` - wgpu texture to register (shared ownership).
+	/// * `desc` - metadata copied into the entry (size, format, plane aspect,
+	///   optional array layer range).
 	fn register_texture_entry(
 		&self,
 		texture: Arc<wgpu::Texture>,
@@ -976,13 +1045,27 @@ impl GpuContext {
 		self.ofx_zerocopy && unsafe { self.device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some()
 	}
 
-	/// Create an `Rgba32Float` texture backed by exportable Vulkan memory.
+	/// Creates an `Rgba32Float` texture backed by exportable Vulkan memory
+	/// (`OPAQUE_FD`).
 	///
 	/// The returned token is registered exactly like
-	/// [`GpuContext::create_texture`], but carries an
-	/// [`ExternalTexture`] that [`GpuContext::export_gl_memory`] can hand
-	/// to the GL bridge. Any failure leaves no partial Vulkan objects and
-	/// is reported to the caller, which falls back to a normal texture.
+	/// `GpuContext::create_texture`, but carries an `ExternalTexture` that
+	/// `GpuContext::export_gl_memory` can hand to the GL bridge. Any failure
+	/// leaves no partial Vulkan objects and is reported to the caller, which
+	/// falls back to a normal texture.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - texture size in pixels; must be positive.
+	/// * `format` - must be `wgpu::TextureFormat::Rgba32Float`.
+	/// * `usage` - must include `TextureUsages::TEXTURE_BINDING`.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-positive size, a format other than RGBA32F, or
+	/// a `usage` without texture binding; `Error::State` when the device is not
+	/// Vulkan or the hal device cannot be acquired; `Error::Failed` when
+	/// image/memory allocation or exporting the fd fails.
 	pub fn create_exportable_texture(
 		&self,
 		width: i32,
@@ -1202,8 +1285,26 @@ impl GpuContext {
 			&& unsafe { self.device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some()
 	}
 
-	/// Create an `Rgba32Float` texture backed by exportable Vulkan memory
-	/// (`OPAQUE_WIN32`). Mirrors the Linux `OPAQUE_FD` path.
+	/// Creates an `Rgba32Float` texture backed by exportable Vulkan memory
+	/// (`OPAQUE_WIN32`), the Windows counterpart of the Linux `OPAQUE_FD` path.
+	///
+	/// The returned token is registered like `GpuContext::create_texture` but
+	/// carries an `ExternalTexture` that `GpuContext::export_gl_memory` can hand
+	/// to the GL bridge. Any failure leaves no partial Vulkan objects behind.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - texture size in pixels; must be positive.
+	/// * `format` - must be `wgpu::TextureFormat::Rgba32Float`.
+	/// * `usage` - must include `TextureUsages::TEXTURE_BINDING`.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-positive size, a format other than RGBA32F, or
+	/// a `usage` without texture binding; `Error::State` when the device is not
+	/// Vulkan or lacks `VULKAN_EXTERNAL_MEMORY_WIN32`; `Error::Failed` when
+	/// image/memory allocation fails. The caller then falls back to a regular
+	/// texture.
 	pub fn create_exportable_texture(
 		&self,
 		width: i32,

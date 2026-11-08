@@ -76,7 +76,12 @@ pub struct EvalRequest {
 }
 
 impl EvalRequest {
-	/// New request.
+	/// Create an evaluation request for `root` at `time`, with no range.
+	///
+	/// `root` is the node whose output is wanted; only its upstream is evaluated
+	/// (lazily). `time` is the requested time in the graph's rate, and `range`
+	/// starts as `None`, i.e. a point evaluation — assign the field directly for
+	/// audio or range pulls.
 	pub fn new(root: NodeId, time: Rational) -> EvalRequest {
 		EvalRequest {
 			root,
@@ -255,9 +260,14 @@ impl Traverser {
 			.unwrap_or(NodeValue::None))
 	}
 
-	/// Invalidate walk: mark downstream caches dirty after an input
-	/// change (C++ `invalidate_cache` fan-out, signal-free). Records the
-	/// walked set in [`Traverser::last_invalidation`].
+	/// Mark the caches downstream of `from` as dirty after an input change.
+	///
+	/// Flood-fills `graph.downstream` from `from` — the signal-free equivalent of
+	/// the C++ `invalidate_cache` fan-out — visiting every reachable node once
+	/// and recording the walked set in [`Traverser::last_invalidation`] for
+	/// callers and tests. `range` is accepted for API parity with the C++
+	/// time-range fan-out but is currently unused: the walk is graph-wide, not
+	/// limited to the changed time span.
 	pub fn invalidate_downstream(&mut self, graph: &Graph, from: NodeId, range: TimeRange) {
 		let _ = range;
 		self.last_invalidation.clear();
@@ -407,11 +417,16 @@ fn live_nodes(graph: &Graph, input: NodeId, output: NodeId) -> HashSet<NodeId> {
 	live
 }
 
-/// A cycle inside the nodes the sweep could not order: residual nodes
-/// (positive in-degree left) walked upstream, always taking the
-/// smallest-id residual feeder, until a node repeats — the repeated
-/// suffix is the cycle. Deterministic; empty when there is no residual
-/// node.
+/// Extract one cycle from the nodes the Kahn sweep could not order.
+///
+/// `indegree` is the leftover in-degree map from the sweep; nodes still counting
+/// positive are the residual set. Starting at the smallest-id residual node, the
+/// walk repeatedly steps to the smallest-id residual upstream feeder, recording
+/// the path; the first node seen twice closes the cycle and the returned vector
+/// is that repeated suffix. Returns an empty vector when the residual set is
+/// empty (no cycle) and the path walked so far if a residual node has no
+/// residual feeder. Deterministic; used only to build the cycle error message in
+/// [`Traverser::eval_graph_bfs`].
 fn find_cycle(graph: &Graph, indegree: &HashMap<NodeId, usize>) -> Vec<NodeId> {
 	let residual: BTreeSet<NodeId> = indegree
 		.iter()

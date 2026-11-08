@@ -81,6 +81,12 @@ pub struct XmlReader {
 
 impl XmlReader {
 	/// Create a streaming reader over a complete document.
+	///
+	/// `data` is parsed up front into an expat-equivalent event list (see
+	/// [`parse_document`]). Malformed input does not fail here: the reader is
+	/// always returned and positions itself on the token stream, while the parse
+	/// error is reported later through [`XmlReader::has_error`] and makes further
+	/// reads yield `TokenType::Invalid`.
 	pub fn new(data: &str) -> Result<Self> {
 		let (events, has_error) = parse_document(data);
 		// CPP-PARITY: The C++ constructor reports parse failures through
@@ -263,7 +269,13 @@ impl XmlWriter {
 		}
 	}
 
-	/// Write a start element.
+	/// Open a new element in the output.
+	///
+	/// Flushes a pending `>` for the previous start tag, appends `<name` and pushes
+	/// `name` on the open-element stack; the tag is closed later by
+	/// [`XmlWriter::write_characters`] or [`XmlWriter::write_end_element`] (which
+	/// may turn it into `<name/>`). `name` is written verbatim, without validation
+	/// or escaping. Returns `Ok`; the fallible signature mirrors the C++ writer.
 	pub fn write_start_element(&mut self, name: &str) -> Result<()> {
 		if self.open_start_tag {
 			self.output.push('>');
@@ -276,7 +288,12 @@ impl XmlWriter {
 		Ok(())
 	}
 
-	/// Write an attribute on the current start element.
+	/// Write an attribute onto the currently open start tag.
+	///
+	/// `name` is written verbatim (not validated); `value` is escaped with
+	/// [`escape_attribute`], which also escapes `"`. When no start tag is open the
+	/// call is a no-op returning `Ok(())` (C++ parity), so a misordered write does
+	/// not corrupt the output.
 	pub fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
 		// CPP-PARITY: no-op when not inside an open start tag.
 		if !self.open_start_tag {
@@ -290,7 +307,11 @@ impl XmlWriter {
 		Ok(())
 	}
 
-	/// Write character data.
+	/// Append character data to the output.
+	///
+	/// Closes a pending start tag first, then escapes `text` with [`escape_text`]
+	/// (only `&`, `<` and `>` are substituted). Quotes are not escaped here; use
+	/// [`XmlWriter::write_attribute`] for attribute values.
 	pub fn write_characters(&mut self, text: &str) -> Result<()> {
 		if self.open_start_tag {
 			self.output.push('>');
@@ -308,7 +329,12 @@ impl XmlWriter {
 		Ok(())
 	}
 
-	/// Write an end element.
+	/// Close the innermost open element.
+	///
+	/// Pops the name stack: if its start tag is still open, it becomes an empty
+	/// element (`<name/>`); otherwise a `</name>` end tag is appended. A call with
+	/// an empty stack is a no-op returning `Ok(())` (C++ parity). Mismatched
+	/// nesting is not detected; callers must close elements in order.
 	pub fn write_end_element(&mut self) -> Result<()> {
 		// CPP-PARITY: no-op when the element stack is empty.
 		let name = match self.stack.pop() {
@@ -327,7 +353,12 @@ impl XmlWriter {
 		Ok(())
 	}
 
-	/// Write the end of the document.
+	/// Close every element still open.
+	///
+	/// Pops and closes the writer's element stack until it is empty, so callers
+	/// that did not pair every [`XmlWriter::write_start_element`] with an end
+	/// element still get well-formed output. Does not append an XML declaration or
+	/// prolog.
 	pub fn write_end_document(&mut self) -> Result<()> {
 		while !self.stack.is_empty() {
 			self.write_end_element()?;
@@ -341,7 +372,11 @@ impl XmlWriter {
 	}
 }
 
-/// Escape text for the XML entities used by `escape_text` in C++.
+/// Escape character data for XML output.
+///
+/// Replaces `&`, `<` and `>` with `&amp;`, `&lt;` and `&gt;`; quotes are left
+/// alone (only [`escape_attribute`] escapes `"`). Used by
+/// [`XmlWriter::write_characters`].
 fn escape_text(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
 	for c in s.chars() {
@@ -355,7 +390,11 @@ fn escape_text(s: &str) -> String {
 	out
 }
 
-/// Escape text for the XML entities used by `escape_attribute` in C++.
+/// Escape an attribute value for XML output.
+///
+/// Replaces `&`, `<`, `>` and `"` with their predefined entities so the value
+/// can be emitted inside double quotes. Single quotes are not escaped (values
+/// are always written with `"`). Used by [`XmlWriter::write_attribute`].
 fn escape_attribute(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
 	for c in s.chars() {
@@ -371,6 +410,10 @@ fn escape_attribute(s: &str) -> String {
 }
 
 /// Whether `c` is XML whitespace.
+///
+/// True for space, tab, carriage return and line feed (the four characters XML
+/// treats as whitespace); used to decide whether prolog/epilog text is merely
+/// pretty-printing and can be ignored.
 fn is_ws(c: char) -> bool {
 	c == ' ' || c == '\t' || c == '\r' || c == '\n'
 }
@@ -452,7 +495,18 @@ fn push_start_element(
 
 /// Parse `data` with quick-xml into an expat-equivalent event list.
 ///
-/// Returns `(events, has_error)`.
+/// Returns `(events, has_error)`. The list contains `StartElement`,
+/// `EndElement` and `Characters` tokens only: an empty element yields a
+/// Start/End pair, character entities are resolved, CDATA is passed through
+/// literally, and comments, processing instructions and the DOCTYPE are
+/// skipped. `has_error` is set for malformed XML, mismatched or unclosed tags,
+/// content outside the root element, and unknown entities; events parsed before
+/// the first error are kept.
+///
+/// # Returns
+///
+/// * `events` - event list; may be partial when `has_error` is true.
+/// * `has_error` - whether parsing failed (the reader then reports `TokenType::Invalid`).
 fn parse_document(data: &str) -> (Vec<Event>, bool) {
 	let mut events: Vec<Event> = Vec::new();
 	let mut stack: Vec<String> = Vec::new();

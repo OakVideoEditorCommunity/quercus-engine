@@ -144,7 +144,13 @@ pub(crate) struct GraphSnapshot {
 	pub edges: Vec<GraphEdge>,
 }
 
-/// Maps a behavior type ID to its coarse graph role.
+/// Map a behavior type-id string to the coarse [`GraphRole`] shown by the
+/// node editor.
+///
+/// Sequence, clip, footage and the two virtual graph endpoints map to their
+/// own roles; every other type id (built-in effects and unknown plugin
+/// types alike) maps to [`GraphRole::Effect`]. [`node_snapshot`] derives
+/// `role`, `protected` and `has_output` from this result.
 fn role(type_id: &str) -> GraphRole {
 	match type_id {
 		TYPE_SEQUENCE => GraphRole::Sequence,
@@ -163,7 +169,13 @@ fn displayed(type_id: &str) -> bool {
 	!matches!(type_id, TYPE_TRACK | TYPE_TRACK_LIST | TYPE_GAP | TYPE_TRANSITION)
 }
 
-/// Reads a node's behavior type ID, returning an empty string for a stale ID.
+/// Read the behavior type id of node `id`, or an empty string when `id` is
+/// stale or absent from `g`.
+///
+/// Used by the snapshot builder to drop timeline plumbing that has no card
+/// ([`displayed`]) and to detect clip nodes for synthetic wires; an empty
+/// string simply fails those comparisons, which lets callers skip a separate
+/// validity check.
 fn type_id(g: &Graph, id: NodeId) -> String {
 	g.get(id)
 		.map(|entry| entry.behavior.type_id().to_string())
@@ -191,10 +203,21 @@ fn full_graph_nodes(g: &Graph, sequence: NodeId) -> Vec<NodeId> {
 	nodes
 }
 
-/// Copies one graph node and its visible ports without retaining graph borrows.
+/// Copy one graph node and its visible ports into an owned [`GraphNode`],
+/// without retaining any borrow of `g`.
 ///
-/// The caller supplies IDs from a validated node list, so a missing entry here
-/// would indicate a builder invariant violation rather than a user error.
+/// `id` must be a live node from the validated snapshot set (see [`build`]);
+/// `sequence` selects the node's entry in `context_positions` for the
+/// editor position. Visible ports are the declaration-order Texture/Samples
+/// inputs that are not `HIDDEN` and have a non-empty id; `label` falls back
+/// to the behavior name. A `(0, 0)` stored position is reported as `None` so
+/// callers can apply their fallback layout.
+///
+/// # Panics
+///
+/// Panics when `id` is not present in `g`; callers pass ids from the
+/// validated node list, so this indicates a builder invariant violation, not
+/// a user error.
 fn node_snapshot(g: &Graph, sequence: NodeId, id: NodeId) -> GraphNode {
 	let entry = g.get(id).expect("node IDs are validated by the builder");
 	let type_id = entry.behavior.type_id().to_string();

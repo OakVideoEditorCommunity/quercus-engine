@@ -47,7 +47,17 @@ struct RefBox<T: ?Sized> {
 /// `Send + Sync` come from the shared type.
 pub use quercus_core::handle::CHandle;
 
-/// addref implementation: atomic +1 on the box's refcount.
+/// Increment a handle context's reference count.
+///
+/// The addref trampoline stored in every handle produced by [`make_owned`]; the
+/// count is bumped with a relaxed atomic increment, so the caller must already
+/// hold a live reference for the duration of the call.
+///
+/// # Safety
+///
+/// `ctx` must be the `RefBox<T>` pointer taken from a live handle created by
+/// [`make_owned`] for the same `T`, and that box must not have been reclaimed.
+/// Calling with a null or dangling pointer is undefined behavior.
 unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	unsafe {
 		let rb = ctx as *const RefBox<T>;
@@ -56,8 +66,20 @@ unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	}
 }
 
-/// release implementation: atomic -1; at zero, reclaim the box and destroy
-/// the contained object.
+/// Decrement a handle context's reference count and destroy at zero.
+///
+/// The release trampoline stored in every handle produced by [`make_owned`].
+/// The count is decremented with `AcqRel`; when the previous count was 1 the
+/// box is reclaimed, dropping the contained value so its destructor observes
+/// all prior writes.
+///
+/// # Safety
+///
+/// `ctx` must be the `RefBox<T>` pointer from a live handle created by
+/// [`make_owned`] for the same `T`, and the caller must own one reference
+/// (typically by consuming the handle). Releasing after the last reference was
+/// already dropped is undefined behavior, as is passing a null or dangling
+/// pointer.
 unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 	unsafe {
 		let rb = ctx as *mut RefBox<T>;
@@ -69,7 +91,13 @@ unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_v
 	}
 }
 
-/// Owned handle with count 1; empty on allocation failure.
+/// Box `value` into an owned handle with reference count 1.
+///
+/// The returned [`CHandle`] carries an `addref`/`release` pair that keeps the
+/// box alive; the caller owns that single reference and must eventually invoke
+/// `release` (or pass the handle through the C ABI, whose contract consumes
+/// it). Allocation goes through the global allocator, which aborts on failure,
+/// so the returned handle is non-null.
 pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 	let rb = Box::into_raw(Box::new(RefBox {
 		refs: AtomicU32::new(1),
@@ -105,6 +133,18 @@ pub unsafe fn get<T: Any>(h: &CHandle) -> Option<&T> {
 // discharged by the caller, not by `&mut CHandle` (which the C ABI does
 // not pass).
 #[allow(clippy::mut_from_ref)]
+/// Typed mutable view into a handle's boxed value.
+///
+/// Returns `None` for a null (empty) handle and `Some(&mut T)` otherwise. Only
+/// `&CHandle` is passed, so exclusivity is entirely the caller's contract
+/// rather than a borrow-checker guarantee.
+///
+/// # Safety
+///
+/// `T` must be the type boxed by [`make_owned`] for this handle, and the caller
+/// must guarantee no other borrow of the value is live for the returned
+/// lifetime (the C ABI contract: a handle passed by value is exclusively owned
+/// for the duration of the call).
 pub unsafe fn get_mut<T: Any>(h: &CHandle) -> Option<&mut T> {
 	if h.is_null() {
 		return None;

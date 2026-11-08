@@ -61,7 +61,17 @@ impl Registry {
 		Ok(())
 	}
 
-	/// Unregister by name; unknown name is E_NOT_FOUND.
+	/// Remove the backend registered under `name`, if any.
+	///
+	/// Removes every entry whose [`StorageBackend::name`] equals `name` (names are
+	/// unique because [`Registry::register`] rejects duplicates) and leaves the
+	/// registration order of the rest intact. Other `Arc` holders keep their
+	/// backend alive; only future lookups stop seeing it.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::NotFound`] when no backend has that name; the registry is
+	/// then unchanged.
 	pub fn unregister(&self, name: &str) -> Result<()> {
 		let mut guard = lock(&self.backends);
 		let before = guard.len();
@@ -83,7 +93,16 @@ impl Registry {
 			.collect()
 	}
 
-	/// First backend claiming `uri` (E_NO_BACKEND when none).
+	/// The first registered backend that claims `uri`.
+	///
+	/// Asks each backend's [`StorageBackend::can_handle`] in registration order
+	/// (the arbitration order within a scheme) and clones out the first match, so
+	/// a later backend can shadow an earlier one only by registering first. The
+	/// lock is released before returning; the caller owns the `Arc`.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::NoBackend`] when no backend claims the URI.
 	pub fn resolve(&self, uri: &StorageUri) -> Result<Arc<dyn StorageBackend>> {
 		let guard = lock(&self.backends);
 		guard

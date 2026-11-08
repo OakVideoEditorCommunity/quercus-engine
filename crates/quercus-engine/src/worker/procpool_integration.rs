@@ -74,6 +74,14 @@ fn skip_without_worker() -> bool {
 	}
 }
 
+/// Builds a [`DispatcherConfig`] for the process-pool tests.
+///
+/// `workers` is the initial pool size and `slots` the number of shared-memory
+/// slots per worker. Everything else is the fixed test fixture: 64x64 BGRA8
+/// slots, a batch size of 4, the `quercus-worker` binary discovered by
+/// [`worker_bin`] (`None` when the tests will skip), no graph snapshot and a
+/// 30 s handshake timeout. Graph-mode tests override `graph_snapshot` on the
+/// returned value.
 fn config(workers: usize, slots: u32) -> DispatcherConfig {
 	DispatcherConfig {
 		worker_bin: worker_bin(),
@@ -88,6 +96,15 @@ fn config(workers: usize, slots: u32) -> DispatcherConfig {
 	}
 }
 
+/// Builds the [`VideoTicketParams`] for one generated frame at `time`.
+///
+/// `time` is the timeline position (the tests step it by frame at rate 25);
+/// `footage` is the optional `(path, frame rate)` source the worker generates
+/// from, and `None` means no footage so the worker renders its fallback
+/// montage. The viewer id is fixed to 1, the forced size to 64x64, and the
+/// format is left unforced so the dispatcher's default BGRA8 slot format
+/// applies; no cache, montage or adjustment layers are attached. Shared via
+/// `Arc` because the dispatcher moves the params into a ticket.
 fn params(time: Rational, footage: Option<(String, i32)>) -> Arc<VideoTicketParams> {
 	Arc::new(VideoTicketParams {
 		viewer: 1,
@@ -1105,6 +1122,16 @@ fn post_graph_job(
 /// non-black content — the signature of a real graph render (the
 /// transparent-black montage fallback would be all zero), then release
 /// the slot.
+/// Asserts that a graph-mode completion carries a real rendered frame.
+///
+/// `payload` is the completion to inspect: it must be `Ok` and hold a
+/// [`TicketPayload::ShmFrame`]; the frame must be 64x64 BGRA8 with
+/// `64 * 64 * 4` bytes, at least 99% of its pixels fully opaque
+/// (`alpha == 255`) and at least one non-zero channel. The transparent-black
+/// montage fallback fails both content checks. `dispatcher` is used only to
+/// release the slot back to the pool before returning.
+///
+/// Panics on any mismatch, which fails the calling test.
 fn assert_graph_frame_opaque(dispatcher: &ProcessDispatcher, payload: TicketResult) {
 	let payload = payload.expect("graph-mode frame rendered");
 	let TicketPayload::ShmFrame(frame) = payload else {

@@ -207,12 +207,24 @@ impl RenderTask {
 		}
 	}
 
-	/// Configure the render inputs before [`RenderTask::render`] (called by
-	/// the concrete subclasses' `run`). The color-manager / frame-cache
-	/// handle arguments of the deleted C ABI path are gone: the direct
-	/// ticket arena has no color management (the eval producer ignores it)
-	/// and the frame cache is keyed by the viewer node identity for
-	/// pre-cache runs.
+	/// Set the three inputs the render loop reads, normally the last call
+	/// each concrete subclass's `run` makes before [`RenderTask::render`]
+	/// (the export and pre-cache tasks both pass mode `0`).
+	///
+	/// `mode` is the C++ `olive::RenderMode::Mode` value as an `i32`
+	/// (`0` = `k_online`), carried through for render-mode-dependent
+	/// behavior. `audio_enabled` gates submission of the single audio ticket
+	/// (a video-only export passes `false`); video submission is gated
+	/// separately by [`RenderTask::set_video_enabled`]. `export_range` is the
+	/// half-open range the loop walks, and also the range handed to the audio
+	/// ticket. The color-manager / frame-cache handle arguments of the
+	/// deleted C ABI path are gone: the direct ticket arena has no color
+	/// management (the eval producer ignores it) and the frame cache is keyed
+	/// by the viewer node identity for pre-cache runs.
+	///
+	/// [`RenderTask::new`] starts with `mode = 0`, audio disabled, and the
+	/// empty range `(0/1, 0/1)`, so every caller must set these before
+	/// rendering anything meaningful.
 	pub fn set_render_inputs(&mut self, mode: i32, audio_enabled: bool, export_range: TimeRange) {
 		self.mode = mode;
 		self.audio_enabled = audio_enabled;
@@ -230,7 +242,15 @@ impl RenderTask {
 		self.video_end = end;
 	}
 
-	/// Enable/disable the render loop's own progress signalling.
+	/// Enable or disable the render loop's own progress signalling.
+	///
+	/// When enabled (the default set by [`RenderTask::new`]), every delivered
+	/// frame — a video ticket result or a black pad — increments the loop's
+	/// counter and calls `Task::emit_progress(counter / total)`, so the task
+	/// reports monotonically as frames are handed to the behavior. Audio
+	/// deliveries do not signal. Subclasses that report progress themselves
+	/// (the export task counts written frames) switch this off to avoid two
+	/// progress sources; [`RenderTask::total_frames`] is still maintained.
 	pub fn set_native_progress_signalling(&mut self, enabled: bool) {
 		self.native_progress_signalling = enabled;
 	}
@@ -264,7 +284,19 @@ impl RenderTask {
 		}
 	}
 
-	/// Allocate a zeroed CPU frame for a black pad slot.
+	/// Allocate a zeroed CPU frame standing in for the frame at `time`.
+	///
+	/// Used when the picture ends before the export/audio range
+	/// ([`RenderTask::set_video_end`]): the slot is delivered as black
+	/// instead of via a ticket. The size is the forced output size when
+	/// [`ForceParams`] sets one, else the video params' size; the frame is
+	/// four-channel, [`quercus_core::PixelFormat::F32`], stamped with `time`, and
+	/// zero-filled by [`quercus_core::texture::Frame::allocate`].
+	///
+	/// Returns `None` when no size is known (no force size and no video
+	/// params), when the size is non-positive, or when the allocation fails
+	/// — the render loop turns that into
+	/// `Error::Failed("Could not allocate a black pad frame")`.
 	fn black_texture(&self, time: Rational) -> Option<Texture> {
 		let (width, height) = self.force_size().or_else(|| {
 			self.video_params
@@ -511,8 +543,25 @@ impl RenderTask {
 		}
 	}
 
-	/// Flatten the audio tracks of `sequence` into an audio montage
-	/// (track order is irrelevant — the mixer accumulates gains).
+	/// Resolve the audible clips of `sequence` at `time` into montage
+	/// entries for the audio mixer.
+	///
+	/// Walks `sequence`'s track lists, keeps only `TrackType::Audio` lists,
+	/// skips muted tracks, and emits one [`MontageClip`] per block whose
+	/// half-open `[in, out)` range contains `time`. Each clip is resolved
+	/// through [`find_input_footage`] and [`RenderTask::audio_media`]: the
+	/// proxy file with stream 1 when proxy media is enabled and ready and
+	/// carries audio, otherwise the original filename with stream 0. Audio
+	/// gain/pan/fades come from [`MontageAudio::from_block_core`] (gain
+	/// clamped to 0..4, pan to -1..1, negative/NaN fades normalised to no
+	/// fade) and the clip's own audio chain is carried in `audio_effects`;
+	/// the video `effects` list is always empty here. Track order is
+	/// irrelevant because the mixer accumulates gains.
+	///
+	/// `project` is locked for the whole walk (a poisoned lock is recovered,
+	/// not propagated). Returns an empty vector when `sequence` is not in the
+	/// graph, is not a sequence, or no audio clip covers `time` — a missing
+	/// or non-audio footage node on one clip simply skips that clip.
 	fn audio_montage(
 		project: &ProjectRef,
 		sequence: quercus_node::id::NodeId,
@@ -603,8 +652,29 @@ impl RenderTask {
 		montage
 	}
 
-	/// Build the video ticket params for `time` (mirrors the C++
-	/// `start_video_ticket` param marshalling).
+	/// Build the video ticket params for the frame at `time` (mirrors the
+	/// C++ `start_video_ticket` param marshalling).
+	///
+	/// The viewer node decides the shape of the ticket. A footage viewer
+	/// yields a single-source ticket: `footage = (filename, 0)` and the frame
+	/// cache keyed by the viewer node identity (see
+	/// [`RenderTask::set_render_inputs`] on pre-cache runs). A sequence
+	/// viewer leaves `footage` empty and fills `montage` from
+	/// [`RenderTask::video_montage`], which is resolved *after* the project
+	/// lock is released — the same lock is not reentrant, so holding it
+	/// across the montage build would deadlock every sequence export. The
+	/// owning project's uuid is copied out first and travels with the ticket
+	/// so a worker renders only from its own project's snapshot.
+	/// `force_size`/`force_format` come from the [`ForceParams`] of this
+	/// task; `adjustments` is left empty.
+	///
+	/// `time` is in the sequence timebase and is passed through unchanged.
+	///
+	/// # Errors
+	///
+	/// Returns `Error::Failed("No node connected to the viewer output")` when
+	/// the viewer id is stale, or when the node behind it is neither footage
+	/// nor a sequence.
 	fn build_video_ticket(&self, time: Rational) -> Result<VideoTicketParams> {
 		let (project, viewer_id) = &self.viewer;
 		// The owning project's uuid (M16 S1: graph-mode tickets carry it so
@@ -746,12 +816,22 @@ impl RenderTask {
 		Ok(id)
 	}
 
-	/// Submit a video ticket and account it as in-flight.
+	/// Submit one video frame ticket at `time` and account it as in flight.
+	///
+	/// `arena` is the shared ticket arena; `time` is the frame's timestamp in
+	/// the sequence timebase; `dispatch` is the completion channel handed to
+	/// the ticket and must outlive its callback (the loop owns it). On
+	/// success the id is pushed to `in_flight` (so the failure path can
+	/// cancel and wait it) and recorded in `ticket_keys` under
+	/// [`TICKET_VIDEO`] with the time's numerator/denominator, which is the
+	/// key [`RenderTask::classify_ticket`] uses to find the delivery slot.
 	///
 	/// The in-flight count is bumped **before** the submit: a ticket can
 	/// complete synchronously (its callback fires before the submit returns),
 	/// so the callback's decrement must always see its increment. A failed
-	/// submit never fires a callback, so the bump is rolled back.
+	/// submit never fires a callback, so the bump is rolled back. Errors come
+	/// from [`RenderTask::build_video_ticket`] (e.g. nothing connected to the
+	/// viewer) and leave both the counter and the bookkeeping untouched.
 	fn start_video_ticket(
 		&self,
 		arena: &TicketArena,
@@ -778,8 +858,21 @@ impl RenderTask {
 		}
 	}
 
-	/// Submit the audio ticket and account it as in-flight (see
-	/// [`RenderTask::start_video_ticket`] for the counting contract).
+	/// Submit the audio ticket for `range` and account it as in flight.
+	///
+	/// Same counting contract as [`RenderTask::start_video_ticket`]: the
+	/// `dispatch.running` counter is incremented **before** the submit
+	/// (a completion callback may fire synchronously), rolled back when the
+	/// submit itself fails, and decremented later by the ticket's finished
+	/// callback, so the render loop sees one net increment per live ticket.
+	///
+	/// `range` is the audio range to pull; `in_flight` receives the new id so
+	/// the loop can cancel/wait it on error; `dispatch` is the shared
+	/// completion channel and must outlive the callback. `ticket_keys`
+	/// records the id under [`TICKET_AUDIO`] with the range's in-point
+	/// numerator/denominator — the key [`RenderTask::classify_ticket`] later
+	/// uses to route the result to the audio delivery slot. Errors come from
+	/// [`RenderTask::build_audio_ticket`].
 	fn start_audio_ticket(
 		&self,
 		arena: &TicketArena,

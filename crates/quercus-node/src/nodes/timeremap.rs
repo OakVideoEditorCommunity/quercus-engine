@@ -195,9 +195,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TimeRemapNode))
 }
 
-/// Register this node type (C++ factory listing for
-/// `org.olivevideoeditor.Olive.timeremap`; see the note on
-/// [`NodeBehavior::categories`] about the missing `Time` category).
+/// Register the Time Remap node type in the factory's static entry list.
+///
+/// `meta` is the factory entry vector to append to; the pushed [`NodeMeta`]
+/// carries type id `org.olivevideoeditor.Olive.timeremap`, display name
+/// "Time Remap", no category and [`create`] as the constructor. The category is
+/// empty because the C++ factory lists this node under `Time`, which the Rust
+/// [`Category`] enum does not model yet — see the note on
+/// [`NodeBehavior::categories`]. Called once at startup via
+/// [`crate::nodes::register_all`].
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.timeremap",

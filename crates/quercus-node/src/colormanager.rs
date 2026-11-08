@@ -104,6 +104,11 @@ impl ColorManager {
 	}
 
 	/// Views of the active config for `display` (default view).
+	///
+	/// `display` is accepted for the C++ signature but ignored today: without
+	/// a real OCIO config there is exactly one view, so the list always holds
+	/// the manager's default view. Returns an empty list when no config is
+	/// loaded; [`Self::list_displays`] supplies the display names.
 	pub fn list_views(&self, _display: &str) -> Vec<String> {
 		if !self.config_loaded {
 			return Vec::new();

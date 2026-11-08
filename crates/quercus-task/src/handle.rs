@@ -46,6 +46,19 @@ pub struct RefBox<T: ?Sized> {
 /// source-compatible. `Send + Sync` come from the shared type.
 pub use quercus_core::handle::CHandle;
 
+/// C ABI addref callback installed by [`make_owned`].
+///
+/// `ctx` is the handle's `RefBox<T>` pointer, treated as `*const RefBox<T>`;
+/// a null pointer is a no-op (the empty handle is a valid value). Increments the
+/// atomic reference count with `SeqCst`, so the box stays alive until a matching
+/// [`owned_release`] drops it. `T` must be the exact type the handle was created
+/// with, since the pointer is reinterpreted.
+///
+/// # Safety
+///
+/// When non-null, `ctx` must point to a live `RefBox<T>` previously handed out
+/// by [`make_owned`] (or another handle helper for the same `T`) with a count of
+/// at least one; the caller must own a reference to add.
 unsafe extern "C" fn owned_addref<T: 'static>(ctx: *mut std::ffi::c_void) {
 	if !ctx.is_null() {
 		// CPP-PARITY: src/task/c_api/taskhandle.h (task_addref)
@@ -57,6 +70,20 @@ unsafe extern "C" fn owned_addref<T: 'static>(ctx: *mut std::ffi::c_void) {
 	}
 }
 
+/// C ABI release callback installed by [`make_owned`].
+///
+/// `ctx` is the handle's `RefBox<T>` pointer, treated as `*const RefBox<T>`; a
+/// null pointer is a no-op (the empty handle is a valid value). Decrements the
+/// atomic count with `SeqCst` and, when this was the last reference (the count
+/// went from 1 to 0), drops the box and frees the allocation. `T` must be the
+/// exact type the handle was created with, since the pointer is reinterpreted.
+///
+/// # Safety
+///
+/// When non-null, `ctx` must point to a live `RefBox<T>` previously handed out
+/// by [`make_owned`] (or another handle helper for the same `T`) with a count of
+/// at least one. It must not be released twice, and the value must not be used
+/// after the count reaches zero.
 unsafe extern "C" fn owned_release<T: 'static>(ctx: *mut std::ffi::c_void) {
 	if ctx.is_null() {
 		return;
@@ -71,7 +98,15 @@ unsafe extern "C" fn owned_release<T: 'static>(ctx: *mut std::ffi::c_void) {
 	}
 }
 
-/// Owned handle with count 1; empty on allocation failure.
+/// Create a handle that owns `value`, with reference count 1.
+///
+/// Moves `value` into a [`RefBox`] on the heap and returns a [`CHandle`] whose
+/// `ctx` is that box, whose `addref`/`release` callbacks are [`owned_addref`] /
+/// [`owned_release`] instantiated for `T` and which is stamped with
+/// [`QUERCUSTASK_ABI_VERSION`]. `T` must be `Send` so the handle can cross
+/// threads like the C objects do. Allocation is not fallible in the signature
+/// sense — an OOM aborts like any `Box` — so the only empty handle is one a
+/// caller created itself (null `ctx`), which `get`/`get_mut` report as `None`.
 pub fn make_owned<T: Send + 'static>(value: T) -> CHandle {
 	let b = Box::new(RefBox {
 		refs: AtomicU32::new(1),
@@ -96,11 +131,19 @@ pub unsafe fn get<T: 'static>(h: &CHandle) -> Option<&T> {
 	unsafe { Some(&(*(h.ctx as *const RefBox<T>)).value) }
 }
 
-/// Typed mutable view into a handle; `None` for empty handles.
+/// Typed mutable view into the payload a handle owns; `None` for empty handles.
+///
+/// Returns a `&mut T` to the value boxed by [`make_owned`] (or by whatever
+/// helper created the handle). The `&CHandle` input only mirrors the ABI
+/// shape — the handle itself is not mutated — so the returned reference's
+/// exclusivity cannot be enforced by the borrow checker and becomes the
+/// caller's obligation.
 ///
 /// # Safety
-/// `T` must be the boxed type, and the handle must not be concurrently
-/// shared mutably.
+///
+/// `T` must be the exact type the handle was created with, the handle must be
+/// live (its count not yet zero), and no other reference to the same value may
+/// be alive or used for the duration of the returned borrow.
 // The shared reference is the ABI input; exclusivity is the caller's
 // `unsafe` contract above, so the lint's usual aliasing concern is
 // discharged by the caller, not by `&mut CHandle` (which the C ABI does

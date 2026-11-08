@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 插件实例：action 调用面。
+//! Plugin instance: the action-invocation surface.
 //!
-//! 对应 C++ 的 `OlivePluginInstance`。语义参照：
-//! HS: ofxhImageEffect.cpp `Instance`（action 调用序列与参数集组装）。
+//! Corresponds to C++ `OlivePluginInstance`. Semantics follow:
+//! HS: ofxhImageEffect.cpp `Instance` (action call sequencing and argument-set assembly).
 
 use std::ffi::CString;
 use std::sync::Arc;
@@ -27,24 +27,25 @@ use crate::host::Plugin;
 use crate::param::ParamSetInstance;
 use crate::property::PropertySet;
 
-/// paramEditBegin/End 的编辑事务状态（undo 分组）。对应 C++
-/// oliveplugininstance.cpp 的 `edit_depth_`/`edit_command_`：
-/// 事务内的多次参数回写合并为一条 multi 命令，editEnd 时整体
-/// redo 后释放。
+/// Edit-transaction state for paramEditBegin/End (undo grouping). Corresponds
+/// to `edit_depth_`/`edit_command_` in C++
+/// oliveplugininstance.cpp: multiple parameter write-backs inside the
+/// transaction merge into one multi command, which is redone as a whole and
+/// released on editEnd.
 #[repr(C)]
 pub struct EditTransaction {
-	/// 嵌套深度（editBegin/End 必须配对）。
+	/// Nesting depth (editBegin/End must be paired).
 	depth: i32,
-	/// 事务累积的 multi 命令（None = 尚无子命令）。
+	/// The multi command accumulated by the transaction (None = no sub-command yet).
 	multi: Option<quercus_undo::undocommand::UndoCommand>,
-	/// 事务内回写次数（标签计数）。
+	/// Number of write-backs inside the transaction (label count).
 	param_count: i32,
-	/// 第一条回写的标签。
+	/// Label of the first write-back.
 	first_label: String,
 }
 
 impl EditTransaction {
-	/// 空事务（无嵌套、无累积命令）。
+	/// An empty transaction (no nesting, no accumulated command).
 	pub fn new() -> Self {
 		Self {
 			depth: 0,
@@ -55,81 +56,88 @@ impl EditTransaction {
 	}
 }
 
-/// 时间范围（OFX 规范双精度秒）。
+/// A time range (OFX canonical double seconds).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OfxRangeD {
-	/// 起始（含）。
+	/// Start (inclusive).
 	pub min: f64,
-	/// 结束（含）。
+	/// End (inclusive).
 	pub max: f64,
 }
 
-/// 矩形（规范坐标，double）。
+/// A rectangle (canonical coordinates, double).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OfxRectD {
-	/// 左。
+	/// Left.
 	pub x1: f64,
-	/// 上。
+	/// Top.
 	pub y1: f64,
-	/// 右。
+	/// Right.
 	pub x2: f64,
-	/// 下。
+	/// Bottom.
 	pub y2: f64,
 }
 
-/// 像素比/场序等渲染参量（render action 的 in_args 子集）。
+/// Rendering parameters such as pixel aspect and field order (the in_args
+/// subset of the render action).
 #[derive(Clone, Copy, Debug)]
 pub struct RenderScale {
-	/// x 方向渲染比例。
+	/// Render scale on the x axis.
 	pub x: f64,
-	/// y 方向渲染比例。
+	/// Render scale on the y axis.
 	pub y: f64,
 }
 
-/// 插件实例。`Arc<RefBox<Instance>>` 管理生命周期（`RefBox` 为 facade
-/// 边界类型，见 [`crate::handle`]）；param 桥按 props 地址映射反查
-/// （[`crate::suites::param`]），节点绑定经 [`crate::node`] 身份注册表。
+/// A plugin instance. `Arc<RefBox<Instance>>` owns the lifetime (`RefBox` is
+/// the facade boundary type, see [`crate::handle`]); the param bridge looks
+/// instances up by props address ([`crate::suites::param`]), and node binding
+/// goes through the [`crate::node`] identity registry.
 ///
-/// `#[repr(C)]` + props 在偏移 0（句柄约定，见 [`crate::suites::tag`]；
-/// 实例期 effect/param-set handle 即 `&props`）。
+/// `#[repr(C)]` with props at offset 0 (handle convention, see
+/// [`crate::suites::tag`]; during the instance lifetime the effect/param-set
+/// handle is `&props`).
 #[repr(C)]
 pub struct Instance {
-	/// 实例级属性集（偏移 0，句柄约定）。
+	/// Instance-level property set (offset 0, handle convention).
 	pub props: PropertySet,
-	/// 所属插件。
+	/// The owning plugin.
 	pub plugin: Arc<Plugin>,
-	/// 上下文（kOfxImageEffectContext*）。
+	/// Context (kOfxImageEffectContext*).
 	pub context: String,
-	/// 参数实例集（createInstance 后由 describe 产物实例化）。
+	/// Parameter instance set (instantiated from the describe output after createInstance).
 	pub params: ParamSetInstance,
-	/// clip 实例集（含 "Output"；Box 保证句柄地址稳定）。
+	/// Clip instance set (including "Output"; `Box` keeps the handle addresses stable).
 	pub clips: Vec<Box<ClipInstance>>,
-	/// 绑定的 quercusnode 节点身份（param 桥写入；0 = 未绑定）。
+	/// Bound quercusnode node identity (written by the param bridge; 0 = unbound).
 	pub node_identity: std::sync::atomic::AtomicUsize,
-	/// destroyInstance action 是否已通知（析构幂等门；Drop 驱动；
-	/// 公开：宿主 shutdown 与测试都要置位）。
+	/// Whether the destroyInstance action has been announced (destruction
+	/// idempotence gate; driven by `Drop`; public because host shutdown and
+	/// tests both need to set it).
 	pub destroyed: std::sync::atomic::AtomicBool,
-	/// beginSequenceRender 的时间域（timeline getTimeBounds 用；
-	/// endSequenceRender 清除）。
+	/// Time domain of beginSequenceRender (used by the timeline
+	/// getTimeBounds; cleared by endSequenceRender).
 	pub sequence_range: std::sync::Mutex<Option<OfxRangeD>>,
-	/// facade 注册的进度回调（quercusplugin_instance_set_progress_cb）。
+	/// Progress callback registered by the facade
+	/// (`quercusplugin_instance_set_progress_cb`).
 	pub progress_cb: std::sync::Mutex<Option<(crate::progress::ProgressFn, usize)>>,
-	/// facade 取消标记（quercusplugin_instance_cancel）。
+	/// Facade cancellation flag (`quercusplugin_instance_cancel`).
 	pub cancel: std::sync::atomic::AtomicBool,
-	/// paramEditBegin/End 的编辑事务（undo 分组）。
+	/// Edit transaction for paramEditBegin/End (undo grouping).
 	pub edit: std::sync::Mutex<EditTransaction>,
-	/// 实例级渲染串行化（对应 C++ `OlivePluginInstance::mutex`；
-	/// pluginrenderer.cpp:1436-1444 的 instance_lock——渲染路径非
-	/// 线程安全，并发 render 必须互斥）。
+	/// Instance-level render serialization (corresponds to C++
+	/// `OlivePluginInstance::mutex`; the instance_lock at
+	/// pluginrenderer.cpp:1436-1444 — the render path is not thread-safe, so
+	/// concurrent renders must exclude each other).
 	pub render_lock: std::sync::Mutex<()>,
-	/// 关联的 interact（`new_interact` 创建；与实例同生命周期，
-	/// notify_destroy 时连带销毁）。
+	/// The associated interact (created by `new_interact`; lives as long as
+	/// the instance and is destroyed along with it in `notify_destroy`).
 	pub interact: std::sync::Mutex<Option<std::sync::Arc<crate::suites::interact::Interact>>>,
 }
 
-/// 实例销毁路径：先通知 destroyInstance action，再摘除 param 回写登记。
-/// （`Arc<RefBox<Instance>>` 归零时 Drop 触发——action 通知必须在
-/// 对象析构前发出。）
+/// Instance destruction path: announce the destroyInstance action first, then
+/// remove the param write-back registrations. (Triggered by `Drop` when
+/// `Arc<RefBox<Instance>>` reaches zero — the action announcement must be
+/// emitted before the object is destroyed.)
 impl Drop for Instance {
 	fn drop(&mut self) {
 		if !self
@@ -143,17 +151,18 @@ impl Drop for Instance {
 }
 
 impl Instance {
-	/// 绑定 quercusnode 节点（C++ `set_node_handle` 的 Rust 侧；装配期由
-	/// facade/测试调用）。`identity` 为 [`crate::node::register_node`]
-	/// 返回的 quercusnode 节点身份（[`quercus_node::id::NodeId::identity`] 的
-	/// 打包值，经 [`crate::node::node_from_identity`] 反查）；
-	/// 0 解除绑定。
+	/// Binds a quercusnode node (the Rust side of C++ `set_node_handle`;
+	/// called by the facade/tests during assembly). `identity` is the
+	/// quercusnode node identity returned by [`crate::node::register_node`]
+	/// (the packed value of [`quercus_node::id::NodeId::identity`], resolved
+	/// back through [`crate::node::node_from_identity`]); 0 unbinds.
 	pub fn bind_node(&self, identity: usize) {
 		self.node_identity
 			.store(identity, std::sync::atomic::Ordering::Relaxed);
 	}
 
-	/// paramEditBegin：进入编辑事务（可嵌套；首次进入重置事务状态）。
+	/// paramEditBegin: enters the edit transaction (nestable; the first entry
+	/// resets the transaction state).
 	pub fn edit_begin(&self) {
 		let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
 		e.depth += 1;
@@ -164,9 +173,11 @@ impl Instance {
 		}
 	}
 
-	/// paramEditEnd：退出编辑事务；最外层结束时把累积的 multi 命令
-	/// redo 生效并释放（本 crate 无 undo 栈——命令在 quercusundo 侧
-	/// 提交，见 C++ `submit_undo_command` 的 fallback 分支）。
+	/// paramEditEnd: leaves the edit transaction; when the outermost level
+	/// ends, the accumulated multi command is redone into effect and released
+	/// (this crate has no undo stack — commands are submitted on the
+	/// quercusundo side, see the fallback branch of C++
+	/// `submit_undo_command`).
 	pub fn edit_end(&self) {
 		let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
 		if e.depth > 0 {
@@ -183,15 +194,18 @@ impl Instance {
 		}
 	}
 
-	/// 是否处于编辑事务内（param 桥回写据此决定打包成 multi）。
+	/// Whether an edit transaction is active (the param bridge consults this to
+	/// decide whether to pack a write-back into the multi command).
 	pub fn in_edit(&self) -> bool {
 		self.edit.lock().unwrap_or_else(|e| e.into_inner()).depth > 0
 	}
 
-	/// 事务感知的 undo 提交（param 桥回写用；对应 C++
-	/// oliveplugininstance.cpp:390-414 `submit_undo_command`）：
-	/// 编辑事务内并入 multi（子命令立即 redo 生效，值即时可见），
-	/// 否则单命令 redo 后释放。
+	/// Transaction-aware undo submission (used by the param bridge for
+	/// write-backs; corresponds to C++
+	/// oliveplugininstance.cpp:390-414 `submit_undo_command`): inside an edit
+	/// transaction the command joins the multi (the sub-command is redone
+	/// immediately, so the value is visible at once); otherwise the single
+	/// command is redone and released.
 	pub(crate) fn submit_undo_command(&self, mut cmd: quercus_undo::undocommand::UndoCommand, label: &str) {
 		if self.in_edit() {
 			let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
@@ -213,19 +227,22 @@ impl Instance {
 		}
 	}
 
-	/// getClipPreferences action，返回协商结果（输出 clip 的分量/
-	/// 位深/像素比/field 与帧率）。协商顺序逐行对照
-	/// HS: ofxhImageEffect.cpp `Instance::getClipPreferences`——
-	/// 当年调试重灾区，实现时必须附行号注释。
+	/// getClipPreferences action, returning the negotiation result (the
+	/// output clip's components/bit depth/pixel aspect/field and the frame
+	/// rate). The negotiation order follows HS: ofxhImageEffect.cpp
+	/// `Instance::getClipPreferences` line by line — the historical debugging
+	/// hot spot, so the implementation must carry line-number comments.
 	///
-	/// 协商流程（HS: ofxhImageEffect.cpp:1686-1740）：
-	/// 1. out args 预置 clipPrefsStuffs（frameRate=1、premult、
-	///    fieldOrder、continuousSamples、frameVarying，HS:1697-1710）；
-	/// 2. 预置 per-clip 的 "OfxImageClipPropComponents_<name>" 等
-	///    （默认 RGBA/Float/PAR=1，HS:1717-1727）；
-	/// 3. 调 action（out args 即协商产物，HS:1708-1718）；
-	/// 4. 回灌：per-clip 分量/位深/像素比写回 clip 实例属性，
-	///    输出帧率/fielding/premult 记入实例（HS:1721-1740）。
+	/// Negotiation flow (HS: ofxhImageEffect.cpp:1686-1740):
+	/// 1. Pre-set clipPrefsStuffs in the out args (frameRate=1, premult,
+	///    fieldOrder, continuousSamples, frameVarying, HS:1697-1710);
+	/// 2. Pre-set the per-clip "OfxImageClipPropComponents_<name>" etc.
+	///    (defaults RGBA/Float/PAR=1, HS:1717-1727);
+	/// 3. Call the action (the out args are the negotiation product,
+	///    HS:1708-1718);
+	/// 4. Feed back: the per-clip components/bit depth/pixel aspect are
+	///    written back to the clip instance properties, and the output frame
+	///    rate/fielding/premult are recorded on the instance (HS:1721-1740).
 	pub fn get_clip_preferences(&self) -> crate::error::Result<ClipPreferences> {
 		use crate::host::{
 			ACTION_GET_CLIP_PREFERENCES, CLIP_PREF_COMPONENTS, CLIP_PREF_DEPTH, CLIP_PREF_PAR,
@@ -395,11 +412,22 @@ impl Instance {
 		read_rect(&out, PROP_ROD).ok_or(crate::error::Error::Failed("getRoD 无输出".into()))
 	}
 
-	/// getRegionsOfInterest action：输入 clip 的 RoI 写入 out_args
-	/// 属性集，返回值即各 clip 的 RoI 列表（与 `clips` 顺序一致）。
+	/// `getRegionsOfInterest` action: asks the plugin for the region of
+	/// interest each input clip needs.
 	///
-	/// 约定名 "OfxImageEffectPropRegionOfInterest_<clipname>"（HS:
-	/// ofxhImageEffect.cpp getRegionsOfInterest 的 per-clip 前缀）。
+	/// `time` is the effect time (seconds), `scale` is the render scale (1/1
+	/// for the main timeline), and `region` is the output region the host is
+	/// currently requesting (pixel coordinates). The host pre-defines
+	/// `kOfxImageEffectPropRegionOfInterest_<clip name>` in the out args,
+	/// calls the plugin, then reads each clip's RoI in `self.clips` order
+	/// (matching the `clips` order); when the plugin does not write a clip's
+	/// property, OFX semantics fall back to the whole `region`.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the action returns
+	/// anything other than OK/ReplyDefault (for example when the plugin does
+	/// not know the action), with the status code in the message.
 	pub fn get_regions_of_interest(
 		&self,
 		time: f64,
@@ -465,10 +493,11 @@ impl Instance {
 		Ok(rois)
 	}
 
-	/// isIdentity action：返回 Some((time, input_clip_name)) 表示本帧
-	/// OFX 1.4+/Natron 框架对 action in-args 的强读属性：缺了会被抛成
-	/// PropertyUnknownToHost → MissingHostFeature（紫帧根因）。每个
-	/// action in-args 都带上。
+	/// isIdentity action: returns Some((time, input_clip_name)) meaning this
+	/// frame. Properties that the OFX 1.4+/Natron frameworks strongly read on
+	/// action in-args: when missing they are thrown as PropertyUnknownToHost
+	/// → MissingHostFeature (the root cause of purple frames). Every action
+	/// in-args carries it.
 	fn add_action_arg_compat_props(in_args: &PropertySet) {
 		use crate::property::Value;
 		// NatronOfxPropNativeOverlays：Natron 支持库强读（0 = 宿主不
@@ -479,11 +508,13 @@ impl Instance {
 		in_args.set_one("NatronOfxPropNativeOverlays", Value::Int(0));
 	}
 
-	/// 直接透传该输入 clip；None 表示需要真正 render。
+	/// Passes the input clip through directly; None means a real render is
+	/// needed.
 	///
-	/// 参照 HS: ofxhImageEffect.cpp:1378-1450：in args = time + scale +
-	/// renderWindow + fieldToRender；out args = kOfxImageEffectPropIsIdentity
-	/// （输入 clip 名）+ kOfxPropTime（透传时间，可改）。
+	/// Follows HS: ofxhImageEffect.cpp:1378-1450: in args = time + scale +
+	/// renderWindow + fieldToRender; out args =
+	/// kOfxImageEffectPropIsIdentity (the input clip name) + kOfxPropTime
+	/// (the pass-through time, which may be changed).
 	pub fn is_identity(&self, time: f64) -> crate::error::Result<Option<(f64, String)>> {
 		use crate::host::{
 			ACTION_IS_IDENTITY, PROP_FIELD_TO_RENDER, PROP_IS_IDENTITY, PROP_RENDER_SCALE,
@@ -555,8 +586,20 @@ impl Instance {
 		}
 	}
 
-	/// render action 的 in args 组装（CPU/GL 共用；GL 模式加
-	/// kOfxImageEffectPropOpenGLEnabled=1，ofxGPURender.h:117）。
+	/// Assembles the in args for the render action (shared by the CPU/GL
+	/// paths).
+	///
+	/// `time` is the effect time (seconds), `scale` is the render scale
+	/// (x/y), and `window` is the render window in pixel coordinates
+	/// (rounded to `Int×4` — the support library type-checks the render
+	/// in-args, and a Double would fail validation); when `gl_enabled` is
+	/// true, `kOfxImageEffectPropOpenGLEnabled=1` is written as well
+	/// (ofxGPURender.h:117).
+	///
+	/// Fixed flags such as sequentialRender/interactive/draft and the Natron
+	/// compatibility property (`NatronOfxPropNativeOverlays=0`) are filled in
+	/// too, so [`Instance::render`]/[`Instance::render_gl`] can hand the args
+	/// straight to the plugin.
 	fn render_in_args(
 		time: f64,
 		scale: RenderScale,
@@ -605,14 +648,16 @@ impl Instance {
 		in_args
 	}
 
-	/// render action（CPU 路径）。`output` 为已按协商格式分配的输出
-	/// 图像（Arc：插件经 clipGetImage(Output) 取用，render 驱动与
-	/// suite 各自持强引用）；输入 clip 的图像由调用方经
-	/// [`ClipInstance::fetch_image`] 备好。GL 路径见
-	/// [`Instance::render_gl`]。
+	/// render action (CPU path). `output` is the output image already
+	/// allocated in the negotiated format (Arc: the plugin obtains it via
+	/// clipGetImage(Output), and the render driver and the suite each hold a
+	/// strong reference); the input clips' images are prepared by the caller
+	/// through [`ClipInstance::fetch_image`]. For the GL path see
+	/// [`Instance::render_gl`].
 	///
-	/// 声明原为 `&mut Image`：输出图像需与 suite 共享强引用（TLS +
-	/// LIVE_IMAGES 表），&mut 无法表达——改为 `Arc<Image>`。
+	/// The signature was originally `&mut Image`: the output image has to be
+	/// shared with the suite as a strong reference (TLS + the LIVE_IMAGES
+	/// table), which `&mut` cannot express — hence `Arc<Image>`.
 	pub fn render(
 		&self,
 		time: f64,
@@ -675,29 +720,32 @@ impl Instance {
 		Ok(())
 	}
 
-	/// GL render action（M11 §4；ofxGPURender.h 的 Render 动作 GL
-	/// 模式）。与 [`Instance::render`]（CPU）并存。
+	/// GL render action (M11 §4; the GL mode of ofxGPURender.h's Render
+	/// action). Coexists with [`Instance::render`] (CPU).
 	///
-	/// 前置契约（render 驱动遵守）：调用方已把 `renderer` 的 GL
-	/// 上下文置为 current（ofxGPURender.h "OpenGL Current Context"：
-	/// 宿主只在 Render/Begin/EndSequenceRender/Attach/Detach 期间
-	/// 要求上下文 current——本实现的约定是 quercusrender 的 PluginJob
-	/// 路径在进入前做好），且 `output_texture` 已附着为渲染器输出
-	/// 目标（等价 C++ `PluginRenderer::attach_output_texture`）。
-	/// `output_gl_texture` 为宿主为输出帧建的真实 GL 纹理名（GL 模式
-	/// 下 clipLoadTexture(Output) 的 OpenGLTextureIndex 以它为准）；
-	/// None = CPU 回退语义。
+	/// Preconditions (honored by the render driver): the caller has already
+	/// made the `renderer`'s GL context current (ofxGPURender.h "OpenGL
+	/// Current Context": the host only requires a current context during
+	/// Render/Begin/EndSequenceRender/Attach/Detach — this implementation's
+	/// convention is that quercusrender's PluginJob path does so on entry),
+	/// and `output_texture` is already attached as the renderer's output
+	/// target (equivalent to C++ `PluginRenderer::attach_output_texture`).
+	/// `output_gl_texture` is the real GL texture name the host created for
+	/// the output frame (in GL mode clipLoadTexture(Output)'s
+	/// OpenGLTextureIndex uses it); None = CPU fallback semantics.
 	///
-	/// action 序列：kOfxActionOpenGLContextAttached → render（in args
-	/// 带 kOfxImageEffectPropOpenGLEnabled=1）→
-	/// kOfxActionOpenGLContextDetached（ofxGPURender.h:345-371；
-	/// attach/detach 必须配对）。渲染结果留在 GL 输出纹理上（插件
-	/// 直接画进附着目标），宿主经 glReadPixels 回读（render 驱动
-	/// 负责，见 [`crate::gl_bridge`]）；GL 模式下
-	/// clipGetImage(Output) 不可用（插件按规范走 OpenGL suite——
+	/// Action sequence: kOfxActionOpenGLContextAttached → render (with
+	/// kOfxImageEffectPropOpenGLEnabled=1 in the in args) →
+	/// kOfxActionOpenGLContextDetached (ofxGPURender.h:345-371; attach and
+	/// detach must be paired). The render result stays on the GL output
+	/// texture (the plugin draws straight into the attached target) and the
+	/// host reads it back via glReadPixels (done by the render driver, see
+	/// [`crate::gl_bridge`]); in GL mode clipGetImage(Output) is unavailable
+	/// (per the spec the plugin goes through the OpenGL suite —
 	/// ofxGPURender.h "the effect SHOULD access all its images through
-	/// the OpenGL suite"）。render 返回前对未释放的输入 GL 纹理做
-	/// 兜底清理（[`crate::suites::gl_render::purge_leftovers`]）。
+	/// the OpenGL suite"). Before render returns, unreleased input GL
+	/// textures are given a last-chance cleanup
+	/// ([`crate::suites::gl_render::purge_leftovers`]).
 	pub fn render_gl(
 		&self,
 		time: f64,
@@ -801,15 +849,17 @@ impl Instance {
 		Ok(())
 	}
 
-	/// GetOutputColourspace action（M11 §4；ofxColour.h:243-283）：
-	/// 宿主给插件一份偏好色彩空间列表，插件回写输出 clip 的色彩
-	/// 空间（可为 "OfxColourspace_<clip>" 交叉引用）。
+	/// GetOutputColourspace action (M11 §4; ofxColour.h:243-283): the host
+	/// gives the plugin a list of preferred colour spaces and the plugin
+	/// writes back the colour space of the output clip (which may be an
+	/// "OfxColourspace_<clip>" cross-reference).
 	///
-	/// 返回解析后的输出色彩空间：交叉引用解析为所引 clip 的实际
-	/// 色彩空间（ofxColour.h:142-141 的跨 clip 引用约定）；
-	/// REPLY_DEFAULT → 第一个输入 clip 的色彩空间（ofxColour.h:278-279）。
-	/// 调用方（render 驱动）随后把结果写回输出 clip（
-	/// [`Instance::set_output_colourspace`]）。
+	/// Returns the resolved output colour space: a cross-reference resolves
+	/// to the referenced clip's actual colour space (the cross-clip reference
+	/// convention of ofxColour.h:142-141); REPLY_DEFAULT → the first input
+	/// clip's colour space (ofxColour.h:278-279). The caller (render driver)
+	/// then writes the result back to the output clip
+	/// ([`Instance::set_output_colourspace`]).
 	pub fn get_output_colourspace(&self, preferred: &[String]) -> crate::error::Result<String> {
 		use crate::host::{
 			ACTION_GET_OUTPUT_COLOURSPACE, PROP_CLIP_COLOURSPACE, PROP_CLIP_PREFERRED_COLOURSPACES,
@@ -874,9 +924,10 @@ impl Instance {
 		}
 	}
 
-	/// 把输出 clip 的色彩空间写回（GetOutputColourspace 后的落点；
-	/// ofxColour.h:262-264 "the host must set kOfxImageClipPropColourspace
-	/// on the instance's output clip to the value from outArgs"）。
+	/// Writes the output clip's colour space back (the landing point after
+	/// GetOutputColourspace; ofxColour.h:262-264 "the host must set
+	/// kOfxImageClipPropColourspace on the instance's output clip to the
+	/// value from outArgs").
 	pub fn set_output_colourspace(&self, colourspace: &str) {
 		use crate::property::Value;
 		if let Some(output) = self.clips.iter().find(|c| c.name == "Output") {
@@ -887,8 +938,16 @@ impl Instance {
 		}
 	}
 
-	/// 解析 "OfxColourspace_<clip>" 交叉引用为所引 clip 的实际色彩
-	/// 空间；非交叉引用原样返回。
+	/// Resolves an `OfxColourspace_<clip>` cross-reference to the referenced
+	/// clip's actual colour space.
+	///
+	/// If `value` starts with that prefix, the clip is looked up by name in
+	/// `self.clips` and its `OfxImageEffectPropColourspace` property is
+	/// returned as a string; when the clip does not exist or the property is
+	/// not a string, `value` is returned unchanged. A non-cross-reference is
+	/// returned unchanged as well. The consumer is the clip preferences
+	/// negotiation path that lands the plugin-declared colour space on a
+	/// concrete clip.
 	pub fn resolve_colourspace(&self, value: String) -> String {
 		const PREFIX: &str = "OfxColourspace_";
 		if let Some(clip_name) = value.strip_prefix(PREFIX) {
@@ -910,20 +969,43 @@ impl Instance {
 		}
 	}
 
-	/// begin/endSequenceRender 配对（帧序列渲染的前后括号；
-	/// HS: ofxhImageEffect.cpp:473-513 的 in args：frameRange +
-	/// frameStep + renderScale + sequentialRenderStatus）。GL 模式
-	/// 变体 [`Instance::begin_sequence_render_gl`] 额外带
-	/// kOfxImageEffectPropOpenGLEnabled（ofxGPURender.h:117）。
+	/// begin/endSequenceRender pair (the opening/closing brackets of a frame
+	/// sequence render; in args per HS: ofxhImageEffect.cpp:473-513:
+	/// frameRange + frameStep + renderScale + sequentialRenderStatus). The
+	/// GL-mode variant [`Instance::begin_sequence_render_gl`] additionally
+	/// carries kOfxImageEffectPropOpenGLEnabled (ofxGPURender.h:117).
 	pub fn begin_sequence_render(&self, range: OfxRangeD) -> crate::error::Result<()> {
 		self.begin_sequence_inner(range, false)
 	}
 
-	/// GL 模式的 beginSequenceRender（in args 带 OpenGLEnabled=1）。
+	/// `beginSequenceRender` in GL mode.
+	///
+	/// Same as [`Instance::begin_sequence_render`], except that the in args
+	/// additionally carry `kOfxImageEffectPropOpenGLEnabled=1`
+	/// (ofxGPURender.h:117) for pairing around the GL render path. `range`
+	/// is the `[min, max]` frame range of this sequence render.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK.
 	pub fn begin_sequence_render_gl(&self, range: OfxRangeD) -> crate::error::Result<()> {
 		self.begin_sequence_inner(range, true)
 	}
 
+	/// Common implementation of `beginSequenceRender` (shared by CPU/GL).
+	///
+	/// First assembles the in args from `range` and records the range in
+	/// `sequence_range` (for pairing with
+	/// [`Instance::end_sequence_render`]), then sends the begin action to the
+	/// plugin.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK; `sequence_range` has already been written at
+	/// that point, so the caller should still invoke the matching end to
+	/// clean up.
 	fn begin_sequence_inner(&self, range: OfxRangeD, gl_enabled: bool) -> crate::error::Result<()> {
 		use crate::host::ACTION_BEGIN_SEQUENCE;
 
@@ -950,8 +1032,13 @@ impl Instance {
 		Ok(())
 	}
 
-	/// 序列 action 的 in args 组装（begin/end 共用；GL 模式加
-	/// OpenGLEnabled=1）。
+	/// Assembles the in args shared by begin/endSequenceRender.
+	///
+	/// `range` is the `[min, max]` frame range of the sequence render
+	/// (written to `kOfxImageEffectPropFrameRange`, Double×2); when
+	/// `gl_enabled` is true, `kOfxImageEffectPropOpenGLEnabled=1` is added.
+	/// frameStep is fixed at 1.0, renderScale at 1/1 and sequentialRender at
+	/// 1 (the in args contract of HS: ofxhImageEffect.cpp:473-513).
 	fn sequence_in_args(range: OfxRangeD, gl_enabled: bool) -> PropertySet {
 		use crate::host::{
 			PROP_FRAME_RANGE, PROP_FRAME_STEP, PROP_RENDER_SCALE, PROP_SEQUENTIAL_RENDER,
@@ -975,16 +1062,45 @@ impl Instance {
 		in_args
 	}
 
-	/// 见 [`Instance::begin_sequence_render`]。
+	/// Ends the sequence-render bracket opened by
+	/// [`Instance::begin_sequence_render`] (CPU path).
+	///
+	/// `range` should be the same as at begin time and is used to assemble
+	/// the end in args; whatever the plugin returns, the recorded
+	/// `sequence_range` is cleared.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK.
 	pub fn end_sequence_render(&self, range: OfxRangeD) -> crate::error::Result<()> {
 		self.end_sequence_inner(range, false)
 	}
 
-	/// GL 模式的 endSequenceRender。
+	/// `endSequenceRender` in GL mode.
+	///
+	/// Same as [`Instance::end_sequence_render`], except that the in args
+	/// additionally carry `kOfxImageEffectPropOpenGLEnabled=1`
+	/// (ofxGPURender.h:117); `range` should match the GL begin.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK.
 	pub fn end_sequence_render_gl(&self, range: OfxRangeD) -> crate::error::Result<()> {
 		self.end_sequence_inner(range, true)
 	}
 
+	/// Common implementation of `endSequenceRender` (shared by CPU/GL).
+	///
+	/// Assembles the in args from `range` and sends the end action, then
+	/// clears the recorded `sequence_range` unconditionally so the next begin
+	/// cannot misjudge the pairing.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK.
 	fn end_sequence_inner(&self, range: OfxRangeD, gl_enabled: bool) -> crate::error::Result<()> {
 		use crate::host::ACTION_END_SEQUENCE;
 
@@ -1011,19 +1127,22 @@ impl Instance {
 		Ok(())
 	}
 
-	/// kOfxActionInstanceChanged 的宿主侧分发（ofxCore.h:405-435 的
-	/// inArgs 契约）：
+	/// Host-side dispatch of `kOfxActionInstanceChanged` (the inArgs contract
+	/// of ofxCore.h:405-435).
 	///
-	/// - kOfxPropType = kOfxTypeParameter（参数值变更）
-	/// - kOfxPropName = 变更的参数名
-	/// - kOfxPropChangeReason = kOfxChange*（UserEdited / PluginEdited /
-	///   Time）
-	/// - kOfxPropTime = 变更发生时的效果时间（Image Effect 插件专属）
-	/// - kOfxImageEffectPropRenderScale = 当前渲染比例
+	/// `param_name` is the name of the changed parameter; `reason` determines
+	/// `kOfxPropChangeReason` (UserEdited / PluginEdited / Time); `time` is
+	/// the effect time at which the change happened (seconds); `scale` is the
+	/// current render scale (x/y). The in args additionally carry
+	/// `kOfxPropType=kOfxTypeParameter`. After the host presses a push
+	/// button it calls this with UserEdited (a push button has no value, so
+	/// the plugin's reaction lives entirely in instanceChanged; real plugins
+	/// such as CImg rely on this action to refresh their internal state).
 	///
-	/// 宿主按下 push button 后以 UserEdited 调用它（push button 无值，
-	/// 插件的反应全在 instanceChanged 里；真实插件如 CImg 依赖此动作
-	/// 刷新内部状态）。返回非 OK/ReplyDefault 状态码时为 Err。
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::Failed`] when the plugin returns a
+	/// status other than OK/ReplyDefault.
 	pub fn instance_changed(
 		&self,
 		param_name: &str,
@@ -1078,25 +1197,31 @@ impl Instance {
 		Ok(())
 	}
 
-	/// 创建关联的 interact（主进程 UI 事件宿主；任务契约的
-	/// `new_interact(instance)`）。与 worker 进程里的渲染实例并存——
-	/// OFX 允许同一插件多实例，interact 是独立对象（独立 handle），
-	/// 经 [`crate::suites::interact::Interact::handle`] 与效果实例区分。
+	/// Creates the associated interact (the UI-event host in the main
+	/// process; `new_interact(instance)` from the task contract). It coexists
+	/// with the render instance in the worker process — OFX allows multiple
+	/// instances of the same plugin, and the interact is an independent
+	/// object (independent handle), distinguished from the effect instance by
+	/// [`crate::suites::interact::Interact::handle`].
 	///
-	/// 流程：插件声明的 overlay interact 入口（V2 优先、V1 次之；
-	/// ofxImageEffect.h:825/812）作为 interact 的入口——未声明则用插件
-	/// main entry（任务契约）→ 建 [`Interact`]（属性表 + tagged handle）
-	/// → 向入口发 `kOfxActionNewInteract`。
+	/// Flow: the plugin-declared overlay interact entry (V2 preferred, then
+	/// V1; ofxImageEffect.h:825/812) becomes the interact's entry — when it
+	/// is not declared, the plugin's main entry is used (task contract) →
+	/// create the [`Interact`] (property set + tagged handle) → send
+	/// `kOfxActionNewInteract` to the entry.
 	///
-	/// 返回值：
-	/// - `Some(interact)`：创建成功（NewInteract 返回 OK；或插件未实现
-	///   NewInteract 但声明了 overlay interact——真实 overlay 插件不认
-	///   NewInteract，走 describe/create 序列）。
-	/// - `None`：插件无 interact（NewInteract 返回 kOfxStatReplyDefault
-	///   且未声明 overlay 入口）或返回错误状态。
+	/// Return value:
+	/// - `Some(interact)`: creation succeeded (NewInteract returned OK, or
+	///   the plugin does not implement NewInteract but declares an overlay
+	///   interact — real overlay plugins do not know NewInteract and go
+	///   through the describe/create sequence).
+	/// - `None`: the plugin has no interact (NewInteract returned
+	///   kOfxStatReplyDefault and no overlay entry is declared) or returned
+	///   an error status.
 	///
-	/// 创建后调用方继续 [`Interact::describe`] → [`Interact::create_instance`]
-	/// 完成实例化；销毁随实例自动连带（[`Instance::notify_destroy`]）。
+	/// After creation the caller continues with [`Interact::describe`] →
+	/// [`Interact::create_instance`] to finish instantiation; destruction
+	/// follows the instance automatically ([`Instance::notify_destroy`]).
 	pub fn new_interact(&self) -> Option<std::sync::Arc<crate::suites::interact::Interact>> {
 		use crate::host::overlay_interact_entry;
 		use crate::suites::interact::Interact;
@@ -1130,7 +1255,13 @@ impl Instance {
 		Some(interact)
 	}
 
-	/// 已创建的 interact（None = 未创建）。
+	/// Returns the already-created interact (the UI-event host in the main
+	/// process).
+	///
+	/// Registered by [`Instance::new_interact`] after a successful creation;
+	/// returns `None` when it has not been created yet, creation failed, or
+	/// it has already been taken by [`Instance::notify_destroy`]. The
+	/// returned `Arc` clone can be held safely by the caller.
 	pub fn interact(&self) -> Option<std::sync::Arc<crate::suites::interact::Interact>> {
 		self.interact
 			.lock()
@@ -1138,9 +1269,9 @@ impl Instance {
 			.clone()
 	}
 
-	/// describe_interact（任务契约）：对已创建的 interact 发
-	/// `kOfxActionDescribe`（kOfxActionDescribeInteract）。未创建 →
-	/// kOfxStatErrBadHandle。
+	/// describe_interact (task contract): sends `kOfxActionDescribe`
+	/// (kOfxActionDescribeInteract) to the already-created interact. Not
+	/// created → kOfxStatErrBadHandle.
 	pub fn describe_interact(&self) -> i32 {
 		match self.interact() {
 			Some(i) => i.describe(),
@@ -1148,9 +1279,10 @@ impl Instance {
 		}
 	}
 
-	/// 销毁（destroyInstance action）。析构由 `Arc<RefBox<Instance>>`
-	/// 归零驱动；此处只做 action 通知，幂等（[`Instance::drop`] 的
-	/// `destroyed` 门保证只发一次）。
+	/// Destruction (the destroyInstance action). Teardown is driven by
+	/// `Arc<RefBox<Instance>>` reaching zero; this only announces the
+	/// action, idempotently (the `destroyed` gate in [`Instance::drop`]
+	/// guarantees a single send).
 	pub(crate) fn notify_destroy(&self) {
 		use crate::host::ACTION_DESTROY_INSTANCE;
 		let inst_handle = crate::suites::tag::make(
@@ -1180,7 +1312,13 @@ impl Instance {
 	}
 }
 
-/// 从属性集读矩形（Double×4）。
+/// Reads an `OfxRectD` rectangle from a property set (as the Double
+/// components x1, y1, x2, y2).
+///
+/// The property `name` must exist and its first four components must all be
+/// `Value::Double`, otherwise `None` is returned (a type mismatch is handled
+/// the same as a missing property). Used to parse the out args of
+/// `getRoD`/`getRegionsOfInterest`.
 fn read_rect(props: &PropertySet, name: &str) -> Option<OfxRectD> {
 	use crate::property::Value;
 	let x1 = match props.get(name, 0)? {
@@ -1202,18 +1340,18 @@ fn read_rect(props: &PropertySet, name: &str) -> Option<OfxRectD> {
 	Some(OfxRectD { x1, y1, x2, y2 })
 }
 
-/// getClipPreferences 的协商结果。
+/// The negotiation result of getClipPreferences.
 #[derive(Clone, Debug)]
 pub struct ClipPreferences {
-	/// 输出分量（kOfxImageComponentRGBA 等）。
+	/// Output components (kOfxImageComponentRGBA etc.).
 	pub output_components: String,
-	/// 输出位深（kOfxBitDepthFloat 等；全链路 F32 下恒为 float）。
+	/// Output bit depth (kOfxBitDepthFloat etc.; always float on the all-F32 pipeline).
 	pub output_bit_depth: String,
-	/// 像素比。
+	/// Pixel aspect ratio.
 	pub pixel_aspect_ratio: f64,
-	/// 帧率。
+	/// Frame rate.
 	pub frame_rate: f64,
-	/// field 处理模式（kOfxImageField*）。
+	/// Field handling mode (kOfxImageField*).
 	pub field: String,
 }
 
@@ -2117,8 +2255,8 @@ mod tests {
 
 	// ---- trace probes -----------------------------------------------------
 
-	/// QUERCUS_OFX_TRACE 打开的探针分支（clip prefs/RoD/RoI/isIdentity 与
-	/// isIdentity 失败路径的日志）。
+	/// Trace-probe branches enabled by QUERCUS_OFX_TRACE (logging for clip
+	/// prefs/RoD/RoI/isIdentity and the isIdentity failure path).
 	///
 	/// The probe's only effect besides the normal action result is a trace
 	/// line on stderr (no test-installable sink), so each call is pinned by

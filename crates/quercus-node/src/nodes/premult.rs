@@ -233,7 +233,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(PremultiplyNode))
 }
 
-/// Register this node type.
+/// Appends the Premultiply node's factory entry to `meta`.
+///
+/// Called by `crate::nodes::register_all` while it assembles the global node
+/// table. The entry registers the type id
+/// `org.olivevideoeditor.Olive.premult`, the display name "Premultiply", the
+/// `Math` menu category and this module's `create` constructor. Registering
+/// only makes the type available to the factory; no node instance is created.
+///
+/// # Arguments
+///
+/// * `meta` - factory table under construction; the entry is appended in
+///   registration order, which is also the create-menu order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.premult",

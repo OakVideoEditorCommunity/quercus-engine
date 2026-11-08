@@ -170,6 +170,12 @@ pub struct ImportedHwFrame {
 impl ImportedHwFrame {
 	/// The YUV→RGB transform for the planes (the bit depth picks the
 	/// exact limited-range expansion: 8 for NV12, 16 for P010).
+	///
+	/// `matrix` is the conversion matrix resolved from the frame's metadata and
+	/// `full_range` whether the source is full (JPEG) rather than limited (MPEG)
+	/// range. The bit depth is taken from this frame's descriptor, so callers
+	/// never restate it. Returns a plain value that cannot fail; the planes it
+	/// describes are the ones in `self.planes`.
 	pub fn transform(&self, matrix: YuvMatrix, full_range: bool) -> YuvTransform {
 		YuvTransform::from_matrix_depth(matrix, full_range, self.descriptor.storage.bit_depth())
 	}
@@ -255,11 +261,25 @@ fn bump_fallback() {
 }
 
 /// The frame's raw pixel format (hardware variants included).
+///
+/// `frame` must point at a valid `AVFrame` for the whole call; only its
+/// `format` field is read, and the value is transmuted from the raw int to
+/// `AVPixelFormat`, so hardware formats such as `AV_PIX_FMT_CUDA` come back
+/// unchanged and are not validated.
 fn frame_format(frame: *const sys::AVFrame) -> sys::AVPixelFormat {
 	// SAFETY: plain read of the frame's format field.
 	unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>((*frame).format) }
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This Linux variant dispatches CUDA frames to [`cuda_import`] and
+/// VAAPI frames to `vaapi_import`; any other device type — or a disabled
+/// per-path config switch (`QUERCUS_GPU_IMPORT_CUDA`/`..._VAAPI` or the
+/// corresponding store key) — reports [`ImportOutcome::Unsupported`] so the
+/// caller silently stages the frame without counting a failure.
 #[cfg(target_os = "linux")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -287,6 +307,14 @@ fn platform_import(
 	vaapi_import(req, ctx)
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This Windows variant supports only D3D11VA; any other device type
+/// — or a disabled `QUERCUS_GPU_IMPORT_D3D11` / `ConfigKeyD3d11Import` switch —
+/// reports [`ImportOutcome::Unsupported`] so the caller silently stages the
+/// frame.
 #[cfg(target_os = "windows")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -302,6 +330,14 @@ fn platform_import(
 	d3d11_import(req, ctx)
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This macOS variant supports only VideoToolbox; any other device
+/// type — or a disabled `QUERCUS_GPU_IMPORT_VIDEOTOOLBOX` /
+/// `ConfigKeyVideotoolboxImport` switch — reports
+/// [`ImportOutcome::Unsupported`] so the caller silently stages the frame.
 #[cfg(target_os = "macos")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -317,6 +353,9 @@ fn platform_import(
 	videotoolbox_import(req, ctx)
 }
 
+/// Non-desktop targets have no GPU import path: always reports
+/// [`ImportOutcome::Unsupported`] and ignores its arguments, so every frame
+/// takes the staging path on such platforms.
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn platform_import(
 	_req: &HwImportRequest<'_>,
@@ -353,6 +392,13 @@ fn frame_sw_format(frame: *const sys::AVFrame) -> Option<sys::AVPixelFormat> {
 }
 
 /// Map an FFmpeg software pixel format to the generic planar descriptor.
+///
+/// `sw_format` is the hwframe's software layout. NV12/P010/NV16/P210 map to
+/// semi-planar descriptors and the 420/422/444 8- and 10-bit planar formats to
+/// equivalent planar ones; any other format returns `None`, in which case every
+/// platform import path reports `Unsupported` and the frame is staged through
+/// the CPU. This is the shared (non-CUDA) mapping; the CUDA path has its own
+/// copy in [`cuda_descriptor`].
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn av_format_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 	use quercus_core::texture::{PlaneStorage, Subsampling};
@@ -633,10 +679,23 @@ mod cuda_driver {
 
 	static DRIVER: OnceLock<Option<Driver>> = OnceLock::new();
 
+	/// Looks up one symbol in an already-opened shared library.
+	///
+	/// `lib` is the `dlopen` handle and `name` a NUL-terminated symbol name;
+	/// returns the raw address, which is null when the symbol is absent. The
+	/// caller must cast it to the exact function-pointer type before calling
+	/// (see [`load`]); no type metadata is available here.
 	fn sym(lib: *mut c_void, name: &[u8]) -> *mut c_void {
 		unsafe { dlsym(lib, name.as_ptr() as *const c_char) }
 	}
 
+	/// Loads the CUDA driver library once and resolves every entry point the
+	/// VMM import path needs.
+	///
+	/// Opens `libcuda.so.1` with `RTLD_NOW`; returns `None` when the library is
+	/// missing (no CUDA driver installed) or any required symbol cannot be
+	/// resolved, and caches the result in a `OnceLock` — a failed load is not
+	/// retried and a successful one is shared by every thread. Never panics.
 	pub fn load() -> Option<Driver> {
 		*DRIVER.get_or_init(|| unsafe {
 			let lib = dlopen(b"libcuda.so.1\0".as_ptr() as *const c_char, RTLD_NOW);
@@ -762,6 +821,12 @@ fn close_fd(fd: i32) {
 
 
 /// Map an FFmpeg software pixel format to the engine's generic descriptor.
+///
+/// `sw_format` is the hardware frame's software layout
+/// (`AVHWFramesContext.sw_format`). The NV12/P010/NV16/P210 semi-planar formats
+/// and the 420/422/444 8- and 10-bit planar formats are recognized; anything
+/// else returns `None`, which makes the CUDA path fall back to staging. The
+/// mapping matches [`av_format_descriptor`] (kept separate for this path).
 #[cfg(target_os = "linux")]
 fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 	use quercus_core::texture::{ColorModel, PlaneStorage, Subsampling};
@@ -783,6 +848,23 @@ fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
 	})
 }
 
+/// Imports a CUDA (NVDEC) hardware frame on Linux by copying its planes into a
+/// reusable CUDA VMM slot and importing the slot's exported fds as Vulkan
+/// textures.
+///
+/// `req` is the decoded frame plus its luma size; the frame's `sw_format` picks
+/// the plane layout via [`cuda_descriptor`] and its FFmpeg `hw_frames_ctx`
+/// supplies the CUDA context. `ctx` is the GPU context that receives the plane
+/// textures. A free pool slot with the same descriptor and layout is reused;
+/// otherwise one is allocated, up to 8 slots (a 4K P210 slot is 32 MiB) — past
+/// that the frame takes the staging path instead of exhausting GPU memory. Each
+/// plane is copied with `cuMemcpyDtoD` under the device's external lifecycle
+/// lock, because a concurrent CUDA copy and mapped readback loses the device on
+/// NVIDIA, and the frame is then exposed as an owned slot lease.
+///
+/// Returns [`ImportOutcome::Unsupported`] when the driver, hwframes/CUDA
+/// context, plane layout or slot pool is unusable (no failure is counted), and
+/// [`ImportOutcome::Failed`] when a planned plane import fails after starting.
 #[cfg(target_os = "linux")]
 fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
 	use cuda_driver::{MemAccessDesc, MemAllocationProp, MemLocation};

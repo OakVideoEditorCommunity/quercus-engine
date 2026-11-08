@@ -31,7 +31,17 @@ pub struct MulticamState {
 }
 
 /// Finds the first sequence feeding a clip's texture chain.
+///
+/// `clip` is the clip block; the search starts at the source of its
+/// `TEXTURE_INPUT` and walks upstream depth-first (see `walk`), so a
+/// footage/multicam chain is traversed to the sequence at its root. `None`
+/// when the texture input is unconnected or no sequence is reachable.
 pub fn clip_connected_sequence(graph: &Graph, clip: NodeId) -> Option<NodeId> {
+	/// Depth-first search upstream from `node` for a sequence node.
+	///
+	/// `visited` guards against cycles in the (multi-input) graph; it is
+	/// appended to, so the caller can share one visited set across the walk.
+	/// Returns the first directly connected sequence found, or `None`.
 	fn walk(graph: &Graph, node: NodeId, visited: &mut Vec<NodeId>) -> Option<NodeId> {
 		if visited.contains(&node) {
 			return None;
@@ -62,6 +72,10 @@ pub fn clip_is_multicam(graph: &Graph, clip: NodeId) -> bool {
 		.is_some_and(|entry| entry.behavior.type_id() == "org.olivevideoeditor.Olive.multicam")
 }
 
+/// The track type (video or audio) a multicam node selects its angles from.
+///
+/// Reads the node's `SEQUENCE_TYPE` standard value; an unknown node or an
+/// unrecognized value falls back to [`TrackType::Video`].
 fn sequence_type(graph: &Graph, multicam: NodeId) -> TrackType {
 	graph
 		.get(multicam)
@@ -75,6 +89,11 @@ fn sequence_type(graph: &Graph, multicam: NodeId) -> TrackType {
 		.unwrap_or(TrackType::Video)
 }
 
+/// The currently selected angle index of a multicam node.
+///
+/// Reads the node's `CURRENT_INPUT` standard value. Returns `-1` when the node
+/// is unknown or the value is unset, which callers treat as "no angle
+/// selected".
 fn current_source(graph: &Graph, multicam: NodeId) -> i32 {
 	graph
 		.get(multicam)
@@ -82,6 +101,11 @@ fn current_source(graph: &Graph, multicam: NodeId) -> i32 {
 		.unwrap_or(-1)
 }
 
+/// Number of angles (tracks of the multicam node's type) in the connected
+/// source sequence.
+///
+/// Returns `0` when `multicam` has no connected sequence, the sequence's track
+/// list cannot be resolved, or it holds no tracks of that type.
 fn source_count(graph: &Graph, multicam: NodeId) -> i32 {
 	let Some(sequence) = graph.connected_output(multicam, SEQUENCE_INPUT, -1) else {
 		return 0;
@@ -93,11 +117,20 @@ fn source_count(graph: &Graph, multicam: NodeId) -> i32 {
 }
 
 /// Returns the source sequence connected to a multicam node.
+///
+/// `multicam` is the multicam node; the result comes from its `SEQUENCE_INPUT`
+/// connection and is `None` when that input is unconnected or `multicam` is
+/// unknown to `graph`.
 pub fn multicam_sequence(graph: &Graph, multicam: NodeId) -> Option<NodeId> {
 	graph.connected_output(multicam, SEQUENCE_INPUT, -1)
 }
 
 /// Returns the angle's track inside the connected source sequence.
+///
+/// `multicam` is the multicam node and `source` the zero-based angle index;
+/// the track type (video or audio) follows the multicam node's
+/// `SEQUENCE_TYPE` input. `None` when `source` is negative, the node has no
+/// connected source sequence, or the index is past the last track.
 pub fn multicam_source_track(
 	project: &ProjectRef,
 	multicam: NodeId,
@@ -118,6 +151,12 @@ pub fn multicam_source_track(
 }
 
 /// Resolves a clip's multicam node, source sequence and angle selection.
+///
+/// `clip` is the clip block to resolve. The returned [`MulticamState`] carries
+/// the source sequence the multicam node is connected to plus the angle count
+/// and current angle index (see `source_count`/`current_source`). `None` when
+/// `clip` is not a multicam clip or its multicam node has no connected source
+/// sequence.
 pub fn multicam_state(project: &ProjectRef, clip: NodeId) -> Option<MulticamState> {
 	let multicam = quercus_timeline::multicam::clip_find_multicam(&node_ref(project, clip))?;
 	let guard = lock(project);
@@ -134,6 +173,11 @@ pub fn multicam_state(project: &ProjectRef, clip: NodeId) -> Option<MulticamStat
 }
 
 /// Finds the multicam clip covering `time` on a sequence's video tracks.
+///
+/// `sequence` is the sequence to scan and `time` is compared against each
+/// block's `[in, out)` range, so a block ending exactly at `time` does not
+/// match. Blocks that do not resolve to a multicam node are skipped; the first
+/// covering multicam block is returned.
 pub fn multicam_clip_at(project: &ProjectRef, sequence: NodeId, time: Rational) -> Option<NodeId> {
 	let candidates: Vec<NodeId> = {
 		let guard = lock(project);
@@ -155,7 +199,21 @@ pub fn multicam_clip_at(project: &ProjectRef, sequence: NodeId, time: Rational) 
 	})
 }
 
-/// Enables or disables multicam on every valid selected clip as one undo entry.
+/// Enables or disables multicam on every valid selected clip as one undo
+/// entry.
+///
+/// `clips` is the current selection (ids that are not clips are ignored) and
+/// `enabled` picks the direction. Enabling wraps each eligible clip — one
+/// whose texture chain reaches a sequence and that is not already a multicam —
+/// grouping the per-sequence commands into a single multi-command history
+/// entry, so clips from the same source sequence share one multicam node.
+/// Disabling unwraps every selected clip, again as one entry. Nothing is pushed
+/// when no clip is eligible.
+///
+/// # Errors
+///
+/// Returns a message when the command cannot be pushed; a no-op call returns
+/// `Ok(())`.
 pub fn set_multicam_enabled(
 	project: &ProjectRef,
 	clips: &[NodeId],
@@ -221,6 +279,16 @@ pub fn set_multicam_enabled(
 	}
 }
 
+/// Builds the undo commands that move a clip's linked AFV audio to `source`.
+///
+/// AFV ("audio follows video") audio lives on the clip's linked audio clip,
+/// whose texture input is fed by the footage block of the selected angle.
+/// `clip` is the multicam video clip and `source` the new zero-based angle
+/// index. The returned commands disconnect the audio clip's texture input and
+/// reconnect it to the angle's footage, with undo restoring the previous
+/// footage. Returns an empty vector when the audio already plays that angle's
+/// footage, and `None` when there is no linked audio clip, the multicam has no
+/// source sequence, or the angle's footage cannot be resolved.
 fn afv_audio_switch_commands(
 	project: &ProjectRef,
 	clip: NodeId,
@@ -327,7 +395,17 @@ pub fn switch_multicam(
 	push_multi_command(commands, quercus_timeline::multicam::SWITCH_LABEL)
 }
 
-/// Set a clip's audio gain (1.0 = unity) as one undoable command.
+/// Sets a clip's audio gain as one undoable command.
+///
+/// `clip` must be a clip block; `gain` is a linear multiplier (1.0 = unity,
+/// 0.0 = silence) that has to be finite and within `0.0..=4.0`. The undo row
+/// restores the previous gain; assigning the value the clip already has is a
+/// no-op and pushes nothing.
+///
+/// # Errors
+///
+/// Returns a message when `gain` is non-finite or out of range, when the node
+/// is not a clip, or when the command cannot be pushed.
 pub fn set_clip_gain(project: &ProjectRef, clip: NodeId, gain: f64) -> Result<(), String> {
 	if !gain.is_finite() || !(0.0..=4.0).contains(&gain) {
 		return Err("audio gain must be finite and within 0..=4".into());

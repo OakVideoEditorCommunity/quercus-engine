@@ -114,8 +114,17 @@ pub fn write_test_clip_solid(
 	encoder.flush()
 }
 
-/// The shared MPEG-2-video-in-MP4 encoder params of the test clips
-/// (B-frame-free; the H.264 B-frame streams hit a muxer timing bug).
+/// Builds the shared MPEG-2-video-in-MP4 encoder params for the test clips.
+///
+/// `out` is the destination path (must fit the parameter struct's filename
+/// buffer), `width`/`height` the frame dimensions and `fps` the frame rate,
+/// encoded as a `1/fps` time base. The codec is MPEG-2 with no B-frames and F32
+/// pixels; H.264 B-frame streams hit a muxer timing bug (see the module doc).
+///
+/// # Errors
+///
+/// Returns [`Error::Failed`] when the output path does not fit the filename
+/// buffer.
 fn video_params(out: &Path, width: i32, height: i32, fps: i32) -> Result<EncodingParams> {
 	let mut params = EncodingParams::default();
 	let name = out.as_os_str().as_encoded_bytes();
@@ -137,7 +146,11 @@ fn video_params(out: &Path, width: i32, height: i32, fps: i32) -> Result<Encodin
 	Ok(params)
 }
 
-/// One frame of solid `rgba` (F32 RGBA rows, like [`pattern_frame`]).
+/// Generates one solid-color frame (F32 RGBA rows, like [`pattern_frame`]).
+///
+/// `i`/`fps` set the timestamp, `width`/`height` the dimensions and `rgba` the
+/// color written to every pixel (alpha included). Starts from
+/// [`pattern_frame`] frame 0, so the buffer is allocated in the same format.
 fn solid_frame(i: i32, width: i32, height: i32, fps: i32, rgba: [f32; 4]) -> Frame {
 	let mut f = pattern_frame(0, width, height, fps);
 	f.set_timestamp(Rational::new(i as i64, fps as i64));
@@ -156,7 +169,13 @@ fn solid_frame(i: i32, width: i32, height: i32, fps: i32, rgba: [f32; 4]) -> Fra
 	f
 }
 
-/// One frame of the known pattern (see module doc).
+/// Generates one frame of the known test pattern (see the module doc).
+///
+/// `i` is the frame index and sets the timestamp `i / fps`; `width`/`height`
+/// are the frame dimensions in pixels and `fps` the frame rate used for the
+/// timestamp and the per-frame column sweep (a non-positive rate is treated as
+/// 1). The result is a newly allocated F32 RGBA frame with the left half
+/// `[r, g, b]`, the right half `[b, r, g]` and alpha 1.
 fn pattern_frame(i: i32, width: i32, height: i32, fps: i32) -> Frame {
 	let mut vp = VideoParams::new_basic(
 		width,

@@ -84,12 +84,24 @@ pub struct PluginDescriptor {
 	pub description: String,
 }
 
+/// Copies `value` into a fixed-size descriptor field, leaving room for the NUL
+/// terminator.
+///
+/// The engine's descriptor fields are zero-initialised `[u8; N]` arrays, so the
+/// untouched last byte is what NUL-terminates the string on the C side. `value`
+/// is truncated by byte count, which can split a multi-byte UTF-8 character; the
+/// C side decodes the field lossily anyway (`PluginDescriptor::from_c`).
 fn fill_field(field: &mut [u8], value: &str) {
 	let n = value.len().min(field.len() - 1);
 	field[..n].copy_from_slice(&value.as_bytes()[..n]);
 }
 
 impl PluginDescriptor {
+	/// Converts the descriptor into the engine's fixed-size `repr(C)` form.
+	///
+	/// Every string is copied into its zero-initialised byte array, so values longer
+	/// than a field are truncated. Used by [`Plugin::register`]; the reverse
+	/// direction is `from_c`.
 	fn to_c(&self) -> QuercusPluginDescriptor {
 		let mut d = QuercusPluginDescriptor {
 			id: [0; 128],
@@ -106,6 +118,11 @@ impl PluginDescriptor {
 		d
 	}
 
+	/// Rebuilds a descriptor from the engine's `repr(C)` form.
+	///
+	/// Each field is read up to its first NUL byte and decoded lossily (invalid
+	/// UTF-8 becomes replacement characters), so a truncated or non-UTF-8
+	/// descriptor still yields a usable value. The inverse of `to_c`.
 	fn from_c(d: &QuercusPluginDescriptor) -> Self {
 		let read = |f: &[u8]| {
 			let end = f.iter().position(|&b| b == 0).unwrap_or(f.len());
@@ -150,12 +167,33 @@ pub struct Plugin {
 unsafe impl Send for Plugin {}
 
 impl Plugin {
-	/// Registers a plugin; the callback receives command ids as the host
-	/// invokes them. `None` when the id is empty or already registered.
+	/// Registers `descriptor` and installs `on_command` as its command callback.
+	///
+	/// The callback receives the command id of every command the host dispatches
+	/// to this plugin (see [`invoke_command`]) on whatever thread the engine calls
+	/// from, so it must be `Send + 'static`. `descriptor` is copied into the
+	/// engine's fixed-size form, so over-long fields are truncated.
+	///
+	/// Returns `None` when the id is empty or already registered, dropping the
+	/// callback; the engine reports no reason beyond that. Dropping the returned
+	/// [`Plugin`] unregisters it and makes its commands unreachable.
 	pub fn register(
 		descriptor: PluginDescriptor,
 		on_command: impl Fn(&str) + Send + 'static,
 	) -> Option<Plugin> {
+		/// C callback the engine invokes for every command dispatched to this plugin.
+		///
+		/// `command_id` is a NUL-terminated C string owned by the engine and valid only
+		/// for the duration of the call, so it is copied into an owned `String` before
+		/// the userdata closure runs; `userdata` is the double-boxed `BoxedCallback`
+		/// installed by [`Plugin::register`].
+		///
+		/// # Safety
+		///
+		/// `userdata` must be the `*mut BoxedCallback` produced by `Box::into_raw` in
+		/// `Plugin::register` and must stay alive until the plugin is unregistered;
+		/// `command_id` must be NUL-terminated and valid for reads. Both are rejected
+		/// when null, but neither is validated further.
 		unsafe extern "C" fn trampoline(command_id: *const std::ffi::c_char, userdata: *mut c_void) {
 			if command_id.is_null() || userdata.is_null() {
 				return;
@@ -196,7 +234,13 @@ impl Plugin {
 		}
 	}
 
-	/// This plugin's descriptor.
+	/// The plugin's metadata as currently registered.
+	///
+	/// Re-reads the engine's stored descriptor rather than the value passed to
+	/// [`Plugin::register`], copying it into an owned [`PluginDescriptor`] with
+	/// lossy UTF-8 decoding, so fields truncated at registration come back
+	/// truncated. Never fails: if the engine cannot look the plugin up, the
+	/// default (all-empty) descriptor is returned.
 	pub fn descriptor(&self) -> PluginDescriptor {
 		let mut d = QuercusPluginDescriptor {
 			id: [0; 128],

@@ -137,10 +137,14 @@ impl TextGeneratorV1 {
 		(offset_x, offset_y)
 	}
 
-	/// The layout/measure control flow of the C++ `generate_frame()` with
-	/// the backend hooks: build the request, measure via the installed
-	/// measure backend (zero size when none is installed — the documented
-	/// no-backend fallback), and compute the draw offsets for the given
+	/// Computes the text layout for a row: builds the request, measures it
+	/// through the installed backend and derives the draw offsets.
+	///
+	/// `row` supplies the evaluated inputs (text, HTML flag, color, font, size
+	/// and the vertical-align combo), while `frame_width`/`frame_height` are the
+	/// render target dimensions in pixels. Returns the layout request, the
+	/// measured document size (zero when no measure backend is installed — the
+	/// documented no-backend fallback) and the `(x, y)` draw offset for that
 	/// frame size.
 	///
 	/// The render step and the alpha transplant need the frame's pixel
@@ -274,10 +278,13 @@ impl NodeBehavior for TextGeneratorV1 {
 	}
 }
 
-/// Constructor (C++ `TextGeneratorV1::TextGeneratorV1()`): adds
-/// `text_in`, `html_in`, `color_in`, `valign_in`, `font_in` and
-/// `font_size_in` with the defaults documented on the constants, and
-/// sets the `dont_show_in_create_menu` flag.
+/// Builds a text-generator node and its behavior.
+///
+/// Adds the `text_in`, `html_in`, `color_in`, `valign_in`, `font_in` and
+/// `font_size_in` inputs with the defaults documented on the constants, then
+/// sets the `dont_show_in_create_menu` flag, mirroring the C++
+/// `TextGeneratorV1` constructor. Returns the core and the boxed behavior for
+/// the factory.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
@@ -317,8 +324,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TextGeneratorV1))
 }
 
-/// Register this node type (C++ `k_text_generator_v1` in
-/// `factory.cpp::create_from_factory_index`).
+/// Registers this node type in the node factory table.
+///
+/// Pushes a [`NodeMeta`] with the stable type id
+/// `org.olivevideoeditor.Olive.textgenerator`, the display name "Text
+/// (Legacy)", the generator category and this module's [`create`] constructor;
+/// the factory then instantiates it by index (the C++ `k_text_generator_v1`
+/// entry is only a parity reference).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.textgenerator",

@@ -94,6 +94,23 @@ pub fn place_by_source_time(
 }
 
 /// Converts a measured sample offset into a timeline placement.
+///
+/// The result is `reference_timeline_in + offset_samples / sample_rate`
+/// seconds, i.e. where the candidate clip should start on the timeline.
+/// Pairs with [`estimate_envelope_offset`] / [`estimate_stretch_offset`],
+/// whose `offset_samples` field is the input here.
+///
+/// # Arguments
+///
+/// * `reference_timeline_in` - reference clip's start on the timeline.
+/// * `candidate_offset_samples` - measured delay in source samples; negative
+///   means the candidate is earlier than the reference.
+/// * `sample_rate` - source sample rate in Hz; must be `> 0`.
+///
+/// # Returns
+///
+/// The computed placement; `valid = false` with the default rational when
+/// `sample_rate <= 0` or the computed time is NaN.
 pub fn place_by_waveform_offset(
 	reference_timeline_in: crate::types::Rational,
 	candidate_offset_samples: i64,
@@ -163,6 +180,32 @@ pub fn estimate_envelope_offset(
 }
 
 /// Searches a playback-rate correction and offset over two envelopes.
+///
+/// The candidate envelope is resampled for each rate in `[min_rate,
+/// max_rate]` stepping by `rate_step`, and the best correlation wins; use it
+/// when correlation at rate 1 is weak. Pair with
+/// [`estimate_envelope_offset`] (rate 1 only).
+///
+/// # Arguments
+///
+/// * `reference` / `candidate` - envelope values (e.g. absolute peaks per
+///   window) in timeline order.
+/// * `reference_valid` / `candidate_valid` - per-window validity masks; an
+///   invalid window is excluded from the correlation, and an empty mask means
+///   every window is valid.
+/// * `window_samples` - source samples per envelope window, used to convert
+///   the winning lag into `offset_samples`.
+/// * `max_offset_windows` - bounds the lag search to `±max_offset_windows`
+///   windows.
+/// * `min_rate` - lowest playback rate to try; must be finite and `> 0`.
+/// * `max_rate` - highest rate to try; must be finite and `>= min_rate`.
+/// * `rate_step` - rate increment between trials; must be finite and `> 0`.
+///
+/// # Returns
+///
+/// The best `(rate, offset_samples, confidence)`; `valid = false` with
+/// `rate = 1.0` when no rate/lag produced a usable correlation or the
+/// argument constraints are violated.
 #[allow(clippy::too_many_arguments)]
 pub fn estimate_stretch_offset(
 	reference: &[f64],
@@ -232,6 +275,17 @@ unsafe impl Send for Waveform {}
 unsafe impl Sync for Waveform {}
 
 impl Waveform {
+	/// Wraps a raw engine waveform pointer, or `None` when it is null.
+	///
+	/// Takes ownership of the reference the C call returned: the handle releases
+	/// it on `Drop` and clones add a reference. Only pointers produced by the
+	/// engine's waveform extraction (`quercus_audio_waveform_extract` /
+	/// `quercus_task_take_waveform`) may be passed here; constructing a handle
+	/// from any other pointer would release memory the engine does not own.
+	///
+	/// # Arguments
+	///
+	/// * `ptr` - pointer returned by the engine; null means extraction failed.
 	pub(crate) fn from_raw(ptr: *const c_void) -> Option<Self> {
 		(!ptr.is_null()).then_some(Self { ptr })
 	}
@@ -243,13 +297,30 @@ impl Waveform {
 		ok.then_some(info).unwrap_or_default()
 	}
 
-	/// Copies one point; `None` for an out-of-range point/channel.
+	/// Copies one point of one channel; `None` for an out-of-range
+	/// point/channel.
+	///
+	/// `point` is a window index (not a sample index) and `channel` is 0-based;
+	/// the returned min/max are the amplitude extremes inside that window.
+	///
+	/// # Arguments
+	///
+	/// * `point` - 0-based window index, `< info().point_count`.
+	/// * `channel` - 0-based channel index, `< info().channels`.
 	pub fn point(&self, point: usize, channel: i32) -> Option<MinMax> {
 		let mut out = MinMax::default();
 		unsafe { quercus_waveform_point_at(self.ptr, point, channel, &mut out) }.then_some(out)
 	}
 
 	/// Copies every point of one channel in timeline order.
+	///
+	/// The result has `info().point_count` entries; an out-of-range `channel`
+	/// yields an empty vector rather than an error. Each point is a min/max
+	/// amplitude pair for one window of `samples_per_point` source frames.
+	///
+	/// # Arguments
+	///
+	/// * `channel` - 0-based channel index; must be `< info().channels`.
 	pub fn peaks(&self, channel: i32) -> Vec<MinMax> {
 		let info = self.info();
 		if channel < 0 || channel >= info.channels {
@@ -260,8 +331,28 @@ impl Waveform {
 			.collect()
 	}
 
-	/// Extracts on the calling thread for hosts that already own a background
-	/// media worker. Prefer [`crate::task::extract_waveform`] on UI threads.
+	/// Decode an audio stream of `filename` into an owned waveform, blocking the
+	/// calling thread.
+	///
+	/// For hosts that already own a background media worker; on UI threads prefer
+	/// [`crate::task::extract_waveform`], which runs the same extraction off the
+	/// UI thread. The result holds per-point, per-channel min/max peaks, one
+	/// point per `samples_per_point` source frames.
+	///
+	/// # Arguments
+	///
+	/// * `filename` - path to the media file, UTF-8 (an interior NUL fails the
+	///   C-string conversion).
+	/// * `stream_index` - 0-based audio stream index; negative values are
+	///   rejected.
+	/// * `samples_per_point` - source frames summarized by one peak; must be
+	///   `> 0`.
+	///
+	/// # Returns
+	///
+	/// `Some` handle owning one reference (clones share it), or `None` when the
+	/// path cannot be probed/decoded, the arguments are out of range, or the
+	/// stream produces no peaks.
 	pub fn extract(filename: &str, stream_index: i32, samples_per_point: i32) -> Option<Self> {
 		Self::from_raw(unsafe {
 			quercus_audio_waveform_extract(

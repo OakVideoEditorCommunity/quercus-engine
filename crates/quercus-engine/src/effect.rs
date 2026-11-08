@@ -95,6 +95,27 @@ pub(crate) fn is_enabled(g: &Graph, node: NodeId) -> bool {
 
 /// Copies a node's effect-input ID using the bounded-string convention.
 /// Returns `-1` for a null project, stale node or node without an effect input.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle that owns `node`.
+/// * `node` - identity token of the node to inspect.
+/// * `buf` - output buffer; may be null with `buf_len == 0` to query the
+///   required size.
+/// * `buf_len` - capacity of `buf` in bytes; the id is NUL-terminated when
+///   there is room.
+///
+/// # Returns
+///
+/// The full id byte length (excluding the NUL), or `-1` on failure. A return
+/// value `>= buf_len` means the copied id was truncated; a return of `0`
+/// means an empty id.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `buf` must be null or writable for `buf_len`
+/// bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_effect_input_id(
 	project: *const ProjectHandle,
@@ -143,11 +164,36 @@ fn lock(p: &ProjectRef) -> std::sync::MutexGuard<'_, quercus_node::project::Proj
 	p.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Pushes `cmd` onto the process-global undo stack under `name`, executing it
+/// immediately (C++ push semantics). The stack is process-wide, so callers
+/// use [`grouped`] when several pushes must undo as one row.
+///
+/// # Arguments
+///
+/// * `cmd` - the command to execute and own; consumed.
+/// * `name` - human-readable undo-row label.
+///
+/// # Errors
+///
+/// Returns the undo stack's error text when it rejects the command.
 fn push(cmd: UndoCommand, name: &str) -> Result<(), String> {
 	quercus_undo::global::push(cmd, name).map_err(|e| e.to_string())
 }
 
-/// Runs `f` as one undo group (one undo row for the whole edit).
+/// Runs `f` as one undo group: begins a named group, then commits it when `f`
+/// returns `Ok` and aborts it when `f` returns `Err`, so a failed edit leaves
+/// no partial undo row.
+///
+/// # Arguments
+///
+/// * `name` - undo-row label for the group.
+/// * `f` - the edit to run; must do all of its pushes while the group is
+///   open.
+///
+/// # Errors
+///
+/// Propagates `f`'s error (after aborting the group); a failing
+/// `group_begin`/`group_end` is converted to a `String` as well.
 fn grouped<T>(name: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 	quercus_undo::global::group_begin(name).map_err(|e| e.to_string())?;
 	match f() {
@@ -164,6 +210,18 @@ fn grouped<T>(name: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, St
 
 /// An undoable edge add: validated at creation (existence, connectability,
 /// not already connected); the redo connects, the undo disconnects.
+///
+/// # Arguments
+///
+/// * `p` - project reference; cloned into the returned command's closures.
+/// * `from` - upstream node whose output feeds `to`.
+/// * `to` - downstream node receiving the edge.
+/// * `input_id` - the input id on `to` that the edge feeds.
+///
+/// # Errors
+///
+/// Returns `Err` when either node is unknown, `to` has no input `input_id`,
+/// that input is not connectable, or it is already connected.
 fn connect_command(
 	p: &ProjectRef,
 	from: NodeId,
@@ -205,6 +263,17 @@ fn connect_command(
 
 /// An undoable edge remove: succeeds even when nothing is connected; the
 /// undo re-connects the edge captured at construction.
+///
+/// # Arguments
+///
+/// * `p` - project reference; cloned into the returned command's closures.
+/// * `to` - identity token of the node whose input is disconnected.
+/// * `input_id` - the input id on `to`.
+///
+/// # Errors
+///
+/// Returns `Err` when `to` does not exist or has no input named `input_id`
+/// (the disconnect itself always succeeds, even with nothing connected).
 fn disconnect_command(p: &ProjectRef, to: NodeId, input_id: &str) -> Result<UndoCommand, String> {
 	let source = {
 		let g = lock(p);
@@ -693,9 +762,27 @@ pub extern "C" fn quercus_effect_chain_at(project: *const ProjectHandle, host: u
 }
 
 /// Undoable insert ("Add Effect") of a new effect of `type_id` at chain
-/// position `index` (clamped to the ends); the new node's id, or
+/// position `index` (clamped to the ends); returns the new node's id, or
 /// `QUERCUS_NODE_ID_INVALID` on failure (unknown project/host/type, or the
-/// host/type cannot host effects).
+/// host/type cannot host effects). The node add and the edge rewires are one
+/// undo row.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle that owns `host`.
+/// * `host` - identity token of the node whose effect chain receives the new
+///   effect (e.g. a clip).
+/// * `index` - insertion position, 0 = closest to the source; negative values
+///   become 0 and values past the chain length clamp to the end.
+/// * `type_id` - UTF-8 node type id of the effect to create.
+/// * `type_id_len` - byte length of `type_id`.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `host` must be an identity token from that
+/// project; `type_id` must be null or point to `type_id_len` readable bytes
+/// (invalid UTF-8 or a null pointer fails the call).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_effect_chain_insert(
 	project: *const ProjectHandle,
@@ -780,7 +867,14 @@ pub extern "C" fn quercus_effect_set_enabled(
 	set_enabled_impl(&inner, effect, enabled).is_ok()
 }
 
-/// Whether the effect node is enabled; false when unknown.
+/// Whether `effect` is enabled (the `enabled_in` standard value); `false`
+/// when the project or node is unknown or the value is not a boolean `true`.
+/// Read-only counterpart of [`quercus_effect_set_enabled`].
+///
+/// # Arguments
+///
+/// * `project` - engine project handle that owns `effect`.
+/// * `effect` - identity token of the effect node.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_effect_is_enabled(project: *const ProjectHandle, effect: u64) -> bool {
 	let Some(effect) = NodeId::from_identity(effect) else {
@@ -789,8 +883,27 @@ pub extern "C" fn quercus_effect_is_enabled(project: *const ProjectHandle, effec
 	crate::node::with_project(project, |p| is_enabled(&p.graph, effect)).unwrap_or(false)
 }
 
-/// Returns an OpenFX node's instance registry id, or 0 for built-in/unknown
-/// nodes and for plugin nodes without a live instance.
+/// Returns an OpenFX node's instance registry id (the handle the OFX host
+/// registered for this plugin instance), or `0` for built-in/unknown nodes
+/// and for plugin nodes without a live instance.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle that owns `node`.
+/// * `node` - identity token of the node to inspect.
+///
+/// # Returns
+///
+/// The plugin instance handle, or `0` when the project is null, the token is
+/// stale, the node is not a
+/// [`PluginNode`](quercus_node::nodes::plugin::PluginNode), or its instance
+/// is null.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `node` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_effect_plugin_instance_handle(
 	project: *const ProjectHandle,

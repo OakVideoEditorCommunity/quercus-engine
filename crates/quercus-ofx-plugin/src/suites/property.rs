@@ -14,33 +14,40 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxPropertySuite v1：属性读写。
+//! OfxPropertySuite v1: property reads and writes.
 //!
-//! 语义逐条对照 HS: ofxhPropertySuite.cpp：
-//! - 读未定义属性 / 类型不符 → kOfxStatErrUnknown（HS: propGet 的
-//!   `fetchTypedProperty` 失败路径，ofxhPropertySuite.cpp:787-794）；
-//! - 越界读写 → kOfxStatErrBadIndex（HS: `getValueRaw`/
-//!   `setValue`，ofxhPropertySuite.cpp:257/284）；
-//! - propGetN 拷贝 min(count, dimension) 个元素，不报错
-//!   （HS: `getValueNRaw`，ofxhPropertySuite.cpp:271-280）；
-//! - propSetN 维度变化时整体替换：本 crate 的属性维度始终跟随数组
-//!   长度（HS 对固定维度属性 count > dimension 会返回
-//!   kOfxStatErrBadIndex，ofxhPropertySuite.cpp:299——本 crate 不区分
-//!   固定/可变维度，如实更宽容；三个系统 bundle 均以正确 count 调用，
-//!   无行为分歧）；
-//! - 只读属性：SDK 无 kOfxStatErrReadOnly，HostSupport 也不在 suite
-//!   层拦截写（`_pluginReadOnly` 仅供宿主内部逻辑查询）——本实现
-//!   如实不拦截；若日后需要，在 PropertySet 增加只读标记再评。
-//! - propReset：HostSupport 恢复到 define 时默认值
-//!   （ofxhPropertySuite.cpp:330）；本 crate 不保存默认值快照，
-//!   第 1 期明确返回 kOfxStatErrUnsupported（真话比静默 no-op 安全）。
+//! Semantics follow HS: ofxhPropertySuite.cpp case by case:
+//! - Reading an undefined property / a type mismatch → kOfxStatErrUnknown (HS:
+//!   propGet's `fetchTypedProperty` failure path,
+//!   ofxhPropertySuite.cpp:787-794);
+//! - Out-of-bounds reads/writes → kOfxStatErrBadIndex (HS: `getValueRaw`/
+//!   `setValue`, ofxhPropertySuite.cpp:257/284);
+//! - propGetN copies min(count, dimension) elements and does not report an
+//!   error (HS: `getValueNRaw`, ofxhPropertySuite.cpp:271-280);
+//! - propSetN replaces the property wholesale when the dimension changes: this
+//!   crate's property dimension always follows the array length (for a
+//!   fixed-dimension property HS returns kOfxStatErrBadIndex when
+//!   count > dimension, ofxhPropertySuite.cpp:299 — this crate does not
+//!   distinguish fixed/variable dimensions and is faithfully more lenient; all
+//!   three system bundles call with the correct count, so there is no behavioral
+//!   divergence);
+//! - Read-only properties: the SDK has no kOfxStatErrReadOnly, and HostSupport
+//!   does not intercept writes at the suite layer either (`_pluginReadOnly` is
+//!   only queried by host-internal logic) — this implementation faithfully does
+//!   not intercept; if that is needed later, add a read-only flag to PropertySet
+//!   and re-evaluate.
+//! - propReset: HostSupport restores the define-time default values
+//!   (ofxhPropertySuite.cpp:330); this crate does not keep a snapshot of the
+//!   defaults, so phase 1 deliberately returns kOfxStatErrUnsupported (telling
+//!   the truth is safer than a silent no-op).
 
 use std::ffi::{c_char, c_double, c_int, c_void, CStr, CString};
 
 use crate::property::{Property, PropertySet, Value};
 use crate::suites::status;
 
-/// 函数表布局（与 SDK `OfxPropertySuiteV1` 逐字段一致）。
+/// Function table layout (field-for-field identical to the SDK's
+/// `OfxPropertySuiteV1`).
 #[repr(C)]
 pub struct PropertySuiteV1 {
 	/// propSetPointer
@@ -89,7 +96,8 @@ pub struct PropertySuiteV1 {
 	pub get_dimension: unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_int) -> c_int,
 }
 
-/// 属性值类别（suite 层的类型检查；对应 HS 的 `Property::TypeEnum`）。
+/// Property value kind (the suite-layer type check; corresponds to HS's
+/// `Property::TypeEnum`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
 	Int,
@@ -109,15 +117,18 @@ impl Kind {
 	}
 }
 
-/// 属性 suite 公共入口模板：解句柄 + panic 兜底。
+/// Common entry template for the property suite: decode the handle + panic
+/// guard.
 ///
-/// 句柄按 [`crate::suites::tag`] 约定：低 3 位是对象种类标签，地址
-/// 即对象 props 字段（偏移 0）；剥标签后可直接当 PropertySet 用。
-/// 裸 PropertySet 指针（标签 0，宿主内部/测试直传）原样通过。
+/// Handles follow the [`crate::suites::tag`] convention: the low 3 bits are the
+/// object-kind tag and the address is the object's props field (offset 0); once
+/// the tag is stripped it can be used directly as a PropertySet. A bare
+/// PropertySet pointer (tag 0, passed directly by host internals/tests) passes
+/// through unchanged.
 ///
-/// `# Safety`：`handle` 必须指向活的 `PropertySet` 或已注册对象
-/// （suite 生命周期契约：宿主对象先于 suite 调用创建，后于全部调用
-/// 销毁）。
+/// `# Safety`: `handle` must point to a live `PropertySet` or a registered
+/// object (the suite lifetime contract: host objects are created before suite
+/// calls and destroyed after all of them).
 #[track_caller]
 unsafe fn caught(handle: *mut c_void, f: impl FnOnce(&PropertySet) -> Result<(), c_int>) -> c_int {
 	let caller = std::panic::Location::caller();
@@ -136,10 +147,10 @@ unsafe fn caught(handle: *mut c_void, f: impl FnOnce(&PropertySet) -> Result<(),
 	code
 }
 
-/// 属性名：空指针 / 非 UTF-8 → kOfxStatErrValue（防御性；HostSupport
-/// 直接解引用会崩）。
+/// Property name: null pointer / non-UTF-8 → kOfxStatErrValue (defensive;
+/// HostSupport dereferences directly and would crash).
 ///
-/// `# Safety`：`name` 必须是有效的 NUL 结尾 C 字符串（插件契约）。
+/// `# Safety`: `name` must be a valid NUL-terminated C string (plugin contract).
 unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 	if name.is_null() {
 		return Err(status::ERR_VALUE);
@@ -149,13 +160,19 @@ unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 		.map_err(|_| status::ERR_VALUE)
 }
 
-/// 越界防护：`index` 转 usize（负数 → 越界错误）。
+/// Index guard: converts a `c_int` index received at the suite layer into
+/// `usize`.
+///
+/// A negative `index` cannot be represented as `usize`, so it is treated as out
+/// of bounds directly → kOfxStatErrBadIndex (it must not silently wrap into a
+/// huge index). Every propGet/propSet entry point goes through this before
+/// touching the array.
 fn idx(index: c_int) -> Result<usize, c_int> {
 	usize::try_from(index).map_err(|_| status::ERR_BAD_INDEX)
 }
 
-/// 先类型后索引的取值（HS 顺序：`fetchTypedProperty` 在
-/// `getValueRaw` 之前，ofxhPropertySuite.cpp:787/794/257）。
+/// Value lookup with the type check before the index check (HS order:
+/// `fetchTypedProperty` before `getValueRaw`, ofxhPropertySuite.cpp:787/794/257).
 fn get_value<'a>(
 	props: &'a [Property],
 	name: &str,
@@ -172,6 +189,23 @@ fn get_value<'a>(
 	result
 }
 
+/// Inner implementation of single-element reads: first find the property named
+/// `name` in `props`, check its type, then take the value at `index`.
+///
+/// The type is represented by the first element for the whole property (the host
+/// only defines homogeneous arrays; HS fixes the type at define time, which is
+/// equivalent). An empty array has no type probe, so the type check is skipped
+/// and out of bounds is reported as BadIndex by the indexed access. Int and
+/// Double are treated as the same numeric kind and may be read from each other.
+/// `props` is the property list to search, `name` is the property name, and
+/// `index` is the element index (`c_int`; negative values fail to convert to
+/// usize here).
+///
+/// # Errors
+///
+/// Undefined property → kOfxStatErrUnknown; first-element type does not match
+/// `kind` and is not a numeric read-across → kOfxStatErrUnknown; negative index
+/// or out of bounds → kOfxStatErrBadIndex.
 fn get_value_inner<'a>(
 	props: &'a [Property],
 	name: &str,
@@ -201,11 +235,25 @@ fn get_value_inner<'a>(
 
 // ---- propSet（单元素）-----------------------------------------------------
 
-/// propSet 通用实现：属性未定义时按 OFX 语义**隐式创建**（ofxProperty.h：
-/// "If the property does not exist it is created"，HS setValue 同）——
-/// 插件 describe 期写的大量描述符属性（grouping、各 capability 开关）
-/// 并未由宿主预定义，拒绝创建会让 describe 直接失败。已定义但类型
-/// 不符 → Unknown；越界 → BadIndex。
+/// Shared implementation of the propSet (single-element) family: write `value`
+/// into slot `index` of the property named `name` in `set`.
+///
+/// An undefined property is **implicitly created** per OFX semantics
+/// (ofxProperty.h: "If the property does not exist it is created", same as HS's
+/// setValue) — many descriptor properties written during plugin describe
+/// (grouping, the capability switches) are not predefined by the host, and
+/// refusing to create them would make describe fail outright. A newly created
+/// property has dimension `index + 1`, with the leading slots filled with the
+/// same `value`; an already defined empty array accepts only `index == 0`
+/// (push), because an empty array has no type probe. Ownership of `value` moves
+/// into the property set (`Value` owns payloads such as strings) and `index` is
+/// the element index.
+///
+/// # Errors
+///
+/// Defined but with a mismatched type → kOfxStatErrUnknown; negative index,
+/// `index > dimension`, or writing `index > 0` into an empty array →
+/// kOfxStatErrBadIndex.
 fn set_value(set: &PropertySet, name: &str, index: c_int, value: Value) -> Result<(), c_int> {
 	set.with_locked(|props| {
 		let idx = idx(index)?;
@@ -251,6 +299,21 @@ fn set_value(set: &PropertySet, name: &str, index: c_int, value: Value) -> Resul
 	})
 }
 
+/// propSetPointer: write the raw pointer `value` into slot `index` of the `name`
+/// property.
+///
+/// The pointer is stored as-is; the suite neither dereferences nor frees it. The
+/// property is implicitly created when absent (`index + 1` dimensions, leading
+/// slots with the same value); `index == dimension` appends; a larger
+/// out-of-bounds index or a negative index → kOfxStatErrBadIndex; defined but not
+/// of type Pointer → kOfxStatErrUnknown. `value` may be NULL (a null pointer is
+/// a valid property value).
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), and `name` must be a valid NUL-terminated C
+/// string.
 unsafe extern "C" fn prop_set_pointer(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -265,6 +328,20 @@ unsafe extern "C" fn prop_set_pointer(
 	}
 }
 
+/// propSetString: copy the C string `value` into slot `index` of the `name`
+/// property.
+///
+/// The string is truncated at the first NUL and copied into an internal
+/// `CString`; the plugin retains ownership of the original buffer. The property
+/// is implicitly created when absent; `index == dimension` appends; a larger
+/// out-of-bounds index or a negative index → kOfxStatErrBadIndex. `value` NULL →
+/// kOfxStatErrValue; defined but not of type String → kOfxStatErrUnknown.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), and `name` and `value` must be valid
+/// NUL-terminated C strings.
 unsafe extern "C" fn prop_set_string(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -285,6 +362,19 @@ unsafe extern "C" fn prop_set_string(
 	}
 }
 
+/// propSetDouble: write `value` into slot `index` of the `name` property.
+///
+/// The property is implicitly created when absent (`index + 1` dimensions,
+/// leading slots with the same value); `index == dimension` appends; a larger
+/// out-of-bounds index or a negative index → kOfxStatErrBadIndex; defined but not
+/// of type Double → kOfxStatErrUnknown (strict typing: an Int property is not
+/// written as Double).
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), and `name` must be a valid NUL-terminated C
+/// string.
 unsafe extern "C" fn prop_set_double(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -299,6 +389,20 @@ unsafe extern "C" fn prop_set_double(
 	}
 }
 
+/// propSetInt: write `value` into slot `index` of the `name` property.
+///
+/// The property is implicitly created when absent per OFX semantics (`index + 1`
+/// dimensions, leading slots with the same value; see [`set_value`]);
+/// `index == dimension` appends one element (negotiation properties grow slot by
+/// slot), a larger out-of-bounds index or a negative index → kOfxStatErrBadIndex;
+/// defined but not of type Int → kOfxStatErrUnknown (propSet is strict and does
+/// not convert between Int/Double).
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), and `name` must be a valid NUL-terminated C
+/// string.
 unsafe extern "C" fn prop_set_int(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -315,8 +419,9 @@ unsafe extern "C" fn prop_set_int(
 
 // ---- propSetN（批量）------------------------------------------------------
 
-/// 从 C 数组读出 `count` 个元素并整体写入；count != 现有维度时
-/// 整体替换（HS `setValueN` 的 resize 语义，ofxhPropertySuite.cpp:299-311）。
+/// Reads `count` elements from a C array and writes them wholesale; when count
+/// != the current dimension it replaces the whole property (HS `setValueN`'s
+/// resize semantics, ofxhPropertySuite.cpp:299-311).
 fn set_values(
 	set: &PropertySet,
 	name: &str,
@@ -353,6 +458,22 @@ fn set_values(
 	})
 }
 
+/// propSetPointerN: write the `count` raw pointers in `values[0..count]`
+/// wholesale into the `name` property.
+///
+/// The pointer values are stored as-is and ownership remains with the plugin; the
+/// property is implicitly created when absent; when `count` differs from the
+/// current dimension the property is replaced wholesale, otherwise it is
+/// overwritten slot by slot. A first-element type mismatch →
+/// kOfxStatErrUnknown; negative `count` → kOfxStatErrBadIndex; `count > 0` with
+/// `values` NULL → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `values` is non-null it must be readable for `count` `*mut c_void`
+/// elements.
 unsafe extern "C" fn prop_set_pointer_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -373,6 +494,22 @@ unsafe extern "C" fn prop_set_pointer_n(
 	}
 }
 
+/// propSetStringN: copy the `count` C strings in `values[0..count]` into the
+/// `name` property.
+///
+/// Each string is truncated at the first NUL and **copied** into an internal
+/// `CString` (the plugin may reuse the buffer immediately). The property is
+/// implicitly created when absent; when `count` differs from the dimension the
+/// property is replaced wholesale. Errors: `count > 0` with `values` NULL, or any
+/// element NULL → kOfxStatErrValue; first element type mismatch with the existing
+/// property → kOfxStatErrUnknown; negative `count` → kOfxStatErrBadIndex.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `values` is non-null it must be readable for `count` valid
+/// NUL-terminated C-string pointers.
 unsafe extern "C" fn prop_set_string_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -400,6 +537,23 @@ unsafe extern "C" fn prop_set_string_n(
 	}
 }
 
+/// propSetDoubleN: write the `count` doubles in `values[0..count]` wholesale
+/// into the `name` property.
+///
+/// The property is implicitly created when absent; when `count` differs from the
+/// current dimension it is replaced wholesale (resize semantics, same as HS
+/// `setValueN`), otherwise it is overwritten slot by slot. Note that the propSet
+/// family **strictly** distinguishes Int/Double and does not convert values
+/// (unlike propGet's leniency): a first-element type mismatch →
+/// kOfxStatErrUnknown; negative `count` → kOfxStatErrBadIndex; `count > 0` with
+/// `values` NULL → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `values` is non-null it must be readable for `count` `c_double`
+/// elements.
 unsafe extern "C" fn prop_set_double_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -420,6 +574,22 @@ unsafe extern "C" fn prop_set_double_n(
 	}
 }
 
+/// propSetIntN: write the `count` ints in `values[0..count]` wholesale into the
+/// `name` property.
+///
+/// The property is implicitly created when absent per OFX semantics; when `count`
+/// differs from the current dimension it is replaced wholesale (HS `setValueN`'s
+/// resize semantics, ofxhPropertySuite.cpp:299-311), otherwise it is overwritten
+/// slot by slot. A first-element type mismatch (for example writing a Double source
+/// into an Int array) → kOfxStatErrUnknown; negative `count` →
+/// kOfxStatErrBadIndex; `count > 0` with `values` NULL → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `values` is non-null it must be readable for `count` `c_int`
+/// elements.
 unsafe extern "C" fn prop_set_int_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -442,11 +612,36 @@ unsafe extern "C" fn prop_set_int_n(
 
 // ---- propGet（单元素）-----------------------------------------------------
 
-/// 非字符串标量读取（克隆值写出；字符串走内驻指针路径）。
+/// Single-element lookup for non-string scalars: hands the caller a clone of the
+/// `Value`.
+///
+/// `set` is the property set to read, `name` is the property name, and `index` is
+/// the element index; strings go through [`get_string`]'s in-place pointer path
+/// (a cloned `CString` pointer would dangle) and do not pass through here. The
+/// caller matches the variant and performs numeric conversion per concrete suite
+/// entry.
+///
+/// # Errors
+///
+/// Undefined property or type mismatch → kOfxStatErrUnknown; negative index/out of
+/// bounds → kOfxStatErrBadIndex.
 fn get_scalar(set: &PropertySet, name: &str, index: c_int, kind: Kind) -> Result<Value, c_int> {
 	set.with_locked(|props| get_value(props, name, index, kind).cloned())
 }
 
+/// propGetPointer: write the raw pointer at `index` of the `name` property into
+/// `*out`.
+///
+/// Undefined property or a first element that is not Pointer →
+/// kOfxStatErrUnknown; negative index/out of bounds → kOfxStatErrBadIndex; `out`
+/// NULL (before the bounds check) → kOfxStatErrValue. The retrieved pointer
+/// belongs to the plugin; the suite does not take over its lifetime.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `out` is non-null it must be writable for one `*mut c_void`.
 unsafe extern "C" fn prop_get_pointer(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -474,8 +669,20 @@ unsafe extern "C" fn prop_get_pointer(
 	}
 }
 
-/// propGetString：写**内驻** C 串指针（OFX 契约：指向宿主内部存储，
-/// 属性被下次修改前有效；克隆的 CString 指针会悬垂，绝不能给插件）。
+/// Returns the **in-place** C-string pointer of the string at `index` of the
+/// `name` property.
+///
+/// The OFX contract requires a pointer into the host's internal storage: valid
+/// until the property is next modified. Returning a pointer to a cloned `CString`
+/// would dangle as soon as the caller used it, so this exposes the `as_ptr()` of
+/// the `PropertySet` entry directly. `index` is the element index (negative or out
+/// of bounds fails); the string value itself is not UTF-8 validated (it is already
+/// a valid C string when stored).
+///
+/// # Errors
+///
+/// Undefined property or type mismatch → kOfxStatErrUnknown; negative index/out of
+/// bounds → kOfxStatErrBadIndex.
 fn get_string(set: &PropertySet, name: &str, index: c_int) -> Result<*mut c_char, c_int> {
 	set.with_locked(|props| match get_value(props, name, index, Kind::Str)? {
 		Value::String(s) => Ok(s.as_ptr() as *mut c_char),
@@ -483,6 +690,19 @@ fn get_string(set: &PropertySet, name: &str, index: c_int) -> Result<*mut c_char
 	})
 }
 
+/// propGetString: write the **in-place** C-string pointer of the string at
+/// `index` of the `name` property into `*out` (see [`get_string`]).
+///
+/// The pointer points into the property set's internal storage and is valid until
+/// the property is next modified; the plugin must not free it or cache it beyond
+/// that window. Undefined property/type mismatch → kOfxStatErrUnknown; negative
+/// index or out of bounds → kOfxStatErrBadIndex; `out` NULL → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `out` is non-null it must be writable for one `*mut c_char`.
 unsafe extern "C" fn prop_get_string(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -509,6 +729,19 @@ unsafe extern "C" fn prop_get_string(
 	}
 }
 
+/// propGetDouble: write the value at `index` of the `name` property into `*out`
+/// as a double.
+///
+/// Int elements are promoted to `f64` automatically (forgiving-host semantics,
+/// same as [`get_n`]); undefined property or first-element type mismatch →
+/// kOfxStatErrUnknown; negative index/out of bounds → kOfxStatErrBadIndex; `out`
+/// NULL → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `out` is non-null it must be writable for one `c_double`.
 unsafe extern "C" fn prop_get_double(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -538,6 +771,21 @@ unsafe extern "C" fn prop_get_double(
 	}
 }
 
+/// propGetInt: write the value at `index` of the `name` property into `*out` as
+/// an int.
+///
+/// The type check runs before the index lookup (HS order: `fetchTypedProperty`
+/// before `getValueRaw`, ofxhPropertySuite.cpp:787/794/257): undefined property
+/// or type mismatch → kOfxStatErrUnknown; negative index or out of bounds →
+/// kOfxStatErrBadIndex. Double elements are truncated with `as i32` (not rounded,
+/// saturating out of range). A NULL `out` with a valid index returns
+/// kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and when `out` is non-null it must be writable for one `c_int`.
 unsafe extern "C" fn prop_get_int(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -574,8 +822,22 @@ unsafe extern "C" fn prop_get_int(
 
 // ---- propGetN（批量）------------------------------------------------------
 
-/// 批量读取：拷贝 min(count, dimension) 个（HS `getValueNRaw`，
-/// ofxhPropertySuite.cpp:271-280，不报错）。
+/// Shared implementation of `propGet*N`: look up the property by name and call
+/// `write(value, i)` for each of the first min(`count`, dimension) elements.
+///
+/// Only the first element's type is checked (arrays are assumed homogeneous), and
+/// Int/Double coerce to each other numerically. `write` may be called fewer than
+/// `count` times and the tail of the output array is never touched — this is
+/// exactly HS `getValueNRaw`'s (ofxhPropertySuite.cpp:271-280) "truncate without
+/// error" semantics. `set` is the property set to read; `kind` is the type kind
+/// requested by the plugin; `write` is the caller-supplied write closure (which
+/// dereferences the `out` pointer).
+///
+/// # Errors
+///
+/// Property missing or an empty array → kOfxStatErrUnknown; first-element type
+/// mismatch (not in the numeric kind) → kOfxStatErrUnknown; negative `count` →
+/// kOfxStatErrBadIndex.
 fn get_n(
 	set: &PropertySet,
 	name: &str,
@@ -627,6 +889,20 @@ fn get_n(
 	})
 }
 
+/// propGetPointerN: write the first min(`count`, dimension) raw pointers of the
+/// `name` property into `out[0..n]`.
+///
+/// The pointer values are exactly what propSetPointer stored (ownership is always
+/// on the plugin side; the suite does not free them). Delegates to [`get_n`]:
+/// undefined/empty property or a first element that is not Pointer →
+/// kOfxStatErrUnknown; negative `count` → kOfxStatErrBadIndex; `out` NULL with
+/// `count > 0` → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and `out` must be writable for min(`count`, dimension) `*mut c_void` elements.
 unsafe extern "C" fn prop_get_pointer_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -644,6 +920,21 @@ unsafe extern "C" fn prop_get_pointer_n(
 	}
 }
 
+/// propGetStringN: write the **in-place** C-string pointers of the first
+/// min(`count`, dimension) strings of the `name` property into `out[0..n]`.
+///
+/// The pointers point into the property set's internal storage and are valid until
+/// the property is next modified; the plugin must not free them or hold them for
+/// long (equivalent to C++ returning `const char**`). Delegates to [`get_n`]:
+/// undefined/empty property or a first element that is not String →
+/// kOfxStatErrUnknown; negative `count` → kOfxStatErrBadIndex; `out` NULL with
+/// `count > 0` → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and `out` must be writable for min(`count`, dimension) `*mut c_char` elements.
 unsafe extern "C" fn prop_get_string_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -661,6 +952,21 @@ unsafe extern "C" fn prop_get_string_n(
 	}
 }
 
+/// propGetDoubleN: write the first min(`count`, dimension) double values of the
+/// `name` property into `out[0..n]`.
+///
+/// Delegates to [`get_n`]: Int elements are promoted to `f64` automatically
+/// (forgiving-host semantics; the CImg framework reads window parameters with
+/// propGetDoubleN); undefined/empty property → kOfxStatErrUnknown; first element
+/// not numeric → kOfxStatErrUnknown. A `count` larger than the dimension writes
+/// only the dimension's worth without error; negative `count` →
+/// kOfxStatErrBadIndex; `out` NULL with `count > 0` → kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and `out` must be writable for min(`count`, dimension) `c_double` elements.
 unsafe extern "C" fn prop_get_double_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -682,6 +988,22 @@ unsafe extern "C" fn prop_get_double_n(
 	}
 }
 
+/// propGetIntN: write the first min(`count`, dimension) int values of the `name`
+/// property into `out[0..n]`.
+///
+/// Delegates to [`get_n`]: undefined or empty property → kOfxStatErrUnknown; a
+/// first element that is not Int/Double → kOfxStatErrUnknown; Double elements are
+/// truncated to `c_int` (a C-style `as` conversion, not rounding). A `count`
+/// larger than the dimension writes only the dimension's worth of elements
+/// without error; negative `count` → kOfxStatErrBadIndex; `out` NULL with
+/// `count > 0` → kOfxStatErrValue (NULL is allowed when `count == 0`). `out` is
+/// allocated by the caller with at least `count` elements.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string,
+/// and `out` must be writable for min(`count`, dimension) `c_int` elements.
 unsafe extern "C" fn prop_get_int_n(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -705,6 +1027,19 @@ unsafe extern "C" fn prop_get_int_n(
 
 // ---- propReset / propGetDimension -----------------------------------------
 
+/// propReset: reset a property to its define-time default — not supported by
+/// this crate yet.
+///
+/// This crate does not keep a snapshot of the defaults, so it **always** returns
+/// kOfxStatErrUnsupported (see the module docs; HostSupport performs the real
+/// restore, and a silent no-op would hide the gap on the host side). Invalid
+/// property name → kOfxStatErrValue; `handle` NULL → kOfxStatErrBadHandle.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), and `name` must be a valid NUL-terminated C
+/// string.
 unsafe extern "C" fn prop_reset(handle: *mut c_void, name: *const c_char) -> c_int {
 	unsafe {
 		caught(handle, |set| {
@@ -718,6 +1053,18 @@ unsafe extern "C" fn prop_reset(handle: *mut c_void, name: *const c_char) -> c_i
 	}
 }
 
+/// propGetDimension: write the element count of the `name` property into `*out`.
+///
+/// Undefined property → kOfxStatErrUnknown; a defined empty array is a valid
+/// dimension of 0 (the initial state of negotiation properties such as
+/// `OfxImageEffectPropSupportedContexts`) and is not an error. `out` NULL →
+/// kOfxStatErrValue.
+///
+/// # Safety
+///
+/// `handle` must point to a live `PropertySet` (or a registered object encoded
+/// per [`crate::suites::tag`]), `name` must be a valid NUL-terminated C string;
+/// when `out` is non-null it must be writable for one `c_int`.
 unsafe extern "C" fn prop_get_dimension(
 	handle: *mut c_void,
 	name: *const c_char,
@@ -745,7 +1092,13 @@ unsafe extern "C" fn prop_get_dimension(
 	}
 }
 
-/// 静态函数表实例（fetch_suite 返回其地址）。
+/// The static function table of OfxPropertySuite v1, initialized once on the
+/// first call in the process.
+///
+/// The returned reference lives as long as the process, and its address can be
+/// handed to a plugin as `OfxPropertySuiteV1*`; [`crate::suites::fetch_suite`]
+/// uses it to answer `kOfxPropertySuite` requests, and repeated calls return the
+/// same instance, so pointers can be compared safely.
 pub fn suite_v1() -> &'static PropertySuiteV1 {
 	static SUITE: std::sync::OnceLock<PropertySuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| PropertySuiteV1 {
@@ -782,7 +1135,8 @@ mod tests {
 		CString::new(s).unwrap()
 	}
 
-	/// `Value` 未实现 PartialEq（Pointer 无法比较）——用 Debug 串比较。
+	/// `Value` does not implement PartialEq (Pointer cannot be compared) — compare
+	/// Debug strings instead.
 	fn val_eq(a: &Value, b: &Value) -> bool {
 		format!("{a:?}") == format!("{b:?}")
 	}
@@ -794,7 +1148,7 @@ mod tests {
 		);
 	}
 
-	/// 空句柄 → BadHandle；空/非 UTF-8 属性名 → ErrValue。
+	/// Null handle → BadHandle; null / non-UTF-8 property name → ErrValue.
 	#[test]
 	fn bad_handles_and_bad_names() {
 		let s = suite_v1();
@@ -860,8 +1214,8 @@ mod tests {
 		}
 	}
 
-	/// 未定义属性 get → ErrUnknown；define 后空数组维度 0 且越界读
-	/// → BadIndex；负索引 → BadIndex。
+	/// get on an undefined property → ErrUnknown; after define, an empty array has
+	/// dimension 0 and an out-of-bounds read → BadIndex; negative index → BadIndex.
 	#[test]
 	fn get_missing_empty_and_bounds() {
 		let s = suite_v1();
@@ -899,8 +1253,9 @@ mod tests {
 		}
 	}
 
-	/// propSet 隐式创建：index 2 建出维度 3 的属性且前导槽位同值；
-	/// 已定义数组 index == 维度追加、越界 → BadIndex。
+	/// propSet implicit creation: index 2 builds a property of dimension 3 with the
+	/// leading slots holding the same value; for a defined array, index ==
+	/// dimension appends and out of bounds → BadIndex.
 	#[test]
 	fn set_creates_and_appends() {
 		let s = suite_v1();
@@ -930,7 +1285,7 @@ mod tests {
 		assert_eq!(set.dimension("a"), 4);
 	}
 
-	/// 空预定义数组：index 0 推入；index > 0 → BadIndex。
+	/// Empty predefined array: index 0 pushes; index > 0 → BadIndex.
 	#[test]
 	fn set_into_empty_predefined_array() {
 		let s = suite_v1();
@@ -947,7 +1302,8 @@ mod tests {
 		assert_value(&set, "empty", 0, &Value::Int(5));
 	}
 
-	/// propSet 类型不符 → Unknown；数值 Int/Double 不互转（set 严格）。
+	/// propSet type mismatch → Unknown; numeric Int/Double are not converted to
+	/// each other (set is strict).
 	#[test]
 	fn set_type_mismatch() {
 		let s = suite_v1();
@@ -968,7 +1324,8 @@ mod tests {
 		}
 	}
 
-	/// propGet：Int ↔ Double 数值协随；混合数组元素类型不符 → Failed。
+	/// propGet: Int ↔ Double numeric coercion; a mismatched element type in a
+	/// mixed array → Failed.
 	#[test]
 	fn get_numeric_coercion_and_mixed_arrays() {
 		let s = suite_v1();
@@ -1011,8 +1368,9 @@ mod tests {
 		}
 	}
 
-	/// 分量不足/超出的类型读：get_string 读数值属性 → Unknown（类型
-	/// 不符），get_double 读字符串 → Unknown。
+	/// Reads with too few/too many components in the requested type: get_string on
+	/// a numeric property → Unknown (type mismatch), get_double on a string
+	/// property → Unknown.
 	#[test]
 	fn get_kind_mismatch() {
 		let s = suite_v1();
@@ -1035,7 +1393,7 @@ mod tests {
 		}
 	}
 
-	/// propGet 空 out 指针 → ErrValue（四种标量读取）。
+	/// propGet with a null out pointer → ErrValue (all four scalar reads).
 	#[test]
 	fn get_null_out_pointers() {
 		let s = suite_v1();
@@ -1065,7 +1423,8 @@ mod tests {
 		}
 	}
 
-	/// propGetPointer：成功写出指针；混合数组类型不符 → Failed。
+	/// propGetPointer: writes the pointer successfully; a type mismatch in a mixed
+	/// array → Failed.
 	#[test]
 	fn get_pointer_paths() {
 		let s = suite_v1();
@@ -1092,7 +1451,8 @@ mod tests {
 		}
 	}
 
-	/// propGetString：写出内驻指针且内容正确；混合数组 → Failed。
+	/// propGetString: writes the in-place pointer with the correct contents; mixed
+	/// array → Failed.
 	#[test]
 	fn get_string_paths() {
 		let s = suite_v1();
@@ -1117,7 +1477,7 @@ mod tests {
 		}
 	}
 
-	/// propSetString：NULL 值 → ErrValue；截断到首个 NUL。
+	/// propSetString: NULL value → ErrValue; truncates at the first NUL.
 	#[test]
 	fn set_string_null_and_truncation() {
 		let s = suite_v1();
@@ -1131,7 +1491,8 @@ mod tests {
 		}
 	}
 
-	/// propSetN 家族：隐式创建、维度替换/逐位写、空数组与 NULL 参数。
+	/// propSetN family: implicit creation, dimension replacement/slot-by-slot
+	/// writes, empty arrays and NULL arguments.
 	#[test]
 	fn set_n_families() {
 		let s = suite_v1();
@@ -1247,7 +1608,8 @@ mod tests {
 		assert_eq!(set.dimension("strs"), 2);
 	}
 
-	/// set_n 类型不符 → Unknown；已有数组 count 0 替换为空。
+	/// set_n type mismatch → Unknown; an existing array is replaced with empty when
+	/// count is 0.
 	#[test]
 	fn set_n_type_mismatch_and_empty_replace() {
 		let s = suite_v1();
@@ -1269,8 +1631,8 @@ mod tests {
 		assert_eq!(set.dimension("i"), 0);
 	}
 
-	/// propGetN：Int ↔ Double 协随、min(count, dim) 截断、混合数组写
-	/// 跳过不符元素。
+	/// propGetN: Int ↔ Double coercion, min(count, dim) truncation, mixed-array
+	/// writes skip mismatched elements.
 	#[test]
 	fn get_n_families() {
 		let s = suite_v1();
@@ -1347,7 +1709,8 @@ mod tests {
 		}
 	}
 
-	/// propGetN 错误路径：空 out、未定义、空数组、类型不符、负 count。
+	/// propGetN error paths: null out, undefined, empty array, type mismatch,
+	/// negative count.
 	#[test]
 	fn get_n_error_paths() {
 		let s = suite_v1();
@@ -1415,7 +1778,8 @@ mod tests {
 		}
 	}
 
-	/// propReset 明确不支持；propGetDimension 空 out/未定义/空数组。
+	/// propReset is explicitly unsupported; propGetDimension with null
+	/// out/undefined/empty array.
 	#[test]
 	fn reset_and_dimension() {
 		let s = suite_v1();
@@ -1446,8 +1810,9 @@ mod tests {
 		}
 	}
 
-	/// QUERCUS_OFX_TRACE 开启时的诊断分支：所有 trace 打印点都被走到
-	/// （错误路径与成功路径）。测试串行化并还原环境变量。
+	/// Diagnostic branches when QUERCUS_OFX_TRACE is enabled: every trace print
+	/// site is reached (error paths and success paths). The test serializes itself
+	/// and restores the environment variable.
 	#[test]
 	fn trace_diagnostic_branches() {
 		static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

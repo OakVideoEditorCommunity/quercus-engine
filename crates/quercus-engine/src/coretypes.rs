@@ -82,7 +82,13 @@ fn pixel_format_from_i32(v: i32) -> Option<PixelFormat> {
 // Rational
 // ---------------------------------------------------------------------------
 
-/// A reduced `num/den` rational (0/0 when `den` is 0).
+/// Build a reduced rational from the raw components `num`/`den`.
+///
+/// Signs are normalized to a non-negative denominator and the fraction is
+/// reduced against `i32::MAX`; `den == 0` (for any numerator) yields the null
+/// sentinel `0/0`, while a zero numerator with a non-zero denominator yields
+/// `0/1`. Use `quercus_core_rational_from_string` to parse text or
+/// `quercus_core_rational_from_f64` for floats.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_new(num: i64, den: i64) -> QuercusRational {
 	QuercusRational::from_native(&Rational::new(num, den))
@@ -94,6 +100,13 @@ pub extern "C" fn quercus_core_rational_null() -> QuercusRational {
 	QuercusRational::from_native(&Rational::NULL)
 }
 
+/// True when `r` is the null/invalid rational, i.e. its numerator is zero
+/// (`0/0` after normalization).
+///
+/// This is the value produced by invalid parsing and by sentinel arithmetic;
+/// the counterpart constructor is `quercus_core_rational_null`. Note that
+/// `is_null` tests the numerator while `is_nan` tests the denominator, so a
+/// hand-built struct with `num == 0` and `den != 0` is reported as null.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_is_null(r: QuercusRational) -> bool {
 	r.to_native().is_null()
@@ -105,6 +118,11 @@ pub extern "C" fn quercus_core_rational_is_nan(r: QuercusRational) -> bool {
 	r.to_native().is_nan()
 }
 
+/// Convert `r` to `f64` as `num / den`.
+///
+/// The null/NaN sentinel (`den == 0`) yields `f64::NAN`; large numerators can
+/// lose precision in the division. Counterpart of the
+/// `quercus_core_rational_from_f64` constructor.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_to_f64(r: QuercusRational) -> f64 {
 	r.to_native().to_f64()
@@ -116,27 +134,52 @@ pub extern "C" fn quercus_core_rational_from_f64(value: f64) -> QuercusRational 
 	QuercusRational::from_native(&Rational::from_double(value))
 }
 
+/// Add two rationals: `a + b`, reduced against `i32::MAX`.
+///
+/// A `RATIONAL_MIN`/`RATIONAL_MAX` operand yields the null sentinel `0/0`; a
+/// NaN operand propagates NaN. Mirrors the C++ `Rational::operator+`. Both
+/// operands are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_add(a: QuercusRational, b: QuercusRational) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() + b.to_native()))
 }
 
+/// Subtract two rationals: `a - b`, reduced against `i32::MAX`.
+///
+/// A `RATIONAL_MIN`/`RATIONAL_MAX` operand yields the null sentinel `0/0`; a
+/// NaN operand propagates NaN. Mirrors the C++ `Rational::operator-`. Both
+/// operands are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_sub(a: QuercusRational, b: QuercusRational) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() - b.to_native()))
 }
 
+/// Multiply two rationals: `a * b`, reduced against `i32::MAX`.
+///
+/// A `RATIONAL_MIN`/`RATIONAL_MAX` operand yields the null sentinel `0/0`; a
+/// NaN operand propagates NaN. Mirrors the C++ `Rational::operator*`. Both
+/// operands are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_mul(a: QuercusRational, b: QuercusRational) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() * b.to_native()))
 }
 
+/// Divide `a` by `b`: `a / b`, reduced against `i32::MAX`.
+///
+/// A zero divisor, a `RATIONAL_MIN`/`RATIONAL_MAX` operand or a null result
+/// yields the null sentinel `0/0`; a NaN operand propagates NaN. Mirrors the
+/// C++ `Rational::operator/`. Both operands are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_div(a: QuercusRational, b: QuercusRational) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() / b.to_native()))
 }
 
-/// Three-way comparison: -1/0/1 for less/equal/greater.
+/// Three-way comparison of `a` and `b`: `-1`, `0` or `1` for
+/// less/equal/greater.
+///
+/// The null/NaN rational (`0/0`) orders before every non-NaN value and equal
+/// to itself, so sentinels compare deterministically (see `Ord for Rational`).
+/// Both operands are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_cmp(a: QuercusRational, b: QuercusRational) -> i32 {
 	match a.to_native().cmp(&b.to_native()) {
@@ -146,15 +189,30 @@ pub extern "C" fn quercus_core_rational_cmp(a: QuercusRational, b: QuercusRation
 	}
 }
 
-/// The project-XML text form (e.g. "30000/1001"), snprintf-style (see
-/// `codec::copy_str_out`).
+/// Write `r` in the project-XML text form (e.g. `"30000/1001"`) using
+/// `snprintf` semantics.
+///
+/// At most `buf_len - 1` bytes are copied and a NUL terminator is added; the
+/// return value is the **full** text length in bytes, so a value `>=
+/// buf_len` means the output was truncated. Passing a null `buf` or
+/// `buf_len == 0` writes nothing and just returns the required length (query
+/// mode). See `codec::copy_str_out`.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_to_string(r: QuercusRational, buf: *mut u8, buf_len: usize) -> i32 {
 	crate::codec::copy_str_out(&r.to_native().to_display_string(), buf, buf_len)
 }
 
-/// Parses the text form ("30000/1001" etc.); invalid input yields the
-/// null sentinel.
+/// Parse the project-XML rational text form, e.g. `"30000/1001"`.
+///
+/// Returns the null sentinel when `s` is null, not valid UTF-8, or not a
+/// parseable rational — callers cannot distinguish those cases from an
+/// explicitly null input. The text form matches
+/// [`quercus_core_rational_to_string`], so parse/format round-trips.
+///
+/// # Safety
+///
+/// `s` must point to `len` readable bytes that stay valid for the call; a null
+/// pointer is allowed and returns the null sentinel.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_core_rational_from_string(s: *const u8, len: usize) -> QuercusRational {
 	let Some(s) = (unsafe { crate::codec::str_arg(s, len) }) else {
@@ -193,19 +251,34 @@ pub extern "C" fn quercus_core_timerange_new(in_: QuercusRational, out: QuercusR
 	QuercusTimeRange::from_native(&TimeRange::new(in_.to_native(), out.to_native()))
 }
 
-/// `out - in`.
+/// The length of `r`, computed as `out - in`.
+///
+/// Returns the null/NaN rational when either endpoint is a
+/// `RATIONAL_MIN`/`RATIONAL_MAX` sentinel (the subtraction propagates NaN, C++
+/// parity). The range constructors normalize their endpoints, so lengths built
+/// through them are non-negative; a hand-built struct with `out < in` yields a
+/// negative length because the fields are public.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_timerange_length(r: QuercusTimeRange) -> QuercusRational {
 	QuercusRational::from_native(&r.to_native().length())
 }
 
-/// True when `t` lies in [in, out).
+/// True when `t` lies in the half-open interval `[in, out)` of `r`.
+///
+/// The `out` endpoint is exclusive, so a zero-length range contains nothing.
+/// Comparisons use the crate's total order (the null/NaN rational sorts before
+/// every value) and never panic on sentinel values.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_timerange_contains(r: QuercusTimeRange, t: QuercusRational) -> bool {
 	r.to_native().contains(t.to_native())
 }
 
-/// The overlap of two ranges (empty when disjoint).
+/// The overlap of two half-open ranges `a` and `b`.
+///
+/// Computed as `max(a.in, b.in) .. min(a.out, b.out)` and then normalized
+/// like every [`TimeRange`], so for **disjoint** ranges the endpoints are
+/// swapped and the result is the gap between them (C++ parity), not an empty
+/// range; touching ranges yield a zero-length range instead.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_timerange_intersected(
 	a: QuercusTimeRange,
@@ -214,7 +287,12 @@ pub extern "C" fn quercus_core_timerange_intersected(
 	QuercusTimeRange::from_native(&a.to_native().intersected(&b.to_native()))
 }
 
-/// The smallest range covering both inputs.
+/// The smallest range covering both `a` and `b` (the union hull).
+///
+/// Runs from `min(a.in, b.in)` to `max(a.out, b.out)` and is normalized, so
+/// two disjoint ranges still yield one range spanning the gap between them
+/// (C++ `TimeRange::combined`); it never merges into a list of ranges. Both
+/// inputs are taken by value.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_timerange_combined(a: QuercusTimeRange, b: QuercusTimeRange) -> QuercusTimeRange {
 	QuercusTimeRange::from_native(&a.to_native().combined(&b.to_native()))
@@ -224,7 +302,13 @@ pub extern "C" fn quercus_core_timerange_combined(a: QuercusTimeRange, b: Quercu
 // PixelFormat
 // ---------------------------------------------------------------------------
 
-/// Whether `format` is a PixelFormat discriminant (-1..=4).
+/// Whether `format` is a known [`PixelFormat`] discriminant.
+///
+/// Accepted codes: `-1` (`Invalid`), `0` (`U8`), `1` (`U10`), `2` (`U16`),
+/// `3` (`F16`) and `4` (`F32`); every other `i32` returns `false`. Mirrors the
+/// conversion used by [`quercus_core_pixelformat_bytes_per_channel`] and
+/// [`quercus_core_pixelformat_bytes_per_pixel`], which return `-1` for the
+/// same invalid inputs.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_pixelformat_is_valid(format: i32) -> bool {
 	pixel_format_from_i32(format).is_some()
@@ -380,7 +464,12 @@ pub extern "C" fn quercus_core_videoparams_default() -> QuercusVideoParams {
 	QuercusVideoParams::from_native(&VideoParams::new())
 }
 
-/// Whether the parameter set describes a valid video stream.
+/// Whether the parameter set describes a usable video stream.
+///
+/// True only when width and height are positive, the pixel aspect ratio is
+/// not the null rational, the pixel format is a real format (not
+/// `Invalid`/`Count`) and `channel_count > 0`. The resolution divider is not
+/// part of the check. Returns `false` for a null `params`.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_videoparams_is_valid(params: *const QuercusVideoParams) -> bool {
 	if params.is_null() {
@@ -389,7 +478,17 @@ pub extern "C" fn quercus_core_videoparams_is_valid(params: *const QuercusVideoP
 	unsafe { &*params }.to_native().is_valid()
 }
 
-/// The width after applying the resolution divider.
+/// Frame width after applying the resolution divider, i.e. the width a
+/// preview actually processes.
+///
+/// The divider is applied with truncating integer division, so odd sizes lose
+/// up to `divider - 1` columns. Returns `0` when `params` is null.
+///
+/// # Panics
+///
+/// Panics (and therefore aborts at the C ABI boundary) when the stored
+/// divider is `0`, because the underlying division is unchecked; validate the
+/// parameter set before calling.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_videoparams_effective_width(params: *const QuercusVideoParams) -> i32 {
 	if params.is_null() {
@@ -398,7 +497,17 @@ pub extern "C" fn quercus_core_videoparams_effective_width(params: *const Quercu
 	unsafe { &*params }.to_native().effective_width()
 }
 
-/// The height after applying the resolution divider.
+/// Frame height after applying the resolution divider, i.e. the height a
+/// preview actually processes.
+///
+/// The divider is applied with truncating integer division, so odd sizes lose
+/// up to `divider - 1` rows. Returns `0` when `params` is null.
+///
+/// # Panics
+///
+/// Panics (and therefore aborts at the C ABI boundary) when the stored
+/// divider is `0`, because the underlying division is unchecked; validate the
+/// parameter set before calling.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_videoparams_effective_height(params: *const QuercusVideoParams) -> i32 {
 	if params.is_null() {
@@ -416,7 +525,13 @@ pub extern "C" fn quercus_core_videoparams_bytes_per_pixel(params: *const Quercu
 	unsafe { &*params }.to_native().bytes_per_pixel()
 }
 
-/// Total frame buffer size in bytes; -1 when params is null.
+/// Total bytes for one uncompressed frame of this parameter set.
+///
+/// Computed as `width * height * bytes_per_pixel` with wrapping `i32`
+/// arithmetic (C++ parity), using the raw width/height — not the
+/// divider-applied effective sizes — and adding no row alignment or padding;
+/// an unknown pixel format contributes 0 bytes. Returns `-1` when `params` is
+/// null; the pointer is read but not retained.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_videoparams_buffer_size(params: *const QuercusVideoParams) -> i32 {
 	if params.is_null() {

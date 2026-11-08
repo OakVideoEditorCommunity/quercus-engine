@@ -11,6 +11,14 @@ use crate::codec::{copy_str_out, str_arg};
 
 /// Whether `filename` contains an image-sequence digit placeholder;
 /// false on invalid input.
+///
+/// `filename` is a UTF-8 byte slice of `filename_len` bytes (not
+/// NUL-terminated); null input or invalid UTF-8 yields `false`.
+///
+/// # Safety
+///
+/// `filename` must be null or point to `filename_len` readable bytes valid
+/// for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_filename_contains_digit_placeholder(
 	filename: *const u8,
@@ -24,6 +32,14 @@ pub unsafe extern "C" fn quercus_codec_encoder_filename_contains_digit_placehold
 
 /// The digit count of the sequence placeholder in `filename` (0 when
 /// none); -1 on invalid input.
+///
+/// For example `export.[####].exr` reports 4; -1 means `filename` was null or
+/// not valid UTF-8.
+///
+/// # Safety
+///
+/// `filename` must be null or point to `filename_len` readable bytes valid
+/// for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_image_sequence_placeholder_digit_count(
 	filename: *const u8,
@@ -37,6 +53,17 @@ pub unsafe extern "C" fn quercus_codec_encoder_image_sequence_placeholder_digit_
 
 /// `filename` with the digit placeholder removed, snprintf-style; -1 on
 /// invalid input.
+///
+/// `buf` receives the result NUL-terminated, truncated to `buf_len - 1`; a
+/// null `buf` or `buf_len == 0` performs a size query. Returns the full
+/// output byte length excluding the NUL (so `ret >= buf_len` means the output
+/// was truncated), or -1 when `filename` is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `filename` must be null or point to `filename_len` readable bytes;
+/// `buf` must be null or point to `buf_len` writable bytes, and the two
+/// buffers must not overlap (the copy is non-overlapping).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_filename_remove_digit_placeholder(
 	filename: *const u8,
@@ -126,6 +153,16 @@ pub extern "C" fn quercus_codec_encoding_params_default() -> EncodingParams {
 /// not yet open). `EncodingParams` is `repr(C)` and crosses by reference
 /// — declare the identical layout in the C header. Null when no encoder
 /// supports the requested format or configuration fails.
+///
+/// The returned handle is refcounted; release it with
+/// `quercus_codec_encoder_release` and call [`quercus_codec_encoder_open`]
+/// before writing.
+///
+/// # Safety
+///
+/// `params` must be null or point at a readable, properly aligned
+/// [`EncodingParams`] with the layout declared in the C header; it is
+/// borrowed and need only stay valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_create(
 	params: *const EncodingParams,
@@ -147,6 +184,15 @@ pub unsafe extern "C" fn quercus_codec_encoder_create(
 
 /// Opens the output file and writes the headers. False on null or
 /// failure.
+///
+/// Call once after [`quercus_codec_encoder_create`] and before any
+/// `write_*`; false when the session is null or the file cannot be opened
+/// or the headers cannot be written.
+///
+/// # Safety
+///
+/// `session` must be null or a live, unreleased handle from
+/// [`quercus_codec_encoder_create`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_open(session: *mut EncoderSession) -> bool {
 	if session.is_null() {
@@ -158,6 +204,12 @@ pub unsafe extern "C" fn quercus_codec_encoder_open(session: *mut EncoderSession
 /// Encodes one video frame (a `Frame` handle from
 /// `quercus_codec_frame_*`; the caller keeps its reference). False on null
 /// input, a closed session, or encode failure.
+///
+/// # Safety
+///
+/// `session` must be null or a live, unreleased encoder handle;
+/// `frame` must be null or a live, unreleased frame handle that is not
+/// mutated concurrently for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_write_video(
 	session: *mut EncoderSession,
@@ -172,8 +224,19 @@ pub unsafe extern "C" fn quercus_codec_encoder_write_video(
 		.is_ok()
 }
 
-/// Encodes `frame_count` frames of interleaved f32 audio from
-/// `samples`. False on null input or encode failure.
+/// Encodes `frame_count` frames of interleaved f32 audio from `samples`.
+///
+/// `samples` holds `sample_count` f32 values (channels interleaved) and may
+/// be null only when `sample_count == 0` (an empty buffer). Returns false on
+/// a null session, a null `samples` with a non-zero `sample_count`, or an
+/// encode failure.
+///
+/// # Safety
+///
+/// `session` must be null or a live, unreleased handle from
+/// [`quercus_codec_encoder_create`]; `samples` must be null or point to
+/// `sample_count` readable, properly aligned `f32` values valid for the
+/// call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_write_audio(
 	session: *mut EncoderSession,
@@ -196,6 +259,14 @@ pub unsafe extern "C" fn quercus_codec_encoder_write_audio(
 }
 
 /// Flushes the encoders. False on null or failure.
+///
+/// Drains buffered packets to the muxer so the output is complete before
+/// [`quercus_codec_encoder_close`]; call it after the last write.
+///
+/// # Safety
+///
+/// `session` must be null or a live, unreleased handle from
+/// [`quercus_codec_encoder_create`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_flush(session: *mut EncoderSession) -> bool {
 	if session.is_null() {
@@ -204,8 +275,17 @@ pub unsafe extern "C" fn quercus_codec_encoder_flush(session: *mut EncoderSessio
 	unsafe { &*session }.encoder.flush().is_ok()
 }
 
-/// Writes the trailer and closes the output (idempotent). False on null
-/// or failure.
+/// Writes the trailer and closes the output (idempotent). False on null or
+/// failure.
+///
+/// A second close is idempotent: it forwards the encoder's result again.
+/// Flush pending packets with [`quercus_codec_encoder_flush`] first.
+///
+/// # Safety
+///
+/// `session` must be null or a live, unreleased handle from
+/// [`quercus_codec_encoder_create`]; it is not freed here (use
+/// `quercus_codec_encoder_release`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_close(session: *mut EncoderSession) -> bool {
 	if session.is_null() {
@@ -366,7 +446,17 @@ mod session_tests {
 }
 
 /// Encodes one subtitle entry (`in_seconds`/`out_seconds` in seconds).
-/// False on null input, unsupported encoder, or encode failure.
+///
+/// `text` is a UTF-8 byte slice of `text_len` bytes (not NUL-terminated);
+/// the entry spans `in_seconds..out_seconds` on the output timeline. Returns
+/// false on a null session or `text`, invalid UTF-8, an encoder without
+/// subtitle support, or an encode failure.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from
+/// [`quercus_codec_encoder_create`] that has not been released; `text` must
+/// be null or point to `text_len` readable bytes valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_encoder_write_subtitle(
 	session: *mut EncoderSession,

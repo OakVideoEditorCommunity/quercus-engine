@@ -50,6 +50,11 @@ pub struct MediaIoError {
 
 impl MediaIoError {
 	/// Build an error from a status code and message.
+	///
+	/// `code` is provider-defined (0 means "unspecified"; usually a POSIX
+	/// `errno` or a vendor status) and `message` the human-readable
+	/// diagnostic. Both are kept verbatim; the [`std::fmt::Display`] impl
+	/// prints them as `message (code N)`.
 	pub fn new(code: i32, message: impl Into<String>) -> Self {
 		MediaIoError {
 			code,
@@ -143,6 +148,11 @@ pub fn clear_provider() -> Option<Arc<dyn MediaIoProvider>> {
 }
 
 /// Whether a provider is installed and claims `path`.
+///
+/// Clones the process-wide provider out of the registry, then calls its
+/// cheap, I/O-free [`MediaIoProvider::can_open`]; `false` when no provider is
+/// installed. [`open_input`] uses this to choose between the provider's
+/// stream and the ordinary local-file open.
 pub fn provider_handles(path: &str) -> bool {
 	current_provider().is_some_and(|provider| provider.can_open(path))
 }

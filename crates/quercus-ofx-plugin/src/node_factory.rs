@@ -14,30 +14,35 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OFX 插件 → 节点工厂接线（阶段 6a）。
+//! OFX plugin → node factory wiring (stage 6a).
 //!
-//! 对应 C++ `NodeFactory::register_plugin_nodes`
-//! （factory.cpp:148-186）+ `PluginNode::PluginNode(Instance*)` 的
-//! 参数翻译构造函数（engine/node/plugins/plugin.cpp:274-514）。
-//! OFX 类型只存在于本 crate，故翻译放这里；quercusnode 侧只承载行为
-//! （[`quercus_node::nodes::plugin::PluginNode`]）——这是依赖方向
-//! （quercusplugin → quercusrender → quercusnode）强加的拆分。
+//! Corresponds to the C++ `NodeFactory::register_plugin_nodes`
+//! (factory.cpp:148-186) plus the parameter-translation constructor of
+//! `PluginNode::PluginNode(Instance*)` (engine/node/plugins/plugin.cpp:274-514).
+//! OFX types exist only in this crate, so the translation lives here; the
+//! quercusnode side carries only the behavior
+//! ([`quercus_node::nodes::plugin::PluginNode`]) — this split is forced by
+//! the dependency direction (quercusplugin → quercusrender → quercusnode).
 //!
-//! 职责：
-//! - **实例注册表**：节点持 [`quercus_node::nodes::plugin::PluginInstanceHandle`]
-//!   （u64 键），这里持 `Arc<RefBox<Instance>>`（C++ 的工厂实例在库
-//!   条目内存活；Rust 侧等价于注册表进程级存活）。
-//! - **参数翻译**：15 类 OFX 参数 → quercusnode 输入（类型表逐字对齐
-//!   plugin.cpp:340-378），默认值缓存、颜色语义启发式、combo 排序、
-//!   secret→hidden、ui_group/ui_page、clip→纹理输入、effect_input
-//!   选择（plugin.cpp:494-514）。
-//! - **渲染执行器**：[`install_render_executor`] 把 render_driver 装
-//!   进 quercusrender 的 executor 槽（依赖反转；quercusrender 看不见本 crate）
-//!   与 quercusnode 的 duplicator 槽。
+//! Responsibilities:
+//! - **Instance registry**: the node holds a
+//!   [`quercus_node::nodes::plugin::PluginInstanceHandle`] (u64 key), while
+//!   this crate holds an `Arc<RefBox<Instance>>` (C++ factory instances live
+//!   for the lifetime of the library entry; the Rust equivalent keeps them
+//!   alive for the process lifetime via the registry).
+//! - **Parameter translation**: 15 classes of OFX parameters → quercusnode
+//!   inputs (the type table mirrors plugin.cpp:340-378 verbatim), default
+//!   value caching, color-semantics heuristics, combo ordering,
+//!   secret→hidden, ui_group/ui_page, clip→texture input, effect_input
+//!   selection (plugin.cpp:494-514).
+//! - **Render executor**: [`install_render_executor`] installs the
+//!   render_driver into quercusrender's executor slot (dependency inversion;
+//!   quercusrender cannot see this crate) and into quercusnode's duplicator
+//!   slot.
 //!
-//! app 注入点另见 [`crate::progress::set_reporter_factory`]（进度
-//! UI）与 [`crate::suites::timeline::set_active_viewer_provider`]
-//! （timeline suite 回退时间源）。
+//! For other app injection points see [`crate::progress::set_reporter_factory`]
+//! (progress UI) and [`crate::suites::timeline::set_active_viewer_provider`]
+//! (the timeline suite's fallback time source).
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -56,7 +61,7 @@ use crate::instance::Instance;
 use crate::param::{self as ofx, ParamDef, ParamValue};
 use crate::property::{PropertySet, Value as PropValue};
 
-/// kOfxPropPluginDescription（描述符根属性）。
+/// kOfxPropPluginDescription (descriptor root property).
 const PROP_PLUGIN_DESCRIPTION: &str = "OfxPropPluginDescription";
 
 // ---------------------------------------------------------------------------
@@ -70,8 +75,10 @@ fn instances() -> &'static Mutex<HashMap<u64, Arc<RefBox<Instance>>>> {
 	INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 登记一个实例，返回非 0 句柄键（C++ 的 `Instance*` 指针身份）。
-/// 实例进程级存活（对齐 C++ 工厂持有；Drop 才发 destroyInstance）。
+/// Registers an instance and returns a non-zero handle key (the identity of
+/// the C++ `Instance*` pointer).
+/// The instance lives for the process lifetime (matching the C++ factory's
+/// ownership; `Drop` sends destroyInstance).
 pub fn register_instance(inst: Arc<RefBox<Instance>>) -> u64 {
 	let id = NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
 	instances()
@@ -81,7 +88,17 @@ pub fn register_instance(inst: Arc<RefBox<Instance>>) -> u64 {
 	id
 }
 
-/// 句柄键 → 实例（查无返回 None）。
+/// Looks up the instance registry by handle key and returns the shared
+/// instance reference.
+///
+/// Returns `None` when the lookup fails (not registered, already
+/// [`unregister_instance`]d, or key 0). The returned `Arc` keeps the instance
+/// alive for as long as the caller holds it and can be used across `Host`
+/// calls. Corresponds to the C++ factory's `Instance*` pointer identity.
+///
+/// # Arguments
+///
+/// * `id` - Non-zero handle key allocated by [`register_instance`].
 pub fn instance_from_id(id: u64) -> Option<Arc<RefBox<Instance>>> {
 	instances()
 		.lock()
@@ -90,7 +107,16 @@ pub fn instance_from_id(id: u64) -> Option<Arc<RefBox<Instance>>> {
 		.cloned()
 }
 
-/// 摘除登记（节点销毁路径；未登记的键 no-op）。
+/// Removes `id` from the instance registry (node-destruction path).
+///
+/// Afterwards [`instance_from_id`] can no longer find the key; existing `Arc`
+/// references stay valid and the `Instance`'s `Drop` (which sends
+/// destroyInstance) runs only when the last reference is released. An
+/// unregistered key is a no-op and does not report an error.
+///
+/// # Arguments
+///
+/// * `id` - Handle key to remove.
 pub fn unregister_instance(id: u64) {
 	instances()
 		.lock()
@@ -98,7 +124,7 @@ pub fn unregister_instance(id: u64) {
 		.remove(&id);
 }
 
-/// 当前登记数（测试/诊断）。
+/// Current registration count (tests/diagnostics).
 pub fn registered_instance_count() -> usize {
 	instances().lock().unwrap_or_else(|e| e.into_inner()).len()
 }
@@ -153,7 +179,19 @@ pub fn push_button_clicked(instance: u64, param_name: &str) -> bool {
 
 static PROJECT_EXTENT: OnceLock<Mutex<(f64, f64)>> = OnceLock::new();
 
-/// 注入项目幅面（宽、高；normalised 坐标默认值换算用）。
+/// Injects the project extent, used to convert default values of normalised
+/// coordinates into canonical values.
+///
+/// When an OFX parameter declares
+/// `kOfxParamPropDefaultCoordinateSystem = normalised`, its default value is
+/// converted using the extent (see [`default_value_for_param`] and
+/// [`to_canonical`]). When no extent is injected the HD default 1920×1080 is
+/// used; this crate does not hold project context, so the app calls this when
+/// opening a project or switching sequences.
+///
+/// # Arguments
+///
+/// * `width` / `height` - Project canvas size (pixels, i.e. canonical units).
 pub fn set_project_extent(width: f64, height: f64) {
 	*project_extent_slot()
 		.lock()
@@ -170,7 +208,18 @@ fn project_extent() -> (f64, f64) {
 		.unwrap_or_else(|e| e.into_inner())
 }
 
-/// C++ to_canonical（plugin.cpp:52-55）。
+/// Converts normalised coordinates (0..1 values relative to the extent) into
+/// canonical pixel values.
+///
+/// When `extent > 0` returns `normalised * extent`; otherwise (extent not
+/// injected or 0) returns the input unchanged, avoiding division by zero and
+/// NaN. Corresponds to the C++ function of the same name (plugin.cpp:52-55).
+///
+/// # Arguments
+///
+/// * `normalised` - Normalised coordinate, usually 0..1 but out-of-range
+///   values are allowed.
+/// * `extent` - Extent size of that axis (pixels).
 fn to_canonical(normalised: f64, extent: f64) -> f64 {
 	if extent > 0.0 {
 		normalised * extent
@@ -183,6 +232,18 @@ fn to_canonical(normalised: f64, extent: f64) -> f64 {
 // 属性读取助手
 // ---------------------------------------------------------------------------
 
+/// Reads the string value of the `index`-th same-named property in a property
+/// set.
+///
+/// Returns an empty `String` when the value type is not String or the
+/// property is missing (the common fallback for absent OFX properties); uses
+/// a lossy conversion, so non-UTF-8 bytes are replaced.
+///
+/// # Arguments
+///
+/// * `props` - Property set of the parameter/descriptor.
+/// * `name` - OFX property name (e.g. `OfxPropLabel`).
+/// * `index` - Index of the same-named multi-value property, starting at 0.
 fn prop_str(props: &PropertySet, name: &str, index: usize) -> String {
 	match props.get(name, index) {
 		Some(PropValue::String(s)) => s.to_string_lossy().into_owned(),
@@ -190,6 +251,18 @@ fn prop_str(props: &PropertySet, name: &str, index: usize) -> String {
 	}
 }
 
+/// Reads the floating-point value of the `index`-th same-named property in a
+/// property set.
+///
+/// Returns a Double directly and widens an Int to f64; returns 0.0 when the
+/// property is missing or has another type. Used for numeric properties such
+/// as default/display-min/display-max.
+///
+/// # Arguments
+///
+/// * `props` - Property set.
+/// * `name` - OFX property name.
+/// * `index` - Index of the same-named multi-value property, starting at 0.
 fn prop_double(props: &PropertySet, name: &str, index: usize) -> f64 {
 	match props.get(name, index) {
 		Some(PropValue::Double(v)) => v,
@@ -198,6 +271,17 @@ fn prop_double(props: &PropertySet, name: &str, index: usize) -> f64 {
 	}
 }
 
+/// Reads the integer value of the `index`-th same-named property in a property
+/// set.
+///
+/// Returns an Int directly and truncates a Double to i32; returns 0 when the
+/// property is missing or has another type.
+///
+/// # Arguments
+///
+/// * `props` - Property set of the parameter/descriptor.
+/// * `name` - OFX property name.
+/// * `index` - Index of the same-named multi-value property, starting at 0.
 fn prop_int(props: &PropertySet, name: &str, index: usize) -> i32 {
 	match props.get(name, index) {
 		Some(PropValue::Int(v)) => v,
@@ -214,8 +298,21 @@ fn is_normalised_coord_system(def: &ParamDef) -> bool {
 // 默认值（plugin.cpp default_value_for_param，:57-131）
 // ---------------------------------------------------------------------------
 
-/// 单个参数的节点默认值（无值类返回 None；对齐 C++ 返回 invalid
-/// QVariant 的分支）。
+/// Builds the node default value for a parameter according to its OFX type.
+///
+/// The numeric family reads `kOfxParamPropDefault`: Integer→Int,
+/// Choice→Combo, Boolean→`!=0`, Double→Float (normalised coordinates are
+/// converted to canonical using the project extent); String/StrChoice→Text,
+/// Custom→Binary (raw bytes preserved); RGB/RGBA read 3/4 components (alpha
+/// defaults to 1.0); Double2D/3D and Integer2D/3D become Vec2/Vec3;
+/// Bytes→empty Binary; Parametric→deterministic JSON text of the
+/// `def.default` curve (node inputs have no curve type). PushButton/Group/Page
+/// and unknown types have no default value and return `None`.
+///
+/// # Arguments
+///
+/// * `def` - Parameter description (type, property set, describe-time default
+///   value).
 fn default_value_for_param(def: &ParamDef) -> Option<NodeValue> {
 	let props = &def.props;
 	match def.ofx_type.as_str() {
@@ -304,15 +401,27 @@ fn default_value_for_param(def: &ParamDef) -> Option<NodeValue> {
 	}
 }
 
-/// 每插件的默认值缓存（C++ g_plugin_param_defaults，plugin.cpp:37）。
+/// Per-plugin default-value cache (C++ g_plugin_param_defaults, plugin.cpp:37).
 static DEFAULTS: OnceLock<Mutex<HashMap<String, HashMap<String, NodeValue>>>> = OnceLock::new();
 
 fn defaults_slot() -> &'static Mutex<HashMap<String, HashMap<String, NodeValue>>> {
 	DEFAULTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 取（或首访构建）某插件的参数默认值表（build_default_values，
-/// plugin.cpp:224-246）。
+/// Returns the parameter default-value table for a plugin (process-level
+/// cache), built on first access.
+///
+/// The cache key is the plugin identifier; when building, Group/Page/PushButton
+/// and empty-name parameters are skipped and all others are written through
+/// [`default_value_for_param`] as `parameter name → NodeValue`. Returns a clone,
+/// which the caller may modify freely. Concurrent first access is serialised by
+/// a mutex (`OnceLock<Mutex<…>>`).
+///
+/// # Arguments
+///
+/// * `plugin_id` - Plugin identifier (cache key).
+/// * `params` - That instance's parameter set; used only when building on first
+///   access.
 fn cached_defaults(
 	plugin_id: &str,
 	params: &crate::param::ParamSetInstance,
@@ -350,7 +459,22 @@ fn cached_defaults(
 // 颜色语义启发式（plugin.cpp deduce_color_semantic，:133-222）
 // ---------------------------------------------------------------------------
 
-/// RGB/RGBA 参数是取色器（"color"）还是逐通道标量组（"scalar"）。
+/// Decides whether an RGB/RGBA parameter is a color picker (`"color"`) or a
+/// per-channel scalar group (`"scalar"`).
+///
+/// Applies the heuristics in order: label/hint/name containing color keywords
+/// (color/colour/fill/tint/key) → color; containing scalar keywords
+/// (gamma/contrast/gain/offset/…) → scalar; display min/max clearly outside
+/// [0,1] → scalar; all channel defaults equal → scalar; parent group name or
+/// group label containing scalar keywords → scalar; otherwise color. For
+/// non-RGB/RGBA types returns "color" directly (callers only use this on Color
+/// inputs).
+///
+/// # Arguments
+///
+/// * `def` - Parameter description (type + property set).
+/// * `group_labels` - Group parameter name → display label (collected in the
+///   first pass), used for the parent-group check in rule 5.
 fn deduce_color_semantic(def: &ParamDef, group_labels: &HashMap<String, String>) -> &'static str {
 	const COLOR_KEYWORDS: &[&str] = &["color", "colour", "fill", "tint", "key"];
 	const SCALAR_KEYWORDS: &[&str] = &[
@@ -431,6 +555,18 @@ fn deduce_color_semantic(def: &ParamDef, group_labels: &HashMap<String, String>)
 // clip 显示名（plugin.cpp clip_label_for_name，:248-270）
 // ---------------------------------------------------------------------------
 
+/// Computes the display name of a clip (texture input) on a node.
+///
+/// Transition-specific clip names are mapped first: `Source`→"Source",
+/// `SourceFrom`→"From", `SourceTo`→"To"; otherwise the clip property
+/// `OfxPropLabel` is preferred, falling back to the clip name itself when that
+/// is empty. Corresponds to C++ `clip_label_for_name` (plugin.cpp:248-270).
+///
+/// # Arguments
+///
+/// * `name` - OFX clip name.
+/// * `clip_props` - The clip's property set; pass `None` when it has no
+///   properties.
 fn clip_label_for_name(name: &str, clip_props: Option<&PropertySet>) -> String {
 	// 过渡上下文 clip 名（ofxImageEffect.h:1435-1441）。
 	if name == SOURCE_CLIP {
@@ -455,8 +591,9 @@ fn clip_label_for_name(name: &str, clip_props: Option<&PropertySet>) -> String {
 // 参数翻译：OFX 参数 → 节点输入（plugin.cpp:331-490）
 // ---------------------------------------------------------------------------
 
-/// OFX 类型 → 节点输入值类型（plugin.cpp:340-378 的类型表；
-/// Group/Page 与未知类型（k_none）均无输入 → None，跳过）。
+/// Maps an OFX type → node input value type (the type table in
+/// plugin.cpp:340-378; Group/Page and unknown types (k_none) have no input →
+/// None and are skipped).
 fn input_type_for(ofx_type: &str) -> Option<ValueType> {
 	Some(match ofx_type {
 		ofx::TYPE_INTEGER => ValueType::Int,
@@ -477,7 +614,26 @@ fn input_type_for(ofx_type: &str) -> Option<ValueType> {
 	})
 }
 
-/// 从描述符实例构建节点输入表（PluginNode 构造函数的参数/clip 循环）。
+/// Builds the plugin's node input table (`NodeCore`) from a descriptor
+/// instance.
+///
+/// Scans the parameters in two passes: the first collects group labels and the
+/// page→parameter mapping; the second translates every value parameter into an
+/// input (defaults from [`cached_defaults`], secret→HIDDEN, label→display_name,
+/// the `ui_group`/`ui_page` properties, the parametric dimensions/domain/UI
+/// color properties, Color's `color_semantic`+min/max+tooltip, and
+/// Combo/StrCombo's `combo_option`/`combo_value` with a stable sort by
+/// ChoiceOrder). Then turns every clip (except "Output") into a Texture input,
+/// and finally decides effect_input: prefer the `Source` clip, else an existing
+/// `Texture` input, otherwise add a `Texture` input when other clips exist and
+/// select it.
+///
+/// # Arguments
+///
+/// * `inst` - Plugin instance that has been created and described.
+///
+/// The returned core is taken over by `PluginNode::new`; this function does not
+/// register an instance.
 fn build_core(inst: &Instance) -> NodeCore {
 	let mut core = NodeCore::new();
 
@@ -704,7 +860,17 @@ fn build_core(inst: &Instance) -> NodeCore {
 	core
 }
 
-/// 上下文的显示子分类（plugin.cpp:281-290）。
+/// Maps an OFX image-effect context to the factory's display sub-category.
+///
+/// `OfxImageEffectContextFilter/Generator/Transition` map to
+/// Filter/Generator/Transition respectively, and everything else (General and
+/// unknown contexts) maps to "General". The result is written to
+/// `DynamicNodeMeta::sub_category` and determines the grouping in the create
+/// menu.
+///
+/// # Arguments
+///
+/// * `context` - OFX context string.
 fn sub_category_for(context: &str) -> &'static str {
 	match context {
 		"OfxImageEffectContextFilter" => "Filter",
@@ -714,7 +880,15 @@ fn sub_category_for(context: &str) -> &'static str {
 	}
 }
 
-/// 插件描述符的显示名（plugin.cpp PluginNode::name，:517-524）。
+/// The plugin's display name in the create menu.
+///
+/// Takes the descriptor's `OfxPropLabel`; when that is empty it falls back to
+/// the plugin identifier so the menu entry is never empty. Corresponds to C++
+/// `PluginNode::name` (plugin.cpp:517-524).
+///
+/// # Arguments
+///
+/// * `inst` - Plugin instance (reads `inst.plugin.descriptor.props`).
 fn plugin_display_name(inst: &Instance) -> String {
 	let label = prop_str(&inst.plugin.descriptor.props, ofx::PROP_LABEL, 0);
 	if label.is_empty() {
@@ -724,8 +898,16 @@ fn plugin_display_name(inst: &Instance) -> String {
 	}
 }
 
-/// 插件描述符的描述文本（plugin.cpp PluginNode::description，
-/// :531-538）。
+/// The description text of the plugin descriptor.
+///
+/// Reads the `OfxPropPluginDescription` property; returns an empty string when
+/// the plugin does not provide it (not `None`; callers use it directly as an
+/// empty description). Corresponds to C++ `PluginNode::description`
+/// (plugin.cpp:531-538).
+///
+/// # Arguments
+///
+/// * `inst` - Plugin instance (reads the descriptor property set).
 fn plugin_description(inst: &Instance) -> String {
 	prop_str(&inst.plugin.descriptor.props, PROP_PLUGIN_DESCRIPTION, 0)
 }
@@ -735,7 +917,21 @@ fn plugin_description(inst: &Instance) -> String {
 // 所有权模型；Rust 侧每节点独占实例才能支持 duplicate 与并发渲染）
 // ---------------------------------------------------------------------------
 
-/// 为 (identifier, context) 建一个插件节点（新实例 + 注册表登记）。
+/// Creates a new plugin instance for `(identifier, context)` and wraps it as a
+/// node.
+///
+/// Creates the instance through `Host::global().create_instance`, lets
+/// [`build_core`] produce the input table, reads the display name/description/
+/// sub-category, registers the instance in the registry, then wraps it with
+/// `PluginNode::new` and returns `(core, behavior)`. Returns `None` when
+/// instance creation fails (e.g. the plugin does not support that context), and
+/// the caller falls back to an empty plugin node.
+///
+/// # Arguments
+///
+/// * `identifier` - Plugin identifier (also used as the factory type id).
+/// * `context` - OFX image-effect context string; determines the display
+///   sub-category.
 fn create_plugin_node(
 	identifier: &str,
 	context: &str,
@@ -758,10 +954,10 @@ fn create_plugin_node(
 	Some((core, Box::new(node)))
 }
 
-/// 扫描宿主插件缓存并向节点工厂注册动态条目（C++
-/// `NodeFactory::register_plugin_nodes`，factory.cpp:148-186）。
-/// 返回新注册的 type id 列表；已存在的 id 跳过（register_dynamic
-/// 去重，对齐 C++ existing_ids 检查）。
+/// Scans the host's plugin cache and registers dynamic entries with the node
+/// factory (C++ `NodeFactory::register_plugin_nodes`, factory.cpp:148-186).
+/// Returns the list of newly registered type ids; existing ids are skipped
+/// (register_dynamic de-duplicates, matching the C++ existing_ids check).
 pub fn register_plugin_nodes() -> Vec<String> {
 	install_render_executor();
 
@@ -814,14 +1010,22 @@ pub fn register_plugin_nodes() -> Vec<String> {
 // 渲染执行器 + duplicator（依赖反转的 quercusplugin 侧半环）
 // ---------------------------------------------------------------------------
 
-/// 文本族参数注入（POD 无字符串表达；直接 set_ofx）。按参数的 OFX
-/// 类型分发：String → String、StrChoice → StrChoice；Parametric →
-/// 解析 JSON 曲线集（[`crate::param_curve::curves_from_json`]，宿主侧
-/// [`crate::param_curve::curves_to_json`] 的格式）写回
-/// `ParamValue::Parametric`——即"节点输入值变化 → 写回实例"的
-/// parametric 路径（渲染期参数覆盖的分支，见
-/// [`execute_plugin_job`]）。JSON 解析失败 / 类型不符 → 忽略（与
-/// 字符串族类型不匹配静默一致）。
+/// Writes text-family parameters back to the plugin instance (POD value
+/// overrides cannot express strings, so `set_ofx` is used directly).
+///
+/// Dispatches on the parameter's OFX type: String → `ParamValue::String`,
+/// StrChoice → `ParamValue::StrChoice` (text containing NUL is rejected; a
+/// failing `CString::new` is ignored), Parametric → parses the JSON into a
+/// curve set and writes it back as `ParamValue::Parametric` (format described
+/// in [`crate::param_curve::curves_from_json`]). A missing parameter,
+/// mismatched type, or invalid JSON is silently ignored.
+///
+/// # Arguments
+///
+/// * `inst` - Target plugin instance.
+/// * `key` - Parameter name (OFX parameter identifier).
+/// * `text` - Text form of the new value; curve JSON for Parametric
+///   parameters.
 fn set_text_param(inst: &Instance, key: &str, text: &str) {
 	let Some(p) = inst.params.find(key) else {
 		return;
@@ -848,7 +1052,30 @@ fn set_text_param(inst: &Instance, key: &str, text: &str) {
 	}
 }
 
-/// executor 槽实现：JobSpec::Plugin → render_driver::render_frame。
+/// Render-executor slot implementation: hands a `PluginJobRequest` to the
+/// plugin render path.
+///
+/// Handles only `JobSpec::Plugin`: looks up the registry by `instance`; writes
+/// the text/StrChoice/curves in `values` back to the instance
+/// ([`set_text_param`]) and collects POD values as numeric overrides for
+/// `render_driver`; creates the output texture at the input texture size (for
+/// GPU inputs with `QUERCUS_OFX_GL` + GL zero-copy, uses a GPU texture from the
+/// same `GpuContext`, otherwise CPU F32; creation failure also falls back to
+/// CPU); finally calls `render_driver::render_frame` and returns the output
+/// texture.
+///
+/// # Arguments
+///
+/// * `req` - Render request: `spec` (plugin instance id, time, effect input,
+///   input table, parameter overrides) and `src` (the evaluated input texture,
+///   which must not be a dummy).
+///
+/// # Errors
+///
+/// * `Error::Invalid`: `spec` is not `JobSpec::Plugin`.
+/// * `Error::Failed`: the instance is not registered (already released), the
+///   input is a dummy, output frame allocation fails, or the plugin render
+///   fails.
 fn execute_plugin_job(
 	req: &quercus_render::eval::PluginJobRequest<'_>,
 ) -> quercus_render::error::Result<quercus_core::texture::Texture> {
@@ -961,7 +1188,20 @@ fn execute_plugin_job(
 	Ok(out)
 }
 
-/// duplicator 槽实现：duplicate() 经注册表换新实例。
+/// Duplicator slot implementation: creates a **new** plugin instance for a
+/// duplicated node.
+///
+/// Looks up the old handle to get the identifier and context, calls
+/// createInstance again through `Host`, then registers the new instance in the
+/// registry and returns the new handle. Returns `None` when the old instance is
+/// not found or the new one cannot be created; `PluginNode::duplicate` then
+/// also returns `None` (duplication failed). Each node owns an exclusive
+/// instance, so duplicated nodes do not share parameter state with the node
+/// they were copied from.
+///
+/// # Arguments
+///
+/// * `old` - Instance handle of the node being duplicated.
 fn duplicate_instance(old: PluginInstanceHandle) -> Option<PluginInstanceHandle> {
 	let inst = instance_from_id(old.0)?;
 	let identifier = inst.value.plugin.identifier.clone();
@@ -974,9 +1214,10 @@ fn duplicate_instance(old: PluginInstanceHandle) -> Option<PluginInstanceHandle>
 
 static EXECUTOR_INSTALLED: OnceLock<()> = OnceLock::new();
 
-/// 把渲染执行器装进 quercusrender 的 executor 槽、duplicator 装进
-/// quercusnode（幂等）。[`register_plugin_nodes`] 已内含；app 侧单独
-/// 初始化渲染管线时也可直接调。
+/// Installs the render executor into quercusrender's executor slot and the
+/// duplicator into quercusnode (idempotent). [`register_plugin_nodes`] already
+/// includes this; the app may also call it directly when initialising the
+/// render pipeline on its own.
 pub fn install_render_executor() {
 	EXECUTOR_INSTALLED.get_or_init(|| {
 		quercus_render::eval::set_plugin_executor(Some(Arc::new(execute_plugin_job)));
@@ -1000,10 +1241,13 @@ pub fn install_render_executor() {
 // montage 渲染路径的共享实例（渲染进程按插件标识惰性创建 + 进程级缓存）
 // ---------------------------------------------------------------------------
 
-/// montage 效果栈携带插件标识而非实例 id（montage 在主进程从时间线
-/// 解析，实例活在渲染进程）。渲染进程经此工厂按需创建实例并缓存：
-/// 参数每次渲染前由 montage 注入（[`execute_plugin_job`] 的 values
-/// 覆盖），worker 单线程顺序渲染，共享实例无跨帧状态冲突。
+/// A montage effect stack carries a plugin identifier rather than an instance
+/// id (the montage is resolved from the timeline in the main process, while
+/// instances live in the render process). The render process creates instances
+/// on demand through this factory and caches them: parameters are injected by
+/// the montage before every render (the values overrides of
+/// [`execute_plugin_job`]), and the worker renders sequentially on a single
+/// thread, so shared instances have no cross-frame state conflicts.
 fn shared_plugin_instance(identifier: &str) -> Option<u64> {
 	static SHARED: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 	let cache = SHARED.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1040,12 +1284,13 @@ mod tests {
 	/// assert the kOfxActionInstanceChanged routing and its inArgs.
 	static PUSH_ENTRY_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-	/// PUSH_ENTRY_CALLS 是进程级静态：触碰它的测试必须串行。
+	/// PUSH_ENTRY_CALLS is a process-level static: tests that touch it must be serialised.
 	static PUSH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-	/// Mock 插件入口：instanceChanged 记录 action 与 change reason；
-	/// 其它 action/空 action 静默成功。直接调它以覆盖缺失/类型不符的
-	/// reason 分支（push_button_clicked 只会写 String reason）。
+	/// Mock plugin entry: instanceChanged records the action and change reason;
+	/// other actions/an empty action silently succeed. Call it directly to cover
+	/// the missing/mismatched-reason branches (push_button_clicked only writes a
+	/// String reason).
 	unsafe extern "C" fn recording_entry(
 		action: *const c_char,
 		_: *const c_void,
@@ -1190,17 +1435,19 @@ mod tests {
 		assert!(shared_plugin_instance("com.example.definitely-missing").is_none());
 	}
 
-	/// 最简单的真实插件（AddOFX：每个像素加一个常量）经 executor
-	/// 路径渲染成功——区分"系统性宿主问题"与"单插件问题"（机器上
-	/// 没装该插件则跳过）。
+	/// The simplest real plugin (AddOFX: adds a constant to every pixel) renders
+	/// successfully through the executor path — distinguishes "systemic host
+	/// problem" from "single-plugin problem" (skipped when the machine does not
+	/// have the plugin installed).
 	#[test]
 	fn add_plugin_renders_through_the_executor() {
 		render_real_plugin_smoke("net.sf.openfx.AddPlugin");
 	}
 
-	/// 真实 GL-only 插件（CImg 的 ChromaKeyerOFX）经 executor 路径渲染
-	/// 成功——GL-kind 标记必须把它引上可用的 GL 路径，而不是
-	/// MissingHostFeature 紫帧（机器上没装该插件则跳过）。
+	/// The real GL-only plugin (CImg's ChromaKeyerOFX) renders successfully through
+	/// the executor path — the GL-kind flag must route it onto a usable GL path
+	/// instead of a MissingHostFeature purple frame (skipped when the machine does
+	/// not have the plugin installed).
 	#[test]
 	fn cimg_chromakeyer_renders_through_the_executor() {
 		render_real_plugin_smoke("net.sf.openfx.ChromaKeyerPlugin");
@@ -1270,7 +1517,7 @@ mod tests {
 		assert_ne!(px, [0.0, 0.0, 0.0, 0.0], "must not be a black empty frame");
 	}
 
-	/// 构造一个只含 push-button 参数的最小实例（直接登记进注册表）。
+	/// Builds a minimal instance containing only a push-button parameter (registered directly in the registry).
 	fn instance_with_push_button() -> u64 {
 		use crate::descriptor::EffectDescriptor;
 		use crate::handle::RefBox;
@@ -1323,10 +1570,10 @@ mod tests {
 		}))
 	}
 
-	/// push_button_clicked：实例/参数查无与类型不匹配 → false；命中 →
-	/// true、置 PushButton 值并把按下路由为 kOfxActionInstanceChanged
-	/// （UserEdited，inArgs 带 change reason / name / type / time /
-	/// render scale）。
+	/// push_button_clicked: unknown instance/parameter and type mismatch → false;
+	/// a hit → true, sets the PushButton value and routes the press as
+	/// kOfxActionInstanceChanged (UserEdited, with inArgs carrying change reason /
+	/// name / type / time / render scale).
 	#[test]
 	fn push_button_clicked_routes_instance_changed() {
 		let _g = PUSH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1349,8 +1596,9 @@ mod tests {
 		unregister_instance(id);
 	}
 
-	/// 构造一个带 parametric 参数（维度 2、自定义 range、双维 UI 颜色
-	/// 已配置）与一个 String 参数的实例（直接登记进注册表）。
+	/// Builds an instance with a parametric parameter (dimension 2, custom range,
+	/// two-dimensional UI color configured) and a String parameter (registered
+	/// directly in the registry).
 	fn instance_with_parametric() -> u64 {
 		use crate::descriptor::EffectDescriptor;
 		use crate::handle::RefBox;
@@ -1429,9 +1677,9 @@ mod tests {
 		}))
 	}
 
-	/// 翻译 pass 产出 Parametric 输入：value_type、默认值（= 默认曲线
-	/// 的 JSON）、display_name（= label）、不可键帧 + 专属属性
-	/// （dimension / range / 每维一条 UI 颜色）。
+	/// The translation pass produces a Parametric input: value_type, default value
+	/// (= the default curve's JSON), display_name (= label), not keyframable plus
+	/// its own properties (dimension / range / one UI color per dimension).
 	#[test]
 	fn build_core_produces_parametric_input() {
 		let id = instance_with_parametric();
@@ -1480,8 +1728,9 @@ mod tests {
 		unregister_instance(id);
 	}
 
-	/// parametric 输入（Text JSON）→ 实例写回：有效 JSON 解析并
-	/// `set_ofx(Parametric)`；坏 JSON / 类型不符 → 静默忽略（保持现值）。
+	/// Parametric input (Text JSON) → instance write-back: valid JSON is parsed and
+	/// `set_ofx(Parametric)`; bad JSON / type mismatch → silently ignored (current
+	/// value kept).
 	#[test]
 	fn parametric_input_writes_back_to_instance() {
 		let id = instance_with_parametric();
@@ -1736,7 +1985,7 @@ mod tests {
 	use crate::descriptor::ClipDescriptor;
 	use std::ffi::{c_char, c_void};
 
-	/// 宿主测试用最小插件入口：任何 action 都成功（不做任何事）。
+	/// Minimal plugin entry for host tests: every action succeeds (does nothing).
 	unsafe extern "C" fn ok_entry(
 		_: *const c_char,
 		_: *const c_void,
@@ -1750,8 +1999,8 @@ mod tests {
 		PropValue::String(CString::new(s).unwrap())
 	}
 
-	/// Text 变体提取（两臂都被调用方触达；避免测试里出现不可达
-	/// panic 分支）。
+	/// Text variant extraction (both arms are reached by callers; avoids an
+	/// unreachable panic branch in tests).
 	fn text_of(value: &NodeValue) -> Option<String> {
 		match value {
 			NodeValue::Text(s) => Some(s.clone()),
@@ -1759,7 +2008,7 @@ mod tests {
 		}
 	}
 
-	/// Parametric 变体提取（同上）。
+	/// Parametric variant extraction (same as above).
 	fn curves_of(value: ParamValue) -> Option<Vec<crate::param_curve::Curve>> {
 		match value {
 			ParamValue::Parametric(c) => Some(c),
@@ -1841,8 +2090,8 @@ mod tests {
 			.collect()
 	}
 
-	/// 规则 4（默认值全相等）与规则 5（parent/group 关键词）以及
-	/// rule-3 的 dmin < -0.01 半边。
+	/// Rule 4 (all defaults equal) and rule 5 (parent/group keywords), plus the
+	/// dmin < -0.01 half of rule 3.
 	#[test]
 	fn color_semantic_rules_4_and_5_and_display_min() {
 		let empty = HashMap::new();
@@ -1899,8 +2148,9 @@ mod tests {
 		assert_eq!(deduce_color_semantic(&def, &groups), "scalar");
 	}
 
-	/// build_core 的 group/page 第一遍：label 空回退 name、page 子项映射、
-	/// skip row/column 跳过、空名/未知类型参数跳过。
+	/// build_core's group/page first pass: empty label falls back to name, page
+	/// child mapping; skip row/column and empty-name/unknown-type parameters are
+	/// skipped.
 	#[test]
 	fn build_core_translates_groups_pages_and_skips_unknowns() {
 		let group_labeled = ParamDef::new("grp_labeled", ofx::TYPE_GROUP);
@@ -1971,7 +2221,7 @@ mod tests {
 		assert!(core.get_input("").is_none());
 	}
 
-	/// build_core 的 clip→纹理输入与 effect_input 回退链。
+	/// build_core's clip→texture input and effect_input fallback chain.
 	#[test]
 	fn build_core_selects_effect_input_from_clips() {
 		// Source 存在 → effect_input = Source；Output 不入输入表。
@@ -2014,8 +2264,8 @@ mod tests {
 		assert!(core.get_input("Mask").is_some());
 	}
 
-	/// 颜色输入属性（semantic/min/max/tooltip）与 combo 选项表
-	/// （enum 回退、ChoiceOrder 排序、StrCombo 值表）。
+	/// Color input properties (semantic/min/max/tooltip) and the combo option
+	/// table (enum fallback, ChoiceOrder sorting, StrCombo value table).
 	#[test]
 	fn build_core_color_and_combo_property_tables() {
 		let tint = ParamDef::new("tint", ofx::TYPE_RGB);
@@ -2119,7 +2369,7 @@ mod tests {
 		);
 	}
 
-	/// parametric UI 颜色表不足一整维时在循环内 break。
+	/// Breaks out of the loop when the parametric UI color table has less than one full dimension.
 	#[test]
 	fn build_core_parametric_partial_ui_colour() {
 		let def = ParamDef::new("curve", ofx::TYPE_PARAMETRIC);
@@ -2160,7 +2410,7 @@ mod tests {
 		);
 	}
 
-	/// 显示名/描述回退与子分类映射。
+	/// Display-name/description fallbacks and sub-category mapping.
 	#[test]
 	fn display_name_description_and_sub_category() {
 		let inst = fake_instance("test.display", ok_entry, param_set(vec![]), vec![]);
@@ -2192,8 +2442,8 @@ mod tests {
 		assert_eq!(sub_category_for("OfxImageEffectContextBogus"), "General");
 	}
 
-	/// set_text_param 的类型分发：String/StrChoice 写回、NUL 拒绝、
-	/// 非文本类型与查无参数静默忽略。
+	/// set_text_param's type dispatch: String/StrChoice write-back, NUL rejection,
+	/// non-text types and missing parameters silently ignored.
 	#[test]
 	fn set_text_param_type_dispatch_and_nul_rejection() {
 		let s = ParamDef::new("s", ofx::TYPE_STRING);
@@ -2235,8 +2485,8 @@ mod tests {
 		assert_eq!(inst.params.find("d").unwrap().get(), before);
 	}
 
-	/// recording entry 的边界分支（空 action、非 instanceChanged、
-	/// 缺失/类型不符的 change reason）——直接调 entry 覆盖。
+	/// Edge branches of the recording entry (empty action, non-instanceChanged,
+	/// missing/mismatched change reason) — covered by calling the entry directly.
 	#[test]
 	fn push_button_recording_entry_edge_branches() {
 		let _g = PUSH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2296,7 +2546,7 @@ mod tests {
 		);
 	}
 
-	/// push_button_clicked 的 instanceChanged 失败只记日志、仍返回 true。
+	/// An instanceChanged failure in push_button_clicked only logs and still returns true.
 	#[test]
 	fn push_button_clicked_instance_changed_failure_returns_true() {
 		unsafe extern "C" fn fail_changed(
@@ -2324,8 +2574,8 @@ mod tests {
 		unregister_instance(id);
 	}
 
-	/// execute_plugin_job：非 Plugin spec、未登记实例、dummy/零尺寸
-	/// 输入、参数值分发的 PushButton/None 分支。
+	/// execute_plugin_job: non-Plugin spec, unregistered instance, dummy/zero-size
+	/// input, and the PushButton/None branches of parameter value dispatch.
 	#[test]
 	fn execute_plugin_job_spec_and_source_branches() {
 		let inst = fake_instance("test.exec.branches", ok_entry, param_set(vec![]), vec![]);
@@ -2413,7 +2663,7 @@ mod tests {
 
 	// ---- 真实测试插件（build.rs 产物）的宿主面覆盖 ----------------------
 
-	/// 宿主全局状态串行（真实插件扫描/实例化）。
+	/// Serialises host global state (real plugin scanning/instantiation).
 	static HOST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 	fn fixture_bundle_dir() -> Option<std::path::PathBuf> {
@@ -2478,7 +2728,7 @@ mod tests {
 		out
 	}
 
-	/// duplicate_instance：注册表换新实例（真实测试插件）+ 未知句柄 None。
+	/// duplicate_instance: registry gets a new instance (real test plugin) + unknown handle → None.
 	#[test]
 	fn duplicate_instance_recreates_and_unknown_handle_is_none() {
 		let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2502,8 +2752,8 @@ mod tests {
 		assert!(duplicate_instance(PluginInstanceHandle(u64::MAX)).is_none());
 	}
 
-	/// shared_plugin_instance：首访建实例并缓存，再访命中缓存；查无
-	/// 标识 → None。
+	/// shared_plugin_instance: first access creates and caches an instance, the
+	/// next access hits the cache; unknown identifier → None.
 	#[test]
 	fn shared_plugin_instance_caches_and_misses() {
 		let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2517,8 +2767,9 @@ mod tests {
 		assert!(shared_plugin_instance("com.example.no-such-plugin").is_none());
 	}
 
-	/// 用 build.rs 产出的测试插件跑通 render_real_plugin_smoke 全路径
-	/// （含 QUERCUS_OFX_TRACE 探针分支），不再依赖机器上装有真实插件。
+	/// Runs the full render_real_plugin_smoke path with the test plugin produced by
+	/// build.rs (including the QUERCUS_OFX_TRACE probe branches), no longer
+	/// depending on a real plugin being installed on the machine.
 	#[test]
 	fn fixture_plugin_renders_through_the_executor() {
 		let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

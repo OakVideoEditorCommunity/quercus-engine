@@ -264,12 +264,22 @@ fn first_software_format(formats: *const sys::AVPixelFormat) -> sys::AVPixelForm
 
 /// `get_format` callback for a decoder opened with `hw_device_ctx`.
 ///
-/// Setting `hw_device_ctx` alone is not enough on all FFmpeg/libavcodec
-/// combinations: the default `get_format` can select a software format and
-/// the decoder then runs on the CPU even though `hw_decoder_name()` reports a
-/// hardware device. Explicitly select the hardware format and initialize the
-/// frames context here; if that is not possible, fall back to the first
-/// software format so decoding remains correct.
+/// `avctx` is the decoder context (non-null; its `hw_device_ctx` may be null);
+/// `formats` is FFmpeg's `AV_PIX_FMT_NONE`-terminated list of offered pixel
+/// formats, borrowed for the call. Returns the hardware pixel format when the
+/// device type has one, it is offered, and its frames context initializes;
+/// otherwise returns `AV_PIX_FMT_NONE` to force FFmpeg's first-frame hardware
+/// fallback. The first software format is returned only when no hardware device
+/// is attached or the device type maps to no known hardware pixel format.
+/// Setting `hw_device_ctx` alone is not enough on all
+/// FFmpeg/libavcodec combinations: the default callback may pick a software
+/// format and decode on the CPU.
+///
+/// # Safety
+///
+/// `avctx` must be null or point to a valid `AVCodecContext`; `formats` must be
+/// null or point to a valid `AV_PIX_FMT_NONE`-terminated array of
+/// `AVPixelFormat`. Both are only read during the call.
 unsafe extern "C" fn select_hw_format(
 	avctx: *mut sys::AVCodecContext,
 	formats: *const sys::AVPixelFormat,

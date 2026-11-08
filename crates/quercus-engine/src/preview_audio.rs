@@ -62,6 +62,13 @@ crate::export_handle!(
 );
 
 impl AudioBufferHandle {
+	/// Wrap `data` in a new refcounted [`AudioBufferHandle`] and return it as an
+	/// opaque C pointer with strong count 1.
+	///
+	/// Ownership of that single reference moves to the caller, which must pass
+	/// the pointer to `quercus_audio_buffer_release` when done; other users take
+	/// an extra reference with `quercus_audio_buffer_add_ref`. `data` (samples
+	/// plus timing/layout) is moved into the handle.
 	pub(crate) fn from_data(data: AudioBufferData) -> *const Self {
 		crate::handle::into_ffi(Self { data })
 	}
@@ -102,7 +109,18 @@ impl NativeMirror for QuercusAudioBufferInfo {
 	}
 }
 
-/// Reads audio metadata; false for null arguments.
+/// Writes the timing, layout and element count of `audio` into `*out`.
+///
+/// `out` receives a `#[repr(C)]` mirror: time range in seconds, sample rate in
+/// Hz, FFmpeg-style channel layout mask, interleaved channel count and total
+/// `f32` element count (`sample frames * channels`). Returns `false` without
+/// writing when either pointer is null.
+///
+/// # Safety
+///
+/// `audio` must be null or live for the duration of the call; `out` must be
+/// null or valid for writes of one `QuercusAudioBufferInfo`. The handle is
+/// borrowed, not consumed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_buffer_info(
 	audio: *const AudioBufferHandle,
@@ -115,8 +133,20 @@ pub unsafe extern "C" fn quercus_audio_buffer_info(
 	true
 }
 
-/// Copies interleaved F32 samples into caller storage. Returns the required
-/// element count, or zero for invalid arguments/insufficient capacity.
+/// Copies the handle's interleaved F32 samples into caller storage.
+///
+/// `audio` is the borrowed handle, `dst` the destination buffer and
+/// `dst_capacity` its length in `f32` elements. On success returns the number
+/// of elements written (`sample frames * channels`) and copies exactly that
+/// many; the copy is non-overlapping, so `dst` must not alias the handle's
+/// storage. Returns 0 and writes nothing when `audio` or `dst` is null, or when
+/// `dst_capacity` is smaller than the sample count.
+///
+/// # Safety
+///
+/// `audio` must be null or live for the duration of the call; `dst` must be
+/// null or valid for writes of `dst_capacity` `f32` values. The handle is
+/// borrowed, not consumed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_buffer_copy_samples(
 	audio: *const AudioBufferHandle,
@@ -135,6 +165,19 @@ pub unsafe extern "C" fn quercus_audio_buffer_copy_samples(
 	audio.data.samples.len()
 }
 
+/// Choose the file and stream index to decode when previewing `footage`'s
+/// audio.
+///
+/// Prefers the first non-video stream of the source file; when the source has
+/// none, falls back to stream index 1 provided the filename is non-empty. If
+/// `UseProxyMedia` is enabled in the config store and `footage`'s proxy is
+/// enabled, `Ready`, and has an audio stream, the proxy file (stream 1) wins
+/// over the original.
+///
+/// # Returns
+///
+/// `(filename, stream_index)` to hand to the mixer in [`render_audio`];
+/// `None` when there is no source file at all (empty filename and no streams).
 fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> {
 	let original = footage
 		.streams
@@ -156,6 +199,13 @@ fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> {
 	}
 }
 
+/// The [`FootageBehavior`] behind `clip`, found through the input feeding that
+/// block.
+///
+/// `project` supplies the graph and `clip` is the block node (as returned by
+/// `crate::editor_commands::find_input_footage`). Returns `None` when the block
+/// has no footage input, the input node is gone, or its behavior is not
+/// footage.
 fn footage_of(project: &Project, clip: NodeId) -> Option<&FootageBehavior> {
 	let footage = crate::editor_commands::find_input_footage(&project.graph, clip)?;
 	project
@@ -165,6 +215,20 @@ fn footage_of(project: &Project, clip: NodeId) -> Option<&FootageBehavior> {
 		.and_then(|behavior| behavior.downcast_ref::<FootageBehavior>())
 }
 
+/// Build the montage clip list for `sequence` over `range`, from its audio
+/// track lists.
+///
+/// `project` supplies the graph; `sequence` must be a sequence node (any other
+/// node yields an empty vector). Only audio track lists are walked; muted
+/// tracks, clips entirely outside `range` (no time overlap) and clips whose
+/// footage cannot be resolved are skipped. Each surviving clip carries its
+/// timeline in/out, media in point, gain/pan/fades and audio effects, with the
+/// preview media chosen by [`preview_media`].
+///
+/// # Returns
+///
+/// One `MontageClip` per overlapping clip in track-list/track/block order,
+/// ready for the mixer in [`render_audio`]; empty when nothing is audible.
 fn audio_montage(project: &Project, sequence: NodeId, range: TimeRange) -> Vec<MontageClip> {
 	let Some(sequence) = project
 		.graph

@@ -62,6 +62,12 @@ pub(crate) struct SessionState {
 
 impl SessionState {
 	/// Creates auxiliary state for a project without rebinding or copying it.
+	///
+	/// The project `Arc` is stored as-is (shared, not cloned into a fresh
+	/// project), no sequence is selected (`current_sequence` starts invalid),
+	/// the marker list and work area start empty, the clipboard is empty and
+	/// there is no write-through storage binding. Used by
+	/// [`session_from_project_arc`] for both fresh and loaded projects.
 	fn new(project: Arc<Mutex<Project>>) -> Self {
 		Self {
 			project,
@@ -143,7 +149,16 @@ fn sync_auxiliary_to_settings(session: &EditorSessionHandle) {
 	guard.settings.insert(WORKAREA_SETTING.to_string(), workarea);
 }
 
-/// Restore markers/work area from a project's settings after load.
+/// Restores markers/work area from a project's settings after load.
+///
+/// Reads the `quercus.markers` and `quercus.workarea` JSON blobs written by
+/// [`sync_auxiliary_to_settings`] and replaces the session's live marker list
+/// and work area. Decoding is tolerant: malformed JSON, a non-array markers
+/// blob, or a marker/work-area entry without valid `in`/`out` rationals is
+/// skipped (the whole work-area entry is skipped, but markers already added
+/// are kept). A marker entry with a missing `name` or `color` falls back to
+/// `""`/`0`. Each blob replaces the session's live object only when it
+/// decodes; an absent or undecodable blob leaves that object untouched.
 fn restore_auxiliary_from_settings(session: &EditorSessionHandle) {
 	let (project, markers, workarea) = {
 		let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,6 +292,12 @@ fn session_from_project_handle(project: *mut ProjectHandle) -> *mut EditorSessio
 ///
 /// The handle is consumed exactly once. The new session has independent
 /// transport/selection state but shares the same live project Arc.
+///
+/// # Safety
+///
+/// `project` must be null or a valid handle from the project ABI, owned by
+/// the caller; on success that reference is released and the project Arc is
+/// retained by the new session.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_from_project_handle(
 	project: *mut ProjectHandle,
@@ -302,7 +323,32 @@ pub extern "C" fn quercus_editor_new() -> *mut EditorSessionHandle {
 	session_from_project_arc(project)
 }
 
-/// Opens any URI supported by the storage registry.
+/// Opens any URI supported by the storage registry and wraps the loaded
+/// project in a session, recording the URI as the project's file name.
+///
+/// The returned project is marked unmodified. The default sequence and the
+/// project's markers/work area are established by the session constructor, so
+/// a project that contains a sequence starts with that sequence selected.
+///
+/// # Arguments
+///
+/// * `uri` - UTF-8 storage URI/path, resolved by the registry's registered
+///   backends.
+/// * `version_info` - optional out-parameter; when non-null it starts at 0
+///   and receives the backend's version-info code (a positive value means
+///   the file is too old/new/unknown, which yields a null result).
+///
+/// # Returns
+///
+/// An editor session for the loaded project, or null when the URI cannot be
+/// resolved, the backend fails, the file version is unsupported, or the URI
+/// is null/non-UTF-8. A null result leaves the `version_info` value telling
+/// those cases apart.
+///
+/// # Safety
+///
+/// `uri` must be null or point to `uri_len` readable bytes of valid UTF-8 and
+/// `version_info` must be null or point to one writable `i32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_open(
 	uri: *const u8,
@@ -362,6 +408,12 @@ fn open_library_row_uri(uri: &StorageUri, error: *mut i32) -> *mut EditorSession
 ///
 /// The row URI (`<library>?project=<uuid>`) is opened through the storage
 /// registry, so any backend that claims the library can serve it.
+///
+/// # Safety
+///
+/// `uuid` must be null or point to `uuid_len` readable bytes of valid UTF-8,
+/// and `error` must be null or point to one writable `i32`. The configured
+/// default library must not be mutated concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_open_project_from_library(
 	uuid: *const u8,
@@ -394,6 +446,21 @@ pub unsafe extern "C" fn quercus_editor_open_project_from_library(
 /// Unlike [`quercus_editor_open_project_from_library`], the library need not
 /// be the configured default: the URI is passed to the storage registry as-is
 /// and the row is opened as `<library_uri>?project=<uuid>`.
+///
+/// `error` (when non-null) starts at `QUERCUSSTORAGE_E_INVALID` and receives
+/// `QUERCUSSTORAGE_OK` or the negative failure code. A null/non-UTF-8 URI, a
+/// URI that does not parse, or an empty `uuid` leaves it at `E_INVALID`.
+///
+/// # Returns
+///
+/// An editor session for the loaded project, or null on any of the failures
+/// above or when the row cannot be loaded.
+///
+/// # Safety
+///
+/// `library_uri` must be null or point to `library_uri_len` readable bytes
+/// and `uuid` must be null or point to `uuid_len` readable bytes, both valid
+/// UTF-8; `error` must be null or point to one writable `i32`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_open_project_from_library_uri(
 	library_uri: *const u8,
@@ -429,6 +496,12 @@ pub unsafe extern "C" fn quercus_editor_open_project_from_library_uri(
 /// handle's Arc is retained by the new session and the supplied handle reference
 /// is released. Both sides therefore observe the same live project. Null or
 /// invalid handles return null.
+///
+/// # Safety
+///
+/// `project` must be null or a valid `ProjectRef`-compatible handle owned by
+/// the caller; ownership is consumed on success and on the invalid-handle
+/// error path (the handle is released either way).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_adopt_storage_project_handle(
 	project: quercus_core::handle::CHandle,
@@ -446,8 +519,30 @@ pub unsafe extern "C" fn quercus_editor_adopt_storage_project_handle(
 	session_from_project_handle(ProjectHandle::from_arc(project))
 }
 
-/// Creates a blank row in the configured default library. The returned
-/// session owns the same project that was saved, not a reloaded copy.
+/// Creates a blank row in the configured default library and returns a
+/// session for it.
+///
+/// The new project is initialized, its `projectname` setting is set to
+/// trimmed `name`, and it is saved once through the storage registry so the
+/// library row exists. The returned session owns the same project instance
+/// that was saved, not a reloaded copy; the project starts unmodified.
+///
+/// `error` (when non-null) is set to `QUERCUSSTORAGE_E_INVALID` on entry and
+/// holds `QUERCUSSTORAGE_OK` on success or the negative failure code
+/// otherwise; it is also left at `E_INVALID` for a null/non-UTF-8 or blank
+/// `name`.
+///
+/// # Returns
+///
+/// A new session handle, or null when the name is blank, no default library
+/// is configured/usable, the project cannot be initialized, or the save
+/// fails.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// `error` must be null or point to one writable `i32`, and the default
+/// library configuration must not be mutated concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_create_library(
 	name: *const u8,
@@ -510,6 +605,19 @@ pub unsafe extern "C" fn quercus_editor_create_library(
 }
 
 /// Returns a new reference on the session's live project.
+///
+/// The reference is a fresh [`ProjectHandle`] that shares the session's
+/// project `Arc`; the session keeps its own reference, so the caller must
+/// release the returned handle with `quercus_project_release` when done.
+///
+/// # Returns
+///
+/// A null pointer for a null session; otherwise an owned project handle.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI; it is dereferenced
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_project(
 	session: *const EditorSessionHandle,
@@ -520,7 +628,31 @@ pub unsafe extern "C" fn quercus_editor_project(
 	ProjectHandle::from_arc(unsafe { &*session }.project())
 }
 
-/// Saves through the storage registry and records the file path.
+/// Saves the session's project to `path` through the storage registry.
+///
+/// Before saving, the session's markers and work area are copied into the
+/// project's settings map (`quercus.markers`, `quercus.workarea`) because the
+/// `.ove` serializer only persists project state. On success the project's
+/// file name is set to `path` and its modified flag is cleared; on failure
+/// both are left unchanged.
+///
+/// # Arguments
+///
+/// * `path` - UTF-8 destination understood by the storage registry (a file
+///   path or a backend URI such as `quercusdb+sqlite://…`).
+/// * `options` - quercus-storage save bitmask; unknown bits are ignored.
+///
+/// # Returns
+///
+/// `QUERCUSSTORAGE_OK` (0) on success, otherwise a negative
+/// `QUERCUSSTORAGE_*` code; `QUERCUSSTORAGE_E_INVALID` for a null session or
+/// a null/non-UTF-8 `path`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI and `path` must be
+/// null or point to `path_len` readable bytes of valid UTF-8. The session
+/// must not be used concurrently from another thread during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_save(
 	session: *const EditorSessionHandle,
@@ -561,6 +693,11 @@ pub unsafe extern "C" fn quercus_editor_save(
 ///
 /// A false result commonly means that no library is configured or storage is
 /// disabled; this is a supported non-persistent mode, not a project-open error.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_bind_project_to_library(
 	session: *mut EditorSessionHandle,
@@ -596,6 +733,11 @@ pub unsafe extern "C" fn quercus_editor_bind_project_to_library(
 /// False means a null session, no binding, or a binding disabled by storage
 /// configuration. It does not report whether the last write succeeded; use
 /// `quercus_editor_storage_last_error` for that separate diagnostic.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI; it is only read for
+/// the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_storage_bound(session: *const EditorSessionHandle) -> bool {
 	if session.is_null() {
@@ -617,6 +759,11 @@ pub unsafe extern "C" fn quercus_editor_storage_bound(session: *const EditorSess
 /// alive; only automatic persistence stops. Session destruction performs the
 /// same cleanup as a fallback, and repeated unbind calls are no-ops.
 /// Returns false only for a null session.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_unbind(session: *mut EditorSessionHandle) -> bool {
 	if session.is_null() {
@@ -632,9 +779,23 @@ pub unsafe extern "C" fn quercus_editor_unbind(session: *mut EditorSessionHandle
 
 /// Copies the project's most recent write-through or snapshot error as UTF-8.
 ///
-/// Returns the bounded-string byte count when an error exists. Returns `-1`
-/// for a null session, no binding, or no recorded error; these cases do not
-/// distinguish success from an unavailable diagnostic by themselves.
+/// The text is NUL-terminated in `buf` (truncated to `buf_len - 1` bytes when
+/// too small) and the return value is the full byte length excluding the
+/// NUL, so a null/zero-length buffer queries the required size and
+/// `ret >= buf_len` means the text was truncated.
+///
+/// # Returns
+///
+/// `-1` for a null session, no binding, or no recorded error; these cases do
+/// not distinguish success from an unavailable diagnostic by themselves.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `buf` must be
+/// null or point to at least `buf_len` writable bytes.
+///
+/// Paired with [`quercus_editor_storage_bound`] (binding status) and
+/// [`quercus_editor_unbind`] (explicit cleanup).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_storage_last_error(
 	session: *const EditorSessionHandle,
@@ -658,6 +819,23 @@ pub unsafe extern "C" fn quercus_editor_storage_last_error(
 }
 
 /// Selects a sequence and resets its sequence-local auxiliary state.
+///
+/// `id` must be the identity of a sequence node (a node whose behavior is
+/// [`SequenceBehavior`]) already present in the session's project. On a
+/// change of selection the marker list and work area are recreated empty,
+/// because they are per-sequence and are not reloaded from the project here;
+/// selecting the sequence that is already current leaves them untouched.
+/// Both are persisted with the project on the next save.
+///
+/// # Returns
+///
+/// `false` for a null session, a `0`/malformed identity, or an identity that
+/// does not name a sequence in this project.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_current_sequence(
 	session: *mut EditorSessionHandle,
@@ -696,9 +874,16 @@ pub unsafe extern "C" fn quercus_editor_set_current_sequence(
 
 /// Returns the raw identity of the sequence used by context-dependent edits.
 ///
-/// Returns `QUERCUS_NODE_ID_INVALID` for a null session or when no sequence has
-/// been selected. The returned ID is borrowed only as a value; no project
+/// Commands that do not take an explicit sequence id (markers, work area,
+/// master-bus audio, timeline queries) read this value from session state.
+/// Returns `QUERCUS_NODE_ID_INVALID` for a null session or when no sequence
+/// has been selected. The returned ID is borrowed only as a value; no project
 /// handle or graph reference crosses the ABI.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI; it is dereferenced
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_current_sequence(session: *const EditorSessionHandle) -> u64 {
 	if session.is_null() {
@@ -712,7 +897,25 @@ pub unsafe extern "C" fn quercus_editor_current_sequence(session: *const EditorS
 		.identity()
 }
 
-/// Creates and selects a sequence through the existing node ABI.
+/// Creates a sequence in the session's project and makes it current.
+///
+/// Creation goes through the existing node ABI
+/// ([`crate::node::quercus_sequence_create`]), which also mounts the new
+/// sequence under the project's bin folder and installs its default
+/// video/audio track layout. `name` becomes the sequence label; the caller
+/// keeps ownership of the input buffer and may pass an empty name.
+///
+/// # Returns
+///
+/// The new sequence's node identity, or `QUERCUS_NODE_ID_INVALID` for a null
+/// session/project, a null or non-UTF-8 `name`, a failed node creation, or a
+/// sequence that could not be selected afterwards.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI and `name` must be
+/// null or point to `name_len` readable bytes of valid UTF-8. The session
+/// must not be used concurrently from another thread during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_create_sequence(
 	session: *mut EditorSessionHandle,
@@ -731,7 +934,17 @@ pub unsafe extern "C" fn quercus_editor_create_sequence(
 	id
 }
 
-/// Extract the `(project, clip)` pair shared by the clip audio setters.
+/// Extracts the `(project, clip)` pair shared by the clip audio setters.
+///
+/// Returns `None` for a null session or a null `clip` identity (`0`), which
+/// the callers turn into a `false` ABI result. The returned project `Arc` is
+/// a fresh clone of the session's live project, not a copy of it.
+///
+/// # Safety
+///
+/// `session` must be null or point to a live [`EditorSessionHandle`] obtained
+/// from this ABI; it is dereferenced as `&*session` without any lifetime
+/// guarantee beyond the call.
 unsafe fn editor_audio_clip(
 	session: *const EditorSessionHandle,
 	clip: u64,
@@ -741,8 +954,22 @@ unsafe fn editor_audio_clip(
 	Some((session.project(), clip))
 }
 
-/// Sets a clip's stereo pan (-1 = hard left, 1 = hard right, 0 = centre)
-/// as one undo entry. Returns false on a null/invalid session, clip or pan.
+/// Sets a clip's constant-power stereo pan as one undo entry.
+///
+/// `pan` is `-1.0` for hard left, `0.0` for centre and `1.0` for hard right;
+/// values outside `-1.0..=1.0` or non-finite values are rejected. The change
+/// is recorded as a "Set Clip Pan" undo entry, and writing the already
+/// stored value records nothing.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session or clip, a non-clip node, or a `pan`
+/// outside the accepted range.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_clip_pan(
 	session: *const EditorSessionHandle,
@@ -755,9 +982,29 @@ pub unsafe extern "C" fn quercus_editor_set_clip_pan(
 	crate::editor_commands::set_clip_pan(&project, clip, pan).is_ok()
 }
 
-/// Sets a clip's linear fade-in/fade-out durations (timeline seconds as
-/// rational num/den pairs) as one undo entry. A zero denominator is
-/// invalid. Returns false for a null/invalid session, clip or fade.
+/// Sets a clip's linear fade-in/fade-out durations as one undo entry.
+///
+/// Both fades are timeline seconds expressed as rational `num`/`den` pairs
+/// and are anchored at the clip's timeline in/out points. A zero denominator
+/// is invalid, and a fade longer than the clip is allowed: the mixer clamps
+/// the ramp at the clip's bounds. A call that would not change the stored
+/// pair records no undo entry.
+///
+/// # Arguments
+///
+/// * `fade_in_num`, `fade_in_den` - fade-in duration as a rational number
+///   of seconds; must be finite and non-negative.
+/// * `fade_out_num`, `fade_out_den` - fade-out duration, same constraints.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session or clip, a non-finite or negative
+/// fade, or a fade with a zero denominator.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_clip_fade(
 	session: *const EditorSessionHandle,
@@ -776,9 +1023,24 @@ pub unsafe extern "C" fn quercus_editor_set_clip_fade(
 }
 
 /// Attaches an audio effect (`type_id`) to a clip's audio chain at
-/// `index` (clamped to the chain length) as one undo entry. Returns false
-/// for a null/invalid session or clip, an empty type id, or a negative
-/// index.
+/// `index` (clamped to the chain length) as one undo entry.
+///
+/// `index` is the zero-based insertion position; values past the end of the
+/// chain append. Phase 1 evaluates the built-in `Volume` and `Pan` kernels;
+/// any other type id is kept in the chain and bypassed with a one-shot
+/// render warning, so attaching an unsupported effect is non-destructive.
+///
+/// # Returns
+///
+/// `false` for a null/invalid session or clip, a null or non-UTF-8
+/// `type_id`, an empty (or whitespace-only) type id, or a negative `index`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `type_id` must
+/// be null or point to `type_id_len` readable bytes of valid UTF-8. The
+/// session must not be used concurrently from another thread during the
+/// call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_add_clip_audio_effect(
 	session: *const EditorSessionHandle,
@@ -800,6 +1062,21 @@ pub unsafe extern "C" fn quercus_editor_add_clip_audio_effect(
 }
 
 /// Removes one entry of a clip's audio effect chain as one undo entry.
+///
+/// `index` is the zero-based position in the clip's audio effect chain. On
+/// success the remaining entries keep their relative order, and the removal
+/// is recorded as one "Remove Clip Audio Effect" undo entry.
+///
+/// # Returns
+///
+/// `true` when the entry was removed; `false` for a null/invalid session or
+/// clip (including a node that is not a clip), a negative `index`, or an
+/// `index` at/after the chain length. On `false` no undo entry is recorded.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_remove_clip_audio_effect(
 	session: *const EditorSessionHandle,
@@ -815,7 +1092,23 @@ pub unsafe extern "C" fn quercus_editor_remove_clip_audio_effect(
 	crate::editor_commands::remove_clip_audio_effect(&project, clip, index).is_ok()
 }
 
-/// Enables/disables one entry of a clip's audio effect chain.
+/// Enables or disables one entry of a clip's audio effect chain.
+///
+/// A disabled effect stays in the chain but is bypassed by the mixer. The
+/// change is recorded as one undo entry ("Set Clip Audio Effect Enabled");
+/// writing the value that is already stored records no undo entry.
+///
+/// `index` is the zero-based chain position and `enabled` is the new state.
+///
+/// # Returns
+///
+/// `true` on success; `false` for a null/invalid session or clip, a negative
+/// or out-of-range `index`, or a node that is not a clip.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and it must not be
+/// used concurrently from another thread for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_clip_audio_effect_enabled(
 	session: *const EditorSessionHandle,
@@ -832,8 +1125,26 @@ pub unsafe extern "C" fn quercus_editor_set_clip_audio_effect_enabled(
 	crate::editor_commands::set_clip_audio_effect_enabled(&project, clip, index, enabled).is_ok()
 }
 
-/// Sets one static float parameter of a clip's audio effect. Phase 1
-/// exposes only float parameters (`volume_in`, `panning_in`).
+/// Sets one static float parameter of one entry in a clip's audio effect
+/// chain, as one undo entry.
+///
+/// `index` is the zero-based chain position and `input_id` names the
+/// parameter (Phase 1 exposes only float parameters: the built-in `Volume`
+/// kernel's `volume_in` and the `Pan` kernel's `panning_in`). A value equal
+/// to the stored one records no undo entry.
+///
+/// # Returns
+///
+/// `true` on success; `false` for a null/invalid session or clip, a null or
+/// non-UTF-8 `input_id`, an empty (or whitespace-only) input id, a negative
+/// or out-of-range `index`, or a non-finite `value`.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from this ABI, and `input_id`
+/// must be null or point to `input_id_len` readable bytes of valid UTF-8.
+/// The session must not be used concurrently from another thread during the
+/// call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_set_clip_audio_effect_param(
 	session: *const EditorSessionHandle,

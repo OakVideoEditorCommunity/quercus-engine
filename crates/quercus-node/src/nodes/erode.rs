@@ -196,7 +196,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ErodeNode))
 }
 
-/// Register this node type.
+/// Register this node type with the built-in node table.
+///
+/// Appends one [`NodeMeta`] to the list accumulated by
+/// [`crate::nodes::register_all`]: type id
+/// `org.olivevideoeditor.Olive.erode` (the id serialized into project
+/// files and compared by [`NodeBehavior::type_id`]), display name
+/// `"Erode"`, menu category [`Category::Filter`], and [`create`] as the
+/// constructor. Only appends, so the call order in `register_all`
+/// decides the menu order; registering twice yields two entries.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.erode",

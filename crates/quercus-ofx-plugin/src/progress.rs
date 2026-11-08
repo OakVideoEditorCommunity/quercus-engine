@@ -14,38 +14,42 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 进度上报（Progress suite 的宿主侧）。
+//! Progress reporting (the host side of the Progress suite).
 //!
-//! 对应 C++ 的 `PluginProgressReporter`。进度/取消经 facade 注册的
-//! 回调出 crate（M9 的 facade 回调模式）。取消是粘滞的：一旦回调
-//! 答 false，本报告器的 [`is_cancelled`]（image effect suite 的
-//! abort 查询）持续为真。
+//! Corresponds to C++'s `PluginProgressReporter`. Progress/cancellation
+//! leaves the crate through a callback registered by the facade (M9's
+//! facade-callback pattern). Cancellation is sticky: once the callback
+//! answers false, this reporter's [`is_cancelled`] (the image effect suite's
+//! abort query) stays true.
 //!
-//! ## app 注入点（阶段 6a）
+//! ## app injection point (stage 6a)
 //!
-//! facade C 回调之外，app 可经 [`set_reporter_factory`] 注册一个
-//! 工厂：渲染未装 C 回调时，Progress suite 的 progressStart 携
-//! (label, message) 从工厂现造一个 [`UiProgressReporter`]（如进度
-//! 对话框），progressUpdate 转发给它，返回 false 即取消。对应 C++
-//! `PluginProgressDialogReporter` 的创建路径。
+//! In addition to the facade C callback, the app can register a factory
+//! through [`set_reporter_factory`]: when no C callback is installed for a
+//! render, the Progress suite's progressStart creates a [`UiProgressReporter`]
+//! from the factory on the spot (e.g. a progress dialog), progressUpdate
+//! forwards to it, and a false return means cancel. Corresponds to the
+//! creation path of C++'s `PluginProgressDialogReporter`.
 
 use std::ffi::c_int;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// 进度 UI 报告器（app 实现：对话框、状态栏等）。`update` 返回
-/// false 表示用户请求取消（映射 kOfxStatReplyNo）。
+/// Progress UI reporter (app-implemented: dialog, status bar, etc.). `update`
+/// returning false means the user requested cancellation (mapped to
+/// kOfxStatReplyNo).
 pub trait UiProgressReporter: Send {
-	/// 上报进度（0.0..=1.0）；false = 取消。
+	/// Report progress (0.0..=1.0); false = cancel.
 	fn update(&mut self, progress: f64) -> bool;
-	/// progressEnd 通知（默认 no-op；app 可据此关闭进度 UI / 把完成
-	/// 事件转发过 IPC——worker 侧的进度回传依赖它）。
+	/// progressEnd notification (default no-op; the app can close the progress
+	/// UI / forward the completion event over IPC — the worker side's progress
+	/// reporting relies on it).
 	fn end(&mut self) {}
 }
 
-/// 报告器工厂：progressStart 携 (label, message) 调用，现造一个
-/// [`UiProgressReporter`]。
+/// Reporter factory: called by progressStart with (label, message) to create
+/// a [`UiProgressReporter`] on the spot.
 pub type ReporterFactory =
 	Arc<dyn Fn(&str, &str) -> Box<dyn UiProgressReporter> + Send + Sync>;
 
@@ -55,11 +59,24 @@ fn factory_slot() -> &'static Mutex<Option<ReporterFactory>> {
 	REPORTER_FACTORY.get_or_init(|| Mutex::new(None))
 }
 
-/// 注册/清除进度 UI 工厂（app 接线点；覆盖式）。
+/// Register/clear the progress UI factory (the app's wiring point;
+/// overwrite semantics).
+///
+/// `Some(factory)` replaces the current factory (the old factory is dropped;
+/// reporters already created are unaffected), `None` clears the registration.
+/// There is a single global slot and the last registration wins; if the lock
+/// is poisoned, the inner state is recovered and execution continues without
+/// panicking.
 pub fn set_reporter_factory(factory: Option<ReporterFactory>) {
 	*factory_slot().lock().unwrap_or_else(|e| e.into_inner()) = factory;
 }
 
+/// Get the currently registered UI factory (`None` when absent).
+///
+/// Returns a clone of the `Arc` rather than a reference holding the lock: the
+/// caller creates a reporter outside the lock and does not block
+/// [`set_reporter_factory`]. progressStart uses it to install the UI reporter
+/// (see [`ProgressReporter::install_ui`]).
 pub(crate) fn reporter_factory() -> Option<ReporterFactory> {
 	factory_slot()
 		.lock()
@@ -67,32 +84,33 @@ pub(crate) fn reporter_factory() -> Option<ReporterFactory> {
 		.clone()
 }
 
-/// 是否已注册 UI 工厂（render 路径据此决定是否装静默报告器）。
+/// Whether a UI factory is registered (the render path uses it to decide whether to install a silent reporter).
 pub fn has_reporter_factory() -> bool {
 	reporter_factory().is_some()
 }
 
-/// 进度回调：签名与 `include/plugin/instance.h` 的
-/// `quercusplugin_progress_fn` 逐字一致——`(progress, userdata)`，
-/// 返回非 0 表示应中止（骨架声明为 `(userdata, progress) -> bool`，
-/// 与头文件不符，以此为准）。
+/// Progress callback: the signature matches `quercusplugin_progress_fn` in
+/// `include/plugin/instance.h` verbatim — `(progress, userdata)`, where a
+/// non-zero return means abort (the skeleton declared
+/// `(userdata, progress) -> bool`, which disagrees with the header; the
+/// header wins).
 pub type ProgressFn = unsafe extern "C" fn(progress: f64, userdata: *mut std::ffi::c_void) -> c_int;
 
-/// 进度上报器。render 路径持有一份，Progress suite 的
-/// progressStart/Update/End 转发到这里。
+/// Progress reporter. The render path holds one, and the Progress suite's
+/// progressStart/Update/End are forwarded here.
 pub struct ProgressReporter {
 	callback: Option<ProgressFn>,
 	userdata: usize,
-	/// UI 报告器（progressStart 经 [`reporter_factory`] 现造；
-	/// C 回调优先，无回调时才用）。
+	/// UI reporter (created by progressStart through [`reporter_factory`]; the C
+	/// callback takes precedence and it is used only when there is no callback).
 	ui: Mutex<Option<Box<dyn UiProgressReporter>>>,
-	/// 取消标志（粘滞；update 返回 false 时置位）。
+	/// Cancellation flag (sticky; set when update returns false).
 	cancelled: AtomicBool,
 }
 
 impl ProgressReporter {
-	/// 无回调（渲染静默进行；progressStart 仍可能经工厂装上 UI
-	/// 报告器）。
+	/// No callback (the render proceeds silently; progressStart may still install
+	/// a UI reporter through the factory).
 	pub fn silent() -> Self {
 		Self {
 			callback: None,
@@ -102,10 +120,15 @@ impl ProgressReporter {
 		}
 	}
 
-	/// 带回调。
+	/// With a callback.
 	///
 	/// # Safety
-	/// `userdata` 的生命周期由注册方保证。
+	/// `userdata` is guaranteed by the registering party to be valid for the
+	/// reporter's lifetime and to obey the callback's contract; the raw pointer
+	/// is stored as a `usize` (so `ProgressReporter` can be sent across threads),
+	/// and the callback is still executed synchronously on the calling thread by
+	/// [`Self::update`]. The silent path without a C callback uses
+	/// [`Self::silent`].
 	pub unsafe fn new(callback: ProgressFn, userdata: *mut std::ffi::c_void) -> Self {
 		Self {
 			callback: Some(callback),
@@ -116,8 +139,9 @@ impl ProgressReporter {
 		}
 	}
 
-	/// progressStart 钩子：无 C 回调且工厂已注册时，现造 UI 报告器
-	/// （已装过则不重复造——progressStart 可嵌套括号）。
+	/// progressStart hook: when there is no C callback and a factory is
+	/// registered, create the UI reporter on the spot (do not create it again if
+	/// already installed — progressStart brackets may nest).
 	pub(crate) fn install_ui(&self, label: &str, message: &str) {
 		if self.callback.is_some() {
 			return;
@@ -131,8 +155,15 @@ impl ProgressReporter {
 		}
 	}
 
-	/// 报告进度；返回 false 表示应取消（映射
-	/// kOfxStatReplyNo/action 失败由调用点决定）。
+	/// Report progress; a false return means cancellation should happen (mapping
+	/// to kOfxStatReplyNo / action failure is up to the call site).
+	///
+	/// `progress` is a 0.0..=1.0 progress value, forwarded as-is to the current
+	/// channel: with a C callback, call it (a non-zero return = abort); otherwise
+	/// forward to the [`UiProgressReporter`] installed by progressStart through
+	/// the factory; with neither, return true directly. A cancellation from
+	/// either channel sets the cancellation flag (sticky), after which
+	/// [`Self::is_cancelled`] stays true.
 	pub fn update(&self, progress: f64) -> bool {
 		match self.callback {
 			Some(cb) => {
@@ -159,12 +190,12 @@ impl ProgressReporter {
 		}
 	}
 
-	/// 本次渲染是否已被取消（image effect suite 的 abort 透传）。
+	/// Whether this render has already been cancelled (the image effect suite's abort passthrough).
 	pub(crate) fn is_cancelled(&self) -> bool {
 		self.cancelled.load(Ordering::Relaxed)
 	}
 
-	/// progressEnd 钩子：转发给 UI 报告器（无报告器时 no-op）。
+	/// progressEnd hook: forwards to the UI reporter (no-op when there is no reporter).
 	pub(crate) fn end_ui(&self) {
 		let mut slot = self.ui.lock().unwrap_or_else(|e| e.into_inner());
 		if let Some(ui) = slot.as_mut() {

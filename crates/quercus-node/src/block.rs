@@ -128,7 +128,12 @@ impl ClipAudioEffect {
 		}
 	}
 
-	/// The static value of `input`, if the effect carries one.
+	/// Looks up the static value stored for the node input `input`.
+	///
+	/// Returns `None` when the effect carries no explicit value for that input,
+	/// in which case the node's own default applies. The returned reference
+	/// borrows `self` until the next mutation. Counterpart of
+	/// [`Self::set_param`].
 	pub fn param(&self, input: &str) -> Option<&NodeValue> {
 		self.params
 			.iter()
@@ -136,7 +141,12 @@ impl ClipAudioEffect {
 			.map(|(_, value)| value)
 	}
 
-	/// Set (or replace) a static parameter value.
+	/// Sets a static parameter value on this effect.
+	///
+	/// `input` is the node input id (for example `"volume_in"`); `value` is
+	/// stored by value. An existing entry for `input` is replaced in place, so
+	/// the parameter order written to the project file stays stable; a new id is
+	/// appended. Read the value back with [`Self::param`].
 	pub fn set_param(&mut self, input: &str, value: NodeValue) {
 		if let Some((_, existing)) = self.params.iter_mut().find(|(id, _)| id == input) {
 			*existing = value;
@@ -204,22 +214,38 @@ impl Default for BlockCore {
 }
 
 impl BlockCore {
-	/// The timeline in-point (C++ `Block::in()`).
+	/// The timeline in-point: the inclusive start of the block's span (C++
+	/// `Block::in()`).
+	///
+	/// Together with [`Self::out`] this is the block's placement on the
+	/// timeline, independent of the media range (`media_in` / [`Self::media_out`]).
 	pub fn in_(&self) -> Rational {
 		self.range.in_()
 	}
 
-	/// The timeline out-point (C++ `Block::out()`).
+	/// The timeline out-point: the exclusive end of the block's span (C++
+	/// `Block::out()`).
+	///
+	/// Use [`Self::length`] rather than subtracting by hand; the span is stored
+	/// as `in_..out` and normalized.
 	pub fn out(&self) -> Rational {
 		self.range.out()
 	}
 
-	/// The timeline length (C++ `Block::length()`).
+	/// The timeline length, `out() - in()` (C++ `Block::length()`).
+	///
+	/// The underlying range is normalized on construction, so the value is never
+	/// negative. The default [`BlockCore`] spans `0..1`.
 	pub fn length(&self) -> Rational {
 		self.range.length()
 	}
 
-	/// Set the in-point, keeping the length (C++ `Block::set_in`).
+	/// Moves the timeline in-point to `in_`, keeping the current length.
+	///
+	/// `in_` is a timeline time; the out-point becomes `in_ + length()`. The
+	/// media in-point is left untouched, so the same media content is shown at a
+	/// new timeline position. Contrast [`Self::set_out`], which keeps the
+	/// in-point instead.
 	pub fn set_in(&mut self, in_: Rational) {
 		let length = self.length();
 		self.range = TimeRange::new(in_, in_ + length);
@@ -261,7 +287,13 @@ impl BlockCore {
 		self.media_in = self.media_in + delta;
 	}
 
-	/// Media out (in + length; C++ `Block::media_out`).
+	/// The media out-point, computed as `media_in + length()` (C++
+	/// `Block::media_out`).
+	///
+	/// The timeline length is used directly, so `speed` is not folded in: at
+	/// non-unit speed the result is the media in-point plus the timeline span,
+	/// not the media that is actually consumed. Pairs with [`Self::in_`] /
+	/// [`Self::out`] for the timeline side of the span.
 	pub fn media_out(&self) -> Rational {
 		self.media_in + self.length()
 	}
@@ -353,8 +385,13 @@ fn audio_param_to_text(value: &NodeValue) -> (&'static str, String) {
 	}
 }
 
-/// Parse a serialized audio-effect parameter. Unknown tags degrade to a
-/// float so an older reader never fails the whole project load.
+/// Rebuilds a [`NodeValue`] from its serialized `(type tag, text)` form.
+///
+/// `kind` is the `type` attribute written by [`audio_param_to_text`]
+/// (`"int"`, `"bool"`, `"text"`, `"rational"`, anything else = float) and
+/// `text` is the element text. A numeric parse failure falls back to `0` /
+/// `0.0`, `"bool"` accepts `"1"` or `"true"`, and an unknown tag degrades to
+/// a float so a malformed parameter never fails the whole project load.
 fn audio_param_from_text(kind: &str, text: &str) -> NodeValue {
 	match kind {
 		"int" => NodeValue::Int(text.trim().parse().unwrap_or(0)),
@@ -365,10 +402,17 @@ fn audio_param_from_text(kind: &str, text: &str) -> NodeValue {
 	}
 }
 
-/// Save the shared [`BlockCore`] custom fields (C++ persists the
-/// timeline span through the `length_in` input and the track's block
-/// order; the Rust model owns the range directly, so the custom
-/// segment carries it — new elements old readers skip).
+/// Writes the shared [`BlockCore`] fields as the block's custom segment.
+///
+/// `writer` must already be positioned inside the node's custom section (no
+/// wrapper element is opened); `core` is only read. The timeline span goes
+/// out as `<range in out>` and `media_in`, `speed`, `reversed`, `enabled`,
+/// `maintain_audio_pitch`, `loop_mode`, the audio gain/pan/fades, the ordered
+/// `<audio_effects>` chain and the owning `track` reference follow; `track`
+/// is omitted for a trackless block. C++ derives the span from the `length_in`
+/// input and the track's block order, so this custom element is the Rust
+/// model's own carrier: old readers skip the unknown elements. Reader
+/// counterpart: [`load_block_core`].
 fn save_block_core(writer: &mut dyn crate::serializer::XmlWrite, core: &BlockCore) {
 	writer.start_element("range");
 	writer.attribute("in", &core.in_().to_display_string());

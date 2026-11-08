@@ -49,6 +49,35 @@ fn range_for_seconds(offset: f64, duration: f64, time_base: (i64, i64)) -> TimeR
 	)
 }
 
+/// Builds a multicam source sequence from the selected angle footages.
+///
+/// Creates a sequence labelled `name` with one video track per angle, each
+/// holding one clip of that angle's footage, and — when at least one angle
+/// has audio — one audio track per angle. A clip's range starts at that
+/// angle's offset and lasts the footage duration (non-finite/zero durations
+/// fall back to 10 s), snapped to `time_base` and at least one frame long.
+/// The footage texture feeds each clip, the sequence feeds a multicam node,
+/// and the angle clips are connected as the multicam's source inputs in
+/// array order.
+///
+/// # Arguments
+///
+/// * `project` - Project whose graph is edited (locked for the edit).
+/// * `angles` - Footage node ids in angle order; must not be empty.
+/// * `offsets` - Per-angle start offsets in seconds; same length as `angles`.
+/// * `name` - Label for the new sequence.
+/// * `time_base` - Frame duration as `(num, den)`; degenerate values use a
+///   25 fps fallback.
+///
+/// # Returns
+///
+/// `(source_sequence, multicam_node)` on success.
+///
+/// # Errors
+///
+/// Returns a message when no angles are given, the angle/offset lengths
+/// differ, an angle id is not a footage node, or the graph rejects a
+/// connection or source-input insertion.
 fn build_multicam_sequence(
 	project: &ProjectRef,
 	angles: &[NodeId],
@@ -233,6 +262,15 @@ fn build_multicam_sequence(
 	Ok((sequence, multicam))
 }
 
+/// Returns whether a footage node carries at least one audio stream.
+///
+/// Returns `false` for unknown nodes and for nodes that are not a
+/// [`FootageBehavior`]; otherwise reads the footage's audio stream count.
+///
+/// # Arguments
+///
+/// * `graph` - Project graph to read (not mutated).
+/// * `footage` - Candidate footage node id.
 fn project_footage_has_audio(graph: &Graph, footage: NodeId) -> bool {
 	graph
 		.get(footage)
@@ -241,6 +279,23 @@ fn project_footage_has_audio(graph: &Graph, footage: NodeId) -> bool {
 		.is_some_and(|footage| footage.audio_stream_count() > 0)
 }
 
+/// Finds the host clip under the playhead, or a fallback clip.
+///
+/// Scans the sequence's video tracks from last to first and returns the
+/// first block whose range contains `playhead` (later tracks win, matching
+/// the topmost visible clip). When no block contains the playhead, returns
+/// the first block of the first non-empty video track.
+///
+/// # Arguments
+///
+/// * `graph` - Project graph to read (not mutated).
+/// * `sequence` - Host sequence whose video tracks are scanned.
+/// * `playhead` - Playhead position as seconds ([`Rational`]).
+///
+/// # Returns
+///
+/// The matching block node id, or `None` when the sequence has no video
+/// blocks.
 fn host_clip_at_or_first(graph: &Graph, sequence: NodeId, playhead: Rational) -> Option<NodeId> {
 	let tracks = track_ids(graph, sequence, TrackType::Video);
 	for track in tracks.iter().rev() {
@@ -257,8 +312,35 @@ fn host_clip_at_or_first(graph: &Graph, sequence: NodeId, playhead: Rational) ->
 	})
 }
 
-/// Builds the source sequence, mounts it, resolves/places a host clip, rewires
-/// it to the multicam node, and places linked AFV audio when angle 0 has audio.
+/// Creates a multicam sequence and rewires the host clip to it.
+///
+/// Validates the host sequence, trims `name` (empty becomes "Multi-Cam") and
+/// uses the host sequence's timebase (25 fps fallback). Builds the source
+/// sequence (one video track per angle plus optional audio tracks), adds it
+/// to the project root as
+/// an undoable folder command, then finds the host clip under the playhead
+/// (or places one from angle 0 at the playhead, adding a video track when
+/// the sequence has none). The host clip's texture input is disconnected and
+/// reconnected to the multicam node; when angle 0 has audio, an audio track
+/// is ensured and a linked AFV (audio-follows-video) audio clip is placed
+/// under the host clip.
+///
+/// # Arguments
+///
+/// * `project` - Project whose graph is edited.
+/// * `host_sequence` - Sequence that receives the multicam clip.
+/// * `angles` - Footage node ids in angle order; angle 0 is the default.
+/// * `offsets` - Per-angle start offsets in seconds.
+/// * `name` - Source-sequence label; trimmed, empty means "Multi-Cam".
+///
+/// # Returns
+///
+/// The new source-sequence id and the host clip id.
+///
+/// # Errors
+///
+/// Returns a message when the host sequence is not in the project, the
+/// source-sequence build fails, or a track/place/link edit is rejected.
 pub fn create_multicam_sequence(
 	project: &ProjectRef,
 	host_sequence: NodeId,

@@ -27,9 +27,33 @@ pub extern "C" fn quercus_undo_clear() -> bool {
 	quercus_undo::global::clear().is_ok()
 }
 
-/// Takes ownership of one migration command and records it on this engine's
-/// process-wide undo stack. The pointer must come from `Box<UndoCommand>`;
-/// ownership is transferred exactly once and the command is dropped on errors.
+/// Take ownership of one boxed undo command and record it on the process-wide
+/// undo stack with the given display name.
+///
+/// This is the migration path for commands built outside the Rust API: the
+/// caller hands over a raw `Box<UndoCommand>` and the engine pushes it as if it
+/// had been created here (running its redo, then notifying observers). `name`
+/// need not be NUL-terminated and is copied; it is the label shown in the
+/// history panel.
+///
+/// Ownership is consumed as soon as `command` is non-null, *even when this
+/// function returns `false`*: the box is reconstructed immediately and the
+/// command is either stored on the stack or dropped while unwinding the error
+/// (invalid name, or a push that the stack rejects). The caller must therefore
+/// never use, free, or re-push `command` again, whatever the result.
+///
+/// # Returns
+///
+/// `true` when the command was recorded; `false` when `command` is null (in
+/// which case no ownership is taken), when `name` is null or not valid UTF-8,
+/// or when the stack rejected the push.
+///
+/// # Safety
+///
+/// `command` must be null or a pointer returned by `Box::into_raw` for a
+/// `Box<UndoCommand>` that has not been freed and is not aliased elsewhere. It
+/// must be valid to pass to `Box::from_raw` exactly once. `name` must be null or
+/// point to `name_len` readable bytes for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_undo_push_owned(
 	command: *mut c_void,
@@ -46,8 +70,25 @@ pub unsafe extern "C" fn quercus_undo_push_owned(
 	quercus_undo::global::push(*command, name).is_ok()
 }
 
-/// The display name of history row `row`, snprintf-style; -1 when out
-/// of range.
+/// Write the display name of history row `row` into `buf`, snprintf-style.
+///
+/// `row` is the 0-based index into the undo stack, oldest command first; the
+/// string is the label the history panel shows for that command. The copy
+/// semantics are those of `snprintf`: the name is written NUL-terminated and
+/// truncated to `buf_len - 1` bytes when it does not fit, and the return value is
+/// the name's full byte length excluding the NUL, so `ret >= buf_len` means the
+/// output was truncated. A null `buf` or `buf_len == 0` writes nothing and just
+/// reports the length (the two-stage length query).
+///
+/// # Returns
+///
+/// The required byte length (excluding the NUL) on success, or `-1` when `row`
+/// is out of range.
+///
+/// # Safety
+///
+/// `buf` must be null or valid for writing `buf_len` bytes for the duration of
+/// the call; a non-null `buf` with `buf_len == 0` is accepted and writes nothing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_undo_command_name(row: i64, buf: *mut u8, buf_len: usize) -> i32 {
 	match quercus_undo::global::command_name(row) {
@@ -86,9 +127,30 @@ fn dispatch_observers() {
 	}
 }
 
-/// Registers a change observer (registration-only; there is no
-/// removal, matching the underlying API). Multiple observers may be
-/// registered; a null callback is a no-op.
+/// Register a callback invoked when the process-wide undo stack changes.
+///
+/// Observers are the "project modified" signal for functional plugins: they run
+/// after a command is recorded on the stack (`push` outside an open group),
+/// after a group commit (`group_end`), and after a successful `jump` — which
+/// covers undo and redo. They do **not** fire for pushes inside an open group,
+/// for `group_abort`, or for `clear`.
+///
+/// Registration is one-way: there is no removal (matching
+/// `quercus_undo::global::add_observer`), so a registered pair stays for the
+/// rest of the process. The first non-null registration installs the internal
+/// dispatcher exactly once; later calls only append. A null `cb` is a no-op.
+///
+/// `userdata` is opaque consumer state, passed back to `cb` unchanged and never
+/// dereferenced here; it must stay valid for the rest of the process. The
+/// callback runs on whichever thread mutated the stack and is invoked while the
+/// observer registry is locked, so it must not call this function (that would
+/// deadlock on the same mutex) and should not block.
+///
+/// # Safety
+///
+/// `userdata` must remain valid to hand to `cb` for as long as the process
+/// lives, and `cb` must be safe to call from any thread with the registry
+/// mutex held. Both are the caller's contract; nothing here can verify them.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_undo_add_observer(
 	cb: Option<QuercusUndoObserverFn>,

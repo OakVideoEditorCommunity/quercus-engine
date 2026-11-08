@@ -269,8 +269,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.displaytransform`).
+/// Add the Display Transform node type to the factory registry.
+///
+/// Pushes one [`NodeMeta`] entry - type id
+/// `org.olivevideoeditor.Olive.displaytransform`, display name "Display
+/// Transform", the color category, and the `create` constructor - into `meta`.
+/// Called from `nodes::register_all`, so the node appears in the create menu
+/// and can be instantiated by the project loader (the C++ factory entry).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.displaytransform",

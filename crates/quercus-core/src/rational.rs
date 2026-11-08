@@ -56,9 +56,12 @@ pub struct Rational {
 	den: i64,
 }
 
-/// Signed Euclidean GCD on absolute values (mirrors the C++
-/// `i64_gcd`). Computed in `i128` so that `i64::MIN`-class inputs
-/// cannot overflow when negated.
+/// Signed Euclidean greatest common divisor on absolute values.
+///
+/// `a` and `b` are the two integers (the caller passes widened `i128` values);
+/// returns the non-negative GCD, with `gcd(0, x) = |x|` and `gcd(0, 0) = 0`.
+/// The `i128` signature keeps `i64::MIN`-class inputs from overflowing when
+/// negated. Used by `reduce_fraction` and `from_double`.
 fn i64_gcd(mut a: i128, mut b: i128) -> i128 {
 	if a < 0 {
 		a = -a;
@@ -163,9 +166,12 @@ fn frexp(x: f64, exp: &mut i32) -> f64 {
 	f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52))
 }
 
-/// Apply C++ `fix_signs`: negative denominators are normalized by
-/// flipping both signs; `0/0` stays as the NaN sentinel; a zero
-/// numerator becomes `0/1`.
+/// Normalize a raw numerator/denominator pair in place.
+///
+/// `num` and `den` are the raw `i64` components. A negative denominator flips
+/// both signs; `den == 0` forces the `0/0` NaN sentinel; a zero numerator
+/// becomes `0/1`. Called by [`Rational::new`], [`from_reduced`] and the
+/// rational arithmetic helpers.
 fn fix_signs(num: &mut i64, den: &mut i64) {
 	if *den < 0 {
 		*den = -*den;
@@ -177,9 +183,11 @@ fn fix_signs(num: &mut i64, den: &mut i64) {
 	}
 }
 
-/// Build a rational from already-reduced `i128` values, applying
-/// `fix_signs` and narrowing to `i64` (safe: `reduce_fraction` caps at
-/// `i32::MAX`).
+/// Build a [`Rational`] from an already-reduced `i128` pair.
+///
+/// `num` and `den` are reduced components (as produced by
+/// [`reduce_fraction`]); they are narrowed to `i64` and passed through
+/// [`fix_signs`]. Safe because reduction caps both at `i32::MAX`.
 fn from_reduced(num: i128, den: i128) -> Rational {
 	let mut num = num as i64;
 	let mut den = den as i64;
@@ -187,9 +195,12 @@ fn from_reduced(num: i128, den: i128) -> Rational {
 	Rational { num, den }
 }
 
-/// Compare two fractions exactly (C++ `compare_fractions`). Non-NaN
-/// inputs yield `-1`/`0`/`1`; the `0/0` cases return `i32::MIN`
-/// (meaningless, never used for total ordering).
+/// Compare two fractions exactly without constructing a [`Rational`].
+///
+/// `an`/`ad` are the first numerator/denominator, `bn`/`bd` the second;
+/// denominators are assumed non-negative. Returns `-1`, `0` or `1` for
+/// less/equal/greater. The `0/0` cases return `i32::MIN` (a meaningless
+/// sentinel never used for total ordering).
 fn compare_fractions(an: i64, ad: i64, bn: i64, bd: i64) -> i32 {
 	let tmp = an as i128 * bd as i128 - bn as i128 * ad as i128;
 
@@ -235,8 +246,13 @@ fn flipped(r: Rational) -> Rational {
 	Rational { num, den }
 }
 
-/// C++ `Timecode::timestamp_to_time`: `timebase.num * ts / timebase.den`,
-/// reduced against `INT_MAX`.
+/// Convert a frame timestamp to timeline time for `timebase`.
+///
+/// `ts` is the timestamp in frames; `timebase` is the frames-per-second
+/// rational. Computes `timebase.num * ts / timebase.den`, reduced against
+/// `i32::MAX` (the C++ `Timecode::timestamp_to_time`). A null timebase
+/// (`den == 0`) follows the normal null-rational rules and yields
+/// [`Rational::NULL`].
 fn timestamp_to_time(ts: i64, timebase: Rational) -> Rational {
 	let mut num = timebase.num as i128 * ts as i128;
 	let mut den = timebase.den as i128;
@@ -278,7 +294,13 @@ impl Rational {
 	/// The invalid sentinel (C++ `Rational()`, i.e. 0/0).
 	pub const NULL: Rational = Rational { num: 0, den: 0 };
 
-	/// Construct reduced; `new(0, 0)` yields [`Rational::NULL`].
+	/// Construct a reduced [`Rational`].
+	///
+	/// `num`/`den` are the raw components; signs are normalized and the fraction
+	/// is reduced against `i32::MAX`. `new(0, 0)` (and any `n/0`) yields
+	/// [`Rational::NULL`], while a zero numerator becomes `0/1`. Use
+	/// [`Rational::from_string`] to parse text and [`Rational::from_double`] for
+	/// floats.
 	pub fn new(num: i64, den: i64) -> Rational {
 		let mut num = num;
 		let mut den = den;
@@ -330,12 +352,20 @@ impl Rational {
 		}
 	}
 
-	/// Format identical to C++ `toString()`.
+	/// Format the rational as `"num/den"` (the C++ `toString()` form).
+	///
+	/// Returns the reduced components even for the null sentinel, i.e. `"0/0"`;
+	/// UI code that should hide a null value must check [`Rational::is_null`]
+	/// first. Counterpart of [`Rational::from_string`].
 	pub fn to_display_string(self) -> String {
 		format!("{}/{}", self.num, self.den)
 	}
 
-	/// Truncating conversion to f64 (C++ `toDouble`).
+	/// Convert this rational to `f64` by dividing the reduced components.
+	///
+	/// Returns `num / den`; the null/NaN sentinel (`den == 0`) yields
+	/// `f64::NAN`. The conversion itself may lose precision for large numerators.
+	/// Counterpart of [`Rational::from_double`].
 	pub fn to_f64(self) -> f64 {
 		if self.den != 0 {
 			self.num as f64 / self.den as f64
@@ -344,10 +374,13 @@ impl Rational {
 		}
 	}
 
-	/// f64 → Rational (C++ `Rational::from_double`, continued-fraction
-	/// port of FFmpeg's `av_d2q`; NaN and |v| > INT_MAX+3 yield the
-	/// 0/0 NaN sentinel).
-	/// `// CPP-PARITY: core/src/util/rational.cpp:39`
+	/// Convert an `f64` to a reduced [`Rational`] (continued-fraction port).
+	///
+	/// `value` is the number to approximate; the result is reduced against
+	/// `i32::MAX` and retried at maximum precision when the first pass underflows
+	/// to zero. `NaN` and `|value| > i32::MAX + 3` return [`Rational::NULL`] (the
+	/// `0/0` NaN sentinel). Counterpart of [`Rational::to_f64`]; mirrors the C++
+	/// `Rational::from_double`.
 	pub fn from_double(value: f64) -> Rational {
 		if value.is_nan() || value.abs() > i32::MAX as f64 + 3.0 {
 			return Rational::NULL;
@@ -380,8 +413,12 @@ impl Rational {
 		time_to_timestamp_rnd(time, self, Rounding::Round)
 	}
 
-	/// Inverse of [`Rational::time_to_timestamp`]
-	/// (C++ `Timecode::timestamp_to_time`).
+	/// Convert a frame timestamp to timeline time using this value as the timebase.
+	///
+	/// `ts` is the timestamp in frames and `self` the frames-per-second rational;
+	/// returns `self.num * ts / self.den` reduced against `i32::MAX`. Inverse of
+	/// [`Rational::time_to_timestamp`]; a null timebase yields
+	/// [`Rational::NULL`].
 	pub fn timestamp_to_time(self, ts: i64) -> Rational {
 		timestamp_to_time(ts, self)
 	}

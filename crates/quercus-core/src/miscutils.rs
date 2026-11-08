@@ -59,7 +59,13 @@ pub fn decibel_to_linear(db: f64) -> Result<f64> {
 	}
 }
 
-/// Convert a logarithmic slider position (0..1) to decibels.
+/// Convert a logarithmic slider position to decibels.
+///
+/// `logarithmic` is the slider position in `0..=1` (0 = silence, 1 = 0 dB).
+/// Values below `0.001` clamp to [`DECIBEL_MINIMUM`] (-200 dB) and values
+/// above `0.99` clamp to 0 dB; in between the result is
+/// `20*log10(-ln(1-x)/lo_g100)`. Always returns `Ok` (the `Result` is C ABI
+/// parity); the inverse is [`decibel_to_logarithmic`].
 pub fn decibel_from_logarithmic(logarithmic: f64) -> Result<f64> {
 	// CPP-PARITY: matches `olive::Decibel::from_logarithmic` (branch
 	// thresholds and `20.0*log10(-log(1-x)/lo_g100)`).
@@ -72,7 +78,12 @@ pub fn decibel_from_logarithmic(logarithmic: f64) -> Result<f64> {
 	}
 }
 
-/// Convert decibels to a logarithmic slider position (0..1).
+/// Convert decibels to a logarithmic slider position.
+///
+/// `db` is the gain in decibels; `|db| <= 1e-12` maps to 1.0, otherwise the
+/// result is `1 - exp(-10^(db/20) * lo_g100)` (nominally `0..=1`, approaching
+/// 0 for very negative dB). Always returns `Ok`; inverse of
+/// [`decibel_from_logarithmic`].
 pub fn decibel_to_logarithmic(db: f64) -> Result<f64> {
 	// CPP-PARITY: `1 - exp(-pow(10, db/20) * lo_g100)`, short-circuiting
 	// `|db| <= 1e-12` to 1.
@@ -132,13 +143,21 @@ pub enum DropWorkflowBehavior {
 }
 
 impl DropWorkflowBehavior {
-	/// Whether `value` is a valid behavior.
+	/// Whether `value` is a valid drop-workflow behavior.
+	///
+	/// `value` is the integer form of the enum; valid values are `0..=3`
+	/// (ASK/AUTO/MANUAL/DISABLE). Out-of-range values are also rendered as
+	/// "UNKNOWN" by [`DropWorkflowBehavior::name`].
 	pub fn is_valid(value: i32) -> bool {
 		// CPP-PARITY: the C++ switch matches the four enumerators.
 		matches!(value, 0..=3)
 	}
 
-	/// Printable name ("UNKNOWN" for invalid values).
+	/// Printable name of a drop-workflow behavior value.
+	///
+	/// `value` is the integer enum value: `0` -> "ASK", `1` -> "AUTO", `2` ->
+	/// "MANUAL", `3` -> "DISABLE"; any other value -> "UNKNOWN". Counterpart of
+	/// [`DropWorkflowBehavior::is_valid`].
 	pub fn name(value: i32) -> &'static str {
 		// CPP-PARITY: exact strings from the c_api `behavior_name()`.
 		match value {
@@ -152,6 +171,11 @@ impl DropWorkflowBehavior {
 }
 
 /// Round `value` up to the next power of two.
+///
+/// `value` is the unsigned input; returns the smallest power of two that is
+/// `>= value`. The arithmetic wraps like the C++ (`0` maps to `0`, and
+/// `u32::MAX` also wraps to `0`). Always `Ok` — the `Result` mirrors the C
+/// ABI; no overflow is reported.
 pub fn power_ceil_to_power_of_2(value: u32) -> Result<u32> {
 	// CPP-PARITY: bit-blast from `olive::ceil_to_power_of_2`. Uses wrapping
 	// arithmetic so the decrement of 0 wraps to `u32::MAX` (and the final
@@ -166,6 +190,10 @@ pub fn power_ceil_to_power_of_2(value: u32) -> Result<u32> {
 }
 
 /// Round `value` down to the nearest power of two.
+///
+/// `value` is the unsigned input; returns the largest power of two that is
+/// `<= value` (`0` stays `0`; exact powers of two pass through). Always `Ok` —
+/// the `Result` mirrors the C ABI.
 pub fn power_floor_to_power_of_2(value: u32) -> Result<u32> {
 	// CPP-PARITY: bit-blast from `olive::floor_to_power_of_2`.
 	let mut x = value;
@@ -190,7 +218,11 @@ struct Slot {
 }
 
 impl Slot {
-	/// An empty slot.
+	/// Create an empty slot.
+	///
+	/// Used to initialize `Current`'s four slots: the stored pointer is null and
+	/// `destroy` is `None`, so replacing or clearing the slot never calls a
+	/// deleter.
 	fn empty() -> Self {
 		Self {
 			ptr: std::ptr::null_mut(),
@@ -262,28 +294,57 @@ impl Current {
 		Ok(())
 	}
 
-	/// Fetch a slot's raw occupant pointer (borrowed).
+	/// Fetch a slot's raw occupant pointer without taking ownership.
+	///
+	/// `slot` is the mutex-guarded slot to read (one of `Current`'s video, audio,
+	/// plugin-host or plugin-cache slots). Returns the borrowed `*mut c_void`
+	/// (null when empty); the caller must not destroy it. A poisoned lock is
+	/// recovered. The public `get_*` accessors are thin wrappers around this.
 	fn get_slot(slot: &Mutex<Slot>) -> Result<*mut c_void> {
 		let s = slot.lock().unwrap_or_else(|e| e.into_inner());
 		Ok(s.ptr)
 	}
 
-	/// Store a pointer in the video-params slot, taking over destruction.
+	/// Store an opaque pointer in the video-params slot.
+	///
+	/// `obj` is the external object (may be null to clear the slot); `destroy` is
+	/// the optional deleter invoked when the occupant is replaced or cleared.
+	/// Ownership of `obj` transfers to the slot on success. The process-wide slot
+	/// is mutex-guarded and a poisoned lock is recovered. Always returns
+	/// `Ok(())`; sibling of [`Current::get_video_params`].
 	pub fn set_video_params(&self, obj: *mut c_void, destroy: DestroyFn) -> Result<()> {
 		Self::set_slot(&self.video_params, obj, destroy)
 	}
 
-	/// Store a pointer in the audio-params slot.
+	/// Store an opaque pointer in the audio-params slot.
+	///
+	/// `obj` is the external object (may be null to clear the slot); `destroy` is
+	/// the optional deleter invoked when the occupant is replaced or cleared.
+	/// Ownership of `obj` transfers to the slot. The slot is mutex-guarded; a
+	/// poisoned lock is recovered. Always returns `Ok(())`; sibling of
+	/// [`Current::get_audio_params`].
 	pub fn set_audio_params(&self, obj: *mut c_void, destroy: DestroyFn) -> Result<()> {
 		Self::set_slot(&self.audio_params, obj, destroy)
 	}
 
-	/// Store a pointer in the plugin-host slot.
+	/// Store an opaque pointer in the plugin-host slot.
+	///
+	/// `obj` is the external object (may be null to clear the slot); `destroy` is
+	/// the optional deleter invoked when the occupant is replaced or cleared.
+	/// Ownership of `obj` transfers to the slot. The slot is mutex-guarded; a
+	/// poisoned lock is recovered. Always returns `Ok(())`; sibling of
+	/// [`Current::get_plugin_host`].
 	pub fn set_plugin_host(&self, obj: *mut c_void, destroy: DestroyFn) -> Result<()> {
 		Self::set_slot(&self.plugin_host, obj, destroy)
 	}
 
-	/// Store a pointer in the plugin-cache slot.
+	/// Store an opaque pointer in the plugin-cache slot.
+	///
+	/// `obj` is the external object (may be null to clear the slot); `destroy` is
+	/// the optional deleter invoked when the occupant is replaced or cleared.
+	/// Ownership of `obj` transfers to the slot. The slot is mutex-guarded; a
+	/// poisoned lock is recovered. Always returns `Ok(())`; sibling of
+	/// [`Current::get_plugin_cache`].
 	pub fn set_plugin_cache(&self, obj: *mut c_void, destroy: DestroyFn) -> Result<()> {
 		Self::set_slot(&self.plugin_cache, obj, destroy)
 	}

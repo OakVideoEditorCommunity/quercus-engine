@@ -518,8 +518,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.cornerpin`).
+/// Registers the Corner Pin distort node type into the factory listing.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.cornerpin`, display name "Corner Pin", the
+/// [`Category::Distort`] category (its create-menu group) and [`create`] as
+/// the constructor. The node warps its `tex_in` texture by dragging the four
+/// corner gizmos, optionally with perspective-correct interpolation.
+///
+/// C++ factory entry: `org.olivevideoeditor.Olive.cornerpin`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.cornerpin",

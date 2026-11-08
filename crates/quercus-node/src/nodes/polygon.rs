@@ -98,15 +98,22 @@ impl PolygonGenerator {
 	}
 }
 
-/// Collect the point array of the polygon input (C++ iterating
-/// `GetValueAtTime(k_points_in, i)`): per-element row keys
-/// (`points_in[i]`, the connected-array convention) first, then the
-/// node's own standard/keyframe values per element — an unconnected
-/// array resolves to the default pentagon — sized by the input's
-/// array_size (capped at the shader's 64-element uniform array). An
-/// absent array falls back to a single bare-key value (non-array
-/// connection) or a single degenerate point, so `value()` consumers
-/// always receive a closed loop of at least one point.
+/// Collects the polygon's points as a closed loop of `[x, y, z, w]`
+/// values at `time`.
+///
+/// `core` supplies the declared `points_in` array size (capped at the
+/// shader's 64-element uniform array; defaults to 5, the C++
+/// constructor's pentagon). `inputs` is the evaluated value row for the
+/// node: per-element keys `points_in[i]` (the connected-array convention)
+/// are preferred, then the node's own standard/keyframe values per
+/// element are consulted. `time` is the rational time at which those
+/// per-element values are sampled.
+///
+/// Vec4 points pass through, Vec2 is widened with `z = w = 0`, and Color
+/// is copied into the leading channels. If no element resolves, the bare
+/// `points_in` key (a non-array connection) is used, and failing that a
+/// single degenerate point `[0, 0, 0, 0]`, so `value()` always receives a
+/// closed loop of at least one point.
 pub fn point_array(core: &NodeCore, inputs: &crate::value::NodeValueRow, time: quercus_core::Rational) -> Vec<[f64; 4]> {
 	let size = core
 		.inputs
@@ -380,8 +387,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(PolygonGenerator))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.polygon`).
+/// Registers the polygon generator in the factory menu list.
+///
+/// Pushes one [`NodeMeta`] entry (type id
+/// `org.olivevideoeditor.Olive.polygon`, display name "Polygon", the
+/// Generator category, and the `create` constructor) into `meta`. Called
+/// from `nodes::register_all`, which installs the list into the global
+/// factory; `meta` is appended to, never cleared.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.polygon",

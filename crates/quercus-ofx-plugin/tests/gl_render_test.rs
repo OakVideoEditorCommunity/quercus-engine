@@ -14,25 +14,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! GL 渲染桥端到端：真实 CGL 离屏上下文 + 输出纹理/FBO + 回读。
+//! GL render bridge end-to-end: a real CGL offscreen context + output
+//! texture/FBO + readback.
 //!
-//! 链路（方案 B，见 [`quercus_ofx_plugin::gl_bridge`] 模块文档）：扫描最小测试
-//! 插件的 GL 变体（org.quercus.test-plugin.gl，声明 OpenGLRenderSupported=
-//! "true" + F32）→ 用 GL 后端渲染器（fake `GpuContextLike`，kind=Gl）
-//! 构造 RenderJob → `render_frame` 的 use_opengl 决策命中 → 桥建 CGL
-//! 上下文 + 输出 GL 纹理 + FBO → 插件 render 走 GL 路径（attach/detach、
-//! clipLoadTexture 拿真实纹理名、glClear 清成已知颜色）→ 宿主
-//! glReadPixels 回读装帧。
+//! Flow (plan B, see the [`quercus_ofx_plugin::gl_bridge`] module docs): scan
+//! the GL variant of the minimal test plugin (org.quercus.test-plugin.gl,
+//! declaring OpenGLRenderSupported="true" + F32) -> build a RenderJob with the
+//! GL backend renderer (a fake `GpuContextLike`, kind=Gl) -> `render_frame`'s
+//! use_opengl decision hits -> the bridge creates a CGL context + output GL
+//! texture + FBO -> the plugin's render takes the GL path (attach/detach,
+//! clipLoadTexture gets the real texture name, glClear clears to a known
+//! color) -> the host packs the frame after a glReadPixels readback.
 //!
-//! 断言即"真实 GL 渲染"的证据：
-//! 1. 输出像素 = 插件 GL 清屏色 (0.1, 0.2, 0.3, 1.0)（CPU 路径恒填
-//!    0.5，二者可区分）；
-//! 2. 插件经 message 上报的 gl-source-index / gl-output-index 都是
-//!    非零真实 GL 纹理名（CPU 桩恒 0）；
-//! 3. gl-attached / gl-detached 动作发生（attach/detach 配对）。
+//! The assertions are the evidence of "real GL rendering":
+//! 1. the output pixels equal the plugin's GL clear color (0.1, 0.2, 0.3, 1.0)
+//!    (the CPU path always fills 0.5, so the two are distinguishable);
+//! 2. the gl-source-index / gl-output-index that the plugin reports through
+//!    message are both non-zero real GL texture names (the CPU stub is always
+//!    0);
+//! 3. the gl-attached / gl-detached actions occur (attach/detach pairing).
 //!
-//! 门：macOS（Linux/Windows 的 GL 桥是 stub）+ `QUERCUS_GPU_TESTS`（GL
-//! 验收约定，CI 一律跳过）。
+//! Gates: macOS (the Linux/Windows GL bridge is a stub) + `QUERCUS_GPU_TESTS`
+//! (the GL acceptance convention; CI always skips).
 
 mod common;
 
@@ -47,9 +50,10 @@ use quercus_ofx_plugin::render::{Renderer, Texture};
 
 const GL_PLUGIN_ID: &str = "org.quercus.test-plugin.gl";
 
-/// GL 后端渲染器（fake `GpuContextLike`；只声明 kind=Gl，让 use_opengl
-/// 决策命中。GL 路径不用它的 upload/download/blit——输出是 CPU 帧，
-/// 渲染发生在桥自建的 CGL 上下文）。
+/// GL backend renderer (a fake `GpuContextLike`; it only declares kind=Gl so the
+/// use_opengl decision hits. The GL path does not use its upload/download/blit —
+/// the output is a CPU frame and rendering happens in the CGL context the bridge
+/// builds itself).
 struct FakeGlRenderer;
 
 impl GpuContextLike for FakeGlRenderer {
@@ -73,7 +77,7 @@ impl GpuContextLike for FakeGlRenderer {
 	}
 }
 
-/// 捕获插件 message（gl-test 消息流）。
+/// Capture plugin messages (the gl-test message stream).
 unsafe extern "C" fn capture_msg(
 	type_: *const c_char,
 	message: *const c_char,
@@ -102,7 +106,8 @@ fn first_pixel(texture: &Texture) -> [f32; 4] {
 	out
 }
 
-/// 扫描 + 注册（幂等；宿主不可用返回 false = skip）。
+/// Scan + register (idempotent; returns false when the host is unavailable =
+/// skip).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
 		common::skip("最小测试插件未构建");
@@ -116,7 +121,8 @@ fn scan_and_register() -> bool {
 	true
 }
 
-/// GL 端到端：插件 GL 变体真实走 GL 路径并输出已知颜色。
+/// GL end-to-end: the plugin's GL variant really takes the GL path and outputs a
+/// known color.
 #[test]
 fn gl_plugin_renders_through_real_gl_path() {
 	common::with_host(|| {
@@ -210,9 +216,9 @@ fn gl_plugin_renders_through_real_gl_path() {
 	});
 }
 
-/// Linux/Windows 真正 GPU 零拷贝：真实 wgpu/Vulkan 上下文 + GPU
-/// 输入/输出，插件 GL 渲染后输出仍是同一个 GPU token，且渲染期间没有
-/// download / glReadPixels。
+/// Linux/Windows real-GPU zero copy: a real wgpu/Vulkan context + GPU
+/// input/output; after the plugin's GL render the output is still the same GPU
+/// token, and there is no download / glReadPixels during rendering.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 #[test]
 fn gl_plugin_renders_zero_copy() {
@@ -354,10 +360,11 @@ fn gl_plugin_renders_zero_copy() {
 	});
 }
 
-/// CPU 回退对照：无 GL 渲染器（renderer=None）时，GL 变体插件走 CPU
-/// 路径（actionRenderGL 的 !gl_enabled 回退 actionRender），输出恒
-/// 0.5——与 [`gl_plugin_renders_through_real_gl_path`] 的 0.1,0.2,0.3
-/// 区分，证明 GL 分支只在 renderer 为 GL 时启用。
+/// CPU fallback control: with no GL renderer (renderer=None) the GL-variant
+/// plugin takes the CPU path (actionRenderGL's !gl_enabled fallback to
+/// actionRender) and the output is always 0.5 — distinguishable from the
+/// 0.1,0.2,0.3 of [`gl_plugin_renders_through_real_gl_path`], proving the GL
+/// branch is only enabled when the renderer is GL.
 #[test]
 fn gl_plugin_falls_back_to_cpu_without_gl_renderer() {
 	common::with_host(|| {

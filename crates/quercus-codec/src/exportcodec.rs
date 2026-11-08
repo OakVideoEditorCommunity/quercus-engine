@@ -135,10 +135,12 @@ impl Codec {
 		}
 	}
 
-	/// Whether the codec is lossless.
+	/// Returns true when the codec is considered lossless by the export pipeline.
 	///
-	/// CPP-PARITY: `src/codec/src/exportcodec.cpp` `is_codec_lossless`;
-	/// only PCM and FLAC are lossless.
+	/// Only `PCM` and `FLAC` qualify; video and still-image codecs are not
+	/// counted here even when their compression happens to be lossless (PNG, for
+	/// example, reports `false`). `c` is the codec to test; the query has no
+	/// failure case. Mirrors the C++ engine's `is_codec_lossless` rule.
 	pub fn is_codec_lossless(c: Codec) -> bool {
 		match c {
 			Codec::PCM | Codec::FLAC => true,

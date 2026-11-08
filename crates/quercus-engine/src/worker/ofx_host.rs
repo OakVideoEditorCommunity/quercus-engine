@@ -108,10 +108,14 @@ impl quercus_ofx_plugin::progress::UiProgressReporter for HostProgressReporter {
 	}
 }
 
-/// Build one progress reporter for `progressStart`: clears the sticky
-/// cancel (the protocol's "a fresh render starts uncancelled") and emits
-/// the fraction-0 start event. The reporter factory installed with the
-/// progress suite calls this; tests call it directly.
+/// Build one progress reporter for `progressStart`.
+///
+/// `label` / `message` name the plugin and operation in the emitted
+/// `plugin_progress` events. The reporter clears the sticky cancel (the protocol's
+/// "a fresh render starts uncancelled"), emits the fraction-0 start event, and
+/// returns a reporter that emits each fraction clamped to `0..=1` and answers
+/// `false` once a cancel arrived. Installed as the reporter factory by
+/// `install_progress_factory`; tests call it directly.
 fn host_progress_reporter(label: &str, message: &str) -> Box<dyn quercus_ofx_plugin::progress::UiProgressReporter> {
 	OFX_CANCEL.store(false, Ordering::Relaxed);
 	emit(
@@ -133,10 +137,15 @@ fn install_progress_factory() {
 	quercus_ofx_plugin::progress::set_reporter_factory(Some(Arc::new(host_progress_reporter)));
 }
 
-/// Read stdin on its own thread. `plugin_cancel` is handled inline (sets
-/// the sticky flag) so a cancel is observed while a plugin render is in
-/// flight; every other line goes to the main loop through the channel.
-/// Dropping the sender on EOF closes the channel and ends the loop.
+/// Start the stdin reader thread and return the channel of control lines.
+///
+/// Every non-empty line is forwarded to the main loop, except `plugin_cancel`,
+/// which sets the sticky `OFX_CANCEL` flag inline so a cancel is observed while a
+/// plugin render is in flight. Invalid JSON is still forwarded (the main loop
+/// rejects it). EOF or a send error ends the thread and drops the sender, which
+/// closes the channel and therefore ends the main loop.
+///
+/// Panics (in the spawning thread) when the reader thread cannot be created.
 fn spawn_stdin_reader() -> mpsc::Receiver<String> {
 	let (tx, rx) = mpsc::channel();
 	std::thread::Builder::new()
@@ -180,6 +189,17 @@ struct HostPools {
 
 /// Attach the pools announced by a `handshake` (the worker's
 /// `handle_handshake`, minus the render session).
+///
+/// `msg` is the handshake JSON: `shm_key` / `output_slots` / `slot_data_bytes` for
+/// the output pool and `input_shm_key` / `input_slots` / `input_slot_data_bytes`
+/// for the input pool. Each region is attached at the size the pool needs and
+/// validated as a frame slot pool; the regions are kept in the returned
+/// [`HostPools`] so the pool views stay mapped for the host's lifetime.
+///
+/// # Errors
+///
+/// A message naming the missing geometry, the failing attach, or the region that
+/// does not contain a slot pool.
 fn attach_pools(msg: &serde_json::Value) -> Result<HostPools, String> {
 	let hs: HandshakeMsg =
 		serde_json::from_value(msg.clone()).map_err(|e| format!("invalid handshake: {e}"))?;
@@ -227,7 +247,19 @@ fn attach_pools(msg: &serde_json::Value) -> Result<HostPools, String> {
 	})
 }
 
-/// Consume one input frame (the producer is the main process).
+/// Consume one input frame from the slot pool (the producer is the main process).
+///
+/// `pool` is the input pool and `slot` the slot index the job announced. The slot
+/// must be at the head of the ready ring: a mismatch releases the popped slot and
+/// fails. The metadata is validated (positive width/height, non-negative data
+/// size), the pixels are copied out as F32 RGBA, the shm slot is released and a
+/// [`Frame`] carrying those params and bytes is returned.
+///
+/// # Errors
+///
+/// `"input slot missing"` when nothing is ready, an error naming both slot indices
+/// on a mismatch, and an invalid-metadata error for a bad geometry; the consumed
+/// slot is released on the error paths.
 fn read_input_frame(pool: &FrameSlotPool, slot: u32) -> Result<Frame, String> {
 	let mut consumed = 0u32;
 	// SAFETY: consumer side of the SPSC protocol, single-threaded host.
@@ -267,7 +299,19 @@ fn read_input_frame(pool: &FrameSlotPool, slot: u32) -> Result<Frame, String> {
 	Ok(frame)
 }
 
-/// Publish one output frame (the consumer is the main process).
+/// Publish one output frame to the slot pool (the consumer is the main process).
+///
+/// `pool` is the output pool and `frame` the F32 RGBA frame to copy. A slot is
+/// acquired, the bytes are copied in when they fit the slot capacity, the metadata
+/// is written (F32, 4 channels, line size, data size and the frame timestamp) and
+/// the slot is published. Returns the published slot index.
+///
+/// # Errors
+///
+/// `"output pool is full"` when no slot can be acquired, an error naming both
+/// sizes when the frame is larger than a slot, and `"output publish failed"` when
+/// the ring rejects the publish; the acquired slot is released on every one of
+/// those paths.
 fn write_output_frame(pool: &FrameSlotPool, frame: &Frame) -> Result<i32, String> {
 	let mut slot = 0u32;
 	// SAFETY: producer side of the SPSC protocol, single-threaded host.
@@ -306,6 +350,20 @@ fn write_output_frame(pool: &FrameSlotPool, frame: &Frame) -> Result<i32, String
 }
 
 /// Render one `ofx_job` and return its `ofx_result` response.
+///
+/// `msg` is the parsed JSON job (`OfxJobMsg`: job id, plugin type id, time,
+/// named input slots, optional src slot, effect input id and parameter values);
+/// `pools` is the handshake-attached input/output slot pair. Every named input and
+/// the optional source are consumed from the input pool; a missing source falls
+/// back to the declared effect input, then the first input, then a dummy texture
+/// (mirroring the evaluator). The plugin instance comes from the installed
+/// factory, the render runs through the installed executor, and the resulting
+/// texture is read back and published to the output pool.
+///
+/// Returns an `OfxResultMsg` JSON: the output slot with an empty error on success,
+/// or `slot: -1` plus a message for an invalid job, a bad/missing input slot, a
+/// missing factory or executor, an unknown plugin, a render/readback failure or a
+/// full output pool.
 fn handle_job(msg: serde_json::Value, pools: &HostPools) -> serde_json::Value {
 	let job: OfxJobMsg = match serde_json::from_value(msg) {
 		Ok(job) => job,
@@ -396,6 +454,17 @@ struct CrashHooks {
 }
 
 impl CrashHooks {
+	/// Parse the test-only crash hooks out of the host's arguments.
+	///
+	/// `args` is the host argv (program name and mode flag included): every
+	/// `--ofx-crash-always` sets `always` and every `--ofx-crash-once <path>` takes the
+	/// following argument as `once_marker` (ignored when it is the last argument).
+	/// Unknown arguments are skipped, so the parser tolerates the worker's other
+	/// flags.
+	///
+	/// Parsing does not validate the marker path; `once_marker` is only consulted by
+	/// `maybe_crash`, which aborts on the first job of the process and writes the
+	/// marker so the respawned host renders.
 	fn from_args(args: &[String]) -> Self {
 		let mut hooks = CrashHooks {
 			always: false,
@@ -429,7 +498,20 @@ impl CrashHooks {
 	}
 }
 
-/// The `--ofx-host` main loop. Returns the process exit code.
+/// The `--ofx-host` main loop; returns the process exit code (`0`).
+///
+/// `args` is the full argv, program name and `--ofx-host` included; unknown flags
+/// are ignored and the test-only `--ofx-crash-*` hooks are parsed from it. The
+/// function installs the same plugin runtime the render workers use (the render
+/// executor and the identifier-keyed instance factory, so `handle_job` can
+/// resolve and run plugins), scans the plugin cache once (a scan failure is
+/// logged, not fatal) and installs the progress reporter factory.
+///
+/// stdin is read on its own thread; the loop then serves the control protocol:
+/// `handshake` attaches the shm pools, `ofx_job` renders one job and emits its
+/// `ofx_result`, `plugin_cancel` sets the sticky cancel flag, `shutdown` ends the
+/// loop, and anything else (or invalid JSON) emits an `error` reply. Protocol
+/// failures are reported as messages, never as a non-zero exit code.
 pub fn ofx_host_main(args: &[String]) -> i32 {
 	// The same plugin runtime the render workers install: the executor
 	// (so `plugin_executor` is callable) and the identifier-keyed instance

@@ -198,7 +198,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ColorMatrixNode))
 }
 
-/// Register this node type.
+/// Add the color matrix node (type id
+/// `org.olivevideoeditor.Olive.colormatrix`) to the factory meta list.
+///
+/// The entry registers the display name "Color Matrix", the `Color` category and
+/// this module's `create` constructor, which wires the `tex_in` effect input plus
+/// the sixteen non-keyframable matrix inputs `m0`..`m15` (identity defaults:
+/// 1.0 on the `m0`/`m5`/`m10`/`m15` diagonal, 0.0 elsewhere) and marks the node
+/// as a video effect. Called from `nodes::register_all`; `meta` is the
+/// accumulating registry and the entry is appended in C++ factory order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.colormatrix",

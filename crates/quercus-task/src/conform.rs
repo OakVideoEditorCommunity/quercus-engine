@@ -74,16 +74,22 @@ impl ConformTask {
 		}
 	}
 
-	/// Derive the final and working PCM filenames for the given first-channel
-	/// final filename and channel count.
+	/// Derives the per-channel final and working PCM filenames for one conform.
 	///
-	/// C++ contract: the first-channel final name must end in `.0.pcm`; the
-	/// final name for channel `i` replaces the trailing index, and the
-	/// working name appends `.working`. See `derive_filenames` in
-	/// conform.cpp — this is a parity/golden candidate (see
-	/// tests/parity_test.rs).
+	/// `first_channel_final` is channel 0's final path; it must end in `.0.pcm` and be
+	/// longer than that suffix, otherwise there is no base name. `channel_count` is
+	/// the number of channels (at least 1). For channel `i` the final name is
+	/// `<base>.<i>.pcm` (so channel 0 maps back to the input path) and the working
+	/// name is that final name plus `.working`.
 	///
-	/// CPP-PARITY: src/task/src/conform/conform.cpp (derive_filenames)
+	/// Returns `(final_names, working_names)` in channel order. Returns
+	/// `Error::Failed("Invalid conform output filename")` when `channel_count == 0`,
+	/// when the name does not end in `.0.pcm`, or when the name is only the suffix
+	/// (empty base); the task run path surfaces that as the task error "Invalid
+	/// conform output filename".
+	///
+	/// C++ counterpart: `derive_filenames` in conform.cpp (parity/golden candidate,
+	/// see tests/parity_test.rs).
 	pub fn derive_filenames(
 		first_channel_final: &str,
 		channel_count: usize,

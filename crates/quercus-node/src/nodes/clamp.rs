@@ -209,7 +209,11 @@ fn add_float_input(core: &mut NodeCore, id: &str, default: f64) {
 	));
 }
 
-/// Register this node type.
+/// Register the Clamp node type in the factory's static entry list.
+///
+/// `meta` is the factory entry vector to append to (type id
+/// `org.olivevideoeditor.Olive.clamp`, display name "Clamp", category
+/// [`Category::Color`]). Called once at startup via `nodes::register_all`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.clamp",

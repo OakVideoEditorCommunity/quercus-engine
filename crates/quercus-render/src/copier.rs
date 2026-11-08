@@ -30,7 +30,11 @@ use crate::error::{Error, Result};
 pub struct ProjectHandle(u64);
 
 impl ProjectHandle {
-	/// New identity; `0` is the empty handle.
+	/// Creates a project identity from its raw numeric value.
+	///
+	/// `identity` is the value quercusnode assigned to the live project; `0`
+	/// is the empty handle (see [`ProjectHandle::null`]). Only the identity is
+	/// stored — this module never owns the project object.
 	pub fn new(identity: u64) -> Self {
 		ProjectHandle(identity)
 	}
@@ -91,8 +95,18 @@ pub fn project_deep_copy(_project: ProjectHandle) -> ProjectHandle {
 	ProjectHandle::null()
 }
 
-/// `quercusnode_project_sync_copy` — never implemented (dead direction); the
-/// sync always fails explainably.
+/// Syncs recorded changes from a source project to its copy
+/// (`quercusnode_project_sync_copy` — never implemented).
+///
+/// `_source` is the live source project, `_copy` the copied project and
+/// `_changes` the change records to replay. The direction is dead in the
+/// single-lib plan, so the call fails explainably instead of silently
+/// succeeding.
+///
+/// # Errors
+///
+/// Always returns [`Error::Failed`] with the "not implemented in quercusnode"
+/// message; that is why the parameters are underscore-prefixed.
 pub fn project_sync_copy(
 	_source: ProjectHandle,
 	_copy: ProjectHandle,

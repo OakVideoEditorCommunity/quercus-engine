@@ -74,8 +74,13 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-	/// Parse the settings string (C++ `backend_from_string` semantics for
-	/// the legacy values; unknown values yield Auto).
+	/// Parse the persisted backend settings string into a [`BackendKind`].
+	///
+	/// Matching trims whitespace and ignores case: `""`/`"auto"` → Auto,
+	/// `"metal"` → Metal, `"vulkan"` → Vulkan, `"opengl"`/`"gl"` → Gl and
+	/// `"cpu"`/`"dummy"`/`"multiprocess"` → Cpu (the legacy C++
+	/// `backend_from_string` values). Unknown strings fall back to
+	/// [`BackendKind::Auto`]. Counterpart of [`BackendKind::to_config_string`].
 	pub fn from_config_string(s: &str) -> BackendKind {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"" | "auto" => BackendKind::Auto,
@@ -142,7 +147,12 @@ impl BackendKind {
 		}
 	}
 
-	/// The resolved kind for a wgpu backend id.
+	/// Map a concrete [`wgpu::Backend`] id to the [`BackendKind`] this build
+	/// reports for it.
+	///
+	/// Anything other than Metal, Vulkan or GL (e.g. DX12 or a browser backend)
+	/// maps to [`BackendKind::Cpu`], because those adapters are never created
+	/// here.
 	fn from_wgpu_backend(b: wgpu::Backend) -> BackendKind {
 		match b {
 			wgpu::Backend::Metal => BackendKind::Metal,
@@ -522,12 +532,18 @@ pub struct PlaneData<'a> {
 }
 
 impl<'a> PlaneData<'a> {
-	/// Tightly packed plane bytes.
+	/// Plane bytes whose rows are packed back-to-back (`stride == 0`, derived
+	/// from the plane width when uploaded). Counterpart of
+	/// [`PlaneData::strided`].
 	pub fn tight(data: &'a [u8]) -> Self {
 		Self { data, stride: 0 }
 	}
 
-	/// Plane bytes with an explicit source row stride in bytes.
+	/// Plane bytes with an explicit source row stride, in bytes.
+	///
+	/// `stride` is the distance between the starts of consecutive rows and may
+	/// exceed the packed row length when the decoder pads rows. Counterpart of
+	/// [`PlaneData::tight`].
 	pub fn strided(data: &'a [u8], stride: usize) -> Self {
 		Self { data, stride }
 	}
@@ -536,7 +552,8 @@ impl<'a> PlaneData<'a> {
 /// The `wgpu` copy row alignment for texture uploads (256 bytes).
 const PLANE_ROW_ALIGNMENT: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
 
-/// Round a packed row up to the `wgpu` copy alignment.
+/// Round a packed row up to [`PLANE_ROW_ALIGNMENT`] (256 bytes), the row
+/// stride wgpu requires for buffer↔texture copies. `0` stays `0`.
 fn aligned_plane_row_bytes(row_bytes: usize) -> usize {
 	row_bytes.div_ceil(PLANE_ROW_ALIGNMENT) * PLANE_ROW_ALIGNMENT
 }
@@ -659,6 +676,14 @@ struct ReadbackJob {
 	tx: std::sync::mpsc::Sender<Result<Frame>>,
 }
 
+/// The process-wide readback thread, spawned lazily on first use.
+///
+/// Returns the sender side of the job channel. The `quercus-readback`
+/// thread takes each job's external lifecycle lock, runs
+/// [`download_texture`] and sends the result back on the job's own channel.
+/// One thread serialises every [`GpuContext::download_async`] request,
+/// keeping the render thread free but delaying a queued readback behind a
+/// slow one.
 fn readback_worker() -> &'static std::sync::mpsc::Sender<ReadbackJob> {
 	static TX: std::sync::OnceLock<std::sync::mpsc::Sender<ReadbackJob>> = std::sync::OnceLock::new();
 	TX.get_or_init(|| {
@@ -686,6 +711,19 @@ fn readback_worker() -> &'static std::sync::mpsc::Sender<ReadbackJob> {
 	})
 }
 
+/// Copy a GPU texture back into a CPU [`Frame`] of `PixelFormat::F32`.
+///
+/// `Rgba32Float` is copied as-is and `Rgba16Float` is converted half→f32;
+/// any other format is rejected. The copy goes through a `MAP_READ` staging
+/// buffer whose rows are padded to 256 bytes and then repacked tightly into
+/// `frame.data`. Because this may run on the readback thread, the device is
+/// polled incrementally (never a blocking `PollType::Wait`) with a 30-second
+/// deadline. Counted in [`gpu_transfer_counters`] as a GPU→CPU transfer.
+///
+/// # Errors
+///
+/// `Error::Failed` for an unsupported format, a failed/timed-out map, or a
+/// device lost while polling (a `panic` from `device.poll` counts as lost).
 fn download_texture(
 	device: &wgpu::Device,
 	queue: &wgpu::Queue,
@@ -1053,6 +1091,12 @@ impl GpuContext {
 		self.external_lock.clone()
 	}
 
+	/// Run `callback` once every command buffer submitted so far has finished
+	/// on the GPU.
+	///
+	/// Thin forwarding to [`wgpu::Queue::on_submitted_work_done`]: `callback`
+	/// runs on wgpu's internal thread, so it must capture everything it needs
+	/// and must not block.
 	pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static) {
 		self.queue.on_submitted_work_done(callback);
 	}
@@ -1078,7 +1122,18 @@ impl GpuContext {
 		self.kind != BackendKind::Cpu
 	}
 
-	/// Create an F32 RGBA texture (the pipeline's canonical format).
+	/// Create an `Rgba32Float` texture with the pipeline's canonical usage flags
+	/// and register it.
+	///
+	/// `width`/`height` are in pixels and must be positive. The texture can be
+	/// sampled, rendered to, uploaded into and copied from; this is the format
+	/// every working-space pass produces. Returns the registry token consumed by
+	/// [`GpuContext::upload`], [`GpuContext::blit`], [`GpuContext::download`]
+	/// and the rest of the texture API.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `width` or `height` is not positive.
 	pub fn create_texture(&self, width: i32, height: i32) -> Result<u64> {
 		self.create_texture_format(
 			width,
@@ -1153,7 +1208,9 @@ impl GpuContext {
 		Ok(token)
 	}
 
-	/// Destroy a texture token (idempotent).
+	/// Drop `token` from the registry, releasing the GPU texture once the last
+	/// reference is gone. Unknown tokens are ignored, so repeated calls are
+	/// harmless (idempotent).
 	pub fn destroy_texture(&self, token: u64) {
 		lock(&self.textures).remove(&token);
 	}
@@ -1170,14 +1227,19 @@ impl GpuContext {
 		}
 	}
 
-	/// Look up a texture's (width, height).
+	/// The `(width, height)` of the texture behind `token`, in pixels; `None`
+	/// when the token is unknown.
 	pub fn texture_size(&self, token: u64) -> Option<(u32, u32)> {
 		lock(&self.textures)
 			.get(&token)
 			.map(|t| (t.width, t.height))
 	}
 
-	/// True when the registry holds the token.
+	/// Whether the registry still holds `token`.
+	///
+	/// Tokens leave the registry via [`GpuContext::destroy_texture`] and
+	/// [`GpuContext::take_texture_handle`], so `false` means the texture has
+	/// already been released.
 	pub fn has_texture(&self, token: u64) -> bool {
 		lock(&self.textures).contains_key(&token)
 	}
@@ -1196,13 +1258,24 @@ impl GpuContext {
 		lock(&self.textures).remove(&token).map(|t| t.texture)
 	}
 
-	/// The texture's format (tests/plane uploads).
+	/// The format `token` was created with, or `None` when the token is unknown.
+	/// Used by plane uploads and tests.
 	pub fn texture_format(&self, token: u64) -> Option<wgpu::TextureFormat> {
 		lock(&self.textures).get(&token).map(|t| t.format)
 	}
 
-	/// Upload tightly packed raw bytes into a plain-format texture (the
-	/// YUV→RGB planes). Counted as a CPU→GPU transfer.
+	/// Upload tightly packed raw bytes into a plain single-channel texture (the
+	/// YUV→RGB planes).
+	///
+	/// `data` must be at least `width * bytes-per-texel * height` bytes with no
+	/// row padding; accepted texture formats are `R8Unorm`, `R16Unorm`,
+	/// `R16Float` and `R32Float` (1, 2, 2 and 4 bytes per texel). Counted in
+	/// [`gpu_transfer_counters`] as a CPU→GPU transfer.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` for an unknown `token`; `Error::Invalid` for an
+	/// unsupported texture format or a buffer shorter than the texture needs.
 	pub fn upload_plane(&self, token: u64, data: &[u8]) -> Result<()> {
 		GPU_UPLOADS.fetch_add(1, Ordering::Relaxed);
 		let entry = lock(&self.textures)
@@ -1345,8 +1418,14 @@ impl GpuContext {
 		Ok(planes)
 	}
 
-	/// Legacy adapter: create `(y, uv)` plane textures for a
-	/// [`PlanarFormat`] (semi-planar layouts).
+	/// Legacy adapter: create the `(y, uv)` semi-planar plane textures for a
+	/// [`PlanarFormat`].
+	///
+	/// `width`/`height` are the luma dimensions; the chroma plane is sized by
+	/// the format's subsampling. Returns the two tokens, or `Error::Invalid`
+	/// after destroying whatever was created when the format does not describe
+	/// exactly two planes. Counterpart of
+	/// [`GpuContext::upload_planar_frame`].
 	pub fn create_planar_textures(
 		&self,
 		format: PlanarFormat,
@@ -1399,9 +1478,20 @@ impl GpuContext {
 		)
 	}
 
-	/// Legacy adapter: create and upload one [`PlanarFormat`] frame,
-	/// returning the `(y, uv)` tokens. The caller owns them (wrap in a
-	/// `PlanarTexture` or destroy them).
+	/// Legacy adapter: create and upload one complete [`PlanarFormat`] frame,
+	/// returning the `(y, uv)` tokens.
+	///
+	/// `width`/`height` are the luma dimensions; `y_bytes`/`uv_bytes` carry the
+	/// plane data and `y_stride`/`uv_stride` the source bytes per row (`0` =
+	/// tightly packed). Both textures are created first and destroyed again if
+	/// the upload fails, so an `Err` leaks nothing. The caller owns the returned
+	/// tokens (wrap them in a `PlanarTexture` or destroy them).
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for non-positive dimensions or plane bytes too short for
+	/// the given stride and size; `Error::Failed` when the device lacks 16-bit
+	/// normalized plane formats.
 	#[allow(clippy::too_many_arguments)]
 	pub fn upload_planar_frame(
 		&self,
@@ -1525,8 +1615,17 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// Upload a 3D LUT as an `Rgba32Float` D3 texture. Counted as a
-	/// CPU→GPU transfer; callers cache the GPU resource per LUT.
+	/// Upload a [`crate::lut::Lut3d`] as an `edge³` `Rgba32Float` 3D texture.
+	///
+	/// `lut.data` holds RGB triplets ordered z-major, then y, then x; they are
+	/// expanded to RGBA with alpha 1.0 and rows padded to wgpu's 256-byte copy
+	/// alignment. Counted in [`gpu_transfer_counters`] as a CPU→GPU transfer.
+	/// Callers cache the returned token per LUT (see
+	/// [`GpuContext::apply_color_lut`] and [`GpuContext::set_display_lut`]).
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `lut.data.len() != edge³ * 3`.
 	fn upload_lut(&self, lut: &crate::lut::Lut3d) -> Result<u64> {
 		let expected = (lut.edge as usize).pow(3) * 3;
 		if lut.data.len() != expected {
@@ -1644,8 +1743,19 @@ impl GpuContext {
 		)
 	}
 
-	/// The shared LUT pass: sample the D3 LUT with manual trilinear
-	/// interpolation into a new texture of `dst_format`.
+	/// Run the display LUT pass: sample the 3D `lut_token` texture at every
+	/// pixel of `src` and write the result into a new texture of `dst_format`.
+	///
+	/// `edge` is the LUT's grid size and `lo`/`hi` the input value ranges it was
+	/// baked for; they are passed to the shader verbatim. The destination is
+	/// sized from `src`, registered like any other texture and owned by the
+	/// caller. The external lifecycle lock is held for the whole pass so an
+	/// external producer cannot write the source concurrently.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` when `src` or `lut_token` is unknown; texture and
+	/// pipeline creation errors propagate unchanged.
 	fn apply_lut_to(
 		&self,
 		src: u64,
@@ -1761,8 +1871,17 @@ impl GpuContext {
 		Ok(dst)
 	}
 
-	/// The LUT pass (manual trilinear, no float-filtering feature
-	/// required), cached per output format.
+	/// The display LUT pass, cached per destination format.
+	///
+	/// Samples the working-space `Rgba32Float` source and an `edge³` 3D LUT with
+	/// manual trilinear interpolation, so no float-filtering device feature is
+	/// required, and writes the result as `format`. Binds the source (0), the
+	/// LUT as `texture_3d` (1) and a 48-byte edge/lo/hi uniform (2). Built
+	/// inside a validation error scope; a rejected pipeline is never cached.
+	///
+	/// # Errors
+	///
+	/// `Error::Failed` when wgpu rejects the new render pipeline.
 	fn present_pipeline(&self, format: wgpu::TextureFormat) -> Result<PresentPipeline> {
 		let mut cache = lock(&self.present);
 		if let Some((_, p)) = cache.iter().find(|(f, _)| *f == format) {
@@ -1985,7 +2104,12 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// The YUV→RGB pass pipeline (built once).
+	/// The three-plane YUV→RGB pipeline, built once and then reused.
+	///
+	/// Binds three fragment-visible, non-filterable `texture_2d<f32>` planes
+	/// (Y, U and V, sampled with `textureLoad`) plus the uniform
+	/// [`YuvTransform`] at binding 3. Cached in the `yuv` slot and drawn by
+	/// [`GpuContext::run_yuv_to_rgb`].
 	fn yuv_pipeline(&self) -> Result<PresentPipeline> {
 		let mut cache = lock(&self.yuv);
 		if let Some(p) = cache.as_ref() {
@@ -2602,8 +2726,18 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// Upload a CPU frame into a texture (F32 RGBA). Counted as a CPU→GPU
-	/// transfer ([`gpu_transfer_counters`]).
+	/// Upload a tightly packed CPU [`Frame`] into a registry texture.
+	///
+	/// `frame` must be `PixelFormat::F32` and match the texture's width/height
+	/// exactly; `frame.data` must hold at least `linesize_bytes() * height`
+	/// bytes, and that prefix is what is uploaded (the frame's line size becomes
+	/// the copy row pitch). Counted in [`gpu_transfer_counters`] as a CPU→GPU
+	/// transfer.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` for an unknown `token`; `Error::Invalid` when the frame
+	/// is not F32, has the wrong size, or is shorter than its line size implies.
 	pub fn upload(&self, token: u64, frame: &Frame) -> Result<()> {
 		GPU_UPLOADS.fetch_add(1, Ordering::Relaxed);
 		if frame.format != PixelFormat::F32 {
@@ -2674,7 +2808,19 @@ impl GpuContext {
 		)
 	}
 
-	/// Downloads a raw texture owned by this context for an explicit CPU consumer.
+	/// Download a texture this context already owns (not a registry token)
+	/// into a CPU [`Frame`] for an explicit consumer.
+	///
+	/// `texture`, `format`, `width` and `height` must describe the same
+	/// resource. Only `Rgba32Float` (copied raw) and `Rgba16Float` (converted
+	/// half→f32) are supported, so the frame is always `PixelFormat::F32`. The
+	/// external lifecycle lock is held for the whole copy, keeping an external
+	/// producer (e.g. a CUDA writer) from touching the texture mid-read.
+	///
+	/// # Errors
+	///
+	/// `Error::Failed` on a lost device, an unsupported format, or a map
+	/// timeout/failure.
 	pub fn download_shared_texture(
 		&self,
 		texture: &wgpu::Texture,
@@ -2795,6 +2941,12 @@ impl GpuContext {
 		Ok(())
 	}
 
+	/// The bind-group layout shared by both copy blit pipelines.
+	///
+	/// One fragment-visible `texture_2d<f32>` at binding 0, declared
+	/// non-filterable to match the shader's `textureLoad`. Recreated on each
+	/// call (there is no cache); used by [`GpuContext::blit`] and
+	/// [`GpuContext::convert_to_rgba16f`].
 	fn blit_bind_group_layout(&self) -> wgpu::BindGroupLayout {
 		self.device
 			.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2881,6 +3033,13 @@ impl GpuContext {
 		Ok(dst)
 	}
 
+	/// Build the copy blit pipeline whose color target is `Rgba16Float`.
+	///
+	/// Same shader, bind-group layout and vertex stage as
+	/// [`GpuContext::create_blit_pipeline`]; only the render-target format
+	/// differs. Used by [`GpuContext::convert_to_rgba16f`] for the host
+	/// presenter, whose surface path needs a filterable format. Cached in the
+	/// `blit16` slot of the context.
 	fn create_blit_pipeline16(&self) -> Result<wgpu::RenderPipeline> {
 		// Recreate with the half-float target; the layout/vertex/fragment
 		// modules are identical to the Rgba32 blit.
@@ -2921,6 +3080,13 @@ impl GpuContext {
 			}))
 	}
 
+	/// Build the `Rgba32Float` copy blit pipeline used by [`GpuContext::blit`].
+	///
+	/// The fragment shader samples the single bound source texture with
+	/// `textureLoad` (nearest texel, no filtering) and writes it unchanged, so
+	/// the pass is a straight GPU→GPU copy. The bind group comes from
+	/// [`GpuContext::blit_bind_group_layout`]; [`GpuContext::blit`] caches the
+	/// pipeline in the `blit` slot, so it is built once per context.
 	fn create_blit_pipeline(&self) -> Result<wgpu::RenderPipeline> {
 		let shader = self
 			.device
@@ -3419,32 +3585,55 @@ impl YuvTransform {
 		}
 	}
 
-	/// BT.601, limited range.
+	/// BT.601 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the usual choice
+	/// for broadcast SD. Counterpart of [`YuvTransform::bt601_full`].
 	pub fn bt601_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt601, false)
 	}
 
-	/// BT.601, full range.
+	/// BT.601 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; use it for
+	/// full-range SD sources such as computer-generated or JPEG-origin video.
+	/// Counterpart of [`YuvTransform::bt601_limited`].
 	pub fn bt601_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt601, true)
 	}
 
-	/// BT.709, limited range.
+	/// BT.709 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the common case
+	/// for broadcast HD. Counterpart of [`YuvTransform::bt709_full`].
 	pub fn bt709_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt709, false)
 	}
 
-	/// BT.709, full range.
+	/// BT.709 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; use it for
+	/// full-range HD sources. Counterpart of [`YuvTransform::bt709_limited`].
 	pub fn bt709_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt709, true)
 	}
 
-	/// BT.2020, limited range.
+	/// BT.2020 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the usual choice
+	/// for broadcast UHD. Counterpart of [`YuvTransform::bt2020_full`].
 	pub fn bt2020_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt2020, false)
 	}
 
-	/// BT.2020, full range.
+	/// BT.2020 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; plane
+	/// inputs stay 16-bit normalized code values. Counterpart of
+	/// [`YuvTransform::bt2020_limited`].
 	pub fn bt2020_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt2020, true)
 	}
@@ -3457,11 +3646,19 @@ fn install_device_lost_logging(device: &wgpu::Device, device_lost: Arc<AtomicBoo
 	});
 }
 
-/// Pack an f32 slice as little-endian bytes for `write_buffer`.
-/// Create a small uniform buffer already populated from CPU bytes. Unlike
-/// `queue.write_buffer`, this does not take wgpu's `PendingWrites` lock — a
-/// render thread must not block behind a host/UI queue write (observed as a
-/// playback freeze on the CUDA/OpenFX path).
+/// Create a `UNIFORM | COPY_DST` buffer of `size` bytes filled from `data`.
+///
+/// The buffer is created `mapped_at_creation` and written through the
+/// mapping instead of `queue.write_buffer` with
+/// `wgpu::BufferUsages::COPY_DST`, because a queue write can block a render
+/// thread behind a host/UI write (observed as a playback freeze on the
+/// CUDA/OpenFX path). At most `min(data.len(), size)` bytes are copied; the
+/// rest of the buffer stays zero. `label` is only a wgpu debug label.
+///
+/// # Errors
+///
+/// `Error::Failed` when wgpu reports a validation or out-of-memory error,
+/// or when buffer creation unwinds (device lost).
 fn uniform_buffer_from_bytes(
 	device: &wgpu::Device,
 	label: &str,
@@ -3498,6 +3695,7 @@ fn uniform_buffer_from_bytes(
 	})
 }
 
+/// Pack an f32 slice as little-endian bytes for `write_buffer`.
 fn f32_uniform_bytes(values: &[f32]) -> Vec<u8> {
 	let mut out = Vec::with_capacity(values.len() * 4);
 	for v in values {
@@ -3928,7 +4126,11 @@ impl DisplayRenderer {
 		Ok(())
 	}
 
-	/// The backend kind.
+	/// The backend this renderer was built for.
+	///
+	/// This is the requested [`BackendKind`], which need not be the kind its
+	/// live context ended up on — [`DisplayRenderer::init`] may adopt the
+	/// process-wide shared context; compare with [`GpuContext::kind`].
 	pub fn backend(&self) -> BackendKind {
 		self.backend
 	}
@@ -4072,9 +4274,18 @@ impl DisplayRenderer {
 		Ok(())
 	}
 
-	/// Color-managed blit. CPU path: copy + in-place OCIO conversion.
-	/// GPU path: plain-copy WGSL blit; a color processor on the GPU path is
-	/// deferred (`Error::Failed`, see [`GpuContext::blit`]).
+	/// Blit `src` into `dst`, optionally through a color processor.
+	///
+	/// Both textures must live on the same backend: a `Texture::Gpu` pair owned
+	/// by one [`GpuContext`] blits on the GPU ([`GpuContext::blit`]), a
+	/// `Texture::Cpu` pair copies the source bytes into `dst` and then runs
+	/// `processor.convert_frame` in place. A CPU/GPU mix, two different GPU
+	/// contexts, or `src == None` returns `Error::Failed`; a CPU pair with
+	/// differing sizes returns `Error::Invalid`.
+	///
+	/// A `Some` processor on the GPU path is deferred in this pass and fails
+	/// with `Error::Failed`, so color management currently only happens on the
+	/// CPU path. `dst` is fully overwritten.
 	pub fn blit_color_managed(
 		&self,
 		src: Option<&Texture>,

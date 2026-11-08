@@ -43,6 +43,14 @@ fn demo_path() -> std::path::PathBuf {
 	std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4")
 }
 
+/// Build the fixed [`RetrieveVideoParams`] used by the decode tests.
+///
+/// `stream` selects the codec stream to decode and `time` is the requested
+/// frame timestamp in that stream's timebase. Everything else is fixed:
+/// full-length range, [`K_COLOR_RANGE_DEFAULT`], offline render mode, no
+/// target resize, no image-sequence decoding and non-premultiplied alpha.
+/// Returned by value so a test can override one field before calling
+/// `retrieve_video_frame`.
 fn video_params(stream: CodecStream, time: Rational) -> RetrieveVideoParams {
 	RetrieveVideoParams {
 		stream,
@@ -58,7 +66,17 @@ fn video_params(stream: CodecStream, time: Rational) -> RetrieveVideoParams {
 	}
 }
 
-/// H.264 encoder parameters: 64x64, 10 fps, `out` as the target file.
+/// Build the [`EncodingParams`] used by the encode round-trip tests.
+///
+/// Targets `out` (raw OS bytes copied into the fixed-size `filename`
+/// buffer), MPEG-4 container with H.264 video, 64x64, 10 fps time base
+/// (`1/10`), F32 pixel format, no interlacing and square pixels; audio stays
+/// disabled.
+///
+/// # Panics
+///
+/// Panics when `out`'s path bytes do not fit the `filename` buffer (the copy
+/// is an unchecked slice assignment).
 fn h264_params(out: &std::path::Path) -> crate::encodingparams::EncodingParams {
 	let mut p = crate::encodingparams::EncodingParams::default();
 	let name = out.as_os_str().as_encoded_bytes();
@@ -77,7 +95,17 @@ fn h264_params(out: &std::path::Path) -> crate::encodingparams::EncodingParams {
 	p
 }
 
-/// Build an allocated F32-RGBA frame with a moving color pattern.
+/// Build an allocated 64x64 F32 RGBA frame whose pattern shifts with `i`.
+///
+/// The timestamp is `i / 10` (matching the 10 fps encoder parameters in
+/// [`h264_params`]); the left half has red `0.4 + 0.05 * i` and blue `0.2`,
+/// the right half blue `0.7`, green ramps with the row, and alpha is 1.0.
+/// The frame owns its buffer because [`Frame::allocate`] is called before the
+/// pixels are filled, so tests can hand it straight to the encoder.
+///
+/// # Panics
+///
+/// Panics when [`Frame::allocate`] fails.
 fn pattern_frame(i: i32) -> Frame {
 	let mut vp = VideoParams::new_basic(64, 64, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
 	vp.set_format(QuercusPixelFormat::from_code(PixelFormat::F32 as i32));

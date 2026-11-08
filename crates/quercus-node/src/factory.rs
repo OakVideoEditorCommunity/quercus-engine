@@ -79,9 +79,13 @@ pub struct Factory {
 }
 
 impl Factory {
-	/// Global registry. Registration (`nodes::register_all`) runs on
-	/// first access, so the menu order is deterministic without an
-	/// explicit init call.
+	/// The process-wide factory, initialized on first call.
+	///
+	/// The first access runs [`crate::nodes::register_all`] (which installs
+	/// the static entry table) and keeps the resulting [`Factory`] for the
+	/// process lifetime, so every caller sees the same entries and the menu
+	/// order is deterministic without an explicit init call. [`OnceLock`]
+	/// runs the initializer exactly once even under concurrent first calls.
 	pub fn global() -> &'static Factory {
 		GLOBAL.get_or_init(|| {
 			crate::nodes::register_all();
@@ -96,7 +100,13 @@ impl Factory {
 		})
 	}
 
-	/// Look up by type id.
+	/// Borrow the static built-in entry registered for `type_id`, or `None`
+	/// when no built-in matches.
+	///
+	/// Only the metadata installed by [`crate::nodes::register_all`] is
+	/// searched (menu order = registration order); runtime plugin entries
+	/// live in the separate dynamic list, see [`Factory::find_dynamic`] and
+	/// [`Factory::create_any`].
 	pub fn find(&self, type_id: &str) -> Option<&NodeMeta> {
 		self.entries.iter().find(|e| e.type_id == type_id)
 	}
@@ -132,7 +142,13 @@ impl Factory {
 		self.dynamic().clone()
 	}
 
-	/// Look up a runtime entry by type id.
+	/// Clone the runtime (plugin/OFX) entry registered for `type_id`, or
+	/// `None` when no plugin entry matches.
+	///
+	/// Searches only the dynamic list; built-in types live in the static
+	/// table, so use [`Factory::find`] or [`Factory::create_any`] for the
+	/// combined lookup. The returned [`DynamicNodeMeta`] is a clone, taken so
+	/// that the registry mutex is not held by the caller.
 	pub fn find_dynamic(&self, type_id: &str) -> Option<DynamicNodeMeta> {
 		self.dynamic().iter().find(|m| m.type_id == type_id).cloned()
 	}
@@ -163,7 +179,14 @@ impl Factory {
 			.map(|m| m.type_id.clone())
 	}
 
-	/// Display name for a type id (either entry kind).
+	/// Display name registered for `type_id`, or `None` when neither a static
+	/// nor a runtime entry matches.
+	///
+	/// Static built-ins are checked first ([`Factory::find`]), then runtime
+	/// plugin entries ([`Factory::find_dynamic`]). The name is cloned out
+	/// because dynamic entries are owned strings behind the registry mutex;
+	/// callers that only hold a type id (menus, labels) use this instead of
+	/// matching on [`NodeMeta`] directly.
 	pub fn name_of(&self, type_id: &str) -> Option<String> {
 		if let Some(meta) = self.find(type_id) {
 			return Some(meta.name.to_string());

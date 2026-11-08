@@ -14,23 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxParameterSuite v1：参数定义与读写。
+//! OfxParameterSuite v1: parameter definition and get/set access.
 //!
-//! 语义对照 HS: ofxhParam.cpp：
-//! - paramDefine：describe 期把参数定义挂到效果描述符（未定义类型 →
-//!   kOfxStatErrUnsupported，HS:1665-1710；parametric 类型放行，其
-//!   曲线读写走 OfxParametricParameterSuite，见 suites/parametric.rs）；
-//! - paramGetHandle：按名查（未找到 → kOfxStatErrUnknown，HS:1758）；
-//! - paramGetValue/paramSetValue 等变长入口在 C shim
-//!   （cbits/ofx_param_shim.c）：按 [`crate::param::ParamKind`] 解析
-//!   va_args 后转发到本模块的 `ofx_param_*_impl`；
-//! - paramSetValue 成功后触发 instanceChanged（kOfxChangePluginEdited，
-//!   HS:1982-1994 的 `paramChangedByPlugin`），经
-//!   [`crate::param::notify_instance_changed`] 回写绑定节点；
-//! - 第 1 期无动画：AtTime == 当前值；keys 恒 0；derivative/integral
-//!   → kOfxStatErrMissingHostFeature；editBegin/End 为编辑事务括号
-//!   （undo 分组：事务内回写并入一条 multi 命令，见
-//!   [`crate::instance::Instance::edit_begin`]）。
+//! Semantics follow HS: ofxhParam.cpp:
+//! - paramDefine: during describe, attaches the parameter definition to the
+//!   effect descriptor (undefined type -> kOfxStatErrUnsupported,
+//!   HS:1665-1710; parametric types are allowed, and their curve access goes
+//!   through OfxParametricParameterSuite, see suites/parametric.rs);
+//! - paramGetHandle: lookup by name (not found -> kOfxStatErrUnknown, HS:1758);
+//! - the variadic entry points such as paramGetValue/paramSetValue live in the
+//!   C shim (cbits/ofx_param_shim.c): they resolve va_args by
+//!   [`crate::param::ParamKind`] and forward to this module's
+//!   `ofx_param_*_impl`;
+//! - a successful paramSetValue fires instanceChanged (kOfxChangePluginEdited,
+//!   `paramChangedByPlugin` at HS:1982-1994), writing back to the bound node
+//!   through [`crate::param::notify_instance_changed`];
+//! - phase 1 has no animation: AtTime == the current value; keys are always 0;
+//!   derivative/integral -> kOfxStatErrMissingHostFeature; editBegin/End are
+//!   the edit transaction brackets (undo grouping: write-backs inside the
+//!   transaction are merged into one multi command, see
+//!   [`crate::instance::Instance::edit_begin`]).
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr, CString};
@@ -42,11 +45,11 @@ use crate::param::{ChangeReason, ParamDef, ParamInstance, ParamKind, ParamValue}
 use crate::suites::status;
 use crate::suites::tag;
 
-/// 函数表布局（与 SDK `OfxParameterSuiteV1` 一致；字段序以
-/// SDK 为准）。
+/// Function table layout (identical to the SDK's `OfxParameterSuiteV1`; field
+/// order follows the SDK).
 #[repr(C)]
 pub struct ParameterSuiteV1 {
-	/// paramDefine（describe 期间）：定义参数。
+	/// paramDefine (during describe): defines a parameter.
 	pub param_define:
 		unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *mut *mut c_void) -> c_int,
 	/// paramGetHandle
@@ -60,7 +63,8 @@ pub struct ParameterSuiteV1 {
 	pub param_set_get_property_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
 	/// paramGetPropertySet
 	pub param_get_property_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
-	/// paramGetValue（变长出口参数按类型解释；入口在 C shim）
+	/// paramGetValue (variadic out-parameters are interpreted by type; the
+	/// entry point is in the C shim)
 	pub param_get_value: unsafe extern "C" fn(*mut c_void, ...) -> c_int,
 	/// paramGetValueAtTime
 	pub param_get_value_at_time: unsafe extern "C" fn(*mut c_void, c_double, ...) -> c_int,
@@ -68,7 +72,7 @@ pub struct ParameterSuiteV1 {
 	pub param_get_derivative: unsafe extern "C" fn(*mut c_void, c_double, ...) -> c_int,
 	/// paramGetIntegral
 	pub param_get_integral: unsafe extern "C" fn(*mut c_void, c_double, c_double, ...) -> c_int,
-	/// paramSetValue（触发 instanceChanged）
+	/// paramSetValue (fires instanceChanged)
 	pub param_set_value: unsafe extern "C" fn(*mut c_void, ...) -> c_int,
 	/// paramSetValueAtTime
 	pub param_set_value_at_time: unsafe extern "C" fn(*mut c_void, c_double, ...) -> c_int,
@@ -86,7 +90,7 @@ pub struct ParameterSuiteV1 {
 	/// paramCopy
 	pub param_copy:
 		unsafe extern "C" fn(*mut c_void, *mut c_void, c_double, c_double, *const c_void) -> c_int,
-	/// paramEditBegin / paramEditEnd（编辑事务括号）
+	/// paramEditBegin / paramEditEnd (edit transaction brackets)
 	pub param_edit_begin: unsafe extern "C" fn(*mut c_void) -> c_int,
 	/// paramEditEnd
 	pub param_edit_end: unsafe extern "C" fn(*mut c_void) -> c_int,
@@ -94,20 +98,29 @@ pub struct ParameterSuiteV1 {
 
 // ---- 句柄解析 -----------------------------------------------------------
 
-/// param-set handle：describe 期是效果描述符，实例期是实例
-/// （getParamSet 返回与 effect 相同的 handle，见 image_effect suite）。
+/// param-set handle: at describe time this is the effect descriptor, at
+/// instance time the instance (getParamSet returns the same handle as the
+/// effect, see the image_effect suite).
 enum ParamSetRef<'a> {
 	Descriptor(&'a mut EffectDescriptor),
 	Instance(&'a Instance),
 }
 
-/// param handle：describe 期是定义（值=默认值），实例期是实例。
+/// param handle: at describe time the definition (value = default), at
+/// instance time the instance.
 enum ParamRef<'a> {
 	Def(&'a ParamDef),
 	Instance(&'a ParamInstance),
 }
 
-/// 解析 param-set（effect）句柄。空指针/标签不符 → BadHandle。
+/// Resolve a param-set (effect) handle: the effect descriptor during describe,
+/// the effect instance at instance time.
+///
+/// A handle is the object's `props` address plus a low 3-bit tag; a null
+/// pointer, or a tag that is neither `DESCRIPTOR` nor `INSTANCE`, yields
+/// `kOfxStatErrBadHandle`. The returned `'static` reference is an extended
+/// borrow of the raw pointer, so the caller must keep the object alive for the
+/// duration of the borrow.
 fn resolve_param_set(handle: *mut c_void) -> Result<ParamSetRef<'static>, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -126,7 +139,16 @@ fn resolve_param_set(handle: *mut c_void) -> Result<ParamSetRef<'static>, c_int>
 	}
 }
 
-/// 解析 param 句柄。
+/// Resolve a param handle: at describe time the parameter definition
+/// ([`ParamRef::Def`]), at instance time the parameter instance
+/// ([`ParamRef::Instance`]).
+///
+/// A handle is the object's `props` address plus a low 3-bit tag; a null
+/// pointer, or a tag that is not `PARAM_DEF`/`PARAM_INSTANCE`, yields
+/// `kOfxStatErrBadHandle`. The returned `'static` reference is an extended
+/// borrow of the raw pointer, so the caller must keep the object alive for the
+/// duration of the borrow; every entry point of the parameter suite goes
+/// through here first.
 fn resolve_param(handle: *mut c_void) -> Result<ParamRef<'static>, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -142,7 +164,17 @@ fn resolve_param(handle: *mut c_void) -> Result<ParamRef<'static>, c_int> {
 	}
 }
 
-/// 属性名（空指针/非 UTF-8 → ErrValue；防御性）。
+/// Convert a C string argument (property names, parameter names, ...) to
+/// `&str`.
+///
+/// A null pointer or non-UTF-8 content returns `kOfxStatErrValue`; the returned
+/// `&str` borrows the memory `name` points to, with a lifetime `'a` chosen by
+/// the caller and not tied to the argument.
+///
+/// # Safety
+///
+/// `name` must point to a readable NUL-terminated C string that stays valid for
+/// as long as the returned borrow is used.
 unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 	if name.is_null() {
 		return Err(status::ERR_VALUE);
@@ -152,8 +184,16 @@ unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 		.map_err(|_| status::ERR_VALUE)
 }
 
-/// 公共入口模板：panic 兜底。
+/// Shared entry-point template: panic fallback.
 #[track_caller]
+/// Unified template for all C entry points: runs `f` inside `catch_unwind` and
+/// normalizes the result to an OFX status code.
+///
+/// `f` returning `Ok(())` -> `kOfxStatOK`; `Err(code)` -> that status code
+/// passed through unchanged; a panic -> `kOfxStatFailed` (an unwind never
+/// crosses the C ABI). When the environment variable `QUERCUS_OFX_TRACE` is
+/// set, non-OK codes and the call site are printed to stderr; `#[track_caller]`
+/// makes the location point at the real entry point rather than this template.
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	let caller = std::panic::Location::caller();
 	let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_or_else(
@@ -170,6 +210,12 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 // ---- 变长参数实现（C shim 转发）----------------------------------------
 
 impl ParamKind {
+	/// Convert the integer type tag passed in by the C shim into [`ParamKind`].
+	///
+	/// 1..=12 correspond to Int, Int2, Int3, Double, Double2, Double3, Bool,
+	/// Choice, Rgb, Rgba, Str, StrChoice in that order (matching the numbering
+	/// convention in `cbits/ofx_param_shim.c`); any other value returns `None`,
+	/// and the caller turns that into `kOfxStatErrUnknown`.
 	fn from_i32(v: c_int) -> Option<ParamKind> {
 		Some(match v {
 			1 => ParamKind::Int,
@@ -189,7 +235,20 @@ impl ParamKind {
 	}
 }
 
-/// 按 kind 把 ParamValue 写进类型化 out（数值类）。
+/// Write the numeric components of [`ParamValue`] into the C-side typed output
+/// buffer according to `kind`.
+///
+/// `out` is interpreted by `kind`: `Int` -> `c_int`, `Int2`/`Int3` ->
+/// `c_int[2|3]`, `Double` -> `f64`, `Double2`/`Double3` -> `f64[2|3]`,
+/// `Bool`/`Choice` -> `c_int`, `Rgb`/`Rgba` -> `f64[3|4]`; the caller must
+/// guarantee that the pointer is aligned and long enough. After the write the
+/// memory is owned by the caller.
+///
+/// # Errors
+///
+/// Returns `kOfxStatFailed` when the value variant does not match `kind`, or
+/// when `kind` is a string kind (strings go through
+/// [`ofx_param_get_string_impl`]).
 fn write_value(v: &ParamValue, kind: ParamKind, out: *mut c_void) -> Result<(), c_int> {
 	let err = || Err(status::FAILED);
 	unsafe {
@@ -264,7 +323,15 @@ fn write_value(v: &ParamValue, kind: ParamKind, out: *mut c_void) -> Result<(), 
 	}
 }
 
-/// 按 kind 从类型化 input 构造 ParamValue（数值类）。
+/// Read a [`ParamValue`] (numeric kinds) from the C-side typed input buffer
+/// according to `kind`.
+///
+/// `input` is interpreted by `kind` as a scalar or a multi-component array;
+/// missing components are filled with 0 (e.g. `Int` -> `[v, 0, 0]`, dim=1).
+/// `Bool` treats non-zero as true, `Choice` takes the integer directly. String
+/// kinds (`Str`/`StrChoice`) return `None` and are handled by
+/// [`ofx_param_set_string_impl`]. The caller must guarantee that `input` is
+/// aligned and long enough: `Int3`/`Double3` read 3 components, `Rgba` reads 4.
 fn read_value(kind: ParamKind, input: *const c_void) -> Option<ParamValue> {
 	unsafe {
 		match kind {
@@ -301,7 +368,12 @@ fn read_value(kind: ParamKind, input: *const c_void) -> Option<ParamValue> {
 	}
 }
 
-/// 取"当前值"（实例期=当前值，describe 期=默认值）。
+/// Fetch the parameter's "current value": at instance time reads
+/// [`ParamInstance::get`], at describe time reads the default from the parameter
+/// definition ([`ParamDef::default`]).
+///
+/// The return value is a cloned copy owned by the caller; describe time
+/// therefore has no mutable state to write.
 fn value_of(r: &ParamRef) -> ParamValue {
 	match r {
 		ParamRef::Instance(p) => p.get(),
@@ -309,12 +381,13 @@ fn value_of(r: &ParamRef) -> ParamValue {
 	}
 }
 
-/// param → 所属 instance 的回写定位表（instanceChanged 用）。
-/// `// TODO(instance)`：createInstance 后由宿主登记，destroy 时摘除。
+/// param -> owning instance write-back lookup table (used by instanceChanged).
+/// `// TODO(instance)`: registered by the host after createInstance, removed on
+/// destroy.
 static PARAM_OWNER: std::sync::LazyLock<Mutex<HashMap<usize, usize>>> =
 	std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 登记参数 → 实例（实例化路径调用）。
+/// Register a parameter -> instance mapping (called on the instantiation path).
 pub(crate) fn register_param_owner(param_props: usize, instance_props: usize) {
 	PARAM_OWNER
 		.lock()
@@ -322,7 +395,8 @@ pub(crate) fn register_param_owner(param_props: usize, instance_props: usize) {
 		.insert(param_props, instance_props);
 }
 
-/// 摘除某实例的全部参数登记（destroy 路径调用）。
+/// Remove all parameter registrations of one instance (called on the destroy
+/// path).
 pub(crate) fn unregister_params_of(instance_props: usize) {
 	PARAM_OWNER
 		.lock()
@@ -330,10 +404,10 @@ pub(crate) fn unregister_params_of(instance_props: usize) {
 		.retain(|_, owner| *owner != instance_props);
 }
 
-/// paramSetValue 成功后的 instanceChanged 触发（HS:
-/// ofxhParam.cpp:1991-1994 `paramChangedByPlugin`）。未登记实例时
-/// no-op（未绑定节点的场景本就 no-op）。parametric suite 的
-/// Set/Add/Delete 复用此路径（pub(crate)：suites/parametric.rs）。
+/// instanceChanged trigger after a successful paramSetValue (HS:
+/// ofxhParam.cpp:1991-1994 `paramChangedByPlugin`). A no-op when the instance
+/// is not registered (the unbound-node case is already a no-op). The parametric
+/// suite's Set/Add/Delete reuse this path (pub(crate): suites/parametric.rs).
 pub(crate) fn notify_changed(param_props: usize, name: &str) {
 	let owner = PARAM_OWNER
 		.lock()
@@ -347,8 +421,21 @@ pub(crate) fn notify_changed(param_props: usize, name: &str) {
 	}
 }
 
-/// 参数类型查询（C shim 调用）：未知/非法句柄 → 0（dispatch 失败）。
+/// Parameter type query (called by the C shim): unknown/invalid handle -> 0
+/// (dispatch failure).
 #[no_mangle]
+/// Query the [`ParamKind`] of a parameter handle (used by the C shim for type
+/// dispatch).
+///
+/// Returns the integer encoding of the kind (1..=12, encoding in
+/// [`ParamKind::from_i32`]); for an empty/invalid handle or an unknown type it
+/// returns 0, which the C shim treats as a dispatch failure. Panics are also
+/// swallowed and treated as 0, so this entry point never unwinds into C.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle (definition or instance) or a null
+/// pointer, and the handle must stay valid for the duration of the call.
 pub unsafe extern "C" fn ofx_param_kind_of(param: *mut c_void) -> c_int {
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		match resolve_param(param) {
@@ -362,8 +449,26 @@ pub unsafe extern "C" fn ofx_param_kind_of(param: *mut c_void) -> c_int {
 	.unwrap_or(0)
 }
 
-/// 数值类 get（C shim 转发）：`out` 为按 kind 的类型化数组。
+/// Numeric get (forwarded by the C shim): `out` is a typed array for `kind`.
 #[no_mangle]
+/// Numeric parameter read (the C shim's `paramGetValue*` forward target).
+///
+/// `out` is a C-side typed array allocated for `kind` (mapping in
+/// [`write_value`]); the caller guarantees that it is writable and long enough.
+/// On success the current value (the instance value, or the describe-time
+/// default) is written into it.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `out` must be
+/// writable for the number of elements that `kind` implies; both must stay valid
+/// for the duration of the call.
+///
+/// # Errors
+///
+/// `out` null -> `kOfxStatErrValue`; invalid `kind` -> `kOfxStatErrUnknown`;
+/// invalid handle -> `kOfxStatErrBadHandle`; the value variant does not match
+/// `kind` -> `kOfxStatFailed`.
 pub unsafe extern "C" fn ofx_param_get_impl(
 	param: *mut c_void,
 	kind: c_int,
@@ -380,9 +485,29 @@ pub unsafe extern "C" fn ofx_param_get_impl(
 	})
 }
 
-/// 字符串 get（内驻指针：指向实例存储 / 定义默认值；下次 set 前
-/// 有效——与属性 suite 的字符串指针契约一致）。
+/// String get (resident pointer: points into the instance storage / the
+/// definition default; valid until the next set — same contract as the property
+/// suite's string pointer).
 #[no_mangle]
+/// String parameter read: writes the internally resident `char*` into `*out`
+/// (the C shim's string-get forward target).
+///
+/// The pointer refers to the instance's own string storage (at describe time, to
+/// the definition default) and is valid until the next set on that parameter;
+/// the plugin must not free or modify it and must use it before the next set —
+/// the same contract as the property suite's string pointer.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `out` must be
+/// writable for one `*mut c_char`. The returned string pointer is valid only
+/// within the window described above.
+///
+/// # Errors
+///
+/// `out` null -> `kOfxStatErrValue`; invalid handle -> `kOfxStatErrBadHandle`;
+/// the parameter is not a string type (or the instance string is missing) ->
+/// `kOfxStatFailed`.
 pub unsafe extern "C" fn ofx_param_get_string_impl(
 	param: *mut c_void,
 	out: *mut *mut c_char,
@@ -403,10 +528,28 @@ pub unsafe extern "C" fn ofx_param_get_string_impl(
 	})
 }
 
-/// 数值类 set（C shim 转发）：`input` 为按 kind 的类型化数组。
-/// describe 期（ParamDef）→ BadHandle（HS: paramSetValue 的
-/// verifyMagic 对 descriptor 失败）。
+/// Numeric set (forwarded by the C shim): `input` is a typed array for `kind`.
+/// During describe (ParamDef) -> BadHandle (HS: paramSetValue's verifyMagic fails
+/// for a descriptor).
 #[no_mangle]
+/// Numeric parameter write (the C shim's `paramSetValue*` forward target).
+///
+/// `input` is a C-side typed array for `kind` (mapping in [`read_value`]); after
+/// a successful write to the instance it fires the `kOfxChangePluginEdited`
+/// instanceChanged write-back (see [`notify_changed`]). Definition handles
+/// during describe are not writable.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `input` must be
+/// aligned and long enough for the number of elements that `kind` implies (see
+/// [`read_value`]); both must stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// `input` null -> `kOfxStatErrValue`; invalid `kind` -> `kOfxStatErrUnknown`;
+/// invalid handle or describe time -> `kOfxStatErrBadHandle`; a string `kind`
+/// (because [`read_value`] returns `None`) -> `kOfxStatFailed`.
 pub unsafe extern "C" fn ofx_param_set_impl(
 	param: *mut c_void,
 	kind: c_int,
@@ -430,8 +573,24 @@ pub unsafe extern "C" fn ofx_param_set_impl(
 	})
 }
 
-/// 字符串 set。
+/// String set.
 #[no_mangle]
+/// String parameter write (the C shim's string-set forward target).
+///
+/// Copies the NUL-terminated string `input` points to into the instance storage,
+/// then fires the `kOfxChangePluginEdited` instanceChanged write-back; definition
+/// handles during describe return `BadHandle` and are not written.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `input` must point to
+/// a valid NUL-terminated C string; both must stay valid for the duration of the
+/// call.
+///
+/// # Errors
+///
+/// `input` null -> `kOfxStatErrValue`; invalid handle or describe time ->
+/// `kOfxStatErrBadHandle`.
 pub unsafe extern "C" fn ofx_param_set_string_impl(
 	param: *mut c_void,
 	input: *const c_char,
@@ -453,9 +612,20 @@ pub unsafe extern "C" fn ofx_param_set_string_impl(
 	})
 }
 
-/// derivative/integral：第 1 期无动画 → MissingHostFeature
-/// （C shim 不消费 va_args 直接转发）。
+/// derivative/integral: phase 1 has no animation -> MissingHostFeature (the C
+/// shim forwards without consuming va_args).
 #[no_mangle]
+/// Shared implementation of derivative/integral: phase 1 has no keyframe
+/// animation, so it always returns `kOfxStatErrMissingHostFeature` (the C shim
+/// forwards without consuming va_args).
+///
+/// The handle is still validated first: an empty/bad handle takes precedence and
+/// returns `kOfxStatErrBadHandle` (matching HS's parameter validation order).
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer, and the handle must
+/// stay valid for the duration of the call.
 pub unsafe extern "C" fn ofx_param_missing_feature_impl(param: *mut c_void) -> c_int {
 	caught(|| {
 		// handle 合法性仍检查（空/坏句柄 → BadHandle）。
@@ -466,9 +636,34 @@ pub unsafe extern "C" fn ofx_param_missing_feature_impl(param: *mut c_void) -> c
 
 // ---- 非变长入口 ----------------------------------------------------------
 
-/// paramDefine：describe 期定义参数（未定义类型 → Unsupported，
-/// HS:1704；重复名 → HS 允许，原样再建一条——宿主以首个为准，与
-/// HS 的 map 覆盖语义一致）。
+/// `paramDefine`: during describe, defines a parameter on the effect descriptor
+/// and outputs its handle.
+///
+/// Accepts only a descriptor handle during describe (instance time ->
+/// `BadHandle`); `name` and `param_type` are both NUL-terminated C strings. It
+/// supports the numeric/string types covered by `kind_of_type`, plus the
+/// value-less types Bytes, Custom, PushButton, Group, Page and Parametric
+/// (parametric curve values go through the parametric suite); any other type ->
+/// `kOfxStatErrUnsupported`. A duplicate name is not an error: another entry is
+/// appended in insertion order (host lookup uses the first one, matching HS's
+/// map-overwrite semantics).
+///
+/// On success `*property_set` is the property-set handle of the newly created
+/// parameter (same value as the param handle); on failure it is first set to
+/// NULL.
+///
+/// # Safety
+///
+/// `param_set` must be a valid param-set handle or a null pointer;
+/// `param_type`/`name` must be valid NUL-terminated C strings; `property_set`
+/// may be null, and when non-null must be writable for one `*mut c_void`. All
+/// pointers must stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// `property_set` null -> `BadHandle`; empty or non-UTF-8 name/type -> `ErrValue`;
+/// invalid handle or instance time -> `BadHandle`; unsupported type ->
+/// `Unsupported`.
 unsafe extern "C" fn param_define(
 	param_set: *mut c_void,
 	param_type: *const c_char,
@@ -516,7 +711,28 @@ unsafe extern "C" fn param_define(
 	})
 }
 
-/// paramGetHandle：按名查（未找到 → ErrUnknown，HS:1758）。
+/// `paramGetHandle`: looks a parameter up by name in the param-set and outputs
+/// its param handle.
+///
+/// During describe it searches the descriptor's parameter definitions; at
+/// instance time it searches the instance's parameter table; on a match the
+/// parameter property-set address plus a tag is wrapped into a handle.
+/// `property_set` may be NULL; when non-null it receives the same value as
+/// `param` (props at offset 0). A name that is not found returns
+/// `kOfxStatErrUnknown`.
+///
+/// # Safety
+///
+/// `param_set` must be a valid param-set handle or a null pointer; `name` must be
+/// a valid NUL-terminated C string; `param` must be writable for one
+/// `*mut c_void`, and `property_set` likewise when non-null. All pointers must
+/// stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// `param` null -> `kOfxStatErrBadHandle`; empty/non-UTF-8 name -> `ErrValue`;
+/// invalid handle -> `kOfxStatErrBadHandle`; name not found ->
+/// `kOfxStatErrUnknown`.
 unsafe extern "C" fn param_get_handle(
 	param_set: *mut c_void,
 	name: *const c_char,
@@ -553,7 +769,23 @@ unsafe extern "C" fn param_get_handle(
 	})
 }
 
-/// paramSetGetPropertySet：param-set 的属性集（= effect handle 本体）。
+/// `paramSetGetPropertySet`: returns the param-set's (effect descriptor's or
+/// instance's) own property-set handle.
+///
+/// Under the handle convention the property set and the effect handle have the
+/// same value, so this only validates and writes the handle back unchanged; the
+/// plugin uses it to read/write effect-level properties. Pairs with
+/// [`param_get_property_set`] (the param-level property set).
+///
+/// # Safety
+///
+/// `param_set` must be a valid param-set handle or a null pointer;
+/// `property_set` must be writable for one `*mut c_void`.
+///
+/// # Errors
+///
+/// `property_set` null, or `param_set` null / with a mismatched tag ->
+/// `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_set_get_property_set(
 	param_set: *mut c_void,
 	property_set: *mut *mut c_void,
@@ -568,7 +800,24 @@ unsafe extern "C" fn param_set_get_property_set(
 	})
 }
 
-/// paramGetPropertySet：param 的属性集（= param handle 本体）。
+/// `paramGetPropertySet`: returns the property-set handle of the param handle
+/// itself.
+///
+/// The property-set address and the param handle have the same value (the handle
+/// convention with props at offset 0), so it is validated and written back
+/// unchanged. The plugin uses it to read/write parameter-level properties
+/// (label, display name, ...); it pairs with [`param_set_get_property_set`] (the
+/// effect-level property set).
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `property_set` must be
+/// writable for one `*mut c_void`.
+///
+/// # Errors
+///
+/// `property_set` null, or `param` null / with a mismatched tag ->
+/// `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_get_property_set(
 	param: *mut c_void,
 	property_set: *mut *mut c_void,
@@ -583,7 +832,19 @@ unsafe extern "C" fn param_get_property_set(
 	})
 }
 
-/// paramGetNumKeys：第 1 期无动画 → 恒 0。
+/// `paramGetNumKeys`: reports the number of keyframes of a parameter.
+///
+/// Phase 1 has no animation, so it always writes `*count = 0`; the param handle
+/// is still validated first (invalid -> `BadHandle`).
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer; `count` must be
+/// writable for one `c_int`.
+///
+/// # Errors
+///
+/// `count` null -> `kOfxStatErrValue`.
 unsafe extern "C" fn param_get_num_keys(param: *mut c_void, count: *mut c_int) -> c_int {
 	caught(|| {
 		let _ = resolve_param(param)?;
@@ -595,7 +856,15 @@ unsafe extern "C" fn param_get_num_keys(param: *mut c_void, count: *mut c_int) -
 	})
 }
 
-/// paramGetKeyTime：无关键帧 → BadIndex。
+/// `paramGetKeyTime`: reads the keyframe time by key index.
+///
+/// Phase 1 has no keyframes, so it validates the handle and then always returns
+/// `kOfxStatErrBadIndex`; `_index` is unused and `_time` is never written.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer, and the handle must
+/// stay valid for the duration of the call.
 unsafe extern "C" fn param_get_key_time(
 	param: *mut c_void,
 	_index: c_int,
@@ -607,7 +876,16 @@ unsafe extern "C" fn param_get_key_time(
 	})
 }
 
-/// paramGetKeyIndex：无关键帧 → BadIndex。
+/// `paramGetKeyIndex`: looks up a neighbouring keyframe index by time/direction.
+///
+/// Phase 1 has no keyframes, so it validates the handle and then always returns
+/// `kOfxStatErrBadIndex`; `_time` and `_direction` are unused and `_index` is
+/// never written.
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer, and the handle must
+/// stay valid for the duration of the call.
 unsafe extern "C" fn param_get_key_index(
 	param: *mut c_void,
 	_time: c_double,
@@ -620,7 +898,20 @@ unsafe extern "C" fn param_get_key_index(
 	})
 }
 
-/// paramDeleteKey / paramDeleteAllKeys：无关键帧 → OK no-op。
+/// `paramDeleteKey`: deletes the keyframe at the given time.
+///
+/// Phase 1 has no keyframes, so after validating the handle it returns
+/// `kOfxStatOK` directly (no-op); `_time` is unused (it shares the "no keyframes
+/// means no-op" semantics with [`param_delete_all_keys`]).
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer, and the handle must
+/// stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// Empty/invalid handle -> `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_delete_key(param: *mut c_void, _time: c_double) -> c_int {
 	caught(|| {
 		let _ = resolve_param(param)?;
@@ -628,6 +919,19 @@ unsafe extern "C" fn param_delete_key(param: *mut c_void, _time: c_double) -> c_
 	})
 }
 
+/// `paramDeleteAllKeys`: deletes all keyframes of a parameter.
+///
+/// Phase 1 has no keyframes, so after validating the handle it returns
+/// `kOfxStatOK` directly (no-op); pairs with [`param_delete_key`].
+///
+/// # Safety
+///
+/// `param` must be a valid param handle or a null pointer, and the handle must
+/// stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// Empty/invalid handle -> `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_delete_all_keys(param: *mut c_void) -> c_int {
 	caught(|| {
 		let _ = resolve_param(param)?;
@@ -635,7 +939,21 @@ unsafe extern "C" fn param_delete_all_keys(param: *mut c_void) -> c_int {
 	})
 }
 
-/// paramCopy：第 1 期无关键帧可拷 → OK no-op。
+/// `paramCopy`: copies the keyframes of the `src` parameter to `dst`.
+///
+/// Phase 1 has no keyframes to copy: after validating both handles it returns
+/// `kOfxStatOK` directly (no-op); `_dst_time`, `_src_time` and `_key_range` are
+/// unused.
+///
+/// # Safety
+///
+/// `dst` and `src` must be valid param handles or null pointers, and both must
+/// stay valid for the duration of the call (passing the same handle twice is also
+/// allowed).
+///
+/// # Errors
+///
+/// Either handle null or with a mismatched tag -> `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_copy(
 	dst: *mut c_void,
 	src: *mut c_void,
@@ -650,9 +968,24 @@ unsafe extern "C" fn param_copy(
 	})
 }
 
-/// paramEditBegin：进入编辑事务（undo 分组）。解析 param 句柄后经
-/// PARAM_OWNER 定位所属实例并递增其事务深度；未登记实例时 no-op
-/// （手工构造的实例没有宿主注册，edit 括号退化为无分组）。
+/// `paramEditBegin`: enters an edit transaction (undo grouping).
+///
+/// After resolving the `param` handle it locates the owning instance through
+/// `PARAM_OWNER` and increments its transaction depth; when the instance is not
+/// registered this is a no-op (hand-built instances have no host registration, so
+/// the edit brackets degrade to no grouping). Pairs with [`param_edit_end`];
+/// write-backs inside the transaction start accumulating in
+/// [`crate::instance::Instance::edit_begin`].
+///
+/// # Safety
+///
+/// `param` must be a valid param handle (definition or instance) or a null
+/// pointer, and the handle must stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// Empty/invalid handle or a describe-time definition handle ->
+/// `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_edit_begin(param: *mut c_void) -> c_int {
 	caught(|| {
 		let addr = match resolve_param(param)? {
@@ -672,8 +1005,25 @@ unsafe extern "C" fn param_edit_begin(param: *mut c_void) -> c_int {
 	})
 }
 
-/// paramEditEnd：退出编辑事务；最外层结束时把累积的 multi 命令
-/// redo 生效并释放（见 [`crate::instance::Instance::edit_end`]）。
+/// `paramEditEnd`: exits an edit transaction; the outermost end commits the
+/// commands accumulated inside it.
+///
+/// After resolving the `param` handle it locates the owning instance through
+/// `PARAM_OWNER` and decrements its transaction depth; at the outermost end the
+/// write-backs accumulated inside the transaction are merged into one multi
+/// command, redo'd into effect and released (see
+/// [`crate::instance::Instance::edit_end`]). A no-op when the instance is not
+/// registered. Pairs with [`param_edit_begin`].
+///
+/// # Safety
+///
+/// `param` must be a valid param handle (definition or instance) or a null
+/// pointer, and the handle must stay valid for the duration of the call.
+///
+/// # Errors
+///
+/// Empty/invalid handle or a describe-time definition handle ->
+/// `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_edit_end(param: *mut c_void) -> c_int {
 	caught(|| {
 		let addr = match resolve_param(param)? {
@@ -707,7 +1057,7 @@ extern "C" {
 	) -> c_int;
 }
 
-/// 静态函数表实例。
+/// Static function-table instance.
 pub fn suite_v1() -> &'static ParameterSuiteV1 {
 	static SUITE: std::sync::OnceLock<ParameterSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| ParameterSuiteV1 {
@@ -753,8 +1103,8 @@ mod tests {
 		)
 	}
 
-	/// 假插件（host::Plugin 的构造只为拿 Arc 喂给 Instance；describe
-	/// 之外的字段不被本测试触碰）。
+	/// Fake plugin (host::Plugin is only constructed to obtain an Arc to feed the
+	/// Instance; fields other than the descriptor are not touched by this test).
 	fn dummy_plugin(descriptor: EffectDescriptor) -> Arc<Plugin> {
 		unsafe extern "C" fn dummy_entry(
 			_: *const c_char,
@@ -784,7 +1134,7 @@ mod tests {
 		)
 	}
 
-	/// 用 paramDefine 建一个实例（describe 产物 → createInstance）。
+	/// Build an instance through paramDefine (describe output -> createInstance).
 	fn make_instance() -> (Arc<Instance>, *mut c_void) {
 		let desc = EffectDescriptor::new();
 		let s = suite_v1();
@@ -1028,10 +1378,10 @@ mod tests {
 		}
 	}
 
-	/// paramSetValue → instanceChanged 回写（C++ paramChangedByPlugin）：
-	/// 实例绑定节点后，插件侧改值经 PARAM_OWNER 定位实例、
-	/// notify_instance_changed 生成 undo 命令并立即 redo——节点输入
-	/// 即新值。
+	/// paramSetValue -> instanceChanged write-back (C++ paramChangedByPlugin):
+	/// once the instance is bound to a node, a plugin-side value change locates
+	/// the instance through PARAM_OWNER, notify_instance_changed produces an undo
+	/// command and immediately redoes it — the node input is the new value.
 	#[test]
 	fn set_value_writes_back_to_bound_node() {
 		let (inst, ih) = make_instance();

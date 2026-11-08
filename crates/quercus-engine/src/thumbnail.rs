@@ -43,6 +43,12 @@ crate::export_handle!(
 );
 
 impl ThumbnailHandle {
+	/// Wraps owned thumbnail data in a fresh ref-counted FFI handle and
+	/// returns its raw pointer.
+	///
+	/// The handle starts with one reference; the caller (the task result
+	/// slot) transfers that reference to whoever takes the thumbnail and must
+	/// eventually release it with `quercus_thumbnail_release`.
 	pub(crate) fn from_data(data: ThumbnailData) -> *const Self {
 		crate::handle::into_ffi(Self { data })
 	}
@@ -80,7 +86,19 @@ impl NativeMirror for QuercusThumbnailInfo {
 	}
 }
 
-/// Reads thumbnail metadata; false for null arguments.
+/// Reads a thumbnail's width, height and packed-pixel float count into
+/// `out`.
+///
+/// Returns `false` when `thumbnail` or `out` is null (nothing is
+/// written), and `true` after a successful copy. The metadata describes
+/// the immutable pixel buffer, so it cannot change after creation.
+///
+/// # Safety
+///
+/// `thumbnail` must be null or a live handle returned by
+/// `quercus_task_take_thumbnail` and not yet released; `out` must be null
+/// or point to writable storage for one [`QuercusThumbnailInfo`] valid
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_thumbnail_info(
 	thumbnail: *const ThumbnailHandle,
@@ -94,10 +112,24 @@ pub unsafe extern "C" fn quercus_thumbnail_info(
 	true
 }
 
-/// Copies the packed F32 RGBA pixels into caller storage.
+/// Copies a thumbnail's tightly packed F32 RGBA pixels into `dst`.
 ///
-/// Returns the required float count, or 0 for invalid arguments/insufficient
-/// capacity. Querying [`quercus_thumbnail_info`] first provides the exact capacity.
+/// `dst_capacity` is the number of `f32` values the caller allocated
+/// (`width * height * 4` for the full frame). On success exactly
+/// `pixel_count` floats are copied and that count is returned.
+///
+/// Returns `0` and writes nothing when `thumbnail` or `dst` is null, or
+/// when `dst_capacity` is smaller than `pixel_count`; call
+/// [`quercus_thumbnail_info`] first to size the buffer. The thumbnail is
+/// immutable, so the required count is stable between the two calls.
+///
+/// # Safety
+///
+/// `thumbnail` must be null or a live handle from
+/// `quercus_task_take_thumbnail` that has not been released. `dst` must
+/// be null or point to `dst_capacity` writable `f32` values, and the
+/// source and destination regions must not overlap (the copy uses
+/// `copy_nonoverlapping`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_thumbnail_copy_pixels(
 	thumbnail: *const ThumbnailHandle,

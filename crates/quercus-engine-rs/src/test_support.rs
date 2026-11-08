@@ -13,6 +13,30 @@ pub(crate) fn make_test_clip_with_audio(name: &str) -> String {
 	make_test_clip_impl(name, true)
 }
 
+/// Encode a throwaway H.264 MP4 fixture into the OS temp directory and
+/// return its path.
+///
+/// The file is `quercussdk_editor_fixture_{name}_{pid}.mp4` in
+/// [`std::env::temp_dir`]; the process id keeps parallel test binaries
+/// apart, but the file is neither truncated nor removed here, so each
+/// call overwrites the same per-process path. The video track is
+/// always present: 64x64, [`PixelFormat::F32`], four channels, ten
+/// frames timestamped `0..10/10` (1/10 s time base). `name` therefore
+/// only affects the filename — it is used verbatim, with no escaping,
+/// so characters illegal in a path component will fail the encode.
+///
+/// `with_audio` adds one second of stereo `440 Hz` sine at 48 kHz,
+/// encoded as [`Codec::PCM`] with the left/right channel layout, and
+/// written after the video frames. It is the backing implementation of
+/// [`make_test_clip`] (`false`) and [`make_test_clip_with_audio`]
+/// (`true`); tests using it need a built H.264 encoder.
+///
+/// # Panics
+///
+/// Panics with `create encoder`, `open encoder`, `allocate frame`,
+/// `write frame`, `write audio`, `flush encoder` or `close encoder`
+/// when the corresponding SDK step fails, and when the temp path is
+/// not valid UTF-8.
 fn make_test_clip_impl(name: &str, with_audio: bool) -> String {
 	let out = std::env::temp_dir().join(format!(
 		"quercussdk_editor_fixture_{name}_{}.mp4",
