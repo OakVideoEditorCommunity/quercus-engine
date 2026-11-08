@@ -45,8 +45,9 @@ pub fn ensure_prefix() -> PathBuf {
 	if std::env::var_os("QUERCUS_FFMPEG_OFFLINE").is_some() {
 		panic!("FFMPEG_DIR is missing or invalid and QUERCUS_FFMPEG_OFFLINE is set");
 	}
-	let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-	let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+	let target_os = target_os();
+	let arch = std::env::var("CARGO_CFG_TARGET_ARCH")
+		.unwrap_or_else(|_| std::env::consts::ARCH.to_string());
 	match (target_os.as_str(), arch.as_str()) {
 		("windows", "x86_64") => build_windows_ffmpeg(),
 		("linux", "x86_64" | "aarch64") | ("macos", _) => build_static_ffmpeg(),
@@ -84,7 +85,13 @@ fn build_static_ffmpeg() -> PathBuf {
 
 fn build_windows_ffmpeg() -> PathBuf {
 	assert_eq!(
-		std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default(),
+		std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_else(|_| {
+			if cfg!(target_env = "msvc") {
+				"msvc".to_string()
+			} else {
+				String::new()
+			}
+		}),
 		"msvc",
 		"the pinned Windows FFmpeg build currently supports MSVC targets"
 	);
@@ -201,13 +208,21 @@ fn build_cache() -> PathBuf {
 	if let Some(path) = std::env::var_os("QUERCUS_FFMPEG_CACHE") {
 		return PathBuf::from(path);
 	}
-	let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
+	let Some(out) = std::env::var_os("OUT_DIR").map(PathBuf::from) else {
+		return std::env::current_dir()
+			.expect("current directory")
+			.join("target/quercus-ffmpeg");
+	};
 	let profile = out
 		.ancestors()
 		.find(|path| path.file_name().is_some_and(|name| name == "build"))
 		.and_then(Path::parent)
 		.expect("OUT_DIR contains target/<profile>/build");
 	profile.parent().unwrap_or(profile).join("quercus-ffmpeg")
+}
+
+fn target_os() -> String {
+	std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| std::env::consts::OS.to_string())
 }
 
 struct BuildLock(PathBuf);
@@ -235,7 +250,7 @@ impl Drop for BuildLock {
 }
 
 fn valid_prefix(dir: &Path) -> bool {
-	let library = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+	let library = if target_os() == "windows" {
 		dir.join("lib").join("avcodec.lib")
 	} else {
 		dir.join("lib").join("libavcodec.a")
