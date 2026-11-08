@@ -4,7 +4,7 @@
 #   tooling/publish_workspace.sh --dry-run
 #   tooling/publish_workspace.sh
 #
-# Every crate declares `version = "=0.5.2"` on its internal path dependencies;
+# Every crate declares an exact version on its internal path dependencies;
 # cargo refuses to package a crate whose dependency version is not registered
 # yet, so the order matters.
 
@@ -36,8 +36,11 @@ publish_one() {
 }
 
 ORDER=(
+    quercus-ffmpeg-bootstrap
     quercus-core
     quercus-ffmpeg-link
+    quercus-ffmpeg-sys
+    quercus-ffmpeg-next
     quercus-undo
     quercus-codec
     quercus-node

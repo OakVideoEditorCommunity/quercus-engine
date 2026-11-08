@@ -31,6 +31,8 @@ stable. Use the SDK (or the C ABI) instead.
 | crate | role |
 |---|---|
 | `quercus-core` | base types, color, config, platform helpers |
+| `quercus-ffmpeg-bootstrap` | pinned static FFmpeg download/build bootstrap |
+| `quercus-ffmpeg-sys` / `quercus-ffmpeg-next` | FFmpeg FFI and safe wrapper |
 | `quercus-ffmpeg-link` | static FFmpeg link helper (`links` crate) |
 | `quercus-codec` | decode/probe/encode, hardware decode |
 | `quercus-audio` | audio backend, processing, waveform |
@@ -54,11 +56,16 @@ stable. Use the SDK (or the C ABI) instead.
 > FFmpeg 8.1 build (static, all codec dependencies in one prefix); any other
 > FFmpeg produces link errors or a binary that loads the wrong libraries.
 >
-> Run the two scripts once before the first `cargo build`. If you consume the
-> published crates from another project, clone this repository once to get the
-> scripts, then set `FFMPEG_DIR` to the generated `.cache/ffmpeg` prefix.
+> A normal `cargo add quercus-engine-rs` builds FFmpeg automatically on
+> Linux/macOS and downloads the SHA256-pinned static BtbN development archive
+> on Windows. No FFmpeg shared libraries need to be copied beside the app.
 
-The engine links FFmpeg statically. Run the dependency scripts once (see
+The engine links FFmpeg statically. An existing `FFMPEG_DIR` is honored.
+Otherwise `quercus-ffmpeg-bootstrap` builds it on Linux/macOS, while Windows
+downloads the pinned BtbN 8.1 static development archive and verifies its
+SHA256. Set `QUERCUS_FFMPEG_OFFLINE=1` to forbid that fallback.
+
+For a manual build, run the dependency scripts once (see
 [`docs/build.md`](docs/build.md)); they install into `.cache/ffmpeg` and the
 committed `.cargo/config.toml` points `FFMPEG_DIR` there:
 
@@ -70,9 +77,11 @@ cargo test --workspace
 cargo doc -p quercus-engine-rs --no-deps
 ```
 
-The SDK links the engine dylib at build time. Packaged applications must ship
-`libquercus_engine` next to the executable (or on the loader path) and set an
-rpath; see `crates/quercus-engine-rs/README.md`.
+The SDK uses the engine rlib by default. Enable `engine-cdylib` instead of
+`engine-rlib` when a C-compatible dynamic library is specifically required;
+only that mode needs `libquercus_engine` on the loader path. The native CD
+publishes the dynamic library, static library, C header and Windows import
+library; rlib remains a Cargo implementation detail and is not an artifact.
 
 ## Publishing
 
@@ -84,8 +93,12 @@ tooling/publish_workspace.sh --dry-run
 tooling/publish_workspace.sh
 ```
 
-Order: core → ffmpeg-link → undo → codec → node → otio → render → audio →
-timeline → storage → task → ofx-plugin → engine → engine-rs.
+Order: ffmpeg-bootstrap → core → ffmpeg-link → ffmpeg-sys → ffmpeg-next →
+undo → codec → node → otio → render → audio → timeline → storage → task →
+ofx-plugin → engine → engine-rs.
+
+Version 0.7.0 must pass the Linux, macOS and Windows native CD matrix before
+the publish job runs. The publish job uses the same static native builds.
 
 ## Contributing
 
