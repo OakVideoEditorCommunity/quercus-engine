@@ -52,18 +52,22 @@ stable. Use the SDK (or the C ABI) instead.
 > **FFmpeg is mandatory and must be the project build.**
 >
 > Do **not** point `FFMPEG_DIR` at a system, Homebrew or distro FFmpeg, and do
-> not rely on `pkg-config` picking one up. The engine is pinned to the project
-> FFmpeg 8.1 build (static, all codec dependencies in one prefix); any other
-> FFmpeg produces link errors or a binary that loads the wrong libraries.
+> not rely on `pkg-config` picking one up. The engine uses a project-managed
+> static build with all codec dependencies in one prefix; any other FFmpeg
+> produces link errors or a binary that loads the wrong libraries.
 >
 > A normal `cargo add quercus-engine-rs` builds FFmpeg automatically on
-> Linux/macOS and downloads the SHA256-pinned static BtbN development archive
-> on Windows. No FFmpeg shared libraries need to be copied beside the app.
+> Linux/macOS and uses a SHA256-pinned vcpkg source archive on Windows. No
+> FFmpeg shared libraries need to be copied beside the app.
 
 The engine links FFmpeg statically. An existing `FFMPEG_DIR` is honored.
 Otherwise `quercus-ffmpeg-bootstrap` builds it on Linux/macOS, while Windows
-downloads the pinned BtbN 8.1 static development archive and verifies its
-SHA256. Set `QUERCUS_FFMPEG_OFFLINE=1` to forbid that fallback.
+builds static MSVC-compatible libraries through the pinned vcpkg port and
+verifies its source archive SHA256. Set `QUERCUS_FFMPEG_OFFLINE=1` to forbid
+that fallback.
+
+Automatic builds cache under Cargo's target directory by default. Set
+`QUERCUS_FFMPEG_CACHE` to share that cache between projects or CI jobs.
 
 For a manual build, run the dependency scripts once (see
 [`docs/build.md`](docs/build.md)); they install into `.cache/ffmpeg` and the

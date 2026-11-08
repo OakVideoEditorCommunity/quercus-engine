@@ -30,10 +30,11 @@ role and links to the C header and the SDK; the full API lives in
 
 ## Build prerequisite
 
-The engine is pinned to the project FFmpeg 8.1 static build. Do not use a
+The engine uses a project-managed static FFmpeg build. Do not use a
 system/Homebrew/distro FFmpeg. An existing `FFMPEG_DIR` is honored;
 Linux/macOS otherwise build it automatically, and Windows downloads the
-pinned BtbN static archive and verifies SHA256. For a manual build, run
+pinned vcpkg source archive, verifies SHA256 and builds static MSVC-compatible
+libraries. For a manual Unix build, run
 `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh`, then use the
 generated `.cache/ffmpeg` prefix.
 

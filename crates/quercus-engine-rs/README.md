@@ -20,11 +20,11 @@ engine dynamic library next to the executable.
 
 ## Before you build: FFmpeg is mandatory
 
-`quercus-engine` links the **project FFmpeg 8.1 build** statically. An
+`quercus-engine` links a **project-managed static FFmpeg build**. An
 existing `FFMPEG_DIR` is honored. Linux/macOS build it automatically;
-Windows downloads the pinned BtbN static archive and verifies SHA256.
-`QUERCUS_FFMPEG_OFFLINE=1` disables the fallback. A system, Homebrew or
-distro FFmpeg is not supported.
+Windows builds static MSVC-compatible libraries through a pinned vcpkg
+source archive after verifying SHA256. `QUERCUS_FFMPEG_OFFLINE=1` disables
+the fallback. A system, Homebrew or distro FFmpeg is not supported.
 
 ## Quick start
 

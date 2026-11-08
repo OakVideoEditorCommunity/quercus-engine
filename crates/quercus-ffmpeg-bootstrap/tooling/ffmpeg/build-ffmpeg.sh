@@ -49,8 +49,9 @@ set -euo pipefail
 
 FFMPEG_VERSION="8.1"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PREFIX="$ROOT/.cache/ffmpeg"
-SRC="$ROOT/.cache/ffmpeg-src"
+CACHE="${QUERCUS_FFMPEG_CACHE:-$ROOT/.cache}"
+PREFIX="$CACHE/ffmpeg"
+SRC="$CACHE/ffmpeg-src"
 JOBS="$( (nproc 2>/dev/null) || sysctl -n hw.ncpu)"
 SHARED=0
 
@@ -75,7 +76,7 @@ OS="$(uname -s)"
 
 # --- Source ----------------------------------------------------------------
 
-mkdir -p "$ROOT/.cache"
+mkdir -p "$CACHE"
 if [ ! -d "$SRC" ]; then
 	echo ">> cloning FFmpeg release/$FFMPEG_VERSION"
 	git clone --depth=1 -b "release/$FFMPEG_VERSION" \

@@ -37,6 +37,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore FFmpeg build (Linux/macOS)
+        if: matrix.platform != 'windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/ffmpeg
+            .cache/ffmpeg-src
+            .cache/ffmpeg-deps-src
+          key: cd-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/quercus-ffmpeg-bootstrap/tooling/ffmpeg/*.sh', 'crates/quercus-ffmpeg-bootstrap/tooling/install-deps.sh') }}
+
+      - name: Restore vcpkg build (Windows)
+        if: matrix.platform == 'windows'
+        uses: actions/cache@v4
+        with:
+          path: .cache/vcpkg
+          key: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/quercus-ffmpeg-bootstrap/src/lib.rs', 'Cargo.lock') }}
+
       - name: Set up MSVC (Windows)
         if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -73,14 +90,23 @@ jobs:
       - name: Configure OCIO (Linux/macOS)
         if: matrix.platform != 'windows'
         shell: bash
-        run: bash tooling/ocio-env.sh >> "$GITHUB_ENV"
+        run: |
+          echo "QUERCUS_FFMPEG_CACHE=$GITHUB_WORKSPACE/.cache" >> "$GITHUB_ENV"
+          bash tooling/ocio-env.sh >> "$GITHUB_ENV"
 
       - name: Configure OCIO (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          "QUERCUS_FFMPEG_CACHE=$env:GITHUB_WORKSPACE\.cache" >> $env:GITHUB_ENV
           "OCIO_RS_ENABLE_REAL=1" >> $env:GITHUB_ENV
           "OCIO_RS_LINK=static" >> $env:GITHUB_ENV
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quercus-cd-${{ matrix.platform }}
+          cache-on-failure: true
 
       - name: Test (Linux)
         if: matrix.platform == 'linux'

@@ -41,8 +41,9 @@ set -euo pipefail
 DEPS_STAMP="3"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PREFIX="$ROOT/.cache/ffmpeg"
-DEPS_SRC="$ROOT/.cache/ffmpeg-deps-src"
+CACHE="${QUERCUS_FFMPEG_CACHE:-$ROOT/.cache}"
+PREFIX="$CACHE/ffmpeg"
+DEPS_SRC="$CACHE/ffmpeg-deps-src"
 JOBS="$( (nproc 2>/dev/null) || sysctl -n hw.ncpu)"
 OS="$(uname -s)"
 
