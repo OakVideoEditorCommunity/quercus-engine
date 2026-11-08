@@ -1218,6 +1218,21 @@ impl DecoderState {
 		any_timecode: bool,
 		cancelled: Option<&CancelAtom>,
 	) -> crate::error::Result<Option<RefFrame>> {
+		match self.retrieve_frame_impl(time, any_timecode, cancelled) {
+			Err(_) if self.hw_device.is_some() => {
+				self.reopen_software()?;
+				self.retrieve_frame_impl(time, any_timecode, cancelled)
+			}
+			result => result,
+		}
+	}
+
+	fn retrieve_frame_impl(
+		&mut self,
+		time: &Rational,
+		any_timecode: bool,
+		cancelled: Option<&CancelAtom>,
+	) -> crate::error::Result<Option<RefFrame>> {
 		// Move the video state out so `self.seek` / `self.pull` (which touch
 		// other fields) can be called without conflicting borrows.
 		let mut video = self
@@ -1271,16 +1286,7 @@ impl DecoderState {
 				break;
 			}
 
-			let pulled = match self.pull() {
-				Ok(pulled) => pulled,
-				Err(_) if self.hw_device.is_some() => {
-					self.video = Some(video);
-					self.reopen_software()?;
-					return self.retrieve_frame(time, any_timecode, cancelled);
-				}
-				Err(error) => return Err(error),
-			};
-			let frame = match pulled {
+			let frame = match self.pull()? {
 				Pull::Frame(DecodedFrame::Video(f)) => {
 					// Hardware surfaces stay as they are: the import path
 					// (M5) and `scale_video_to_f32` decide between
