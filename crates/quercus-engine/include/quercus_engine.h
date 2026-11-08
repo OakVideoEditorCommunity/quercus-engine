@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 58 POD structs, 14 enums, 739 functions. */
+/* 58 POD structs, 14 enums, 742 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -166,6 +166,7 @@ typedef uint32_t QuercusEditOp;
 #define QUERCUS_RCUSEDITOP_SETMULTICAMENABLED 71U
 #define QUERCUS_RCUSEDITOP_SWITCHMULTICAM 72U
 #define QUERCUS_RCUSEDITOP_CREATEMULTICAMSEQUENCE 73U
+#define QUERCUS_RCUSEDITOP_CREATENODE 74U
 typedef enum NodeCategory {
     QUERCUS_NODECATEGORY_OUTPUT = 0,
     QUERCUS_NODECATEGORY_EFFECT = 1,
@@ -1362,6 +1363,8 @@ bool quercus_render_gpu_install(const void* wgpu_device, const void* wgpu_queue,
 bool quercus_render_gpu_is_adopted(void);
 int32_t quercus_render_gpu_kind(void);
 bool quercus_render_gpu_mark_host(void);
+bool quercus_render_gpu_set_display_lut(uint32_t edge, const float* lo, const float* hi, const float* data, size_t len);
+void quercus_render_gpu_set_display_transform_required(bool required);
 void quercus_render_manager_clear_graph_snapshot(void);
 bool quercus_render_manager_init(int32_t backend);
 bool quercus_render_manager_is_initialized(void);
@@ -1492,6 +1495,7 @@ void quercus_video_buffer_add_ref(const void* frame);
 size_t quercus_video_buffer_copy_bytes(const void* frame, uint8_t* dst, size_t capacity);
 bool quercus_video_buffer_info(const void* frame, VideoFrameInfo* out);
 void quercus_video_buffer_release(const void* frame);
+const void* quercus_video_buffer_take_texture(void* frame, int32_t* width, int32_t* height);
 void quercus_waveform_add_ref(const void* waveform);
 bool quercus_waveform_info(const void* waveform, WaveformInfo* out);
 bool quercus_waveform_point_at(const void* waveform, size_t point, int32_t channel, MinMax* out);

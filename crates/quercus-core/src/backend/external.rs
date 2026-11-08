@@ -902,9 +902,6 @@ impl GpuContext {
 				format,
 				aspect: wgpu::TextureAspect::All,
 				layer: None,
-				#[cfg(any(target_os = "linux", target_os = "windows"))]
-				external: None,
-			keep_alive: None,
 			},
 		)
 	}

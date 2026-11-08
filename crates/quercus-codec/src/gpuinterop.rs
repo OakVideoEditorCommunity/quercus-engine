@@ -1185,6 +1185,7 @@ fn d3d11_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 			planes: vec![y, uv],
 			descriptor: planar.descriptor(),
 			keep_alive: None,
+			borrowed_planes: false,
 		},
 		// State/Invalid are capability gaps (missing device feature, wrong
 		// format), not failed attempts.

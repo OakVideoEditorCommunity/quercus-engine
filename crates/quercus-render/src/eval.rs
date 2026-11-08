@@ -5595,9 +5595,18 @@ mod tests {
             assert!((got - want).abs() < 1e-4, "CPU composite: expected {want}, got {got}");
         }
 
-        // Same math through the GPU pass when a device is available.
-        if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
-            let gpu_out = composite_tracks_gpu(&ctx, &frames, (2, 1)).expect("GPU composite");
+        // CPU layers deliberately select the CPU compositor. Upload GPU copies
+        // to exercise the same alpha-over math through the GPU pass.
+        if let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") {
+            assert!(matches!(
+                composite_tracks_gpu(&ctx, &frames, (2, 1)),
+                Err(Error::State)
+            ));
+            let gpu_frames = [
+                gpu_test_texture(&ctx, (2, 1), &[[0.5, 0.25, 0.125, 0.5]; 2]),
+                gpu_test_texture(&ctx, (2, 1), &[[1.0, 1.0, 1.0, 0.75]; 2]),
+            ];
+            let gpu_out = composite_tracks_gpu(&ctx, &gpu_frames, (2, 1)).expect("GPU composite");
             let pixel = first_pixel(&gpu_out);
             for (got, want) in pixel.iter().zip(expected) {
                 assert!((got - want).abs() < 1e-3, "GPU composite: expected {want}, got {got}");
