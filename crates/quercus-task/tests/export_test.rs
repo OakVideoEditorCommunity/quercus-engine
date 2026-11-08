@@ -209,9 +209,7 @@ fn export_writes_a_real_playable_mp4() {
 		PixelFormat::F32,
 	)
 	.expect("decode the exported frame");
-	let quercus_core::texture::Texture::Cpu(frame) = &tex else {
-		panic!("decode produced a GPU texture");
-	};
+	let frame = tex.to_frame().expect("read back the exported frame");
 	let off = 32 * frame.linesize_bytes() + 32 * 16;
 	let r = f32::from_le_bytes(frame.data[off..off + 4].try_into().unwrap());
 	let g = f32::from_le_bytes(frame.data[off + 4..off + 8].try_into().unwrap());
