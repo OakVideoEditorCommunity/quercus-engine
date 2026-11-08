@@ -11,11 +11,11 @@ use std::ffi::c_void;
 use crate::node::{NodeId, Project};
 use crate::types::Rational;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_timeline_block_split(project: *const c_void, block: u64, point: Rational) -> bool;
 	fn quercus_timeline_split_preserving_links(

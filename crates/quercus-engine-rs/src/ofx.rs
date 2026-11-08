@@ -15,11 +15,11 @@ use std::sync::Mutex;
 
 use crate::codec::string_out;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_ofx_scan() -> i32;
 	fn quercus_ofx_scan_path(path: *const u8, path_len: usize) -> bool;

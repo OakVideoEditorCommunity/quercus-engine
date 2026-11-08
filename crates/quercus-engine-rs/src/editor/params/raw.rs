@@ -41,8 +41,8 @@ pub(crate) struct KeyframeRaw {
 	pub bezier_out_y: f64,
 }
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	pub(crate) fn quercus_editor_params_snapshot(session: *mut c_void, node: u64) -> *mut c_void;
 	pub(crate) fn quercus_editor_params_release(params: *const c_void);

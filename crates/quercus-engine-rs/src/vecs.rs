@@ -34,8 +34,8 @@ macro_rules! define_vec {
 		unsafe impl Sync for $name {}
 
 		const _: () = {
-			#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-			#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+			#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+			#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 			unsafe extern "C" {
 				#[link_name = concat!($prefix, "_init")]
 				fn init_raw() -> *mut std::ffi::c_void;
@@ -154,8 +154,8 @@ macro_rules! define_vec {
 		unsafe impl Sync for $name {}
 
 		const _: () = {
-			#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-			#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+			#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+			#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 			unsafe extern "C" {
 				#[link_name = concat!($prefix, "_init")]
 				fn init_raw() -> *mut std::ffi::c_void;

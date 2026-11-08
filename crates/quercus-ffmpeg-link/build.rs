@@ -36,16 +36,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-	let dir = match env_or_dotenv("FFMPEG_DIR") {
-		Some(dir) => dir,
-		None => panic!(
-			"FFMPEG_DIR is not set. Quercus links FFmpeg statically; build the project FFmpeg \
-			 first:\n  tooling/install-deps.sh\n  tooling/ffmpeg/build-ffmpeg.sh\n  export \
-			 FFMPEG_DIR=$(pwd)/.cache/ffmpeg\n(see docs/build.md). IDEs that cannot inject \
-			 environment variables into cargo (e.g. RustRover) can use a .env file at the \
-			 workspace root with FFMPEG_DIR=<absolute path>."
-		),
-	};
+	let dir = quercus_ffmpeg_bootstrap::ensure_prefix().to_string_lossy().into_owned();
 	let pc_dir = PathBuf::from(&dir).join("lib").join("pkgconfig");
 	assert!(
 		pc_dir.exists(),
@@ -103,17 +94,6 @@ fn main() {
 			Err(e) if e.kind() == std::io::ErrorKind::NotFound => match run("pkgconf") {
 				Ok(output) => output,
 				Err(pkgconf_err) if pkgconf_err.kind() == std::io::ErrorKind::NotFound => {
-					// Windows CI/CD links the prebuilt SHARED FFmpeg (the
-					// BtbN archive, see the workflows): its import libraries
-					// carry canonical names and the archive is
-					// self-contained, so the fixed link line replaces
-					// pkg-config there (no pkg-config is installed).
-					#[cfg(target_os = "windows")]
-					{
-						link_prebuilt_shared(&dir);
-						return;
-					}
-					#[cfg(not(target_os = "windows"))]
 					panic!("pkg-config/pkgconf is required when FFMPEG_DIR is set");
 				}
 				Err(pkgconf_err) => panic!("failed to run pkgconf: {pkgconf_err}"),
@@ -190,6 +170,8 @@ fn main() {
 				} else {
 					println!("cargo:rustc-link-lib=static={lib}");
 				}
+			} else if cfg!(target_os = "linux") && prefer_static_system_lib(lib) {
+				println!("cargo:rustc-link-lib=static={lib}");
 			} else {
 				println!("cargo:rustc-link-lib={lib}");
 			}
@@ -216,7 +198,11 @@ fn main() {
 	if cfg!(target_os = "macos") {
 		println!("cargo:rustc-link-lib=c++");
 	} else if cfg!(all(target_os = "linux", target_env = "gnu")) {
-		println!("cargo:rustc-link-lib=stdc++");
+		if prefer_static_system_lib("stdc++") {
+			println!("cargo:rustc-link-lib=static=stdc++");
+		} else {
+			println!("cargo:rustc-link-lib=stdc++");
+		}
 	}
 
 	// Some externals (Homebrew lame, snappy) reach the FFmpeg archives via
@@ -231,27 +217,24 @@ fn main() {
 	}
 }
 
-/// Emit the link directives for the prebuilt SHARED FFmpeg archive the
-/// Windows CI/CD jobs use (BtbN's build): the seven FFmpeg import
-/// libraries with their canonical MSVC names. The archive is
-/// self-contained — its `.pc` files carry no external `Libs.private` — so
-/// no pkg-config resolution is needed (and no pkg-config binary is
-/// installed there). MSYS2 local builds keep using pkg-config because
-/// theirs is a static FFmpeg with the full transitive codec list.
-#[cfg(target_os = "windows")]
-fn link_prebuilt_shared(dir: &str) {
-	let libdir = PathBuf::from(dir).join("lib");
-	assert!(
-		libdir.join("avcodec.lib").exists(),
-		"FFMPEG_DIR={dir} has no lib/avcodec.lib — point it at the prebuilt shared \
-		 archive (ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip)"
-	);
-	println!("cargo:rustc-link-search=native={}", libdir.display());
-	for lib in [
-		"avformat", "avcodec", "avfilter", "avdevice", "avutil", "swscale", "swresample",
-	] {
-		println!("cargo:rustc-link-lib={lib}");
+fn prefer_static_system_lib(lib: &str) -> bool {
+	const CANDIDATES: [&str; 22] = [
+		"asound", "sndio", "bz2", "lzma", "numa", "va-drm", "va", "vdpau", "drm", "X11",
+		"Xext", "xcb", "Xau", "Xdmcp", "bsd", "md", "z", "stdc++", "gcc", "pipewire-0.3",
+		"wayland-client", "wayland-cursor",
+	];
+	if !CANDIDATES.contains(&lib) {
+		return false;
 	}
+	let dirs = [
+		"/usr/lib",
+		"/usr/lib64",
+		"/usr/lib/x86_64-linux-gnu",
+		"/usr/lib/aarch64-linux-gnu",
+		"/usr/local/lib",
+		"/opt/homebrew/lib",
+	];
+	dirs.iter().any(|dir| PathBuf::from(dir).join(format!("lib{lib}.a")).exists())
 }
 
 /// Reads `key` from the process environment, falling back to the `.env`

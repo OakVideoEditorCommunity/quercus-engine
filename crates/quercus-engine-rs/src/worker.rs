@@ -12,11 +12,11 @@
 
 use std::ffi::c_void;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_worker_run(backend: *const u8, backend_len: usize) -> i32;
 	fn quercus_worker_ofx_host(args: *const u8, args_len: usize) -> i32;

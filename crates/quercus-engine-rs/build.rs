@@ -6,9 +6,12 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+	if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+		println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+	}
 	// docs.rs builds without the native engine (see Cargo.toml features).
 	if std::env::var_os("DOCS_RS").is_some()
-		|| std::env::var_os("CARGO_FEATURE_ENGINE").is_none()
+		|| std::env::var_os("CARGO_FEATURE_ENGINE_CDYLIB").is_none()
 	{
 		return;
 	}

@@ -13,8 +13,8 @@ use std::ffi::c_void;
 // quercus_engine.dll + quercus_engine.dll.lib, while the default dylib link
 // would look for quercus_engine.lib (LNK1181). +verbatim links the import
 // library under its real name; the DLL itself is found at runtime.
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_audio_manager_create_instance() -> bool;
 	fn quercus_audio_manager_destroy_instance();

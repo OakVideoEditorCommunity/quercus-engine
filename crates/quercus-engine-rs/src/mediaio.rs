@@ -143,8 +143,8 @@ struct QuercusMediaIoVTable {
 	close: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
 }
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_codec_mediaio_register(
 		vt: *const QuercusMediaIoVTable,

@@ -13,8 +13,8 @@ use crate::node::NodeId;
 #[cfg(test)]
 mod tests;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_editor_graph_snapshot(session: *mut c_void, sequence: u64, clip: u64) -> *mut c_void;
 	fn quercus_editor_graph_release(graph: *const c_void);

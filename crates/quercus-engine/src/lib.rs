@@ -73,3 +73,7 @@ pub mod vecs;
 
 #[cfg(not(feature = "docs-only"))]
 mod worker;
+
+/// Keeps the rlib linked when a consumer only references the C ABI.
+#[cfg(not(feature = "docs-only"))]
+pub fn force_link() {}

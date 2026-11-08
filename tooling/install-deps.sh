@@ -113,7 +113,7 @@ case "$(uname -s)" in
 			mesa-vulkan-drivers libvulkan-dev
 			libxkbcommon-dev libxkbcommon-x11-dev
 			xvfb gdb file fonts-dejavu-core icc-profiles-free
-			dpkg-dev librsvg2-bin patchelf
+			dpkg-dev rpm librsvg2-bin patchelf
 			libva-dev libdrm-dev
 		)
 		# A single unavailable package (e.g. pkgconf on openKylin, which

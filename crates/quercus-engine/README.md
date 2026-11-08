@@ -31,10 +31,15 @@ role and links to the C header and the SDK; the full API lives in
 ## Build prerequisite
 
 The engine is pinned to the project FFmpeg 8.1 static build. Do not use a
-system/Homebrew/distro FFmpeg and do not leave `FFMPEG_DIR` pointing at one:
-run `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh` from the
-repository, then build with the generated `.cache/ffmpeg` prefix. Otherwise
-the link fails or the dylib loads the wrong FFmpeg.
+system/Homebrew/distro FFmpeg. An existing `FFMPEG_DIR` is honored;
+Linux/macOS otherwise build it automatically, and Windows downloads the
+pinned BtbN static archive and verifies SHA256. For a manual build, run
+`tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh`, then use the
+generated `.cache/ffmpeg` prefix.
+
+The crate produces an rlib, a cdylib and a static library. The native CD
+package contains only the dynamic library, static library, this C header and
+the Windows import library.
 
 ## C API
 

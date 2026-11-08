@@ -233,8 +233,8 @@ pub(crate) struct QuercusEditResult {
 	pub clipboard_len: usize,
 }
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	/// Executes the operation once. Returns 0, or a negative engine error code.
 	pub(crate) fn quercus_editor_edit(

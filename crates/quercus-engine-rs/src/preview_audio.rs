@@ -5,11 +5,11 @@ use std::ffi::c_void;
 use crate::audio::LevelStats;
 use crate::types::TimeRange;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_audio_buffer_add_ref(audio: *const c_void);
 	fn quercus_audio_buffer_release(audio: *const c_void);

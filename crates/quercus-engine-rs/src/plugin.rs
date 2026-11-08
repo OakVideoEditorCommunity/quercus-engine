@@ -24,8 +24,8 @@ struct QuercusPluginDescriptor {
 
 type CommandFn = unsafe extern "C" fn(command_id: *const std::ffi::c_char, userdata: *mut c_void);
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_plugin_register(
 		descriptor: *const QuercusPluginDescriptor,
