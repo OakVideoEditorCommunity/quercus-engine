@@ -1252,7 +1252,7 @@ fn videotoolbox_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> Impo
 		};
 		// SAFETY: `surface` is the CVPixelBuffer's IOSurface; plane slots
 		// follow the YUV plane order of the descriptor.
-		match unsafe { ctx.import_iosurface_plane(surface, plane as usize, pw as u32, ph as u32, format) } {
+		match unsafe { ctx.import_iosurface_plane(surface, plane as u32, pw as u32, ph as u32, format) } {
 			Ok(token) => planes.push(token),
 			Err(quercus_core::error::Error::State)
 			| Err(quercus_core::error::Error::Invalid) => {

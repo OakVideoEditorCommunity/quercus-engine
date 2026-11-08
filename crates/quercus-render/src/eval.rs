@@ -1201,10 +1201,11 @@ pub fn render_produced_frame(
 
     if !params.montage.is_empty() {
         let r = render_montage_frame(time, params, (w, h), format);
-        return r;
+        return r.map(|texture| texture.with_timestamp(time));
     }
     if let Some((filename, stream_index)) = &params.footage {
-        return render_footage_frame(filename, *stream_index, time, (w, h), format);
+        return render_footage_frame(filename, *stream_index, time, (w, h), format)
+            .map(|texture| texture.with_timestamp(time));
     }
 
     // Generated (transparent) frame: prefer a GPU clear so the pipeline
@@ -1213,7 +1214,7 @@ pub fn render_produced_frame(
         if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
             if let Ok(token) = ctx.create_texture(w, h) {
                 if ctx.clear_texture(token).is_ok() {
-                    return Ok(Texture::gpu(ctx, token, w, h, PixelFormat::F32));
+                    return Ok(Texture::gpu(ctx, token, w, h, PixelFormat::F32).with_timestamp(time));
                 }
                 ctx.destroy_texture(token);
             }
@@ -2152,12 +2153,14 @@ fn composite_tracks_gpu(
 					scratch.push(t);
 					t
 				}
-			Texture::Cpu(_) => {
-				// The CPU image comes from a CPU-only OFX/effect node. Let
-				// the graph use its CPU compositor for this frame instead of
-				// uploading on the render thread; the upload path is the one
-				// that has been losing the Vulkan device with OFX.
-				return Err(Error::State);
+			Texture::Cpu(f) => {
+				let t = ctx.create_texture(f.width, f.height)?;
+				if let Err(err) = ctx.upload(t, f) {
+					ctx.destroy_texture(t);
+					return Err(err);
+				}
+				scratch.push(t);
+				t
 			}
 				Texture::Planar(_) => {
 					return Err(Error::Failed(
@@ -2902,12 +2905,7 @@ pub fn render_graph_frame(
     }
 
     let composite_started = perf.then(std::time::Instant::now);
-    let mut frame = composite_tracks(frames, size);
-    if let Texture::Cpu(cpu) = &mut frame {
-        // The GPU path carries no timestamp (there is nowhere to put it);
-        // the 10-bit present path uses the ticket's time, not this field.
-        cpu.timestamp = time;
-    }
+    let frame = composite_tracks(frames, size).with_timestamp(time);
     if perf {
         let composite_ms = composite_started
             .map(|t| t.elapsed().as_secs_f64() * 1000.0)
@@ -3770,6 +3768,7 @@ fn transparent_gpu_base(
         format: PixelFormat::F32,
         ctx: ctx.clone(),
         lease,
+        timestamp: Rational::default(),
     })
 }
 
@@ -5595,18 +5594,10 @@ mod tests {
             assert!((got - want).abs() < 1e-4, "CPU composite: expected {want}, got {got}");
         }
 
-        // CPU layers deliberately select the CPU compositor. Upload GPU copies
-        // to exercise the same alpha-over math through the GPU pass.
+        // Same math through the GPU pass when a device is available. Software
+        // decoded CPU frames are uploaded at the composite boundary.
         if let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") {
-            assert!(matches!(
-                composite_tracks_gpu(&ctx, &frames, (2, 1)),
-                Err(Error::State)
-            ));
-            let gpu_frames = [
-                gpu_test_texture(&ctx, (2, 1), &[[0.5, 0.25, 0.125, 0.5]; 2]),
-                gpu_test_texture(&ctx, (2, 1), &[[1.0, 1.0, 1.0, 0.75]; 2]),
-            ];
-            let gpu_out = composite_tracks_gpu(&ctx, &gpu_frames, (2, 1)).expect("GPU composite");
+            let gpu_out = composite_tracks_gpu(&ctx, &frames, (2, 1)).expect("GPU composite");
             let pixel = first_pixel(&gpu_out);
             for (got, want) in pixel.iter().zip(expected) {
                 assert!((got - want).abs() < 1e-3, "GPU composite: expected {want}, got {got}");

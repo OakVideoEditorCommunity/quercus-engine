@@ -997,6 +997,8 @@ pub enum Texture {
 		ctx: Arc<dyn GpuContextLike>,
 		/// Shared token ownership (destroyed with the last clone).
 		lease: Arc<GpuLease>,
+		/// Presentation timestamp carried across the readback boundary.
+		timestamp: Rational,
 	},
 	/// Imported hardware-decode YUV frame (M5); resolved to `Gpu` by the
 	/// footage path before consumers run.
@@ -1048,7 +1050,18 @@ impl Texture {
 			format,
 			ctx,
 			lease,
+			timestamp: Rational::default(),
 		}
+	}
+
+	/// Attach a presentation timestamp without changing texture ownership.
+	pub fn with_timestamp(mut self, timestamp: Rational) -> Self {
+		match &mut self {
+			Texture::Gpu { timestamp: current, .. } => *current = timestamp,
+			Texture::Cpu(frame) => frame.timestamp = timestamp,
+			Texture::Planar(_) => {}
+		}
+		self
 	}
 
 	/// A dummy/empty texture (C++ `Texture::dummy` semantics): reads as
@@ -1105,7 +1118,16 @@ impl Texture {
 	pub fn to_frame(&self) -> Result<Frame> {
 		match self {
 			Texture::Cpu(f) => Ok(f.clone()),
-			Texture::Gpu { token, ctx, .. } => ctx.download(*token),
+			Texture::Gpu {
+				token,
+				ctx,
+				timestamp,
+				..
+			} => {
+				let mut frame = ctx.download(*token)?;
+				frame.timestamp = *timestamp;
+				Ok(frame)
+			}
 			Texture::Planar(_) => Err(Error::State),
 		}
 	}
