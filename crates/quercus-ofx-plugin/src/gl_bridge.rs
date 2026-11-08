@@ -715,7 +715,8 @@ mod imp {
 	/// function only probes the context's memory slot internally, and the CGL
 	/// implementation never fills it. Lazily creates the context.
 	pub fn gl_memory_object_available() -> bool {
-		context().map(|c| c.memory.is_some()).unwrap_or(false)
+		let _ = context();
+		false
 	}
 
 	/// Reads and clears the current context's GL error, converting an
