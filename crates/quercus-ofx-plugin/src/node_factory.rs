@@ -982,6 +982,9 @@ pub fn install_render_executor() {
 		quercus_render::eval::set_plugin_executor(Some(Arc::new(execute_plugin_job)));
 		quercus_render::eval::set_plugin_instance_factory(Some(Arc::new(shared_plugin_instance)));
 		quercus_render::eval::set_plugin_gpu_query(Some(Arc::new(|identifier: &str| {
+			if std::env::var_os("QUERCUS_OFX_GL").is_none() {
+				return false;
+			}
 			let Some(id) = shared_plugin_instance(identifier) else {
 				return false;
 			};

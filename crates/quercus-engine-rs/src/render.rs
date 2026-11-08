@@ -54,6 +54,13 @@ unsafe extern "C" {
 	fn quercus_render_gpu_host_installed() -> bool;
 	fn quercus_render_gpu_mark_host() -> bool;
 	fn quercus_render_gpu_set_display_transform_required(required: bool);
+	fn quercus_render_gpu_set_display_lut(
+		edge: u32,
+		lo: *const f32,
+		hi: *const f32,
+		data: *const f32,
+		len: usize,
+	) -> bool;
 	fn quercus_render_textengine_install();
 	fn quercus_render_textengine_add_font_data(bytes: *const u8, len: usize) -> bool;
 	fn quercus_render_textengine_add_font_dir(path: *const u8, path_len: usize) -> bool;
@@ -304,6 +311,18 @@ pub fn gpu_host_installed() -> bool {
 /// authoritative; false keeps the final texture zero-copy.
 pub fn gpu_set_display_transform_required(required: bool) {
 	unsafe { quercus_render_gpu_set_display_transform_required(required) };
+}
+
+/// Installs the CPU-baked working-space to display LUT on the adopted GPU.
+pub fn gpu_set_display_lut(
+	edge: u32,
+	lo: &[f32; 3],
+	hi: &[f32; 3],
+	data: &[f32],
+) -> bool {
+	unsafe {
+		quercus_render_gpu_set_display_lut(edge, lo.as_ptr(), hi.as_ptr(), data.as_ptr(), data.len())
+	}
 }
 
 /// Declares the engine-created shared context as the host's render device

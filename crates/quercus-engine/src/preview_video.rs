@@ -49,7 +49,7 @@ pub enum VideoPixelFormat {
 }
 
 /// Owned bytes and geometry for one video frame.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VideoBufferData {
 	pub width: i32,
 	pub height: i32,
@@ -61,6 +61,22 @@ pub struct VideoBufferData {
 	/// empty and the host should sample this texture directly instead of
 	/// copying pixels.
 	pub gpu_texture: Option<std::sync::Arc<quercus_core::wgpu::Texture>>,
+	gpu_context: Option<std::sync::Arc<quercus_core::backend::GpuContext>>,
+	cpu_bytes: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+impl std::fmt::Debug for VideoBufferData {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("VideoBufferData")
+			.field("width", &self.width)
+			.field("height", &self.height)
+			.field("linesize", &self.linesize)
+			.field("origin", &self.origin)
+			.field("pixel_format", &self.pixel_format)
+			.field("byte_count", &self.cpu_byte_count())
+			.field("has_gpu_texture", &self.gpu_texture.is_some())
+			.finish()
+	}
 }
 
 /// Video metadata without the variable-length byte buffer.
@@ -88,8 +104,36 @@ impl VideoBufferData {
 			linesize: self.linesize,
 			origin: self.origin,
 			pixel_format: self.pixel_format,
-			byte_count: self.bytes.len(),
+			byte_count: self.cpu_byte_count(),
 		}
+	}
+
+	fn cpu_byte_count(&self) -> usize {
+		if self.bytes.is_empty() && self.gpu_texture.is_some() {
+			return self.width.max(0) as usize * self.height.max(0) as usize * 16;
+		}
+		self.bytes.len()
+	}
+
+	fn with_cpu_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+		if !self.bytes.is_empty() {
+			return Some(f(&self.bytes));
+		}
+		let gpu = self.gpu_context.as_ref()?;
+		let texture = self.gpu_texture.as_ref()?;
+		let mut cache = self.cpu_bytes.lock().unwrap_or_else(|e| e.into_inner());
+		if cache.is_none() {
+			let frame = gpu
+				.download_shared_texture(
+					texture,
+					texture.format(),
+					self.width as u32,
+					self.height as u32,
+				)
+				.ok()?;
+			*cache = Some(frame.data);
+		}
+		cache.as_deref().map(f)
 	}
 }
 
@@ -185,20 +229,24 @@ pub unsafe extern "C" fn quercus_video_buffer_copy_bytes(
 	let Some(frame) = (unsafe { frame.as_ref() }) else {
 		return 0;
 	};
-	if dst.is_null() || dst_capacity < frame.data.bytes.len() {
+	let required = frame.data.cpu_byte_count();
+	if dst.is_null() || dst_capacity < required {
 		return 0;
 	}
-	unsafe {
-		std::ptr::copy_nonoverlapping(frame.data.bytes.as_ptr(), dst, frame.data.bytes.len())
-	};
-	frame.data.bytes.len()
+	frame
+		.data
+		.with_cpu_bytes(|bytes| unsafe {
+			std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+			bytes.len()
+		})
+		.unwrap_or(0)
 }
 
-/// Transfers the optional zero-copy presentation texture out of the frame.
+/// Clones the optional zero-copy presentation texture.
 ///
 /// The returned pointer is an `Arc<wgpu::Texture>` raw pointer owned by the
 /// caller (the host wraps it with `Arc::from_raw`). Returns null when the frame
-/// has no GPU texture or it was already taken. The engine device must have been
+/// has no GPU texture. The engine device must have been
 /// adopted by the host (`quercus_render_gpu_install`) for the texture to be
 /// sampleable by the host.
 #[unsafe(no_mangle)]
@@ -210,7 +258,7 @@ pub unsafe extern "C" fn quercus_video_buffer_take_texture(
 	let Some(frame) = (unsafe { frame.as_mut() }) else {
 		return std::ptr::null();
 	};
-	let Some(texture) = frame.data.gpu_texture.take() else {
+	let Some(texture) = frame.data.gpu_texture.clone() else {
 		return std::ptr::null();
 	};
 	if !width.is_null() {
@@ -279,6 +327,8 @@ fn pack_f32_bytes(
 		pixel_format,
 		bytes,
 		gpu_texture: None,
+		gpu_context: None,
+		cpu_bytes: std::sync::Arc::new(std::sync::Mutex::new(None)),
 	})
 }
 
@@ -304,28 +354,27 @@ fn frame_from_cpu(
 fn adopted_texture(
 	ctx: &std::sync::Arc<dyn quercus_core::backend::GpuContextLike>,
 	token: u64,
-) -> Option<std::sync::Arc<quercus_core::wgpu::Texture>> {
+) -> Option<(
+	std::sync::Arc<quercus_core::backend::GpuContext>,
+	std::sync::Arc<quercus_core::wgpu::Texture>,
+)> {
 	let gpu = ctx
 		.as_any()
 		.and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>())?;
 	if !gpu.is_adopted() {
 		return None;
 	}
-	let texture = gpu.texture_handle(token)?;
-	if texture.format() == quercus_core::wgpu::TextureFormat::Rgba16Float {
-		return Some(texture);
-	}
-	// gpui's surface bind group samples with a filterable layout; the
-	// engine's Rgba32Float working texture is not necessarily filterable.
-	// Convert once on the GPU to the 10-bit display format.
-	let converted = gpu.convert_to_rgba16f(token).ok()?;
-	gpu.take_texture_handle(converted)
+	let converted = gpu.present_texture(token).ok()?;
+	let texture = gpu.take_texture_handle(converted)?;
+	let shared = quercus_core::backend::GpuContext::shared()?;
+	(std::sync::Arc::as_ptr(&shared) == gpu).then_some((shared, texture))
 }
 
 fn frame_from_gpu_texture(
 	width: i32,
 	height: i32,
 	texture: std::sync::Arc<quercus_core::wgpu::Texture>,
+	gpu_context: std::sync::Arc<quercus_core::backend::GpuContext>,
 ) -> Result<VideoBufferData, String> {
 	if width <= 0 || height <= 0 {
 		return Err("GPU frame has invalid geometry".into());
@@ -338,6 +387,8 @@ fn frame_from_gpu_texture(
 		pixel_format: VideoPixelFormat::F32Rgba,
 		bytes: Vec::new(),
 		gpu_texture: Some(texture),
+		gpu_context: Some(gpu_context),
+		cpu_bytes: std::sync::Arc::new(std::sync::Mutex::new(None)),
 	})
 }
 
@@ -380,6 +431,8 @@ fn frame_from_shared(
 			pixel_format,
 			bytes: packed,
 			gpu_texture: None,
+			gpu_context: None,
+			cpu_bytes: std::sync::Arc::new(std::sync::Mutex::new(None)),
 		})
 	} else {
 		let mut converted = Vec::with_capacity(meta.width as usize * meta.height as usize * 16);
@@ -509,8 +562,8 @@ pub(crate) fn render_video(
 						token, width, height, ctx, ..
 					} = &texture
 					{
-						if let Some(handle) = adopted_texture(ctx, *token) {
-							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle) {
+						if let Some((gpu, handle)) = adopted_texture(ctx, *token) {
+							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle, gpu) {
 								return Ok(frame);
 							}
 						}
@@ -574,8 +627,8 @@ pub(crate) fn render_video(
 				token, width: tw, height: th, ctx, ..
 			} = &rendered
 			{
-				if let Some(handle) = adopted_texture(ctx, *token) {
-					if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle) {
+				if let Some((gpu, handle)) = adopted_texture(ctx, *token) {
+					if let Ok(frame) = frame_from_gpu_texture(*tw, *th, handle, gpu) {
 						return Ok(frame);
 					}
 				}

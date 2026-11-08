@@ -108,11 +108,10 @@ impl VideoFrame {
 		}
 	}
 
-	/// Takes the optional zero-copy presentation texture. The returned
+	/// Clones the optional zero-copy presentation texture. The returned
 	/// pointer is an `Arc<wgpu::Texture>` raw pointer; the caller owns it and
 	/// must wrap it with `Arc::from_raw` (using the same wgpu 29 generation).
-	/// Returns `None` when the engine produced CPU pixels or the texture was
-	/// already taken.
+	/// Returns `None` when the engine produced CPU pixels.
 	pub fn take_gpu_texture(&self) -> Option<(*const c_void, i32, i32)> {
 		let mut width = 0i32;
 		let mut height = 0i32;

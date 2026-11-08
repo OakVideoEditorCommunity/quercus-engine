@@ -80,10 +80,10 @@ use std::thread::JoinHandle;
 use quercus_core::texture::Texture;
 use quercus_core::{PixelFormat, Rational};
 
+use crate::eval::montage_prefers_gpu;
 use crate::error::{Error, Result};
 use crate::scheduler::FramePriority;
 use crate::worker::{execute_job, Job, JobDispatch};
-
 /// Render-queue bound (jobs). Small on purpose: the queue exists to keep
 /// the render thread fed across a UI tick, not to buffer a whole
 /// pre-render window — a backlog this deep already means the pipeline is
@@ -128,11 +128,8 @@ fn enqueue_job(queue: &mut VecDeque<Job>, job: Job) {
 	queue.insert(position, job);
 }
 
-/// The decode requests a playback frame needs (M4 read-ahead): one per
-/// montage clip covering `time`, plus the single-footage ticket's stream.
-/// The media arithmetic mirrors `eval::render_montage_frame_into`
-/// (`media_in + (time - in_time)`) so a prefetched frame is the exact key
-/// the render rendezvous asks for.
+/// Builds speculative decode requests with the same media time, size,
+/// format and import mode that the subsequent montage/footage render uses.
 fn playback_decode_requests(
 	params: &crate::ticket::VideoTicketParams,
 	time: Rational,
@@ -142,6 +139,7 @@ fn playback_decode_requests(
 		return Vec::new();
 	}
 	let mut requests = Vec::new();
+	let allow_import = montage_prefers_gpu(params, PixelFormat::F32);
 	for clip in &params.montage {
 		if time < clip.in_time || time >= clip.out_time {
 			continue;
@@ -152,9 +150,7 @@ fn playback_decode_requests(
 			time: clip.media_in + (time - clip.in_time),
 			size,
 			format: PixelFormat::F32,
-			// The montage compositor is CPU-side: importing would only
-			// be downloaded again.
-			allow_import: false,
+			allow_import,
 		});
 	}
 	if let Some((filename, stream_index)) = &params.footage {
@@ -1084,7 +1080,7 @@ mod tests {
 			time,
 			size: (64, 64),
 			format: PixelFormat::F32,
-			allow_import: true,
+			allow_import: false,
 		}
 	}
 
@@ -1486,6 +1482,10 @@ mod tests {
 		);
 		assert_eq!(requests[0].size, (64, 32));
 		assert_eq!(requests[0].format, PixelFormat::F32);
+		assert_eq!(
+			requests[0].allow_import,
+			montage_prefers_gpu(&params, PixelFormat::F32)
+		);
 
 		// A single-footage ticket prefetches its stream at the ticket time.
 		let mut footage = params;

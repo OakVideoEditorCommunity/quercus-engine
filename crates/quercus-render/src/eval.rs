@@ -1218,7 +1218,7 @@ const MAX_CACHED_PLANAR_FRAMES: usize = 4;
 /// part of the key: the same media at a different target resolution is a
 /// different frame (an interleaved source-monitor/proxy request must not
 /// reuse a wrongly-sized pixel buffer).
-type DecodedFrameKey = (String, i32, (i64, i64), i32, i32);
+type DecodedFrameKey = (String, i32, (i64, i64), i32, i32, bool);
 
 /// Decoded-frame LRU map. Values are decoded textures (CPU frame, or the
 /// M5 imported planar texture when the hardware import took the frame)
@@ -1544,7 +1544,7 @@ pub(crate) fn render_footage_frame_inner_opts(
     // type's doc).
     let (w, h) = size;
     let cache_size = if w > 0 && h > 0 { (w, h) } else { (-1, -1) };
-    let cache_key = (filename.to_string(), stream_index, time_key(&time), cache_size.0, cache_size.1);
+    let cache_key = (filename.to_string(), stream_index, time_key(&time), cache_size.0, cache_size.1, allow_import);
     {
         let mut cache = decoded_frames();
         let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1689,6 +1689,9 @@ fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Resu
     let dst = gpu
         .create_texture(w, h)
         .map_err(|e| Error::Failed(format!("planar resolve target: {e:?}")))?;
+    if std::env::var_os("OAK_DEBUG_HW").is_some() {
+        eprintln!("[planar] resolve target created");
+    }
     if let Err(e) = gpu.run_planar_matrix_to_rgb(
         planar.plane_tokens(),
         dst,
@@ -1700,6 +1703,9 @@ fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Resu
         gpu.destroy_texture(dst);
         return Err(Error::Failed(format!("planar matrix pass: {e:?}")));
     }
+    if std::env::var_os("OAK_DEBUG_HW").is_some() {
+        eprintln!("[planar] matrix pass submitted");
+    }
     let token = match footage_working_lut(planar.color_primaries, planar.color_trc) {
         Some((key, lut)) => match gpu.apply_color_lut(dst, &key, &lut) {
             Ok(transformed) => {
@@ -1707,8 +1713,10 @@ fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Resu
                 transformed
             }
             Err(e) => {
-                eprintln!("footage working-space LUT failed, using source RGB: {e:?}");
-                dst
+                gpu.destroy_texture(dst);
+                return Err(Error::Failed(format!(
+                    "footage working-space LUT failed: {e:?}"
+                )));
             }
         },
         None => dst,
@@ -3541,6 +3549,16 @@ pub fn render_montage_frame(
     let acc_data = &mut acc.data;
     render_montage_frame_into(time, params, size, acc_data, stride as i32)?;
     Ok(Texture::wrap_frame(acc))
+}
+
+pub(crate) fn montage_prefers_gpu(
+    params: &crate::ticket::VideoTicketParams,
+    format: PixelFormat,
+) -> bool {
+    format == PixelFormat::F32
+        && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+        && !montage_has_cpu_effects(params)
+        && quercus_core::backend::GpuContext::shared().is_some()
 }
 
 /// GPU montage compositor (the playback path's replacement for the CPU
@@ -7106,7 +7124,7 @@ mod tests {
     #[test]
     fn decoded_frame_cache_dedups_breaks_and_prunes_planar() {
         let key = |n: i32| -> DecodedFrameKey {
-            (format!("frame{n}.mp4"), 0, (n as i64, 1), 2, 2)
+            (format!("frame{n}.mp4"), 0, (n as i64, 1), 2, 2, false)
         };
 
         // A duplicate key is a no-op.
@@ -7114,9 +7132,13 @@ mod tests {
         insert_cached_frame(&mut cache, key(0), Texture::dummy(), 1);
         insert_cached_frame(&mut cache, key(0), Texture::dummy(), 2);
         assert_eq!(cache.len(), 1);
+        let mut import_key = key(0);
+        import_key.5 = true;
+        insert_cached_frame(&mut cache, import_key, Texture::dummy(), 2);
+        assert_eq!(cache.len(), 2, "CPU and import requests stay isolated");
         // Planar insertions take the planar-pruning path.
         insert_cached_frame(&mut cache, key(1), planar_texture((2, 2)), 3);
-        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.len(), 3);
 
         // A cache full of tick-0 entries has no victim: the loop breaks.
         let mut cache = std::collections::HashMap::new();

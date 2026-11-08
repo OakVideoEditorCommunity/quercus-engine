@@ -163,6 +163,7 @@ fn spawn_task(
 	audio_slot: Option<Arc<Mutex<Option<crate::preview_audio::AudioBufferData>>>>,
 	video_slot: Option<Arc<Mutex<Option<crate::preview_video::VideoBufferData>>>>,
 ) -> u64 {
+	let foreground = video_slot.is_some() || audio_slot.is_some();
 	let mut task = Task::new(&title, None);
 	let entry = Arc::new(TaskEntry {
 		title,
@@ -215,7 +216,7 @@ fn spawn_task(
 		worker_entry.state.store(state, Ordering::SeqCst);
 		worker_entry.done.notify_all();
 	});
-	task_pool().push(job);
+	task_pool().push(job, foreground);
 	tasks()
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
@@ -237,12 +238,18 @@ type Job = Box<dyn FnOnce() + Send>;
 /// `mpsc::Receiver` behind a mutex) avoids holding the receive lock while a
 /// worker blocks, which made every other worker wait on that one lock.
 struct TaskPool {
-	queue: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
+	foreground: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
+	background: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
 }
 
 impl TaskPool {
-	fn push(&self, job: Job) {
-		let (lock, cv) = &*self.queue;
+	fn push(&self, job: Job, foreground: bool) {
+		let queue = if foreground {
+			&self.foreground
+		} else {
+			&self.background
+		};
+		let (lock, cv) = &**queue;
 		lock.lock().unwrap_or_else(|e| e.into_inner()).push_back(job);
 		cv.notify_one();
 	}
@@ -258,6 +265,7 @@ fn task_pool() -> &'static TaskPool {
 			.filter(|n| *n > 0)
 			.unwrap_or(8);
 		let queue = Arc::new((Mutex::new(VecDeque::<Job>::new()), Condvar::new()));
+		let foreground = Arc::new((Mutex::new(VecDeque::<Job>::new()), Condvar::new()));
 		for index in 0..workers {
 			let queue = queue.clone();
 			let _ = std::thread::Builder::new()
@@ -276,7 +284,28 @@ fn task_pool() -> &'static TaskPool {
 					}
 				});
 		}
-		TaskPool { queue }
+		for index in 0..2 {
+			let queue = foreground.clone();
+			let _ = std::thread::Builder::new()
+				.name(format!("quercus-foreground-{index}"))
+				.spawn(move || loop {
+					let job = {
+						let (lock, cv) = &*queue;
+						let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+						while guard.is_empty() {
+							guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+						}
+						guard.pop_front()
+					};
+					if let Some(job) = job {
+						job();
+					}
+				});
+		}
+		TaskPool {
+			foreground,
+			background: queue,
+		}
 	})
 }
 
