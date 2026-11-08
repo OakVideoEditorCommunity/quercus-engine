@@ -46,13 +46,16 @@ jobs:
             .cache/ffmpeg-src
             .cache/ffmpeg-deps-src
           key: cd-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/quercus-ffmpeg-bootstrap/tooling/ffmpeg/*.sh', 'crates/quercus-ffmpeg-bootstrap/tooling/install-deps.sh') }}
+          save-always: true
 
       - name: Restore vcpkg build (Windows)
         if: matrix.platform == 'windows'
         uses: actions/cache@v4
         with:
           path: .cache/vcpkg
-          key: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/quercus-ffmpeg-bootstrap/src/lib.rs', 'Cargo.lock') }}
+          key: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-ec48c11eae9448c8c6e7739d93e06fa2433aa95f
+          restore-keys: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-
+          save-always: true
 
       - name: Set up MSVC (Windows)
         if: matrix.platform == 'windows'
@@ -107,6 +110,10 @@ jobs:
         with:
           shared-key: quercus-cd-${{ matrix.platform }}
           cache-on-failure: true
+
+      - name: Bootstrap static FFmpeg
+        shell: bash
+        run: cargo run --locked -p quercus-ffmpeg-bootstrap --bin quercus-ffmpeg-bootstrap
 
       - name: Test (Linux)
         if: matrix.platform == 'linux'

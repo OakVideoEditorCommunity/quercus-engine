@@ -24,7 +24,10 @@ EOF
 
 mkdir -p "$STAGE/DEBIAN"
 mv "$STAGE/DEBIAN.control" "$STAGE/DEBIAN/control"
-DEPENDS="$(dpkg-shlibdeps -O "$STAGE/usr/lib/quercus/libquercus_engine.so" | sed 's/^shlibs:Depends=//')"
+SHLIBDEPS_ROOT="$OUT/shlibdeps"
+mkdir -p "$SHLIBDEPS_ROOT/debian"
+sed '1iSource: quercus-engine' "$STAGE/DEBIAN/control" > "$SHLIBDEPS_ROOT/debian/control"
+DEPENDS="$(cd "$SHLIBDEPS_ROOT" && dpkg-shlibdeps -O "$STAGE/usr/lib/quercus/libquercus_engine.so" | sed 's/^shlibs:Depends=//')"
 if [ -n "$DEPENDS" ]; then
 	printf 'Depends: %s\n' "$DEPENDS" >> "$STAGE/DEBIAN/control"
 fi

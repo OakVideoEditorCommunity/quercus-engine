@@ -57,6 +57,7 @@ pub fn ensure_prefix() -> PathBuf {
 fn build_static_ffmpeg() -> PathBuf {
 	let root = bootstrap_root();
 	let cache = build_cache();
+	let prefix = cache.join("ffmpeg");
 	let script = root.join("tooling/ffmpeg/build-ffmpeg.sh");
 	assert!(
 		script.is_file(),
@@ -64,6 +65,9 @@ fn build_static_ffmpeg() -> PathBuf {
 		script.display()
 	);
 	let _lock = BuildLock::acquire(cache.join("build.lock"));
+	if valid_prefix(&prefix) {
+		return prefix;
+	}
 	let status = Command::new("bash")
 		.arg(&script)
 		.current_dir(&root)
@@ -71,7 +75,6 @@ fn build_static_ffmpeg() -> PathBuf {
 		.status()
 		.expect("run the static FFmpeg build script");
 	assert!(status.success(), "static FFmpeg build failed");
-	let prefix = cache.join("ffmpeg");
 	assert!(
 		valid_prefix(&prefix),
 		"static FFmpeg build has no lib/pkgconfig"
@@ -111,6 +114,16 @@ fn build_windows_ffmpeg() -> PathBuf {
 	let actual = sha256(&archive);
 	assert_eq!(actual, VCPKG_SHA256, "SHA256 mismatch for {url}");
 	let vcpkg = cache.join("vcpkg");
+	let overlay = cache.join("triplets");
+	fs::create_dir_all(&overlay).expect("create vcpkg triplet directory");
+	fs::write(
+		overlay.join(format!("{WINDOWS_TRIPLET}.cmake")),
+		"set(VCPKG_TARGET_ARCHITECTURE x64)\n\
+		 set(VCPKG_CRT_LINKAGE dynamic)\n\
+		 set(VCPKG_LIBRARY_LINKAGE static)\n\
+		 set(VCPKG_BUILD_TYPE release)\n",
+	)
+	.expect("write release-only vcpkg triplet");
 	if !vcpkg.join("vcpkg.exe").is_file() {
 		let extract = cache.join("vcpkg-extract");
 		if extract.exists() {
@@ -148,6 +161,7 @@ fn build_windows_ffmpeg() -> PathBuf {
 		.arg("install")
 		.arg("ffmpeg[ass,dav1d,freetype,fribidi,gpl,mp3lame,openjpeg,opus,snappy,speex,theora,vorbis,vpx,webp,x264,x265]:x64-windows-static-md")
 		.args(["--triplet", WINDOWS_TRIPLET, "--clean-after-build", "--disable-metrics"])
+		.arg(format!("--overlay-triplets={}", overlay.display()))
 		.current_dir(&vcpkg)
 		.status()
 		.expect("build static FFmpeg with vcpkg");
@@ -201,7 +215,7 @@ struct BuildLock(PathBuf);
 impl BuildLock {
 	fn acquire(path: PathBuf) -> Self {
 		fs::create_dir_all(path.parent().unwrap()).expect("create build lock directory");
-		for _ in 0..3600 {
+		for _ in 0..7200 {
 			match fs::create_dir(&path) {
 				Ok(()) => return Self(path),
 				Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -221,7 +235,18 @@ impl Drop for BuildLock {
 }
 
 fn valid_prefix(dir: &Path) -> bool {
+	let library = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+		dir.join("lib").join("avcodec.lib")
+	} else {
+		dir.join("lib").join("libavcodec.a")
+	};
 	dir.join("lib").join("pkgconfig").is_dir()
+		&& dir
+			.join("include")
+			.join("libavutil")
+			.join("avutil.h")
+			.is_file()
+		&& library.is_file()
 }
 
 fn sha256(path: &Path) -> String {
@@ -241,4 +266,28 @@ fn env_or_dotenv(key: &str) -> Option<String> {
 			(name == key).then(|| value.trim().trim_matches('"').to_string())
 		})
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn prefix_requires_completed_headers_and_library() {
+		let root =
+			std::env::temp_dir().join(format!("quercus-ffmpeg-prefix-test-{}", std::process::id()));
+		fs::create_dir_all(root.join("lib/pkgconfig")).unwrap();
+		assert!(!valid_prefix(&root));
+		fs::create_dir_all(root.join("include/libavutil")).unwrap();
+		fs::write(root.join("include/libavutil/avutil.h"), "").unwrap();
+		assert!(!valid_prefix(&root));
+		let library = if cfg!(target_os = "windows") {
+			root.join("lib/avcodec.lib")
+		} else {
+			root.join("lib/libavcodec.a")
+		};
+		fs::write(library, "").unwrap();
+		assert!(valid_prefix(&root));
+		fs::remove_dir_all(root).unwrap();
+	}
 }
