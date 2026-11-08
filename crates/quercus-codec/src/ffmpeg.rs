@@ -1271,7 +1271,16 @@ impl DecoderState {
 				break;
 			}
 
-			let frame = match self.pull()? {
+			let pulled = match self.pull() {
+				Ok(pulled) => pulled,
+				Err(_) if self.hw_device.is_some() => {
+					self.video = Some(video);
+					self.reopen_software()?;
+					return self.retrieve_frame(time, any_timecode, cancelled);
+				}
+				Err(error) => return Err(error),
+			};
+			let frame = match pulled {
 				Pull::Frame(DecodedFrame::Video(f)) => {
 					// Hardware surfaces stay as they are: the import path
 					// (M5) and `scale_video_to_f32` decide between

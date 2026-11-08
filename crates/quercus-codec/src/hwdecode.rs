@@ -429,16 +429,9 @@ pub fn open_hw_accel(
 		Ok(opened) => opened,
 		Err(_) => {
 			HW_OPEN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-			// The device context was created but the hardware DECODER
-			// could not be created for this stream (e.g. NVDEC
-			// `cuvidCreateDecoder` out-of-memory at 4K — 4K surface pools
-			// need tens of MB of video memory, and a full/too-small GPU
-			// would otherwise spam its error on EVERY decoder open for
-			// the life of the process). Same treatment as a failed
-			// device-context creation: mark the type so later opens skip
-			// the attempt and its log noise; the caller falls back to the
-			// next candidate / software decode.
-			mark_device_unavailable(device_type);
+			// Decoder creation is codec-specific. Do not poison the whole
+			// device type: VideoToolbox may reject MPEG-2 and still decode
+			// H.264 perfectly well on the next session.
 			return None;
 		}
 	};
