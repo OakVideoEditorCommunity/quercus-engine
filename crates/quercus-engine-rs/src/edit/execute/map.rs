@@ -300,6 +300,17 @@ impl CommandArgs {
 				self.params.range = range;
 				self.params.old_range = old_range;
 			}
+			EditCommand::CreateNode {
+				context,
+				type_id,
+				x,
+				y,
+			} => {
+				self.simple(QuercusEditOp::CreateNode, context);
+				self.path(type_id);
+				self.params.x = x;
+				self.params.y = y;
+			}
 			EditCommand::RemoveNode { node } => self.simple(QuercusEditOp::RemoveNode, node),
 			EditCommand::Connect { from, to, input_id } => {
 				self.simple(QuercusEditOp::Connect, from);

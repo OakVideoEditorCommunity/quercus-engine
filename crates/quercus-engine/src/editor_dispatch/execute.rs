@@ -399,6 +399,12 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 				"Set Workarea",
 			))
 		}
+		EditCommand::CreateNode {
+			context,
+			type_id,
+			x,
+			y,
+		} => primary(crate::effect::create_impl(project, id(context)?, &type_id, x, y)),
 		EditCommand::RemoveNode { node } => empty(ops::remove_node(project, id(node)?)),
 		EditCommand::Connect { from, to, input_id } => empty(ops::push_command(
 			ops::connect_command(project, id(from)?, id(to)?, &input_id)?,

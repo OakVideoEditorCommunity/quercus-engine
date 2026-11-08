@@ -273,6 +273,38 @@ fn add_node_command(p: &ProjectRef, entry: quercus_node::graph::NodeEntry) -> (U
 	)
 }
 
+pub(crate) fn create_impl(
+	p: &ProjectRef,
+	context: NodeId,
+	type_id: &str,
+	x: f64,
+	y: f64,
+) -> Result<NodeId, String> {
+	let Some((core, behavior)) = Factory::global().create_any(type_id) else {
+		return Err(format!("unknown node type id \"{type_id}\""));
+	};
+	let entry = quercus_node::graph::NodeEntry {
+		core,
+		behavior,
+		generation: 0,
+		vacant: false,
+	};
+	grouped("Add Node", || {
+		let (add, state) = add_node_command(p, entry);
+		push(add, "Add Node")?;
+		let fresh = state
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.1
+			.ok_or_else(|| "the add-node command produced no id".to_string())?;
+		push(
+			crate::editor_commands::set_context_position_command(p, fresh, context, x, y)?,
+			"Add Node",
+		)?;
+		Ok(fresh)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // The undoable chain edits
 // ---------------------------------------------------------------------------

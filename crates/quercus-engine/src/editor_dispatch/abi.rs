@@ -91,6 +91,7 @@ pub enum QuercusEditOp {
 	SetMulticamEnabled,
 	SwitchMulticam,
 	CreateMulticamSequence,
+	CreateNode,
 }
 
 impl QuercusEditOp {
@@ -171,6 +172,7 @@ impl QuercusEditOp {
 			71 => Self::SetMulticamEnabled,
 			72 => Self::SwitchMulticam,
 			73 => Self::CreateMulticamSequence,
+			74 => Self::CreateNode,
 			_ => return None,
 		})
 	}

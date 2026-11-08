@@ -447,6 +447,17 @@ pub enum EditCommand {
 	},
 	// Effect-chain and static parameter operations. Insert/move indices use
 	// closest-to-source-first chain order and clamp to the valid end.
+	/// Creates an unattached graph node and places it in a sequence context.
+	CreateNode {
+		/// The sequence context receiving the persisted position.
+		context: NodeId,
+		/// The factory type id.
+		type_id: String,
+		/// The graph-space x coordinate.
+		x: f64,
+		/// The graph-space y coordinate.
+		y: f64,
+	},
 	/// Inserts an effect into a clip's chain.
 	EffectInsert {
 		/// The `host` field.

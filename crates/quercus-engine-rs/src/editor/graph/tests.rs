@@ -148,3 +148,57 @@ fn connection_validation_is_live_and_has_no_side_effects() {
 	assert!(session.graph_snapshot(sequence, Some(NodeId::INVALID)).is_none());
 	let _ = std::fs::remove_file(media);
 }
+
+#[test]
+fn merge_accepts_two_independent_sources() {
+	let _guard = crate::node::UNDO_SERIAL
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	let session = crate::editor::EditorSession::new().expect("session");
+	let sequence = session.create_sequence("Merge").expect("sequence");
+	let base_media = crate::test_support::make_test_clip("graph_merge_base");
+	let blend_media = crate::test_support::make_test_clip("graph_merge_blend");
+	let base = session.project().import_footage(&base_media).expect("base footage");
+	let blend = session.project().import_footage(&blend_media).expect("blend footage");
+	let merge = session
+		.execute(EditCommand::CreateNode {
+			context: sequence,
+			type_id: "org.olivevideoeditor.Olive.merge".into(),
+			x: 320.0,
+			y: 160.0,
+		})
+		.expect("create merge")
+		.primary
+		.expect("merge id");
+
+	let snapshot = session.graph_snapshot(sequence, None).expect("graph");
+	let merge_node = find_node(&snapshot, merge);
+	assert_eq!(merge_node.position, Some((320.0, 160.0)));
+	assert_eq!(merge_node.inputs.len(), 2);
+	assert!(session.can_connect(base, merge, "base_in", -1));
+	session
+		.execute(EditCommand::Connect {
+			from: base,
+			to: merge,
+			input_id: "base_in".into(),
+		})
+		.expect("connect base");
+	assert!(session.can_connect(blend, merge, "blend_in", -1));
+	session
+		.execute(EditCommand::Connect {
+			from: blend,
+			to: merge,
+			input_id: "blend_in".into(),
+		})
+		.expect("connect blend");
+
+	let connected = session.graph_snapshot(sequence, None).expect("connected graph");
+	assert!(connected.edges.iter().any(|edge| {
+		edge.from == base && edge.to == merge && edge.input_id == "base_in"
+	}));
+	assert!(connected.edges.iter().any(|edge| {
+		edge.from == blend && edge.to == merge && edge.input_id == "blend_in"
+	}));
+	let _ = std::fs::remove_file(base_media);
+	let _ = std::fs::remove_file(blend_media);
+}

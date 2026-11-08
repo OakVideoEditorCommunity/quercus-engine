@@ -85,6 +85,7 @@ pub(crate) enum QuercusEditOp {
 	SetMulticamEnabled,
 	SwitchMulticam,
 	CreateMulticamSequence,
+	CreateNode,
 }
 
 impl QuercusEditOp {
