@@ -683,7 +683,7 @@ impl Instance {
 	/// shown in the inspector.
 	///
 	/// Returns `None` when `index` is out of range. Use
-	/// [`param_name_at`] for the stable internal name.
+	/// [`Self::param_name_at`] for the stable internal name.
 	///
 	/// # Arguments
 	///
@@ -921,7 +921,7 @@ impl Instance {
 	/// canonical curve-set JSON the plugin returns.
 	///
 	/// Returns `None` on an unknown parameter name, a type mismatch, or
-	/// JSON that fails to parse. Counterpart of [`set_param_curves`].
+	/// JSON that fails to parse. Counterpart of [`Self::set_param_curves`].
 	///
 	/// # Arguments
 	///
@@ -1020,7 +1020,7 @@ impl Instance {
 	}
 
 	/// Closes the `endSequenceRender` bracket opened by
-	/// [`begin_sequence`], reporting the rendered `[min, max]` range so
+	/// [`Self::begin_sequence`], reporting the rendered `[min, max]` range so
 	/// the plugin can flush per-sequence caches and resources.
 	///
 	/// Returns `false` on an unknown instance or a plugin error; call it
@@ -1154,12 +1154,12 @@ impl Interact {
 	/// `position` and `time` (OFX `kOfxInteractActionPenDown`), reporting
 	/// full pressure `1.0`.
 	///
-	/// Returns the plugin's OFX status code. Pair with [`pen_up`].
+	/// Returns the plugin's OFX status code. Pair with [`Self::pen_up`].
 	///
 	/// # Arguments
 	///
 	/// * `position` - pen position in viewport pixels (`x`, `y`), in the
-	///   coordinate space of the last [`draw`] viewport.
+	///   coordinate space of the last [`Self::draw`] viewport.
 	/// * `time` - timeline position in seconds of the event.
 	pub fn pen_down(&self, position: (f64, f64), time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_pen_down(self.id, position.0, position.1, time) }
@@ -1167,14 +1167,14 @@ impl Interact {
 
 	/// The pen up action: tells the plugin the pen was lifted at
 	/// `position` and `time` (OFX `kOfxInteractActionPenUp`), closing the
-	/// pair opened by [`pen_down`].
+	/// pair opened by [`Self::pen_down`].
 	///
 	/// Returns the plugin's OFX status code.
 	///
 	/// # Arguments
 	///
 	/// * `position` - pen position in viewport pixels (`x`, `y`), in the
-	///   coordinate space of the last [`draw`] viewport.
+	///   coordinate space of the last [`Self::draw`] viewport.
 	/// * `time` - timeline position in seconds of the event.
 	pub fn pen_up(&self, position: (f64, f64), time: f64) -> i32 {
 		unsafe { quercus_ofx_interact_pen_up(self.id, position.0, position.1, time) }
@@ -1196,7 +1196,7 @@ impl Interact {
 
 	/// The key up action: tells the plugin a key was released at `time`
 	/// (OFX `kOfxInteractActionKeyUp`), completing the pair opened by
-	/// [`key_down`].
+	/// [`Self::key_down`].
 	///
 	/// Returns the plugin's OFX status code.
 	///
@@ -1228,7 +1228,7 @@ impl Interact {
 	/// `time`; the pen and key actions are only meaningful while the
 	/// interact holds focus.
 	///
-	/// Returns the plugin's OFX status code. Pair with [`lose_focus`];
+	/// Returns the plugin's OFX status code. Pair with [`Self::lose_focus`];
 	/// the interact must already exist ([`create_interact`]).
 	///
 	/// # Arguments
@@ -1239,7 +1239,7 @@ impl Interact {
 	}
 
 	/// Notifies the plugin that its overlay lost viewer focus at `time`,
-	/// so it can dismiss transient UI. Pair with [`gain_focus`].
+	/// so it can dismiss transient UI. Pair with [`Self::gain_focus`].
 	///
 	/// Returns the plugin's OFX status code (`kOfxStatErrBadHandle` for
 	/// an unknown interact).
@@ -1314,7 +1314,7 @@ impl CurveSet {
 		}
 	}
 
-	/// Parses curve-set JSON (as produced by [`to_json`] or the C++/node
+	/// Parses curve-set JSON (as produced by [`Self::to_json`] or the C++/node
 	/// side) into a new refcounted set.
 	///
 	/// Returns `None` when the text is not valid curve-set JSON; `json`
@@ -1392,7 +1392,7 @@ impl CurveSet {
 
 	/// Inserts `point` into `curve` at its `key` position, or overwrites
 	/// the point already stored at that exact key, keeping the explicit
-	/// Hermite `slope` (unlike [`upsert_point`], which recomputes
+	/// Hermite `slope` (unlike [`Self::upsert_point`], which recomputes
 	/// slopes).
 	///
 	/// Returns `false` when `curve` is out of range, leaving the set

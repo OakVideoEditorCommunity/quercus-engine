@@ -406,7 +406,7 @@ pub fn formatted_executable_for_platform(unformatted: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Returns the unit [`Error`] when the engine reports failure (source missing,
+/// Returns the unit [`struct@Error`] when the engine reports failure (source missing,
 /// the existing target cannot be removed, or the rename syscall fails). The
 /// engine also prints a diagnostic to stderr.
 pub fn rename_file_allow_overwrite(from: &str, to: &str) -> Result<(), Error> {
