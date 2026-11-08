@@ -62,6 +62,10 @@ unsafe fn adopt_raw(
 ///
 /// Both pointers must be non-null and point to live, aligned
 /// `wgpu::Device` / `wgpu::Queue` values of the wgpu 29 generation.
+/// Installs a display LUT on the host-adopted context.
+///
+/// # Safety
+/// `lo` and `hi` point to three floats and `data` points to `len` floats.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_render_gpu_install(
 	wgpu_device: *const c_void,
@@ -114,6 +118,32 @@ pub extern "C" fn quercus_render_gpu_host_installed() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_render_gpu_mark_host() -> bool {
 	GpuContext::mark_host_context()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_render_gpu_set_display_lut(
+	edge: u32,
+	lo: *const f32,
+	hi: *const f32,
+	data: *const f32,
+	len: usize,
+) -> bool {
+	if lo.is_null() || hi.is_null() || data.is_null() {
+		return false;
+	}
+	let expected = (edge as usize).checked_pow(3).and_then(|n| n.checked_mul(3));
+	if expected != Some(len) {
+		return false;
+	}
+	let lut = quercus_core::lut::Lut3d {
+		edge,
+		lo: unsafe { std::slice::from_raw_parts(lo, 3) }.try_into().unwrap(),
+		hi: unsafe { std::slice::from_raw_parts(hi, 3) }.try_into().unwrap(),
+		data: unsafe { std::slice::from_raw_parts(data, len) }.to_vec(),
+	};
+	GpuContext::shared()
+		.filter(|ctx| ctx.is_adopted())
+		.is_some_and(|ctx| ctx.set_display_lut(&lut).is_ok())
 }
 
 #[cfg(test)]

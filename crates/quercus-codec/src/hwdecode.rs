@@ -305,7 +305,14 @@ unsafe extern "C" fn select_hw_format(
 			let mut frames: *mut sys::AVBufferRef = std::ptr::null_mut();
 			let rc = sys::avcodec_get_hw_frames_parameters(avctx, device, hw_fmt, &mut frames);
 			if rc >= 0 && !frames.is_null() {
+				let frames_started = std::time::Instant::now();
 				let init = sys::av_hwframe_ctx_init(frames);
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!(
+						"[hwfmt] frames init {hw_fmt:?} took {}ms rc={init}",
+						frames_started.elapsed().as_millis()
+					);
+				}
 				if init >= 0 {
 					// Ownership transfers to the codec context; libavcodec
 					// unrefs it after decoding / on close.
@@ -371,16 +378,22 @@ pub fn open_hw_accel(
 	note_creation_attempt();
 	let mut context = ffmpeg::codec::Context::from_parameters(params.clone()).ok()?;
 	let mut device: *mut sys::AVBufferRef = std::ptr::null_mut();
-	// SAFETY: `device` is a valid out-pointer; on success it owns the
-	// device reference, which is handed to the codec context below.
-	let rc = unsafe {
-		sys::av_hwdevice_ctx_create(
-			&mut device,
-			device_type,
-			std::ptr::null(),
-			std::ptr::null_mut(),
-			0,
-		)
+	let device_started = std::time::Instant::now();
+	let rc = if device_type == sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA {
+		device = shared_cuda_device().unwrap_or(std::ptr::null_mut());
+		if device.is_null() { -1 } else { 0 }
+	} else {
+		// SAFETY: `device` is a valid out-pointer; on success it owns the
+		// device reference, which is handed to the codec context below.
+		unsafe {
+			sys::av_hwdevice_ctx_create(
+				&mut device,
+				device_type,
+				std::ptr::null(),
+				std::ptr::null_mut(),
+				0,
+			)
+		}
 	};
 	if rc < 0 || device.is_null() {
 		// The device is unavailable (missing driver / no hardware): mark
@@ -389,12 +402,19 @@ pub fn open_hw_accel(
 		mark_device_unavailable(device_type);
 		return None;
 	}
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!(
+			"[hwfmt] device create {device_type:?} took {}ms",
+			device_started.elapsed().as_millis()
+		);
+	}
 	// SAFETY: `hw_device_ctx` takes ownership of the reference; the codec
 	// context frees it with the context.
 	unsafe { (*context.as_mut_ptr()).hw_device_ctx = device };
 	unsafe { attach_hw_get_format(context.as_mut_ptr()); }
 	let mut opts = Dictionary::new();
 	opts.set("threads", &crate::ffmpeg::decoder_threads());
+	let decoder_started = std::time::Instant::now();
 	let opened = match context.decoder().open_as_with(codec, opts) {
 		Ok(opened) => opened,
 		Err(_) => {
@@ -412,8 +432,42 @@ pub fn open_hw_accel(
 			return None;
 		}
 	};
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!(
+			"[hwfmt] decoder open {device_type:?} took {}ms",
+			decoder_started.elapsed().as_millis()
+		);
+	}
 	HW_DECODER_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	Some((opened, device_type))
+}
+
+fn shared_cuda_device() -> Option<*mut sys::AVBufferRef> {
+	static DEVICE: std::sync::OnceLock<std::sync::Mutex<Option<usize>>> =
+		std::sync::OnceLock::new();
+	let mut cached = DEVICE
+		.get_or_init(|| std::sync::Mutex::new(None))
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	if cached.is_none() {
+		let mut device: *mut sys::AVBufferRef = std::ptr::null_mut();
+		let rc = unsafe {
+			sys::av_hwdevice_ctx_create(
+				&mut device,
+				sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+				std::ptr::null(),
+				std::ptr::null_mut(),
+				0,
+			)
+		};
+		if rc < 0 || device.is_null() {
+			return None;
+		}
+		*cached = Some(device as usize);
+	}
+	let device = cached.unwrap() as *mut sys::AVBufferRef;
+	let reference = unsafe { sys::av_buffer_ref(device) };
+	(!reference.is_null()).then_some(reference)
 }
 
 /// Whether a decoded frame's pixel format is a hardware surface that
@@ -559,5 +613,24 @@ mod tests {
 	fn unmarked_device_type_is_not_unavailable() {
 		let dev = sys::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2;
 		assert!(!device_unavailable(dev));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn cuda_device_context_is_shared_by_reference() {
+		let Some(mut first) = shared_cuda_device() else {
+			eprintln!("no CUDA device; skipping shared-context test");
+			return;
+		};
+		let Some(mut second) = shared_cuda_device() else {
+			panic!("second CUDA device reference failed");
+		};
+		unsafe {
+			assert_eq!((*first).buffer, (*second).buffer);
+		}
+		unsafe {
+			sys::av_buffer_unref(&mut first);
+			sys::av_buffer_unref(&mut second);
+		}
 	}
 }

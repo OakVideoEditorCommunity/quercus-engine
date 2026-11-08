@@ -816,16 +816,32 @@ struct AudioResampler {
 impl DecoderState {
 	/// Open `(filename, stream_index)` for decoding.
 	fn open(stream: &CodecStream) -> crate::error::Result<DecoderState> {
-		Self::open_impl(stream, true)
+		Self::open_impl(stream, true, true)
 	}
 
 	/// Open with the hardware-decode preference explicitly on/off (the
 	/// off path is the hardware fallback's software reopen).
-	fn open_impl(stream: &CodecStream, allow_hw: bool) -> crate::error::Result<DecoderState> {
+	fn open_impl(
+		stream: &CodecStream,
+		allow_hw: bool,
+		probe: bool,
+	) -> crate::error::Result<DecoderState> {
 		let mut dict = Dictionary::new();
-		dict.set("analyzeduration", "5000000");
-		dict.set("probesize", "20000000");
+		if probe {
+			dict.set("analyzeduration", "5000000");
+			dict.set("probesize", "20000000");
+		} else {
+			dict.set("analyzeduration", "0");
+			dict.set("probesize", "32768");
+		}
+		let input_started = std::time::Instant::now();
 		let input = crate::mediaio::open_input(stream.filename(), Some(dict)).map_err(ffmpeg_err)?;
+		if std::env::var_os("OAK_DEBUG_HW").is_some() {
+			eprintln!(
+				"[decode] open input probe={probe} took {}ms",
+				input_started.elapsed().as_millis()
+			);
+		}
 
 		let stream_index = stream.stream() as usize;
 		let fstream = input
@@ -974,8 +990,8 @@ impl DecoderState {
 			crate::hwdecode::mark_device_unavailable(failed);
 		}
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
-		let mut fresh = Self::open_impl(&stream, true)
-			.or_else(|_| Self::open_impl(&stream, false))?;
+		let mut fresh = Self::open_impl(&stream, true, false)
+			.or_else(|_| Self::open_impl(&stream, false, false))?;
 		std::mem::swap(self, &mut fresh);
 		Ok(())
 	}
@@ -985,7 +1001,7 @@ impl DecoderState {
 	#[allow(dead_code)]
 	fn reopen_software(&mut self) -> crate::error::Result<()> {
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
-		let mut fresh = Self::open_impl(&stream, false)?;
+		let mut fresh = Self::open_impl(&stream, false, false)?;
 		std::mem::swap(self, &mut fresh);
 		Ok(())
 	}

@@ -355,8 +355,8 @@ pub struct GpuContext {
 	used: AtomicBool,
 	/// Set after a fatal wgpu poll/device-lost error. Further readbacks
 	/// must fail cleanly instead of polling the lost device again.
-	device_lost: AtomicBool,
-	/// Serializes CUDA external-memory import with asynchronous readback.
+	device_lost: Arc<AtomicBool>,
+	/// Serializes CUDA external-memory import with GPU passes and readbacks.
 	external_lock: Arc<Mutex<()>>,
 	/// Linux/Vulkan OpenFX GL zero-copy: allocate `Rgba32Float` textures
 	/// with exportable `OPAQUE_FD` memory. Disabled by
@@ -903,6 +903,8 @@ impl GpuContext {
 			if kind == BackendKind::Cpu {
 				continue;
 			}
+			let device_lost = Arc::new(AtomicBool::new(false));
+			install_device_lost_logging(&device, device_lost.clone());
 			return Some(Arc::new(Self {
 				_instance: Some(instance),
 				_adapter: Some(adapter),
@@ -923,7 +925,7 @@ impl GpuContext {
 				planar_matrix: Mutex::new(None),
 				color_luts: Mutex::new(Vec::new()),
 				used: AtomicBool::new(false),
-				device_lost: AtomicBool::new(false),
+				device_lost,
 				external_lock: Arc::new(Mutex::new(())),
 				ofx_zerocopy: zerocopy_requested(),
 			}));
@@ -968,7 +970,7 @@ impl GpuContext {
 			planar_matrix: Mutex::new(None),
 			color_luts: Mutex::new(Vec::new()),
 			used: AtomicBool::new(false),
-			device_lost: AtomicBool::new(false),
+			device_lost: Arc::new(AtomicBool::new(false)),
 			external_lock: Arc::new(Mutex::new(())),
 			ofx_zerocopy: zerocopy_requested(),
 		})
@@ -1591,7 +1593,7 @@ impl GpuContext {
 	}
 
 	/// Apply the installed display LUT to `src` (a working-space
-	/// `Rgba32Float` texture) and return the resulting `Rgba16Float`
+	/// `Rgba32Float` texture) and return the resulting `Rgba32Float`
 	/// display texture token. GPU→GPU: no upload, no download. The caller
 	/// retrieves the raw handle with [`GpuContext::texture_handle`].
 	pub fn present_texture(&self, src: u64) -> Result<u64> {
@@ -1608,7 +1610,7 @@ impl GpuContext {
 			lut.1,
 			lut.2,
 			lut.3,
-			wgpu::TextureFormat::Rgba16Float,
+			wgpu::TextureFormat::Rgba32Float,
 		)
 	}
 
@@ -1653,6 +1655,10 @@ impl GpuContext {
 		hi: [f32; 3],
 		dst_format: wgpu::TextureFormat,
 	) -> Result<u64> {
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		let src_tex = lock(&self.textures)
 			.get(&src)
 			.cloned()
@@ -2135,6 +2141,15 @@ impl GpuContext {
 		params: &[f32],
 		label: &str,
 	) -> Result<()> {
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost before planar pass".into(),
+			));
+		}
 		if views.is_empty() || views.len() > 3 {
 			return Err(Error::Invalid);
 		}
@@ -2146,12 +2161,18 @@ impl GpuContext {
 		let uniform_size = (uniform_bytes.len() as u64).next_multiple_of(16).max(16);
 		uniform_bytes.resize(uniform_size as usize, 0);
 		let params_label = format!("{label}-params");
-		let uniform = uniform_buffer_from_bytes(
+		let uniform = match uniform_buffer_from_bytes(
 			&self.device,
 			&params_label,
 			&uniform_bytes,
 			uniform_size,
-		);
+		) {
+			Ok(buffer) => buffer,
+			Err(error) => {
+				self.mark_device_lost();
+				return Err(error);
+			}
+		};
 		let dst_view = dst_tex
 			.texture
 			.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2378,6 +2399,12 @@ impl GpuContext {
 				|| size.1 < want_size.1 as u32
 				|| Some(format) != descriptor.plane_texture_format(plane)
 			{
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!(
+						"[planar] plane {plane} mismatch: size={size:?} format={format:?} want={want_size:?} descriptor={:?}",
+						descriptor.plane_texture_format(plane),
+					);
+				}
 				return Err(Error::Invalid);
 			}
 			views.push(view);
@@ -2633,6 +2660,10 @@ impl GpuContext {
 			.get(&token)
 			.cloned()
 			.ok_or(Error::NotFound)?;
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		download_texture(
 			&self.device,
 			&self.queue,
@@ -2641,6 +2672,26 @@ impl GpuContext {
 			entry.width,
 			entry.height,
 		)
+	}
+
+	/// Downloads a raw texture owned by this context for an explicit CPU consumer.
+	pub fn download_shared_texture(
+		&self,
+		texture: &wgpu::Texture,
+		format: wgpu::TextureFormat,
+		width: u32,
+		height: u32,
+	) -> Result<Frame> {
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost; texture download unavailable".into(),
+			));
+		}
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		download_texture(&self.device, &self.queue, texture, format, width, height)
 	}
 
 	/// Asynchronous variant of [`GpuContext::download`]: the GPU wait/map
@@ -3174,6 +3225,10 @@ impl GpuContext {
 		if textures.len() != program.texture_count as usize {
 			return Err(Error::Invalid);
 		}
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		let dst_tex = lock(&self.textures)
 			.get(&dst)
 			.cloned()
@@ -3186,7 +3241,7 @@ impl GpuContext {
 				"quercusrender-fx-uniforms",
 				uniforms,
 				size,
-			);
+			)?;
 			Some(buffer)
 		} else {
 			None
@@ -3395,6 +3450,13 @@ impl YuvTransform {
 	}
 }
 
+fn install_device_lost_logging(device: &wgpu::Device, device_lost: Arc<AtomicBool>) {
+	device.set_device_lost_callback(move |reason, message| {
+		eprintln!("[wgpu] device lost: reason={reason:?} message={message}");
+		device_lost.store(true, Ordering::Release);
+	});
+}
+
 /// Pack an f32 slice as little-endian bytes for `write_buffer`.
 /// Create a small uniform buffer already populated from CPU bytes. Unlike
 /// `queue.write_buffer`, this does not take wgpu's `PendingWrites` lock — a
@@ -3405,20 +3467,35 @@ fn uniform_buffer_from_bytes(
 	label: &str,
 	data: &[u8],
 	size: u64,
-) -> wgpu::Buffer {
-	let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-		label: Some(label),
-		size,
-		usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-		mapped_at_creation: true,
-	});
-	{
-		let mut view = buffer.slice(..).get_mapped_range_mut();
-		let n = data.len().min(view.len());
-		view.slice(..n).copy_from_slice(&data[..n]);
+) -> Result<wgpu::Buffer> {
+	let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+	let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some(label),
+			size,
+			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: true,
+		});
+		{
+			let mut view = buffer.slice(..).get_mapped_range_mut();
+			let n = data.len().min(view.len());
+			view.slice(..n).copy_from_slice(&data[..n]);
+		}
+		buffer.unmap();
+		buffer
+	}));
+	let oom_error = pollster_block_on(oom_scope.pop());
+	let validation_error = pollster_block_on(validation_scope.pop());
+	if let Some(error) = oom_error.or(validation_error) {
+		eprintln!("[wgpu] create buffer {label} failed: {error}");
+		return Err(Error::Failed(format!(
+			"create planar uniform failed: {error}"
+		)));
 	}
-	buffer.unmap();
-	buffer
+	result.map_err(|_| {
+		Error::Failed("wgpu device lost creating planar uniforms".into())
+	})
 }
 
 fn f32_uniform_bytes(values: &[f32]) -> Vec<u8> {
@@ -3628,31 +3705,43 @@ fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // does not blend. Scaled output keeps the 4-tap bilinear.
     let native = p.src_scale.x == 1.0 && p.src_scale.y == 1.0;
     if (mode >= 2) {
-        let c = select(
-            sample_bilinear(plane0, y_pos, y_limit),
-            textureLoad(plane0, vec2<i32>(frag.xy), 0),
-            native,
-        );
+        var c: vec4<f32>;
+        if (native) {
+            c = textureLoad(plane0, vec2<i32>(frag.xy), 0);
+        } else {
+            c = sample_bilinear(plane0, y_pos, y_limit);
+        }
         if (mode == 3) {
             return vec4<f32>(c.rgb, c.a);
         }
         return vec4<f32>(c.rgb, 1.0);
     }
-    let yv = select(
-        sample_bilinear(plane0, y_pos, y_limit),
-        textureLoad(plane0, vec2<i32>(frag.xy), 0),
-        native,
-    ).r;
+    var yv: f32;
+    if (native) {
+        yv = textureLoad(plane0, vec2<i32>(frag.xy), 0).r;
+    } else {
+        yv = sample_bilinear(plane0, y_pos, y_limit).r;
+    }
     let c_pos = frag.xy * (p.src_scale.xy * p.uv_scale_mode.xy) - vec2<f32>(0.5);
     let c_limit = vec2<f32>(p.src_size.z, p.src_size.w) - vec2<f32>(1.0);
     let c_native = vec2<i32>(frag.xy * p.uv_scale_mode.xy);
     var u: f32;
     var v: f32;
     if (mode == 0) {
-        u = select(sample_bilinear(plane1, c_pos, c_limit), textureLoad(plane1, c_native, 0), native).r;
-        v = select(sample_bilinear(plane2, c_pos, c_limit), textureLoad(plane2, c_native, 0), native).r;
+        if (native) {
+            u = textureLoad(plane1, c_native, 0).r;
+            v = textureLoad(plane2, c_native, 0).r;
+        } else {
+            u = sample_bilinear(plane1, c_pos, c_limit).r;
+            v = sample_bilinear(plane2, c_pos, c_limit).r;
+        }
     } else {
-        let uv = select(sample_bilinear(plane1, c_pos, c_limit), textureLoad(plane1, c_native, 0), native);
+        var uv: vec4<f32>;
+        if (native) {
+            uv = textureLoad(plane1, c_native, 0);
+        } else {
+            uv = sample_bilinear(plane1, c_pos, c_limit);
+        }
         u = uv.r;
         v = uv.g;
     }
@@ -4331,8 +4420,8 @@ mod tests {
 		ctx.destroy_texture(dst);
 	}
 
-	/// The GPU present pass reproduces the CPU 3D-LUT evaluation (within
-	/// the Rgba16Float output quantization) and performs no CPU transfer.
+	/// The GPU present pass reproduces the CPU 3D-LUT evaluation without
+	/// leaving F32 or performing a CPU transfer.
 	#[test]
 	fn gpu_present_lut_matches_cpu_trilinear() {
 		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -4378,6 +4467,10 @@ mod tests {
 		// present itself must transfer nothing to/from the CPU.
 		reset_gpu_transfer_counters();
 		let dst = ctx.present_texture(src).unwrap();
+		assert_eq!(
+			ctx.texture_handle(dst).unwrap().format(),
+			wgpu::TextureFormat::Rgba32Float
+		);
 		assert_eq!(gpu_transfer_counters(), (0, 0), "present is GPU→GPU");
 		let out = ctx.download(dst).unwrap();
 		for i in 0..(w * h) as usize {
@@ -4399,6 +4492,40 @@ mod tests {
 		}
 		ctx.destroy_texture(src);
 		ctx.destroy_texture(dst);
+	}
+
+	#[test]
+	fn planar_passes_serialize_concurrent_uniform_uploads() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let mut workers = Vec::new();
+		for _ in 0..8 {
+			let ctx = ctx.clone();
+			workers.push(std::thread::spawn(move || {
+				let pipeline = ctx.planar_yuv_pipeline().unwrap();
+				let src = ctx.create_texture(2, 2).unwrap();
+				let dst = ctx.create_texture(2, 2).unwrap();
+				let src_view = ctx.texture_view(src).unwrap();
+				let params = [0.0f32; 16];
+				for _ in 0..16 {
+					ctx.run_planar_views_pass(
+						&[&src_view, &src_view],
+						dst,
+						&pipeline,
+						&params,
+						"quercusrender-planar-concurrency-test",
+					)
+					.unwrap();
+				}
+				ctx.destroy_texture(src);
+				ctx.destroy_texture(dst);
+			}));
+		}
+		for worker in workers {
+			worker.join().expect("planar worker panicked");
+		}
 	}
 
 	#[test]
@@ -5079,7 +5206,7 @@ mod tests {
 		assert!(ctx.has_display_lut());
 
 		let src = ctx.create_texture(2, 2).unwrap();
-		// Two present calls: the first builds the Rgba16Float pipeline, the
+		// Two present calls: the first builds the display pipeline, the
 		// second reuses the cached one.
 		let presented = ctx.present_texture(src).unwrap();
 		let presented2 = ctx.present_texture(src).unwrap();
