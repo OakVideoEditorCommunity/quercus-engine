@@ -115,6 +115,16 @@ jobs:
         shell: bash
         run: cargo run --locked -p quercus-ffmpeg-bootstrap --bin quercus-ffmpeg-bootstrap
 
+      - name: Install ffmpeg CLI (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg CLI (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: brew install ffmpeg
+
       - name: Test (Linux)
         if: matrix.platform == 'linux'
         shell: bash

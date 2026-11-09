@@ -36,7 +36,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-	let dir = quercus_ffmpeg_bootstrap::ensure_prefix().to_string_lossy().into_owned();
+	let dir = quercus_ffmpeg_bootstrap::ensure_prefix()
+		.to_string_lossy()
+		.into_owned();
 	let pc_dir = PathBuf::from(&dir).join("lib").join("pkgconfig");
 	assert!(
 		pc_dir.exists(),
@@ -163,15 +165,26 @@ fn main() {
 				// libtheoraenc and libtheoradec share member objects, so
 				// force-including both duplicates theora_* symbols.
 				const WHOLE_ARCHIVE: [&str; 7] = [
-					"ass", "unibreak", "harfbuzz", "fribidi", "fontconfig", "expat", "freetype",
+					"ass",
+					"unibreak",
+					"harfbuzz",
+					"fribidi",
+					"fontconfig",
+					"expat",
+					"freetype",
 				];
 				if WHOLE_ARCHIVE.contains(&lib) {
 					println!("cargo:rustc-link-lib=static:-bundle,+whole-archive={lib}");
 				} else {
 					println!("cargo:rustc-link-lib=static={lib}");
 				}
-			} else if cfg!(target_os = "linux") && prefer_static_system_lib(lib) {
-				println!("cargo:rustc-link-lib=static={lib}");
+			} else if cfg!(target_os = "linux") {
+				if let Some(dir) = static_system_lib_dir(lib) {
+					println!("cargo:rustc-link-search=native={dir}");
+					println!("cargo:rustc-link-lib=static={lib}");
+				} else {
+					println!("cargo:rustc-link-lib={lib}");
+				}
 			} else {
 				println!("cargo:rustc-link-lib={lib}");
 			}
@@ -198,7 +211,8 @@ fn main() {
 	if cfg!(target_os = "macos") {
 		println!("cargo:rustc-link-lib=c++");
 	} else if cfg!(all(target_os = "linux", target_env = "gnu")) {
-		if prefer_static_system_lib("stdc++") {
+		if let Some(dir) = static_system_lib_dir("stdc++") {
+			println!("cargo:rustc-link-search=native={dir}");
 			println!("cargo:rustc-link-lib=static=stdc++");
 		} else {
 			println!("cargo:rustc-link-lib=stdc++");
@@ -217,14 +231,33 @@ fn main() {
 	}
 }
 
-fn prefer_static_system_lib(lib: &str) -> bool {
+fn static_system_lib_dir(lib: &str) -> Option<&'static str> {
 	const CANDIDATES: [&str; 22] = [
-		"asound", "sndio", "bz2", "lzma", "numa", "va-drm", "va", "vdpau", "drm", "X11",
-		"Xext", "xcb", "Xau", "Xdmcp", "bsd", "md", "z", "stdc++", "gcc", "pipewire-0.3",
-		"wayland-client", "wayland-cursor",
+		"asound",
+		"sndio",
+		"bz2",
+		"lzma",
+		"numa",
+		"va-drm",
+		"va",
+		"vdpau",
+		"drm",
+		"X11",
+		"Xext",
+		"xcb",
+		"Xau",
+		"Xdmcp",
+		"bsd",
+		"md",
+		"z",
+		"stdc++",
+		"gcc",
+		"pipewire-0.3",
+		"wayland-client",
+		"wayland-cursor",
 	];
 	if !CANDIDATES.contains(&lib) {
-		return false;
+		return None;
 	}
 	let dirs = [
 		"/usr/lib",
@@ -234,7 +267,8 @@ fn prefer_static_system_lib(lib: &str) -> bool {
 		"/usr/local/lib",
 		"/opt/homebrew/lib",
 	];
-	dirs.iter().any(|dir| PathBuf::from(dir).join(format!("lib{lib}.a")).exists())
+	dirs.into_iter()
+		.find(|dir| PathBuf::from(dir).join(format!("lib{lib}.a")).exists())
 }
 
 /// Reads `key` from the process environment, falling back to the `.env`
