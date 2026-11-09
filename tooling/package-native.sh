@@ -50,7 +50,10 @@ Quercus headless nonlinear video editing engine and its C ABI and static library
 /usr/lib/quercus/libquercus_engine.a
 /usr/include/quercus_engine.h
 EOF
-rpmbuild --define "_topdir $RPMROOT" --buildroot "$STAGE" -bb "$RPMROOT/SPECS/quercus-engine.spec"
+RPM_STAGE="$OUT/rpm-stage"
+mkdir -p "$RPM_STAGE"
+cp -a "$STAGE/usr" "$RPM_STAGE/"
+rpmbuild --define "_topdir $RPMROOT" --buildroot "$RPM_STAGE" -bb "$RPMROOT/SPECS/quercus-engine.spec"
 cp "$RPMROOT"/RPMS/*/*.rpm "$OUT/" 2>/dev/null || cp "$RPMROOT"/RPMS/*.rpm "$OUT/"
 
 tar -czf "$OUT/quercus-engine-native-linux-${ARCH}.tar.gz" -C "$STAGE" .
