@@ -26,7 +26,7 @@ default = ["engine-rlib"]
 # Prefer Cargo's normal rlib linkage; opt into the standalone C ABI dylib
 # only when the application explicitly packages libquercus_engine.
 engine-rlib = ["dep:quercus-engine"]
-engine-cdylib = ["dep:quercus-engine"]
+engine-cdylib = ["dep:quercus-engine", "dep:quercus-engine-cdylib"]
 
 [dependencies]
 thiserror = "2"
@@ -43,4 +43,4 @@ quercus-engine = { version = "=0.7.0", path = "../quercus-engine", optional = tr
 # Windows is excluded: Cargo already produces an unhashed
 # quercus_engine.dll in deps, and a host build of the cdylib would collide
 # with the target link (LNK1104).
-quercus-engine = { version = "=0.7.0", path = "../quercus-engine", optional = true }
+quercus-engine-cdylib = { package = "quercus-engine", version = "=0.7.0", path = "../quercus-engine", optional = true }
