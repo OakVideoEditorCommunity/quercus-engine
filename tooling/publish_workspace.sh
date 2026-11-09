@@ -22,12 +22,20 @@ if [[ -n ${PUBLISH_REGISTRY:-} ]]; then
 fi
 
 publish_one() {
-    local crate="$1" attempt
+    local crate="$1" attempt output
     for attempt in 1 2 3 4 5; do
         if (( DRY_RUN )); then
             cargo publish -p "$crate" --dry-run "${REGISTRY_ARGS[@]}" && return 0
         else
-            cargo publish -p "$crate" "${REGISTRY_ARGS[@]}" && return 0
+            if output="$(cargo publish -p "$crate" "${REGISTRY_ARGS[@]}" 2>&1)"; then
+                printf '%s\n' "$output"
+                return 0
+            fi
+            printf '%s\n' "$output"
+            if grep -Eq 'already uploaded|already exists' <<<"$output"; then
+                echo "$crate is already published; skipping"
+                return 0
+            fi
         fi
         echo "publish $crate failed (attempt $attempt); retrying in 20s" >&2
         sleep 20
