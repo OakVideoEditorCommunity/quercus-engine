@@ -32,6 +32,7 @@ use std::process::Command;
 const VCPKG_COMMIT: &str = "ec48c11eae9448c8c6e7739d93e06fa2433aa95f";
 const VCPKG_SHA256: &str = "6fa8be98831a61a3f029f2bb1602b29c4e1fc1cf2dc4f3013049ffe0a8cfa47d";
 const WINDOWS_TRIPLET: &str = "x64-windows-static-md";
+const WINDOWS_FFMPEG_FEATURES: &str = "ass,dav1d,freetype,fribidi,gpl,mp3lame,openjpeg,opus,snappy,speex,theora,vorbis,vpx,webp,x264,x265,nvcodec,qsv,amf";
 
 pub fn ensure_prefix() -> PathBuf {
 	println!("cargo:rerun-if-env-changed=QUERCUS_FFMPEG_CACHE");
@@ -97,7 +98,8 @@ fn build_windows_ffmpeg() -> PathBuf {
 	);
 	let cache = build_cache();
 	let prefix = cache.join("vcpkg").join("installed").join(WINDOWS_TRIPLET);
-	let marker = prefix.join(".quercus-ffmpeg-complete");
+	let feature_hash = Sha256::digest(WINDOWS_FFMPEG_FEATURES.as_bytes());
+	let marker = prefix.join(format!(".quercus-ffmpeg-complete-{feature_hash:x}"));
 	if valid_prefix(&prefix) && marker.exists() {
 		return prefix;
 	}
@@ -166,7 +168,7 @@ fn build_windows_ffmpeg() -> PathBuf {
 	}
 	let status = Command::new(vcpkg.join("vcpkg.exe"))
 		.arg("install")
-		.arg("ffmpeg[ass,dav1d,freetype,fribidi,gpl,mp3lame,openjpeg,opus,snappy,speex,theora,vorbis,vpx,webp,x264,x265]:x64-windows-static-md")
+		.arg(format!("ffmpeg[{WINDOWS_FFMPEG_FEATURES}]:{WINDOWS_TRIPLET}"))
 		.args(["--triplet", WINDOWS_TRIPLET, "--clean-after-build", "--disable-metrics"])
 		.arg(format!("--overlay-triplets={}", overlay.display()))
 		.current_dir(&vcpkg)
@@ -174,7 +176,8 @@ fn build_windows_ffmpeg() -> PathBuf {
 		.expect("build static FFmpeg with vcpkg");
 	assert!(status.success(), "vcpkg static FFmpeg build failed");
 	assert!(valid_prefix(&prefix), "vcpkg FFmpeg has no lib/pkgconfig");
-	fs::write(marker, VCPKG_COMMIT).expect("record completed vcpkg FFmpeg prefix");
+	fs::write(marker, format!("{VCPKG_COMMIT}\n{WINDOWS_FFMPEG_FEATURES}\n"))
+		.expect("record completed vcpkg FFmpeg prefix");
 	prefix
 }
 
