@@ -13,4 +13,4 @@ links = "quercus_ffmpeg_static_deps"
 path = "src/lib.rs"
 
 [build-dependencies]
-quercus-ffmpeg-bootstrap = { version = "=0.7.0", path = "../quercus-ffmpeg-bootstrap" }
+quercus-ffmpeg-bootstrap = { version = "=0.7.1", path = "../quercus-ffmpeg-bootstrap" }

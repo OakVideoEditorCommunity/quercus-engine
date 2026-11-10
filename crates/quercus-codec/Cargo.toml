@@ -9,8 +9,8 @@ license = "GPL-3.0-or-later"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-quercus-ffmpeg-link = { version = "=0.7.0", path = "../quercus-ffmpeg-link" }
-quercus-core = { version = "=0.7.0", path = "../quercus-core" }
+quercus-ffmpeg-link = { version = "=0.7.1", path = "../quercus-ffmpeg-link" }
+quercus-core = { version = "=0.7.1", path = "../quercus-core" }
 # Real media decode/encode. The C++ ffmpeg_bridge library existed only to
 # absorb FFmpeg API churn; the Rust crate calls ffmpeg-next directly.
 #
@@ -26,7 +26,7 @@ quercus-core = { version = "=0.7.0", path = "../quercus-core" }
 # ffmpeg-next's own `build` cargo feature is still not what we use: it
 # clones release/<crate-version>, tying the FFmpeg version to the crate
 # version instead of the project-pinned one.
-quercus-ffmpeg-next = { version = "0.7.0", path = "../quercus-ffmpeg-next", features = ["static"] }
+quercus-ffmpeg-next = { version = "0.7.1", path = "../quercus-ffmpeg-next", features = ["static"] }
 # `std::error::Error` impls for the crate-internal error enum.
 thiserror = "2"
 # Maintained SubRip parser/serializer. quercus-codec decodes the byte stream

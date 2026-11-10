@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "quercus-ffmpeg-next"
-version = "0.7.0"
+version = "0.7.1"
 authors = [
     "meh. <meh@schizofreni.co>",
     "Zhiming Wang <i@zhimingwang.org>",
@@ -178,7 +178,7 @@ version = "2.13"
 
 [dependencies.ffmpeg-sys-next]
 package = "quercus-ffmpeg-sys"
-version = "0.7.0"
+version = "0.7.1"
 path = "../quercus-ffmpeg-sys"
 default-features = false
 
@@ -190,5 +190,5 @@ optional = true
 version = "0.2"
 
 [dependencies.quercus-ffmpeg-link]
-version = "=0.7.0"
+version = "=0.7.1"
 path = "../quercus-ffmpeg-link"

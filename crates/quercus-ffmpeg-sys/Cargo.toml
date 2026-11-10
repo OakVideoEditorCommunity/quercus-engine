@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "quercus-ffmpeg-sys"
-version = "0.7.0"
+version = "0.7.1"
 authors = [
     "meh. <meh@schizofreni.co>",
     "Zhiming Wang <i@zhimingwang.org>",
@@ -123,7 +123,7 @@ path = "src/lib.rs"
 doctest = false
 
 [build-dependencies.quercus-ffmpeg-bootstrap]
-version = "0.7.0"
+version = "0.7.1"
 path = "../quercus-ffmpeg-bootstrap"
 
 [dependencies.libc]
