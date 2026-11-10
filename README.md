@@ -62,7 +62,7 @@ committed `.cargo/config.toml` points `FFMPEG_DIR` there:
 
 ```sh
 tooling/install-deps.sh
-SHARED=1 tooling/ffmpeg/build-ffmpeg.sh
+tooling/ffmpeg/build-ffmpeg.sh --shared
 cargo build -p quercus-engine
 cargo test --workspace
 cargo doc -p quercus-engine-rs --no-deps

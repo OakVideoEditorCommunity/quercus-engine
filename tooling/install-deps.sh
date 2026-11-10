@@ -189,4 +189,4 @@ case "$(uname -s)" in
 		;;
 esac
 
-echo "Done. Now run SHARED=1 tooling/ffmpeg/build-ffmpeg.sh once, then 'cargo build'."
+echo "Done. Now run tooling/ffmpeg/build-ffmpeg.sh --shared once, then 'cargo build'."

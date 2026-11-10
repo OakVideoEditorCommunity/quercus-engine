@@ -19,7 +19,7 @@ workspace through the SDK.
 
 ```sh
 tooling/install-deps.sh         # Homebrew / apt / dnf / pacman / MSYS2
-SHARED=1 tooling/ffmpeg/build-ffmpeg.sh  # shared development build
+tooling/ffmpeg/build-ffmpeg.sh --shared  # shared development build
 ```
 
 `tooling/ffmpeg/build-ffmpeg.sh` installs into `.cache/ffmpeg`. The

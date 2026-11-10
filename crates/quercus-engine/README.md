@@ -40,7 +40,7 @@ Static archives are optional. Enable the `ffmpeg-static` feature and point
 `FFMPEG_DIR` at a static development prefix.
 
 When developing this repository on Linux/macOS, run
-`tooling/install-deps.sh` before `SHARED=1 tooling/ffmpeg/build-ffmpeg.sh`.
+`tooling/install-deps.sh` before `tooling/ffmpeg/build-ffmpeg.sh --shared`.
 
 The crate produces an rlib, a cdylib and a static library. The native CD
 package contains only the dynamic library, static library, this C header and

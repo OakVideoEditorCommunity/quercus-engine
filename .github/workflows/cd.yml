@@ -104,7 +104,7 @@ jobs:
       - name: Build shared FFmpeg (macOS)
         if: matrix.platform == 'macos'
         shell: bash
-        run: SHARED=1 tooling/ffmpeg/build-ffmpeg.sh
+        run: tooling/ffmpeg/build-ffmpeg.sh --shared
 
       - name: Install prebuilt FFmpeg (Windows)
         if: matrix.platform == 'windows'

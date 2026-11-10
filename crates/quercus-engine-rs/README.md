@@ -30,7 +30,7 @@ Static archives are optional. Enable the `ffmpeg-static` feature and point
 `FFMPEG_DIR` at a static development prefix.
 
 When developing this repository on Linux/macOS, run
-`tooling/install-deps.sh` before `SHARED=1 tooling/ffmpeg/build-ffmpeg.sh`.
+`tooling/install-deps.sh` before `tooling/ffmpeg/build-ffmpeg.sh --shared`.
 
 ## Quick start
 
