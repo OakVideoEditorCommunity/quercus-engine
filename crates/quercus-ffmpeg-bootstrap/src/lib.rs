@@ -169,7 +169,13 @@ fn build_windows_ffmpeg() -> PathBuf {
 	let status = Command::new(vcpkg.join("vcpkg.exe"))
 		.arg("install")
 		.arg(format!("ffmpeg[{WINDOWS_FFMPEG_FEATURES}]:{WINDOWS_TRIPLET}"))
-		.args(["--triplet", WINDOWS_TRIPLET, "--clean-after-build", "--disable-metrics"])
+		.args([
+			"--triplet",
+			WINDOWS_TRIPLET,
+			"--recurse",
+			"--clean-after-build",
+			"--disable-metrics",
+		])
 		.arg(format!("--overlay-triplets={}", overlay.display()))
 		.current_dir(&vcpkg)
 		.status()
