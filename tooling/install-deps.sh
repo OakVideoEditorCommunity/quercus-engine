@@ -81,7 +81,7 @@ fi
 case "$(uname -s)" in
 	Darwin)
 		# Homebrew's pkgconf installs a `pkg-config` symlink, which is the
-		# name crates/quercus-ffmpeg-link/build.rs invokes; nasm/meson/ninja
+		# name ffmpeg-sys-next invokes; nasm/meson/ninja
 		# are what the project FFmpeg build (tooling/ffmpeg/build-ffmpeg.sh
 		# + build-deps.sh) requires. librsvg is the app-icon renderer
 		# (rsvg-convert). The autotools cover any source tarball whose
@@ -189,4 +189,4 @@ case "$(uname -s)" in
 		;;
 esac
 
-echo "Done. Now run tooling/ffmpeg/build-ffmpeg.sh once, then 'cargo build'."
+echo "Done. Now run SHARED=1 tooling/ffmpeg/build-ffmpeg.sh once, then 'cargo build'."

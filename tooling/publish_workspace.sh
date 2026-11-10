@@ -44,11 +44,7 @@ publish_one() {
 }
 
 ORDER=(
-    quercus-ffmpeg-bootstrap
     quercus-core
-    quercus-ffmpeg-link
-    quercus-ffmpeg-sys
-    quercus-ffmpeg-next
     quercus-undo
     quercus-codec
     quercus-node

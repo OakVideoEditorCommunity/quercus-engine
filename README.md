@@ -31,9 +31,6 @@ stable. Use the SDK (or the C ABI) instead.
 | crate | role |
 |---|---|
 | `quercus-core` | base types, color, config, platform helpers |
-| `quercus-ffmpeg-bootstrap` | pinned static FFmpeg download/build bootstrap |
-| `quercus-ffmpeg-sys` / `quercus-ffmpeg-next` | FFmpeg FFI and safe wrapper |
-| `quercus-ffmpeg-link` | static FFmpeg link helper (`links` crate) |
 | `quercus-codec` | decode/probe/encode, hardware decode |
 | `quercus-audio` | audio backend, processing, waveform |
 | `quercus-undo` | undo/redo command framework |
@@ -49,25 +46,15 @@ stable. Use the SDK (or the C ABI) instead.
 
 ## Build
 
-> **FFmpeg is mandatory and must be the project build.**
->
-> Do **not** point `FFMPEG_DIR` at a system, Homebrew or distro FFmpeg, and do
-> not rely on `pkg-config` picking one up. The engine uses a project-managed
-> static build with all codec dependencies in one prefix; any other FFmpeg
-> produces link errors or a binary that loads the wrong libraries.
->
-> A normal `cargo add quercus-engine-rs` builds FFmpeg automatically on
-> Linux/macOS and uses a SHA256-pinned vcpkg source archive on Windows. No
-> FFmpeg shared libraries need to be copied beside the app.
+**`FFMPEG_DIR` is required.** Crate packages do not download or build FFmpeg.
+Point it at a development prefix containing `include/`, `lib/` and
+`lib/pkgconfig/`. Dynamic linking is the default; use BtbN's `gpl-shared`
+packages or an equivalent shared FFmpeg development install. Shared libraries
+must be discoverable at run time through the platform loader path or an rpath.
 
-The engine links FFmpeg statically. An existing `FFMPEG_DIR` is honored.
-Otherwise `quercus-ffmpeg-bootstrap` builds it on Linux/macOS, while Windows
-builds static MSVC-compatible libraries through the pinned vcpkg port and
-verifies its source archive SHA256. Set `QUERCUS_FFMPEG_OFFLINE=1` to forbid
-that fallback.
-
-Automatic builds cache under Cargo's target directory by default. Set
-`QUERCUS_FFMPEG_CACHE` to share that cache between projects or CI jobs.
+Static archives are optional. Enable `ffmpeg-static` on `quercus-engine-rs`
+and point `FFMPEG_DIR` at a static development prefix. The same feature exists
+on `quercus-engine` for direct C ABI consumers.
 
 For a manual build, run the dependency scripts once (see
 [`docs/build.md`](docs/build.md)); they install into `.cache/ffmpeg` and the
@@ -75,7 +62,7 @@ committed `.cargo/config.toml` points `FFMPEG_DIR` there:
 
 ```sh
 tooling/install-deps.sh
-tooling/ffmpeg/build-ffmpeg.sh
+SHARED=1 tooling/ffmpeg/build-ffmpeg.sh
 cargo build -p quercus-engine
 cargo test --workspace
 cargo doc -p quercus-engine-rs --no-deps

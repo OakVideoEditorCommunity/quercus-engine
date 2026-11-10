@@ -20,13 +20,17 @@ engine dynamic library next to the executable.
 
 ## Before you build: FFmpeg is mandatory
 
-Linux and macOS users must run `tooling/install-deps.sh` from this repository before building.
+**`FFMPEG_DIR` is required.** Crate packages do not download or build FFmpeg.
+Point it at a development prefix containing `include/`, `lib/` and
+`lib/pkgconfig/`. Dynamic linking is the default; use BtbN's `gpl-shared`
+packages or an equivalent shared FFmpeg development install. Shared libraries
+must be discoverable at run time through the platform loader path or an rpath.
 
-`quercus-engine` links a **project-managed static FFmpeg build**. An
-existing `FFMPEG_DIR` is honored. Linux/macOS build it automatically;
-Windows builds static MSVC-compatible libraries through a pinned vcpkg
-source archive after verifying SHA256. `QUERCUS_FFMPEG_OFFLINE=1` disables
-the fallback. A system, Homebrew or distro FFmpeg is not supported.
+Static archives are optional. Enable the `ffmpeg-static` feature and point
+`FFMPEG_DIR` at a static development prefix.
+
+When developing this repository on Linux/macOS, run
+`tooling/install-deps.sh` before `SHARED=1 tooling/ffmpeg/build-ffmpeg.sh`.
 
 ## Quick start
 
@@ -176,8 +180,7 @@ Publish the whole workspace in dependency order (the internal crates are
 published but are implementation details):
 
 ```text
-quercus-ffmpeg-bootstrap → quercus-core → quercus-ffmpeg-link
-→ quercus-ffmpeg-sys → quercus-ffmpeg-next → quercus-undo → quercus-codec
+quercus-core → quercus-undo → quercus-codec
 → quercus-node → quercus-otio → quercus-render → quercus-audio
 → quercus-timeline → quercus-storage → quercus-task
 → quercus-ofx-plugin → quercus-engine → quercus-engine-rs

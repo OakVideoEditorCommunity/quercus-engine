@@ -30,15 +30,17 @@ role and links to the C header and the SDK; the full API lives in
 
 ## Build prerequisite
 
-Linux and macOS users must run `tooling/install-deps.sh` from this repository before building.
+**`FFMPEG_DIR` is required.** Crate packages do not download or build FFmpeg.
+Point it at a development prefix containing `include/`, `lib/` and
+`lib/pkgconfig/`. Dynamic linking is the default; use BtbN's `gpl-shared`
+packages or an equivalent shared FFmpeg development install. Shared libraries
+must be discoverable at run time through the platform loader path or an rpath.
 
-The engine uses a project-managed static FFmpeg build. Do not use a
-system/Homebrew/distro FFmpeg. An existing `FFMPEG_DIR` is honored;
-Linux/macOS otherwise build it automatically, and Windows downloads the
-pinned vcpkg source archive, verifies SHA256 and builds static MSVC-compatible
-libraries. For a manual Unix build, run
-`tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh`, then use the
-generated `.cache/ffmpeg` prefix.
+Static archives are optional. Enable the `ffmpeg-static` feature and point
+`FFMPEG_DIR` at a static development prefix.
+
+When developing this repository on Linux/macOS, run
+`tooling/install-deps.sh` before `SHARED=1 tooling/ffmpeg/build-ffmpeg.sh`.
 
 The crate produces an rlib, a cdylib and a static library. The native CD
 package contains only the dynamic library, static library, this C header and

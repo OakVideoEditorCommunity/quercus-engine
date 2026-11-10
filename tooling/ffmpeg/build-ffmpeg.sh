@@ -102,9 +102,8 @@ FLAGS=(
 	--disable-network
 	--enable-avcodec --enable-avformat --enable-avfilter
 	--enable-avutil --enable-swscale --enable-swresample
-	# Static closure: probe with --static so the installed .pc files
-	# carry the full transitive link line (Libs.private) that
-	# crates/quercus-ffmpeg-link/build.rs forwards to cargo.
+	# Probe with --static so the installed .pc files carry the full
+	# transitive link line (Libs.private).
 	--pkg-config-flags=--static
 	# lame ships no .pc file; every external lives in this prefix.
 	"--extra-cflags=-I$PREFIX/include"

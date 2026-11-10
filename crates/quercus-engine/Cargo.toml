@@ -23,7 +23,8 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
 default = ["native"]
-native = ["dep:serde", "dep:serde_json", "dep:libc", "dep:quercus-audio", "dep:quercus-codec", "dep:quercus-core", "dep:quercus-ffmpeg-link", "dep:quercus-node", "dep:quercus-ofx-plugin", "dep:quercus-otio", "dep:quercus-render", "dep:quercus-storage", "dep:quercus-task", "dep:quercus-timeline", "dep:quercus-undo"]
+native = ["dep:serde", "dep:serde_json", "dep:libc", "dep:quercus-audio", "dep:quercus-codec", "dep:quercus-core", "dep:quercus-node", "dep:quercus-ofx-plugin", "dep:quercus-otio", "dep:quercus-render", "dep:quercus-storage", "dep:quercus-task", "dep:quercus-timeline", "dep:quercus-undo"]
+ffmpeg-static = ["quercus-codec/ffmpeg-static"]
 # docs.rs builds an empty, dependency-free crate page: the real interface is
 # the C ABI in include/quercus_engine.h and the SDK documentation.
 docs-only = []
@@ -35,7 +36,6 @@ libc = { version = "0.2", optional = true }
 quercus-audio = { version = "=0.7.1", path = "../quercus-audio", optional = true }
 quercus-codec = { version = "=0.7.1", path = "../quercus-codec", optional = true }
 quercus-core = { version = "=0.7.1", path = "../quercus-core", optional = true }
-quercus-ffmpeg-link = { version = "=0.7.1", path = "../quercus-ffmpeg-link", optional = true }
 quercus-node = { version = "=0.7.1", path = "../quercus-node", optional = true }
 quercus-ofx-plugin = { version = "=0.7.1", path = "../quercus-ofx-plugin", optional = true }
 quercus-otio = { version = "=0.7.1", path = "../quercus-otio", optional = true }

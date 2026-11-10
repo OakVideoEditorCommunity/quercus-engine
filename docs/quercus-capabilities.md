@@ -95,7 +95,7 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
 | 平台 | 稳定 C ABI | `quercus_engine.h`（1452 行，718 个 `quercus_*` 符号） | C/C++ 可直接调用 |
 | 平台 | Rust SDK | 26 个模块、edition 2024、Rust 1.85+ | safe wrapper |
 | 平台 | 渲染 worker | `worker::{parse_backend,run,ofx_host_main,main}` | 进程隔离渲染 |
-| 平台 | 依赖与许可 | 静态 FFmpeg 8.1、OpenColorIO 2.x；GPL-3.0-or-later | 与 Oak 一致 |
+| 平台 | 依赖与许可 | 由 `FFMPEG_DIR` 提供 FFmpeg 开发库（默认动态链接）、OpenColorIO 2.x；GPL-3.0-or-later | 与 Oak 一致 |
 
 ## 4. 主线新增（可能尚未发布）
 

@@ -12,7 +12,7 @@ crate-type = ["staticlib", "rlib"]
 quercus-core = { version = "=0.7.1", path = "../quercus-core" }
 # Direct Rust calls (single-lib unification): the decode bridge calls
 # quercuscodec's ffi, the node bridge calls quercusnode's ffi. Both directions
-# are acyclic (quercuscodec → quercuscore-rs/quercus-ffmpeg-link; quercusnode → quercuscodec).
+# are acyclic (quercuscodec → quercuscore-rs; quercusnode → quercuscodec).
 quercus-codec = { version = "=0.7.1", path = "../quercus-codec" }
 quercus-node = { version = "=0.7.1", path = "../quercus-node" }
 # wgpu: portable GPU backend (Metal/Vulkan/GL/DX12 in one safe API) — the
