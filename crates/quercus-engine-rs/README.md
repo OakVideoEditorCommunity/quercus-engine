@@ -20,6 +20,8 @@ engine dynamic library next to the executable.
 
 ## Before you build: FFmpeg is mandatory
 
+Linux and macOS users must run `tooling/install-deps.sh` from this repository before building.
+
 `quercus-engine` links a **project-managed static FFmpeg build**. An
 existing `FFMPEG_DIR` is honored. Linux/macOS build it automatically;
 Windows builds static MSVC-compatible libraries through a pinned vcpkg

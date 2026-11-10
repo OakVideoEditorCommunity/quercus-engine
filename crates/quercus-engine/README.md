@@ -30,6 +30,8 @@ role and links to the C header and the SDK; the full API lives in
 
 ## Build prerequisite
 
+Linux and macOS users must run `tooling/install-deps.sh` from this repository before building.
+
 The engine uses a project-managed static FFmpeg build. Do not use a
 system/Homebrew/distro FFmpeg. An existing `FFMPEG_DIR` is honored;
 Linux/macOS otherwise build it automatically, and Windows downloads the
