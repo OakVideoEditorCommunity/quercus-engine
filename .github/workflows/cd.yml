@@ -42,26 +42,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore FFmpeg build (Linux/macOS)
-        if: matrix.platform != 'windows'
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cache/ffmpeg
-            .cache/ffmpeg-src
-            .cache/ffmpeg-deps-src
-          key: cd-ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/quercus-ffmpeg-bootstrap/tooling/ffmpeg/*.sh', 'crates/quercus-ffmpeg-bootstrap/tooling/install-deps.sh') }}
-          save-always: true
-
-      - name: Restore vcpkg build (Windows)
-        if: matrix.platform == 'windows'
-        uses: actions/cache@v4
-        with:
-          path: .cache/vcpkg
-          key: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-ec48c11eae9448c8c6e7739d93e06fa2433aa95f
-          restore-keys: cd-vcpkg-${{ runner.os }}-${{ runner.arch }}-
-          save-always: true
-
       - name: Set up MSVC (Windows)
         if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -116,9 +96,49 @@ jobs:
           shared-key: quercus-cd-${{ matrix.platform }}
           cache-on-failure: true
 
-      - name: Bootstrap static FFmpeg
+      - name: Download BtbN FFmpeg (Linux)
+        if: matrix.platform == 'linux'
         shell: bash
-        run: cargo run --locked -p quercus-ffmpeg-bootstrap --bin quercus-ffmpeg-bootstrap
+        run: tooling/ffmpeg/download-btbn.sh linux64
+
+      - name: Build shared FFmpeg (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: SHARED=1 tooling/ffmpeg/build-ffmpeg.sh
+
+      - name: Install prebuilt FFmpeg (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $asset = "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg-prebuilt"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri "$base/checksums.sha256" -OutFile "$dir\checksums.sha256"
+          $line = Select-String -Path "$dir\checksums.sha256" -Pattern ([regex]::Escape($asset) + "\s*$") | Select-Object -First 1
+          if (-not $line) { throw "no checksum for $asset" }
+          $expected = $line.Line.Split()[0].ToLowerInvariant()
+          Invoke-WebRequest -Uri "$base/$asset" -OutFile "$dir\$asset"
+          $actual = (Get-FileHash "$dir\$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg checksum mismatch" }
+          $root = "$env:GITHUB_WORKSPACE\.cache"
+          Remove-Item "$root\ffmpeg", "$root\ffmpeg-extract" -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path "$dir\$asset" -DestinationPath "$root\ffmpeg-extract" -Force
+          $inner = Get-ChildItem "$root\ffmpeg-extract" -Directory | Select-Object -First 1
+          Move-Item $inner.FullName "$root\ffmpeg"
+
+      - name: Configure FFmpeg environment
+        shell: bash
+        run: |
+          ffmpeg="$GITHUB_WORKSPACE/.cache/ffmpeg"
+          echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "$ffmpeg/bin" >> "$GITHUB_PATH"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            echo "LD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+          elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+            echo "DYLD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+          fi
 
       - name: Install ffmpeg CLI (Linux)
         if: matrix.platform == 'linux'
@@ -154,7 +174,8 @@ jobs:
         shell: bash
         run: |
           ldd target/release/libquercus_engine.so
-          ! ldd target/release/libquercus_engine.so | grep -E 'libav(codec|format|device|util|filter|swscale|swresample)'
+          mkdir -p dist/lib
+          cp -a "$FFMPEG_DIR/lib/"*.so* dist/lib/
 
       - name: Package native library (Linux)
         if: matrix.platform == 'linux'
@@ -168,6 +189,7 @@ jobs:
           mkdir -p dist/include dist/lib
           cp target/release/libquercus_engine.dylib dist/lib/
           cp target/release/libquercus_engine.a dist/lib/
+          cp -a "$FFMPEG_DIR/lib/"*.dylib dist/lib/
           cp crates/quercus-engine/include/quercus_engine.h dist/include/
           tar -czf quercus-engine-native-macos-arm64.tar.gz -C dist include lib
 
@@ -179,6 +201,7 @@ jobs:
           Copy-Item target/release/quercus_engine.dll dist/lib/
           Copy-Item target/release/quercus_engine.dll.lib dist/lib/
           Copy-Item target/release/quercus_engine.lib dist/lib/
+          Copy-Item "$env:FFMPEG_DIR/bin/*.dll" dist/lib/
           Copy-Item crates/quercus-engine/include/quercus_engine.h dist/include/
           Compress-Archive -Path dist/* -DestinationPath quercus-engine-native-windows-x64.zip
 
@@ -204,8 +227,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: tooling/install-deps.sh
-      - name: Build static FFmpeg
-        run: tooling/ffmpeg/build-ffmpeg.sh
+      - name: Download BtbN FFmpeg
+        run: tooling/ffmpeg/download-btbn.sh linux64
+      - name: Configure FFmpeg
+        run: |
+          echo "FFMPEG_DIR=$GITHUB_WORKSPACE/.cache/ffmpeg" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/.cache/ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/.cache/ffmpeg/lib" >> "$GITHUB_ENV"
       - name: Configure OCIO
         run: bash tooling/ocio-env.sh >> "$GITHUB_ENV"
       - name: Publish workspace
