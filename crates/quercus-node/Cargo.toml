@@ -10,7 +10,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 quercus-core = { version = "=0.7.0", path = "../quercus-core" }
- quercus-undo = { version = "=0.7.0", path = "../quercus-undo" }
+quercus-undo = { version = "=0.7.0", path = "../quercus-undo" }
 quercus-codec = { version = "=0.7.0", path = "../quercus-codec" }
 thiserror = "2"
 
