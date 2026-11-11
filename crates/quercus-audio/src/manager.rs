@@ -509,20 +509,37 @@ pub fn input_device_names() -> Vec<String> {
 /// Enumerates the default host's devices, keeping only the ones that
 /// support the requested direction; unnamed devices are skipped.
 fn device_names(output: bool) -> Vec<String> {
-	eprintln!("audio: create default host");
 	let host = cpal::default_host();
-	eprintln!("audio: enumerate devices");
+	#[cfg(target_os = "windows")]
+	let device = if output {
+		host.default_output_device()
+	} else {
+		host.default_input_device()
+	};
+	#[cfg(target_os = "windows")]
+	return device
+		.into_iter()
+		.filter_map(|device| {
+			device
+				.description()
+				.ok()
+				.map(|description| description.name().to_string())
+		})
+		.collect();
+
+	#[cfg(not(target_os = "windows"))]
 	let devices = if output {
 		host.output_devices()
 	} else {
 		host.input_devices()
 	};
+	#[cfg(not(target_os = "windows"))]
 	let Ok(devices) = devices else {
 		return Vec::new();
 	};
+	#[cfg(not(target_os = "windows"))]
 	devices
 		.filter_map(|device| {
-			eprintln!("audio: read device description");
 			device
 				.description()
 				.ok()
