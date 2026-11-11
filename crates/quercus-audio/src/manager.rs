@@ -509,7 +509,9 @@ pub fn input_device_names() -> Vec<String> {
 /// Enumerates the default host's devices, keeping only the ones that
 /// support the requested direction; unnamed devices are skipped.
 fn device_names(output: bool) -> Vec<String> {
+	eprintln!("audio: create default host");
 	let host = cpal::default_host();
+	eprintln!("audio: enumerate devices");
 	let devices = if output {
 		host.output_devices()
 	} else {
@@ -520,6 +522,7 @@ fn device_names(output: bool) -> Vec<String> {
 	};
 	devices
 		.filter_map(|device| {
+			eprintln!("audio: read device description");
 			device
 				.description()
 				.ok()
