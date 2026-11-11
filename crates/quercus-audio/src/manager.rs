@@ -514,17 +514,14 @@ fn device_names(output: bool) -> Vec<String> {
 	}
 
 	let host = cpal::default_host();
-	#[cfg(not(target_os = "windows"))]
 	let devices = if output {
 		host.output_devices()
 	} else {
 		host.input_devices()
 	};
-	#[cfg(not(target_os = "windows"))]
 	let Ok(devices) = devices else {
 		return Vec::new();
 	};
-	#[cfg(not(target_os = "windows"))]
 	devices
 		.filter_map(|device| {
 			device
