@@ -23,7 +23,7 @@ crate-type = ["rlib"]
 
 [features]
 default = ["engine-rlib"]
-ffmpeg-static = ["quercus-engine/ffmpeg-static", "quercus-engine-cdylib?/ffmpeg-static"]
+ffmpeg-static = ["quercus-engine/ffmpeg-static"]
 # Prefer Cargo's normal rlib linkage; opt into the standalone C ABI dylib
 # only when the application explicitly packages libquercus_engine.
 engine-rlib = ["dep:quercus-engine", "quercus-engine/native"]
