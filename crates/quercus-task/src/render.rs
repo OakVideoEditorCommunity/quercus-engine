@@ -562,10 +562,31 @@ impl RenderTask {
 	/// not propagated). Returns an empty vector when `sequence` is not in the
 	/// graph, is not a sequence, or no audio clip covers `time` — a missing
 	/// or non-audio footage node on one clip simply skips that clip.
+	// Only the unit tests use the point query; export uses `audio_montage_in`.
+	#[cfg(test)]
 	fn audio_montage(
 		project: &ProjectRef,
 		sequence: quercus_node::id::NodeId,
 		time: Rational,
+	) -> Vec<MontageClip> {
+		// A point query is the half-open range [time, time + 1µs).
+		Self::audio_montage_in(project, sequence, time, time + Rational::new(1, 1_000_000))
+	}
+
+	/// Resolve every audible clip of `sequence` that overlaps the half-open
+	/// range `[range_in, range_out)`.
+	///
+	/// Export renders the audio of a whole range in one ticket, so the
+	/// montage must contain every clip overlapping that range. Filtering on
+	/// the range start alone dropped every clip that begins after it: in an
+	/// export starting at 0 only the clips playing at 0 s were mixed, and
+	/// audio placed later came out silent. The preview path
+	/// (`preview_audio::audio_montage`) already filters on overlap.
+	fn audio_montage_in(
+		project: &ProjectRef,
+		sequence: quercus_node::id::NodeId,
+		range_in: Rational,
+		range_out: Rational,
 	) -> Vec<MontageClip> {
 		let guard = project.lock().unwrap_or_else(|e| e.into_inner());
 		let Some(entry) = guard.graph.get(sequence) else {
@@ -611,7 +632,7 @@ impl RenderTask {
 					let Some(core) = crate::nodeops::block_core_of(&guard.graph, *block_id) else {
 						continue;
 					};
-					if time < core.in_() || time >= core.out() {
+					if core.out() <= range_in || core.in_() >= range_out {
 						continue;
 					}
 					let Some(footage_id) = find_input_footage(&guard.graph, *block_id) else {
@@ -755,7 +776,7 @@ impl RenderTask {
 		let (project, viewer_id) = &self.viewer;
 		let (sample_rate, channel_layout) =
 			crate::nodeops::sequence_audio_params(project, *viewer_id);
-		let montage = Self::audio_montage(project, *viewer_id, range.in_());
+		let montage = Self::audio_montage_in(project, *viewer_id, range.in_(), range.out());
 		let bus_effects = {
 			let guard = project.lock().unwrap_or_else(|e| e.into_inner());
 			quercus_render::audio::load_bus_effects(&guard.settings, viewer_id.identity())
@@ -1920,6 +1941,69 @@ mod tests {
 		assert!(RenderTask::audio_montage(&project, folder, Rational::new(0, 1)).is_empty());
 	}
 
+	/// Export renders a whole range in one audio ticket, so every clip that
+	/// overlaps the range must be mixed. Regression: the montage used to keep
+	/// only the clips playing at the range start, which silenced narration and
+	/// music placed later on the timeline.
+	#[test]
+	fn audio_montage_in_includes_clips_overlapping_the_range() {
+		let project = project();
+		let sequence = add_sequence(&project);
+		let footage = add_footage(&project, "audio.mp4");
+		let at_start = add_clip(
+			&project,
+			Some(footage),
+			TimeRange::new(Rational::new(0, 1), Rational::new(2, 1)),
+		);
+		let later = add_clip(
+			&project,
+			Some(footage),
+			TimeRange::new(Rational::new(5, 1), Rational::new(7, 1)),
+		);
+		let at_range_end = add_clip(
+			&project,
+			Some(footage),
+			TimeRange::new(Rational::new(10, 1), Rational::new(12, 1)),
+		);
+		let track = track_with(
+			&project,
+			TrackType::Audio,
+			vec![at_start, later, at_range_end],
+		);
+		let audio_list = track_list_with(&project, TrackType::Audio, vec![track]);
+		{
+			let mut guard = project.lock().unwrap();
+			if let Some(seq) = guard
+				.graph
+				.get_mut(sequence)
+				.and_then(|e| e.behavior.as_any_mut())
+				.and_then(|a| a.downcast_mut::<SequenceBehavior>())
+			{
+				seq.track_lists = vec![audio_list];
+			}
+		}
+
+		let montage = RenderTask::audio_montage_in(
+			&project,
+			sequence,
+			Rational::new(0, 1),
+			Rational::new(10, 1),
+		);
+		let starts: Vec<Rational> = montage.iter().map(|clip| clip.in_time).collect();
+		// The half-open range keeps the clip starting at 5 s and drops the one
+		// starting exactly at the range end.
+		assert_eq!(starts, vec![Rational::new(0, 1), Rational::new(5, 1)]);
+		// The point query keeps its semantics.
+		assert_eq!(
+			RenderTask::audio_montage(&project, sequence, Rational::new(0, 1)).len(),
+			1
+		);
+		assert_eq!(
+			RenderTask::audio_montage(&project, sequence, Rational::new(6, 1)).len(),
+			1
+		);
+		assert!(RenderTask::audio_montage(&project, sequence, Rational::new(3, 1)).is_empty());
+	}
 	#[test]
 	fn build_audio_ticket_reads_sequence_params_and_montage() {
 		let project = project();
