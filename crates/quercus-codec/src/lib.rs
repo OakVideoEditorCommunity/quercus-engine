@@ -37,6 +37,11 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+// Keep the static FFmpeg dependency closure on every engine/test link.
+#[cfg(not(windows))]
+#[used]
+static FORCE_FFMPEG_LINK: fn() = quercus_ffmpeg_link::force_link;
+
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
 

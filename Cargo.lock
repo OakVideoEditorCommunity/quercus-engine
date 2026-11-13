@@ -2880,6 +2880,7 @@ version = "0.7.1"
 dependencies = [
  "ffmpeg-next",
  "quercus-core",
+ "quercus-ffmpeg-link",
  "subparse",
  "thiserror 2.0.21",
  "windows",
@@ -2933,6 +2934,10 @@ dependencies = [
  "quercus-engine",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "quercus-ffmpeg-link"
+version = "0.7.1"
 
 [[package]]
 name = "quercus-node"
