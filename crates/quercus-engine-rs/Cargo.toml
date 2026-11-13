@@ -1,7 +1,7 @@
 [package]
 name = "quercus-engine-rs"
 edition = "2024"
-version = "0.7.1"
+version = "0.7.2"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -35,7 +35,7 @@ thiserror = "2"
 # talks to only through its exported `extern "C"` symbols — no Rust API
 # of the engine is used. The dependency edge makes cargo build the dylib
 # into the dependency search path before anything links the SDK.
-quercus-engine = { version = "=0.7.1", path = "../quercus-engine", optional = true, default-features = false }
+quercus-engine = { version = "=0.7.2", path = "../quercus-engine", optional = true, default-features = false }
 
 [target.'cfg(not(windows))'.build-dependencies]
 # Build-dependency edge: forces the engine cdylib to exist before this
@@ -44,4 +44,4 @@ quercus-engine = { version = "=0.7.1", path = "../quercus-engine", optional = tr
 # Windows is excluded: Cargo already produces an unhashed
 # quercus_engine.dll in deps, and a host build of the cdylib would collide
 # with the target link (LNK1104).
-quercus-engine-cdylib = { package = "quercus-engine", version = "=0.7.1", path = "../quercus-engine", optional = true, default-features = false }
+quercus-engine-cdylib = { package = "quercus-engine", version = "=0.7.2", path = "../quercus-engine", optional = true, default-features = false }

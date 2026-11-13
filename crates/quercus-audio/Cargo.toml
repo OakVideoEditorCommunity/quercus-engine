@@ -9,8 +9,8 @@ license = "GPL-3.0-or-later"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-quercus-core = { version = "=0.7.1", path = "../quercus-core" }
-quercus-codec = { version = "=0.7.1", path = "../quercus-codec" }
+quercus-core = { version = "=0.7.2", path = "../quercus-core" }
+quercus-codec = { version = "=0.7.2", path = "../quercus-codec" }
 # Real resample/channel-convert/time-stretch filter graph. The C++
 # ffmpeg_bridge library existed only to absorb FFmpeg API churn; the Rust
 # crate calls ffmpeg-next directly (same as quercuscodec).

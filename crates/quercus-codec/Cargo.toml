@@ -13,7 +13,7 @@ default = []
 ffmpeg-static = ["ffmpeg-next/static"]
 
 [dependencies]
-quercus-core = { version = "=0.7.1", path = "../quercus-core" }
+quercus-core = { version = "=0.7.2", path = "../quercus-core" }
 # Real media decode/encode. The C++ ffmpeg_bridge library existed only to
 # absorb FFmpeg API churn; the Rust crate calls ffmpeg-next directly.
 #
@@ -41,4 +41,4 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(not(windows))'.dependencies]
-quercus-ffmpeg-link = { version = "=0.7.1", path = "../quercus-ffmpeg-link" }
+quercus-ffmpeg-link = { version = "=0.7.2", path = "../quercus-ffmpeg-link" }

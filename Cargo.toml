@@ -4,7 +4,7 @@ default-members = ["crates/quercus-engine", "crates/quercus-engine-rs"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/OakVideoEditorCommunity/quercus-engine"
 authors = ["Oak Team"]
