@@ -16,13 +16,21 @@ if [[ ${1:-} == "--dry-run" ]]; then
     DRY_RUN=1
 fi
 
-REGISTRY_ARGS=()
-if [[ -n ${PUBLISH_REGISTRY:-} ]]; then
-    REGISTRY_ARGS=(--registry "$PUBLISH_REGISTRY")
-fi
+PUBLISH_REGISTRY="${PUBLISH_REGISTRY:-crates-io}"
+REGISTRY_ARGS=(--registry "$PUBLISH_REGISTRY")
 
 publish_one() {
-    local crate="$1" attempt output
+    local crate="$1" attempt output pkgid version search
+    pkgid="$(cargo pkgid -p "$crate")"
+    version="${pkgid##*#}"
+    # Avoid another upload attempt for a version that already exists. Query
+    # the real crates.io registry explicitly (a source replacement such as
+    # ustc cannot answer `cargo search` for this purpose).
+    search="$(cargo search "$crate" --limit 1 "${REGISTRY_ARGS[@]}" 2>/dev/null || true)"
+    if [[ "$search" == "$crate = \"$version\""* ]]; then
+        echo "$crate@$version is already published; skipping"
+        return 0
+    fi
     for attempt in 1 2 3 4 5; do
         if (( DRY_RUN )); then
             cargo publish -p "$crate" --dry-run "${REGISTRY_ARGS[@]}" && return 0
@@ -46,6 +54,7 @@ publish_one() {
 ORDER=(
     quercus-core
     quercus-undo
+    quercus-ffmpeg-link
     quercus-codec
     quercus-node
     quercus-otio
