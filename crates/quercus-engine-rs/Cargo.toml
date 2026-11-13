@@ -27,7 +27,7 @@ ffmpeg-static = ["quercus-engine/ffmpeg-static"]
 # Prefer Cargo's normal rlib linkage; opt into the standalone C ABI dylib
 # only when the application explicitly packages libquercus_engine.
 engine-rlib = ["dep:quercus-engine", "quercus-engine/native"]
-engine-cdylib = ["dep:quercus-engine", "dep:quercus-engine-cdylib", "quercus-engine/native", "quercus-engine-cdylib/native"]
+engine-cdylib = ["dep:quercus-engine", "quercus-engine/native"]
 
 [dependencies]
 thiserror = "2"
@@ -44,4 +44,4 @@ quercus-engine = { version = "=0.7.2", path = "../quercus-engine", optional = tr
 # Windows is excluded: Cargo already produces an unhashed
 # quercus_engine.dll in deps, and a host build of the cdylib would collide
 # with the target link (LNK1104).
-quercus-engine-cdylib = { package = "quercus-engine", version = "=0.7.2", path = "../quercus-engine", optional = true, default-features = false }
+quercus-engine = { version = "=0.7.2", path = "../quercus-engine", optional = true, default-features = false }
