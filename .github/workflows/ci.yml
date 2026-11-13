@@ -165,6 +165,7 @@ jobs:
         shell: bash
         run: |
           python3 tooling/gen_c_header.py --check
+          python3 tooling/gen_c_api_docs.py --check
           cc -std=c11 -Wall -Wextra -Werror -I crates/quercus-engine/include -fsyntax-only examples/c/hello.c
           c++ -std=c++17 -Wall -Wextra -Werror -I crates/quercus-engine/include -fsyntax-only -x c++ examples/c/hello.c
           DOCS_RS=1 cargo doc -p quercus-engine-rs --no-default-features --no-deps

@@ -183,8 +183,8 @@ unsafe extern "C" {
 	fn quercus_codec_decoder_release(session: *const c_void);
 
 	// encode sessions
-	fn quercus_codec_encoding_params_default() -> EncodingParams;
-	fn quercus_codec_encoder_create(params: *const EncodingParams) -> *mut c_void;
+	fn quercus_codec_encoding_params_default() -> QuercusCodecEncodingParams;
+	fn quercus_codec_encoder_create(params: *const QuercusCodecEncodingParams) -> *mut c_void;
 	fn quercus_codec_encoder_open(session: *mut c_void) -> bool;
 	fn quercus_codec_encoder_write_video(session: *mut c_void, frame: *const c_void) -> bool;
 	fn quercus_codec_encoder_write_audio(
@@ -1492,6 +1492,9 @@ impl Drop for DecoderSession {
 // ---------------------------------------------------------------------------
 // Encode sessions
 // ---------------------------------------------------------------------------
+/// Backwards-compatible alias for [`QuercusCodecEncodingParams`].
+pub type EncodingParams = QuercusCodecEncodingParams;
+
 
 /// Encoding parameters. Layout matches the engine's `EncodingParams`
 /// (which mirrors quercus-codec's `repr(C)` struct field for field); the
@@ -1499,7 +1502,7 @@ impl Drop for DecoderSession {
 /// [`crate::audio::SampleFormat`], scaling method).
 #[repr(C)]
 #[derive(Clone, Debug)]
-pub struct EncodingParams {
+pub struct QuercusCodecEncodingParams {
 	/// Output filename (or image-sequence "[#####]" template),
 	/// NUL-terminated, 1023 bytes max.
 	filename: [u8; 1024],
@@ -1588,13 +1591,13 @@ pub struct EncodingParams {
 	pub color_range: i32,
 }
 
-impl Default for EncodingParams {
+impl Default for QuercusCodecEncodingParams {
 	fn default() -> Self {
 		unsafe { quercus_codec_encoding_params_default() }
 	}
 }
 
-impl EncodingParams {
+impl QuercusCodecEncodingParams {
 	/// Creates a new value.
 	pub fn new() -> Self {
 		Self::default()
@@ -1638,7 +1641,7 @@ impl EncodingParams {
 	///
 	/// Decoded from the fixed 1024-byte NUL-terminated field as UTF-8; returns
 	/// `""` when the field is empty or is not valid UTF-8. Set through
-	/// [`EncodingParams::set_filename`].
+	/// [`QuercusCodecEncodingParams::set_filename`].
 	pub fn filename(&self) -> &str {
 		Self::read_cstr(&self.filename)
 	}
@@ -1646,7 +1649,7 @@ impl EncodingParams {
 	/// Sets the output filename (or image-sequence `"[#####]"` template).
 	///
 	/// `value` is copied into a fixed 1024-byte NUL-terminated field; the empty
-	/// string is allowed. Counterpart of [`EncodingParams::filename`].
+	/// string is allowed. Counterpart of [`QuercusCodecEncodingParams::filename`].
 	///
 	/// # Errors
 	///
@@ -1664,7 +1667,7 @@ impl EncodingParams {
 	/// Sets the encoded pixel-format name (e.g. `"yuv420p"`).
 	///
 	/// `value` is copied into a fixed 64-byte NUL-terminated field, so it must
-	/// be at most 63 bytes. Counterpart of [`EncodingParams::video_pix_fmt`].
+	/// be at most 63 bytes. Counterpart of [`QuercusCodecEncodingParams::video_pix_fmt`].
 	///
 	/// # Errors
 	///
@@ -1683,7 +1686,7 @@ impl EncodingParams {
 	///
 	/// `value` is the OCIO output colorspace name stored in a fixed 256-byte
 	/// NUL-terminated field; the empty string means the reference space.
-	/// Counterpart of [`EncodingParams::color_transform_output`].
+	/// Counterpart of [`QuercusCodecEncodingParams::color_transform_output`].
 	///
 	/// # Errors
 	///
@@ -1717,7 +1720,7 @@ unsafe impl Sync for EncoderSession {}
 impl EncoderSession {
 	/// Creates a configured encoder session; `None` when no encoder
 	/// supports the requested format or configuration fails.
-	pub fn create(params: &EncodingParams) -> Option<Self> {
+	pub fn create(params: &QuercusCodecEncodingParams) -> Option<Self> {
 		let ptr = unsafe { quercus_codec_encoder_create(params) };
 		if ptr.is_null() {
 			None
@@ -2025,7 +2028,7 @@ mod tests {
 	fn encode_h264_roundtrip_via_sdk() {
 		let out = std::env::temp_dir()
 			.join(format!("quercussdk_encode_{}.mp4", std::process::id()));
-		let mut params = EncodingParams::new();
+		let mut params = QuercusCodecEncodingParams::new();
 		params.set_filename(out.to_str().unwrap()).unwrap();
 		params.format = Format::MPEG4Video as i32;
 		params.video_enabled = 1;
@@ -2065,11 +2068,11 @@ mod tests {
 	#[test]
 	fn encoder_negative_paths() {
 		// Unknown format.
-		let params = EncodingParams::new();
+		let params = QuercusCodecEncodingParams::new();
 		assert!(EncoderSession::create(&params).is_none());
 
 		// Field validation.
-		let mut params = EncodingParams::new();
+		let mut params = QuercusCodecEncodingParams::new();
 		assert!(params.set_filename(&"x".repeat(2000)).is_err());
 		assert!(params.set_filename("a\0b").is_err());
 		params.set_filename("/tmp/quercus.mp4").unwrap();

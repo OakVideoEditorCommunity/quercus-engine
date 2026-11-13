@@ -88,6 +88,33 @@ pub unsafe extern "C" fn quercus_render_gpu_install(
 	.unwrap_or(false)
 }
 
+/// `quercus_render_gpu_init`: eagerly create the engine-owned shared GPU
+/// context with an explicit backend (0 auto, 1 Metal, 2 Vulkan, 3 GL,
+/// 4 CPU). Unlike [`quercus_render_gpu_install`] this needs no host wgpu
+/// pointers, so pure C hosts can initialize GPU rendering; the engine
+/// creates and owns the device exactly like the lazy first-render path.
+///
+/// Only the first initialization chooses the backend: once the shared
+/// context exists (an earlier init, render, or adopt) later calls are
+/// no-ops. Returns whether a GPU context is available afterwards; `false`
+/// means rendering stays on the CPU path (requesting CPU therefore always
+/// returns `false`). Does not set the host-installed flag — call
+/// [`quercus_render_gpu_mark_host`] for the hardware-surface import gate.
+/// A driver panic during device creation is contained and reported as
+/// `false` instead of unwinding across the C ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_gpu_init(backend_kind: i32) -> bool {
+	let Some(kind) = backend_kind_from_abi(backend_kind) else {
+		return false;
+	};
+	// Device creation runs driver code; a panic must not unwind across
+	// the C ABI boundary.
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		GpuContext::init_shared(kind)
+	}))
+	.unwrap_or(false)
+}
+
 /// The shared context's backend as a [`BackendKind`] discriminant (0..=4),
 /// or -1 when no context exists.
 #[unsafe(no_mangle)]
@@ -210,6 +237,31 @@ mod tests {
 			assert_eq!(backend_kind_from_abi(value), Some(kind));
 			assert_eq!(kind as i32, value, "ABI discriminants follow BackendKind");
 		}
+	}
+
+	/// An out-of-range kind is rejected before the process-wide slot is
+	/// touched, so this needs no GPU and cannot disturb other tests.
+	#[test]
+	fn render_gpu_init_rejects_out_of_range_kind() {
+		assert!(!quercus_render_gpu_init(-1));
+		assert!(!quercus_render_gpu_init(5));
+		assert!(!quercus_render_gpu_init(i32::MIN));
+	}
+
+	/// Explicit initialization creates (or finds) the engine-owned context:
+	/// repeated calls are no-ops with the same answer, and the answer agrees
+	/// with the backend query. No adapter is a soft outcome (`false`), not a
+	/// failure, matching the lazy `shared()` path the queries already
+	/// exercise.
+	#[test]
+	fn render_gpu_init_is_idempotent_and_consistent_with_kind() {
+		let available = quercus_render_gpu_init(0);
+		assert_eq!(
+			available,
+			quercus_render_gpu_init(0),
+			"init is a no-op once decided"
+		);
+		assert_eq!(available, quercus_render_gpu_kind() >= 0);
 	}
 
 	/// The query helpers read the process-wide slot and must never panic

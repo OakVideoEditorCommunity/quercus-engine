@@ -1958,18 +1958,22 @@ fn convert_decoded_to_working(dst: &mut Frame, decoded: &quercus_codec::frame::F
     }
     let row_bytes = w * 16; // F32 RGBA
     let linesize = dst.linesize_bytes();
-    for y in 0..h {
-        let start = y * linesize;
-        if start + row_bytes > dst.data.len() {
-            break;
-        }
-        quercus_core::colormath::decode_to_acescg_bytes(
-            &mut dst.data[start..start + row_bytes],
-            w,
-            primaries,
-            transfer,
-        );
-    }
+    quercus_core::cpuparallel::for_each_row(
+        &mut dst.data,
+        linesize,
+        h,
+        w,
+        |_, row| {
+            if row.len() >= row_bytes {
+                quercus_core::colormath::decode_to_acescg_bytes(
+                    &mut row[..row_bytes],
+                    w,
+                    primaries,
+                    transfer,
+                );
+            }
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3631,6 +3635,7 @@ fn scale_rgba_f32(
     }
     // 1:1 copy (no scaling): the caller already handled stride equality;
     // here we handle the general case with a fast path for integer 1:1.
+    let src_addr = src as usize;
     let sample = |x: f64, y: f64| -> [f32; 4] {
         let x0 = x.floor() as i32;
         let y0 = y.floor() as i32;
@@ -3643,6 +3648,7 @@ fn scale_rgba_f32(
         let px = |xx: i32, yy: i32| -> [f32; 4] {
             let off = (yy as usize) * (src_stride as usize) + (xx as usize) * 16;
             // SAFETY: coordinates are clamped to the source size.
+            let src = src_addr as *const u8;
             let b = unsafe { std::slice::from_raw_parts(src.add(off), 16) };
             let f = |i: usize| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
             [f(0), f(1), f(2), f(3)]
@@ -3660,24 +3666,30 @@ fn scale_rgba_f32(
         }
         out
     };
-    for y in 0..dst_h {
-        let sy = (y as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
-        let sy = sy.max(0.0);
-        for x in 0..dst_w {
-            let sx = (x as f64 + 0.5) * src_w as f64 / dst_w as f64 - 0.5;
-            let sx = sx.max(0.0);
-            let px = sample(sx, sy);
-            let off = (y as usize) * (dst_stride as usize) + (x as usize) * 16;
-            // RGB is not clamped: bilinear lerp is a convex combination,
-            // so values cannot overshoot the source range, and HDR/WCG
-            // working-space pixels may legitimately exceed 1.0. Only the
-            // alpha channel is clamped to its valid range.
-            for i in 0..4 {
-                let v = if i == 3 { px[i].clamp(0.0, 1.0) } else { px[i] };
-                dst[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    quercus_core::cpuparallel::for_each_row(
+        dst,
+        dst_stride as usize,
+        dst_h as usize,
+        dst_w as usize,
+        |y, row| {
+            let sy = (y as f64 + 0.5) * src_h as f64 / dst_h as f64 - 0.5;
+            let sy = sy.max(0.0);
+            for x in 0..dst_w {
+                let sx = (x as f64 + 0.5) * src_w as f64 / dst_w as f64 - 0.5;
+                let sx = sx.max(0.0);
+                let px = sample(sx, sy);
+                let off = (x as usize) * 16;
+                // RGB is not clamped: bilinear lerp is a convex combination,
+                // so values cannot overshoot the source range, and HDR/WCG
+                // working-space pixels may legitimately exceed 1.0. Only the
+                // alpha channel is clamped to its valid range.
+                for i in 0..4 {
+                    let v = if i == 3 { px[i].clamp(0.0, 1.0) } else { px[i] };
+                    row[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
             }
-        }
-    }
+        },
+    );
 }
 
 /// Composite the montage at `time` for the ticket/eval path. The GPU
@@ -4159,11 +4171,10 @@ fn copy_rows(
     if src.len() < span(src_stride) || dst.len() < span(dst_stride) {
         return false;
     }
-    for y in 0..rows {
+    quercus_core::cpuparallel::for_each_row(dst, dst_stride, rows, w as usize, |y, row| {
         let s = y * src_stride;
-        let d = y * dst_stride;
-        dst[d..d + row_bytes].copy_from_slice(&src[s..s + row_bytes]);
-    }
+        row[..row_bytes].copy_from_slice(&src[s..s + row_bytes]);
+    });
     true
 }
 
@@ -4181,34 +4192,45 @@ pub fn composite_over(
     src_stride: i32,
     gain: f32,
 ) {
-    let read = |buf: &[u8], stride: i32, x: i32, y: i32| -> [f32; 4] {
-        let off = (y as usize) * (stride as usize) + (x as usize) * 16;
+    let read_src = |x: i32, y: usize| -> [f32; 4] {
+        let off = (y as usize) * (src_stride as usize) + (x as usize) * 16;
         let mut out = [0f32; 4];
         for i in 0..4 {
-            out[i] = f32::from_le_bytes(buf[off + i * 4..off + i * 4 + 4].try_into().unwrap());
+            out[i] = f32::from_le_bytes(src[off + i * 4..off + i * 4 + 4].try_into().unwrap());
         }
         out
     };
-    for y in 0..h {
-        for x in 0..w {
-            let s = read(src, src_stride, x, y);
-            let d = read(dst, dst_stride, x, y);
-            let a = (s[3] * gain).clamp(0.0, 1.0);
-            let out = [
-                (s[0] * gain) * a + d[0] * (1.0 - a),
-                (s[1] * gain) * a + d[1] * (1.0 - a),
-                (s[2] * gain) * a + d[2] * (1.0 - a),
-                a + d[3] * (1.0 - a),
-            ];
-            let off = (y as usize) * (dst_stride as usize) + (x as usize) * 16;
-            // RGB keeps the working-space values unclamped (HDR/WCG can
-            // exceed 1.0); only alpha is clamped to its valid range.
-            for i in 0..4 {
-                let v = if i == 3 { out[i].clamp(0.0, 1.0) } else { out[i] };
-                dst[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    quercus_core::cpuparallel::for_each_row(
+        dst,
+        dst_stride as usize,
+        h as usize,
+        w as usize,
+        |y, row| {
+            for x in 0..w {
+                let s = read_src(x, y);
+                let off = (x as usize) * 16;
+                let mut d = [0f32; 4];
+                for i in 0..4 {
+                    d[i] = f32::from_le_bytes(
+                        row[off + i * 4..off + i * 4 + 4].try_into().unwrap(),
+                    );
+                }
+                let a = (s[3] * gain).clamp(0.0, 1.0);
+                let out = [
+                    (s[0] * gain) * a + d[0] * (1.0 - a),
+                    (s[1] * gain) * a + d[1] * (1.0 - a),
+                    (s[2] * gain) * a + d[2] * (1.0 - a),
+                    a + d[3] * (1.0 - a),
+                ];
+                // RGB keeps the working-space values unclamped (HDR/WCG can
+                // exceed 1.0); only alpha is clamped to its valid range.
+                for i in 0..4 {
+                    let v = if i == 3 { out[i].clamp(0.0, 1.0) } else { out[i] };
+                    row[off + i * 4..off + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
             }
-        }
-    }
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4377,15 +4399,21 @@ fn scale_channels_in_place(
         return;
     }
     let row_bytes = (width as usize) * 16;
-    for row in data.chunks_exact_mut(stride).take(height as usize) {
-        let row_end = row_bytes.min(row.len());
-        for px in row[..row_end].chunks_exact_mut(16) {
-            for c in px.chunks_exact_mut(4) {
-                let v = f32::from_le_bytes(c.try_into().unwrap());
-                c.copy_from_slice(&(v * factor).to_le_bytes());
+    quercus_core::cpuparallel::for_each_row(
+        data,
+        stride,
+        height as usize,
+        width as usize,
+        |_, row| {
+            let row_end = row_bytes.min(row.len());
+            for px in row[..row_end].chunks_exact_mut(16) {
+                for c in px.chunks_exact_mut(4) {
+                    let v = f32::from_le_bytes(c.try_into().unwrap());
+                    c.copy_from_slice(&(v * factor).to_le_bytes());
+                }
             }
-        }
-    }
+        },
+    );
 }
 
 /// Run the GPU Opacity pass on `token`, returning the output token (the

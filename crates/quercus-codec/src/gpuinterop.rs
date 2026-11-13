@@ -202,12 +202,28 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 	if !crate::hwdecode::is_hw_format(frame_format(req.frame)) {
 		return None;
 	}
+	// The platform import reinterprets `data[0]` as the device type's
+	// surface (a D3D11 COM texture, a CUDA allocation, a VAAPI surface).
+	// A frame whose hardware format does not match the session's device
+	// type is not that object, and dereferencing it as one crashes the
+	// process; stage it instead.
+	if crate::hwdecode::hw_pixel_format(device_type) != Some(frame_format(req.frame)) {
+		HW_IMPORT_UNSUPPORTED.fetch_add(1, Ordering::Relaxed);
+		return None;
+	}
 	let Some(ctx) = GpuContext::shared() else {
 		// The host slot was cleared between the two checks (shutdown):
 		// nothing was attempted, so this is not a failure.
 		HW_IMPORT_UNSUPPORTED.fetch_add(1, Ordering::Relaxed);
 		return None;
 	};
+	// Only a backend with a real import path may touch the platform surface.
+	// Windows GL uses the dedicated D3D11 video-processor/WGL fallback; an
+	// unrelated backend must stage before any COM/Vulkan object is accessed.
+	if !import_backend_supported(ctx.kind()) {
+		HW_IMPORT_UNSUPPORTED.fetch_add(1, Ordering::Relaxed);
+		return None;
+	}
 	match platform_import(req, &ctx, device_type) {
 		ImportOutcome::Imported {
 			planes,
@@ -236,6 +252,45 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 			None
 		}
 	}
+}
+
+fn import_backend_supported(kind: quercus_core::backend::BackendKind) -> bool {
+	if kind == import_backend_kind() {
+		return true;
+	}
+	#[cfg(target_os = "windows")]
+	{
+		kind == quercus_core::backend::BackendKind::Gl
+	}
+	#[cfg(not(target_os = "windows"))]
+	{
+		false
+	}
+}
+
+/// The primary graphics API this platform's import wraps hardware surfaces for:
+/// Vulkan on Windows/Linux (D3D11VA, VAAPI and CUDA surfaces all become
+/// VkImages through `external.rs`). Windows additionally accepts GL through
+/// [`import_backend_supported`] and the D3D11 video-processor/WGL path.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn import_backend_kind() -> quercus_core::backend::BackendKind {
+	quercus_core::backend::BackendKind::Vulkan
+}
+
+/// The primary graphics API this platform's import wraps hardware surfaces for:
+/// Vulkan on Windows/Linux (D3D11VA, VAAPI and CUDA surfaces all become
+/// VkImages through `external.rs`), Metal on macOS (VideoToolbox). A
+/// shared context of any other kind has no import path.
+#[cfg(target_os = "macos")]
+fn import_backend_kind() -> quercus_core::backend::BackendKind {
+	quercus_core::backend::BackendKind::Metal
+}
+
+/// Non-desktop targets have no import path; the sentinel never matches a
+/// real shared context (engine contexts are never `Cpu`).
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn import_backend_kind() -> quercus_core::backend::BackendKind {
+	quercus_core::backend::BackendKind::Cpu
 }
 
 /// Outcome of one platform import attempt.
@@ -327,7 +382,11 @@ fn platform_import(
 	if !platform_import_enabled("QUERCUS_GPU_IMPORT_D3D11", CONFIG_KEY_D3D11_IMPORT) {
 		return ImportOutcome::Unsupported;
 	}
-	d3d11_import(req, ctx)
+	match ctx.kind() {
+		quercus_core::backend::BackendKind::Vulkan => d3d11_import(req, ctx),
+		quercus_core::backend::BackendKind::Gl => d3d11_gl_import(req, ctx),
+		_ => ImportOutcome::Unsupported,
+	}
 }
 
 /// Imports a hardware frame through the platform's GPU path, when enabled.
@@ -1109,6 +1168,115 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 // Windows: D3D11VA texture -> shared NT handle -> Vulkan import
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "windows")]
+enum GlImportError {
+	Unsupported(String),
+	Failed(String),
+}
+
+#[cfg(target_os = "windows")]
+type GlImportResult<T> = Result<T, GlImportError>;
+
+#[cfg(target_os = "windows")]
+fn gl_unsupported(message: impl Into<String>) -> GlImportError {
+	GlImportError::Unsupported(message.into())
+}
+
+#[cfg(target_os = "windows")]
+fn gl_failed(message: impl Into<String>) -> GlImportError {
+	GlImportError::Failed(message.into())
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn wgl_function<T: Copy>(name: &[u8]) -> Option<T> {
+	let proc = unsafe {
+		windows::Win32::Graphics::OpenGL::wglGetProcAddress(windows::core::PCSTR(name.as_ptr()))
+	};
+	proc.map(|address| unsafe { std::mem::transmute_copy(&address) })
+}
+
+/// A partially constructed WGL registration. Drop runs inside
+/// `GpuContext::with_wgl_context`, so early failures cannot leak GL/D3D11 objects.
+#[cfg(target_os = "windows")]
+struct PendingWglRegistration {
+	device: usize,
+	object: usize,
+	name: u32,
+	locked: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl PendingWglRegistration {
+	fn disarm(&mut self) -> (usize, usize, u32) {
+		let result = (self.device, self.object, self.name);
+		self.device = 0;
+		self.object = 0;
+		self.name = 0;
+		self.locked = false;
+		result
+	}
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for PendingWglRegistration {
+	fn drop(&mut self) {
+		unsafe {
+			if self.locked {
+				if let Some(unlock) = wgl_function::<
+					unsafe extern "system" fn(usize, i32, *const usize) -> i32,
+				>(b"wglDXUnlockObjectsNV\0")
+				{
+					unlock(self.device, 1, &self.object);
+				}
+			}
+			if self.object != 0 {
+				if let Some(unregister) =
+					wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
+						b"wglDXUnregisterObjectNV\0",
+					) {
+					unregister(self.device, self.object);
+				}
+			}
+			if self.name != 0 {
+				windows::Win32::Graphics::OpenGL::glDeleteTextures(1, &self.name);
+			}
+			if self.device != 0 {
+				if let Some(close) = wgl_function::<unsafe extern "system" fn(usize) -> i32>(
+					b"wglDXCloseDeviceNV\0",
+				) {
+					close(self.device);
+				}
+			}
+		}
+	}
+}
+
+#[cfg(target_os = "windows")]
+struct FfmpegD3d11Lock(*const sys::AVD3D11VADeviceContext);
+
+#[cfg(target_os = "windows")]
+impl FfmpegD3d11Lock {
+	unsafe fn new(context: *const sys::AVD3D11VADeviceContext) -> Self {
+		unsafe {
+			if let Some(lock) = (*context).lock {
+				lock((*context).lock_ctx);
+			}
+		}
+		Self(context)
+	}
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for FfmpegD3d11Lock {
+	fn drop(&mut self) {
+		unsafe {
+			if let Some(unlock) = (*self.0).unlock {
+				unlock((*self.0).lock_ctx);
+			}
+		}
+	}
+}
+
 /// Import a D3D11VA texture (Windows): one NV12/P010 texture shared as an
 /// NT handle, imported as a single multi-planar image whose two plane
 /// views feed the planar YUV→RGB pass. The decoder's frame reference is
@@ -1201,6 +1369,300 @@ fn d3d11_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 			ImportOutcome::Unsupported
 		}
 		Err(_) => ImportOutcome::Failed,
+	}
+}
+
+/// GL fallback for D3D11VA: use the D3D11 video processor to produce an
+/// RGBA8 texture, then register that texture in wgpu's own WGL context with
+/// `WGL_NV_DX_interop`. No decoded pixels cross system memory. This is a
+/// GPU conversion (and 8-bit quantization for P010), not the lossless Vulkan
+/// multi-planar path.
+#[cfg(target_os = "windows")]
+fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
+	use windows::Win32::Graphics::Direct3D11::{
+		D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
+		D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+		D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
+		D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
+		D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
+		D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
+		D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext,
+		ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
+	};
+	use windows::Win32::Graphics::Dxgi::Common::{
+		DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM,
+		DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020,
+		DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
+		DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
+		DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+	};
+	use windows::Win32::Graphics::OpenGL::glGenTextures;
+	use windows::core::Interface;
+
+	let interop_available = ctx.with_wgl_context(|| unsafe {
+		wgl_function::<unsafe extern "system" fn(*mut std::ffi::c_void) -> usize>(
+			b"wglDXOpenDeviceNV\0",
+		)
+		.is_some()
+			&& wgl_function::<unsafe extern "system" fn(usize) -> i32>(
+				b"wglDXCloseDeviceNV\0",
+			)
+			.is_some()
+			&& wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
+				b"wglDXUnregisterObjectNV\0",
+			)
+			.is_some()
+	});
+	match interop_available {
+		Ok(true) => {}
+		Ok(false) => return ImportOutcome::Unsupported,
+		Err(_) => return ImportOutcome::Unsupported,
+	}
+
+	let result = (|| -> GlImportResult<u64> {
+		let frame = unsafe { &*req.frame };
+		let texture_ptr = frame.data[0] as *mut std::ffi::c_void;
+		if texture_ptr.is_null() {
+			return Err(gl_unsupported("D3D11 frame has no texture"));
+		}
+		let slice = frame.data[1] as usize as u32;
+		let texture: &ID3D11Texture2D = unsafe { &*(texture_ptr as *const ID3D11Texture2D) };
+		let mut desc = D3D11_TEXTURE2D_DESC::default();
+		unsafe { texture.GetDesc(&mut desc) };
+		if slice >= desc.ArraySize.max(1) {
+			return Err(gl_unsupported("D3D11 frame slice is out of range"));
+		}
+		if desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010 {
+			return Err(gl_unsupported(format!(
+				"GL interop does not accept DXGI format {:?}",
+				desc.Format
+			)));
+		}
+		let (w, h) = req.luma_size;
+		if w == 0 || h == 0 {
+			return Err(gl_unsupported("zero-sized D3D11 frame"));
+		}
+		let frames_ref = frame.hw_frames_ctx;
+		if frames_ref.is_null() {
+			return Err(gl_unsupported("D3D11 frame has no hw_frames_ctx"));
+		}
+		let frames = unsafe { &*((*frames_ref).data as *const sys::AVHWFramesContext) };
+		if frames.device_ctx.is_null() {
+			return Err(gl_unsupported("D3D11 hwframes has no device context"));
+		}
+		let device_context = unsafe { &*frames.device_ctx };
+		let d3d = device_context.hwctx as *const sys::AVD3D11VADeviceContext;
+		if d3d.is_null()
+			|| unsafe { (*d3d).device.is_null() }
+			|| unsafe { (*d3d).device_context.is_null() }
+			|| unsafe { (*d3d).video_device.is_null() }
+			|| unsafe { (*d3d).video_context.is_null() }
+		{
+			return Err(gl_unsupported("incomplete D3D11 device context"));
+		}
+		let device: &ID3D11Device = unsafe { &*((*d3d).device as *const ID3D11Device) };
+		let device_context: &ID3D11DeviceContext =
+			unsafe { &*((*d3d).device_context as *const ID3D11DeviceContext) };
+		let video_device: &ID3D11VideoDevice =
+			unsafe { &*((*d3d).video_device as *const ID3D11VideoDevice) };
+		let video_context: &ID3D11VideoContext =
+			unsafe { &*((*d3d).video_context as *const ID3D11VideoContext) };
+		let _lock = unsafe { FfmpegD3d11Lock::new(d3d) };
+
+		let rate = DXGI_RATIONAL {
+			Numerator: 0,
+			Denominator: 1,
+		};
+		let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+			InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+			InputFrameRate: rate,
+			InputWidth: w,
+			InputHeight: h,
+			OutputFrameRate: rate,
+			OutputWidth: w,
+			OutputHeight: h,
+			Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+		};
+		let enumerator = unsafe { video_device.CreateVideoProcessorEnumerator(&content) }
+			.map_err(|e| gl_failed(format!("CreateVideoProcessorEnumerator: {e}")))?;
+		let processor = unsafe { video_device.CreateVideoProcessor(&enumerator, 0) }
+			.map_err(|e| gl_failed(format!("CreateVideoProcessor: {e}")))?;
+		let context1 = video_context
+			.cast::<ID3D11VideoContext1>()
+			.map_err(|e| gl_unsupported(format!("ID3D11VideoContext1 unavailable: {e}")))?;
+		let input_color_space = match (req.matrix, req.full_range) {
+			(YuvMatrix::Bt601, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
+			(YuvMatrix::Bt601, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601,
+			(YuvMatrix::Bt709, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
+			(YuvMatrix::Bt709, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
+			(YuvMatrix::Bt2020, false) => DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020,
+			(YuvMatrix::Bt2020, true) => DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020,
+		};
+		unsafe {
+			context1.VideoProcessorSetStreamColorSpace1(&processor, 0, input_color_space);
+			context1.VideoProcessorSetOutputColorSpace1(
+				&processor,
+				DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+			);
+		}
+
+		let output_desc = D3D11_TEXTURE2D_DESC {
+			Width: w,
+			Height: h,
+			MipLevels: 1,
+			ArraySize: 1,
+			Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+			SampleDesc: DXGI_SAMPLE_DESC {
+				Count: 1,
+				Quality: 0,
+			},
+			Usage: D3D11_USAGE_DEFAULT,
+			BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+			CPUAccessFlags: 0,
+			MiscFlags: 0,
+		};
+		let mut output = None;
+		unsafe { device.CreateTexture2D(&output_desc, None, Some(&mut output)) }
+			.map_err(|e| gl_failed(format!("CreateTexture2D(RGBA8): {e}")))?;
+		let output: ID3D11Texture2D = output.ok_or_else(|| gl_failed("null RGBA output texture"))?;
+		let input_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+			FourCC: 0,
+			ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+			Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+				Texture2D: D3D11_TEX2D_VPIV {
+					MipSlice: 0,
+					ArraySlice: slice,
+				},
+			},
+		};
+		let mut input = None;
+		unsafe {
+			video_device.CreateVideoProcessorInputView(
+				texture,
+				&enumerator,
+				&input_desc,
+				Some(&mut input),
+			)
+		}
+		.map_err(|e| gl_failed(format!("CreateVideoProcessorInputView: {e}")))?;
+		let input = input.ok_or_else(|| gl_failed("null video processor input view"))?;
+		let output_view_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+			ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+			Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+				Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+			},
+		};
+		let mut output_view = None;
+		unsafe {
+			video_device.CreateVideoProcessorOutputView(
+				&output,
+				&enumerator,
+				&output_view_desc,
+				Some(&mut output_view),
+			)
+		}
+		.map_err(|e| gl_failed(format!("CreateVideoProcessorOutputView: {e}")))?;
+		let output_view = output_view.ok_or_else(|| gl_failed("null video processor output view"))?;
+		let stream = D3D11_VIDEO_PROCESSOR_STREAM {
+			Enable: true.into(),
+			pInputSurface: std::mem::ManuallyDrop::new(Some(input)),
+			..Default::default()
+		};
+		unsafe { video_context.VideoProcessorBlt(&processor, &output_view, 0, &[stream]) }
+			.map_err(|e| gl_failed(format!("VideoProcessorBlt: {e}")))?;
+		unsafe { device_context.Flush() };
+
+		let registered = ctx.with_wgl_context(|| -> GlImportResult<(usize, usize, u32)> {
+			type OpenDevice = unsafe extern "system" fn(*mut std::ffi::c_void) -> usize;
+			type RegisterObject = unsafe extern "system" fn(
+				usize,
+				*mut std::ffi::c_void,
+				u32,
+				u32,
+				u32,
+			) -> usize;
+			type LockObjects = unsafe extern "system" fn(usize, i32, *const usize) -> i32;
+			let open = unsafe { wgl_function::<OpenDevice>(b"wglDXOpenDeviceNV\0") }
+				.ok_or_else(|| gl_unsupported("WGL_NV_DX_interop is unavailable"))?;
+			let register = unsafe { wgl_function::<RegisterObject>(b"wglDXRegisterObjectNV\0") }
+				.ok_or_else(|| gl_unsupported("wglDXRegisterObjectNV is unavailable"))?;
+			let lock = unsafe { wgl_function::<LockObjects>(b"wglDXLockObjectsNV\0") }
+				.ok_or_else(|| gl_unsupported("wglDXLockObjectsNV is unavailable"))?;
+			let device_handle = unsafe { open(device.as_raw()) };
+			let mut pending = PendingWglRegistration {
+				device: device_handle,
+				object: 0,
+				name: 0,
+				locked: false,
+			};
+			if pending.device == 0 {
+				return Err(gl_failed("wglDXOpenDeviceNV failed"));
+			}
+			unsafe { glGenTextures(1, &mut pending.name) };
+			if pending.name == 0 {
+				return Err(gl_failed("glGenTextures failed"));
+			}
+			const GL_TEXTURE_2D: u32 = 0x0DE1;
+			const WGL_ACCESS_READ_ONLY_NV: u32 = 0;
+			pending.object = unsafe {
+				register(
+					pending.device,
+					output.as_raw(),
+					pending.name,
+					GL_TEXTURE_2D,
+					WGL_ACCESS_READ_ONLY_NV,
+				)
+			};
+			if pending.object == 0 {
+				return Err(gl_failed("wglDXRegisterObjectNV failed"));
+			}
+			if unsafe { lock(pending.device, 1, &pending.object) } == 0 {
+				return Err(gl_failed("wglDXLockObjectsNV failed"));
+			}
+			pending.locked = true;
+			Ok(pending.disarm())
+		});
+		let (wgl_device, wgl_object, texture_name) = match registered {
+			Ok(result) => result?,
+			Err(error) => return Err(gl_unsupported(format!("WGL context unavailable: {error:?}"))),
+		};
+		ctx.import_d3d11_gl_texture(
+			wgl_device,
+			wgl_object,
+			texture_name,
+			w,
+			h,
+			Box::new(move || drop(output)),
+		)
+		.map_err(|e| gl_failed(format!("register GL texture with wgpu: {e:?}")))
+	})();
+	match result {
+		Ok(token) => {
+			static LOG_SUCCESS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+			if std::env::var_os("OAK_DEBUG_HW").is_some() {
+				LOG_SUCCESS.get_or_init(|| {
+					eprintln!("[d3d11-gl] using VideoProcessor + WGL_NV_DX_interop");
+				});
+			}
+			ImportOutcome::Imported {
+				planes: vec![token],
+				descriptor: PlanarDescriptor::rgba(quercus_core::texture::PlaneStorage::U8),
+				keep_alive: None,
+				borrowed_planes: false,
+			}
+		}
+		Err(GlImportError::Unsupported(message)) => {
+			if std::env::var_os("OAK_DEBUG_HW").is_some() {
+				eprintln!("[d3d11-gl] unsupported: {message}");
+			}
+			ImportOutcome::Unsupported
+		}
+		Err(GlImportError::Failed(message)) => {
+			if std::env::var_os("OAK_DEBUG_HW").is_some() {
+				eprintln!("[d3d11-gl] failed: {message}");
+			}
+			ImportOutcome::Failed
+		}
 	}
 }
 
@@ -1416,6 +1878,48 @@ mod tests {
 				"unset falls back to the default-on config"
 			);
 		}
+	}
+
+	/// A hardware frame whose format does not match the session's device
+	/// type must be staged BEFORE any platform surface is dereferenced.
+	/// This request pairs a CUDA frame with a D3D11VA session and carries
+	/// a deliberately bogus `data[0]`: the old dispatch sent it to
+	/// `d3d11_import`, which called `ID3D11Texture2D::GetDesc` on it —
+	/// the 0xC0000005 seen when the import ran on the wrong backend.
+	#[test]
+	fn mismatched_hardware_frame_is_staged_before_any_surface_access() {
+		let _g = crate::lock_tests();
+		reset_import_counters();
+		let mut frame = empty_frame();
+		unsafe {
+			(*frame.as_mut_ptr()).format = sys::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
+			// Would crash a D3D11 import (`GetDesc` on a non-COM pointer).
+			(*frame.as_mut_ptr()).data[0] = 1usize as *mut u8;
+		}
+		let req = request(&frame, sys::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+		assert!(try_import_hw_frame(&req).is_none());
+		assert_eq!(HW_IMPORTS.load(Ordering::Relaxed), 0);
+		assert_eq!(HW_IMPORT_FALLBACKS.load(Ordering::Relaxed), 0);
+		assert_eq!(HW_IMPORT_UNSUPPORTED.load(Ordering::Relaxed), 1);
+	}
+
+	/// The backend gate names the graphics API `external.rs` imports for:
+	/// only that kind of shared context may reach the platform import —
+	/// the GL fallback (or any other kind) stages on the CPU instead.
+	#[test]
+	fn import_backend_kind_matches_the_platform_import_api() {
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		assert_eq!(
+			import_backend_kind(),
+			quercus_core::backend::BackendKind::Vulkan
+		);
+		#[cfg(target_os = "macos")]
+		assert_eq!(
+			import_backend_kind(),
+			quercus_core::backend::BackendKind::Metal
+		);
+		#[cfg(target_os = "windows")]
+		assert!(import_backend_supported(quercus_core::backend::BackendKind::Gl));
 	}
 
 	/// Plane layouts carry the expansion depth the YUV transform needs.

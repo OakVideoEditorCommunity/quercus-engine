@@ -141,13 +141,16 @@ class TypeMapper:
             if inner.startswith("mut "):
                 return f"{self.map(inner[4:])}*"
             return f"const {self.map(inner)}*"
-        if text.startswith("[") and text.endswith("]"):
-            inner, count = top_level_split(text[1:-1], ";")
-            return f"{self.map(inner)}"
+        # Nested `[[f32; 3]; 3]` arrays cross by value as QuercusMat3. This
+        # must run before the generic array branch, which would otherwise
+        # collapse the type to its scalar element (`float`).
         if text == "Mat3" or shorten(text) == "Mat3":
             return "QuercusMat3"
         if re.match(r"^\[\[.+;\s*\d+\];\s*\d+\]$", text, re.S):
             return "QuercusMat3"
+        if text.startswith("[") and text.endswith("]"):
+            inner, count = top_level_split(text[1:-1], ";")
+            return f"{self.map(inner)}"
         base = shorten(text)
         if base in PRIMITIVES:
             return PRIMITIVES[base]
@@ -268,7 +271,7 @@ def parse_enums(source: str, mapper: TypeMapper) -> list[str]:
                 next_value = int(m.group(2), 0)
             variants.append((vname, next_value))
             next_value += 1
-        prefix = name[3:] if name.startswith("Quercus") else name
+        prefix = name[len("Quercus"):] if name.startswith("Quercus") else name
         if repr_kind == "C" or repr_kind in ("i32",):
             body = ",\n".join(
                 f"    QUERCUS_{prefix.upper()}_{vname.upper()} = {value}"
@@ -318,8 +321,32 @@ def extern_blocks(source: str) -> list[str]:
     return blocks
 
 
-def parse_functions(source: str, mapper: TypeMapper) -> list[str]:
-    declarations: dict[str, str] = {}
+PLATFORM_MACROS = {
+    "windows": "_WIN32",
+    "linux": "__linux__",
+    "macos": "__APPLE__",
+    "android": "__ANDROID__",
+    "freebsd": "__FreeBSD__",
+    "openbsd": "__OpenBSD__",
+}
+
+
+def cfg_platform(before: str) -> str | None:
+    """Platform guard for a declaration preceded by a `#[cfg(target_os = ...)]`."""
+    match = re.search(r"#\[cfg\(([^\]]*)\)\]\s*$", before, re.S)
+    if not match:
+        return None
+    targets = re.findall(r'target_os\s*=\s*"([^"]+)"', match.group(1))
+    if not targets:
+        return None
+    macros = [PLATFORM_MACROS.get(target) for target in targets]
+    if any(macro is None for macro in macros):
+        return None
+    return " || ".join(f"defined({macro})" for macro in macros)
+
+
+def parse_functions(source: str, mapper: TypeMapper) -> list[tuple[str, str | None]]:
+    declarations: dict[str, tuple[str, str | None]] = {}
     for body in extern_blocks(source):
         index = 0
         while True:
@@ -327,6 +354,7 @@ def parse_functions(source: str, mapper: TypeMapper) -> list[str]:
             if not match:
                 break
             name = match.group(1)
+            platform = cfg_platform(body[: index + match.start()])
             if not name.startswith("quercus_"):
                 index = index + match.end()
                 continue
@@ -345,7 +373,8 @@ def parse_functions(source: str, mapper: TypeMapper) -> list[str]:
                         aname, atype = arg.split(":", 1)
                         args.append(mapper.declare(atype, c_ident(aname.strip())))
                     declarations.setdefault(
-                        name, f"void {name}({', '.join(args) or 'void'});"
+                        name,
+                        (f"void {name}({', '.join(args) or 'void'});", platform),
                     )
                 index = close_paren + 1
                 continue
@@ -374,7 +403,7 @@ def parse_functions(source: str, mapper: TypeMapper) -> list[str]:
                 args.append(mapper.declare(atype, c_ident(aname.strip())))
             params = " ".join(", ".join(args).split())
             prototype = f"{mapper.map(ret)} {name}({params or 'void'});"
-            declarations.setdefault(name, prototype)
+            declarations.setdefault(name, (prototype, platform))
             index = ret_end + 1
     return [declarations[name] for name in sorted(declarations)]
 
@@ -459,7 +488,11 @@ def generate() -> str:
     )
     parts.extend(callbacks)
     parts.append("")
-    parts.extend(functions)
+    for declaration, platform in functions:
+        if platform:
+            parts.extend([f"#if {platform}", declaration, "#endif"])
+        else:
+            parts.append(declaration)
     parts.extend(
         [
             "",

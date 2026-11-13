@@ -805,19 +805,10 @@ struct AudioDecodeState {
 	carry_format: (u32, u64),
 }
 
-/// The frame-thread count handed to every FFmpeg decoder's `threads`
-/// option. `auto` lets libavcodec spawn one decode thread per logical
-/// core (16 observed on a 24-core box) PER DECODER; with ~`cores - 2`
-/// render workers decoding concurrently that oversubscribes the machine
-/// several times over and starves the playback-audio thread (late chunks
-/// are dropped -> pops). 4 threads decode 1080p h264 far past real-time --
-/// preview throughput comes from the worker pool, not from per-decoder
-/// threading.
-pub(crate) fn decoder_threads() -> String {
-	let cores = std::thread::available_parallelism()
-		.map(|n| n.get())
-		.unwrap_or(4);
-	cores.min(4).to_string()
+/// Thread count for a software codec. Hardware contexts explicitly use one
+/// thread; software fallback uses the shared bounded CPU budget.
+pub(crate) fn software_codec_threads() -> String {
+	quercus_core::cpuparallel::thread_count().to_string()
 }
 
 /// A swresample conversion context.
@@ -944,7 +935,7 @@ impl DecoderState {
 				let codec = ffmpeg::decoder::find(codec_id)
 					.ok_or_else(|| fail(format!("no decoder for codec {codec_id:?}")))?;
 				let mut open_opts = Dictionary::new();
-				open_opts.set("threads", &decoder_threads());
+				open_opts.set("threads", &software_codec_threads());
 				ffmpeg::codec::Context::from_parameters(params)
 					.map_err(ffmpeg_err)?
 					.decoder()
@@ -2347,15 +2338,20 @@ fn maximum_queue_size() -> usize {
 /// buffer.
 fn convert_rgba_f32_le(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 	let mut out = vec![0u8; (w as usize) * (h as usize) * PIXEL_F32_BYTES];
-	for y in 0..h as usize {
-		let row = &data[y * stride..y * stride + (w as usize) * PIXEL_F32_BYTES];
-		let dst =
-			&mut out[y * (w as usize) * PIXEL_F32_BYTES..(y + 1) * (w as usize) * PIXEL_F32_BYTES];
+	let row_bytes = (w as usize) * PIXEL_F32_BYTES;
+	quercus_core::cpuparallel::for_each_row(
+		&mut out,
+		row_bytes,
+		h as usize,
+		w as usize,
+		|y, dst| {
+		let row = &data[y * stride..y * stride + row_bytes];
 		dst.copy_from_slice(row);
 		for px in dst.chunks_exact_mut(PIXEL_F32_BYTES) {
 			px[12..16].copy_from_slice(&1.0f32.to_le_bytes());
 		}
-	}
+		},
+	);
 	out
 }
 
@@ -2368,10 +2364,14 @@ fn convert_rgba_f32_le(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 /// some static FFmpeg builds lack float output formats (M12 P0).
 fn convert_rgba8_to_f32(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 	let mut out = vec![0u8; (w as usize) * (h as usize) * PIXEL_F32_BYTES];
-	for y in 0..h as usize {
+	let row_bytes = (w as usize) * PIXEL_F32_BYTES;
+	quercus_core::cpuparallel::for_each_row(
+		&mut out,
+		row_bytes,
+		h as usize,
+		w as usize,
+		|y, dst| {
 		let row = &data[y * stride..y * stride + (w as usize) * 4];
-		let dst =
-			&mut out[y * (w as usize) * PIXEL_F32_BYTES..(y + 1) * (w as usize) * PIXEL_F32_BYTES];
 		for (px, src_px) in dst
 			.chunks_exact_mut(PIXEL_F32_BYTES)
 			.zip(row.chunks_exact(4))
@@ -2380,7 +2380,8 @@ fn convert_rgba8_to_f32(data: &[u8], w: u32, h: u32, stride: usize) -> Vec<u8> {
 				px[c * 4..c * 4 + 4].copy_from_slice(&((src_px[c] as f32 / 255.0).to_le_bytes()));
 			}
 		}
-	}
+		},
+	);
 	out
 }
 
@@ -2415,9 +2416,19 @@ fn convert_yuv444p16_to_rgba_f32(
 		&mut rgba,
 	);
 	let mut bytes = vec![0u8; rgba.len() * 4];
-	for (dst, v) in bytes.chunks_exact_mut(4).zip(&rgba) {
-		dst.copy_from_slice(&v.to_le_bytes());
-	}
+	let row_bytes = (w as usize) * PIXEL_F32_BYTES;
+	quercus_core::cpuparallel::for_each_row(
+		&mut bytes,
+		row_bytes,
+		h as usize,
+		w as usize,
+		|y, row| {
+			let samples = &rgba[y * (w as usize) * 4..(y + 1) * (w as usize) * 4];
+			for (dst, v) in row.chunks_exact_mut(4).zip(samples) {
+				dst.copy_from_slice(&v.to_le_bytes());
+			}
+		},
+	);
 	bytes
 }
 
@@ -2455,11 +2466,16 @@ fn copy_rgba_f32_to_frame(
 	if out.len() < linesize * (height as usize) {
 		return Err(crate::error::Error::State);
 	}
-	for y in 0..(height as usize) {
-		let src = &bytes[y * row_bytes..y * row_bytes + row_bytes];
-		let dst = &mut out[y * linesize..y * linesize + row_bytes];
-		dst.copy_from_slice(src);
-	}
+	quercus_core::cpuparallel::for_each_row(
+		out,
+		linesize,
+		height as usize,
+		width as usize,
+		|y, dst| {
+			let src = &bytes[y * row_bytes..y * row_bytes + row_bytes];
+			dst[..row_bytes].copy_from_slice(src);
+		},
+	);
 	Ok(frame)
 }
 
@@ -3053,11 +3069,21 @@ impl EncoderState {
 				}
 				encoder.set_format(pix_fmt);
 				set_encoder_color_metadata(&mut encoder, params);
+				let hardware = hardware_video_encoder_names(params.video_codec)
+					.iter()
+					.any(|name| *name == codec.name());
+				let threads = if hardware {
+					"1".to_string()
+				} else {
+					software_codec_threads()
+				};
+				let mut open_opts = Dictionary::new();
+				open_opts.set("threads", &threads);
 
 				if std::env::var_os("OAK_DEBUG_HW").is_some() {
 					eprintln!("[encode] trying {}", codec.name());
 				}
-				match encoder.open() {
+				match encoder.open_with(open_opts) {
 					Ok(opened) => {
 						if std::env::var_os("OAK_DEBUG_HW").is_some() {
 							eprintln!("[encode] selected {}", codec.name());
@@ -3162,7 +3188,9 @@ impl EncoderState {
 			let sample_fmt = default_sample_format_for_codec(codec_id);
 			encoder.set_format(sample_fmt);
 
-			let opened = encoder.open().map_err(ffmpeg_err)?;
+			let mut open_opts = Dictionary::new();
+			open_opts.set("threads", &software_codec_threads());
+			let opened = encoder.open_with(open_opts).map_err(ffmpeg_err)?;
 			stream.set_parameters(&opened);
 
 			let resampler = AudioResampler::get(
@@ -3244,9 +3272,14 @@ impl EncoderState {
 		// float input on every build) and scale into the encoder format.
 		let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
 		let linesize = frame.linesize_bytes() as usize;
-		for y in 0..(h as usize) {
+		let dst_stride = (w as usize) * 4;
+		quercus_core::cpuparallel::for_each_row(
+			&mut rgba,
+			dst_stride,
+			h as usize,
+			w as usize,
+			|y, dst| {
 			let row = &data[y * linesize..y * linesize + (w as usize) * PIXEL_F32_BYTES];
-			let dst = &mut rgba[y * (w as usize) * 4..(y + 1) * (w as usize) * 4];
 			for (out_px, in_px) in dst
 				.chunks_exact_mut(4)
 				.zip(row.chunks_exact(PIXEL_F32_BYTES))
@@ -3261,7 +3294,8 @@ impl EncoderState {
 				out_px[c] = (v * 255.0).clamp(0.0, 255.0) as u8;
 			}
 			}
-		}
+			},
+		);
 
 		let mut src = ffmpeg::frame::Video::new(Pixel::RGBA, w, h);
 		src.data_mut(0).copy_from_slice(&rgba);
@@ -5010,18 +5044,38 @@ mod tests {
 		let e = FFmpegEncoder::with_params(params);
 		e.open().expect("open H.264");
 
-		let selected = {
+		let (selected, thread_count) = {
 			let state = e.state.lock().unwrap_or_else(|x| x.into_inner());
 			let output = state.output.as_ref().expect("open output");
-			output.video.as_ref().and_then(|video| {
-				video.encoder.codec().map(|codec| codec.name().to_string())
-			})
+			output
+				.video
+				.as_ref()
+				.map(|video| {
+					(
+						video.encoder.codec().map(|codec| codec.name().to_string()),
+						unsafe { (*video.encoder.as_ptr()).thread_count },
+					)
+				})
+				.unwrap_or((None, 0))
 		};
 		assert!(
 			candidates
 				.iter()
 				.any(|codec| Some(codec.name()) == selected.as_deref()),
 			"selected encoder {selected:?} is not in the priority list"
+		);
+		let hardware = hardware_video_encoder_names(1)
+			.iter()
+			.any(|name| Some(*name) == selected.as_deref());
+		let expected_threads = if hardware {
+			1
+		} else {
+			software_codec_threads().parse::<i32>().unwrap()
+		};
+		assert_eq!(
+			thread_count, expected_threads,
+			"{} encoder thread policy",
+			if hardware { "hardware" } else { "software" }
 		);
 
 		for frame in 0..3 {
@@ -5088,6 +5142,14 @@ mod tests {
 			assert!(
 				state.hw_device.is_none(),
 				"the reopened session is software"
+			);
+			let DecoderInner::Video(decoder) = &state.inner else {
+				panic!("video stream reopened as audio");
+			};
+			assert_eq!(
+				unsafe { (*decoder.as_ptr()).thread_count }.to_string(),
+				software_codec_threads(),
+				"software fallback enables the CPU thread budget"
 			);
 		}
 		if hardware_before {

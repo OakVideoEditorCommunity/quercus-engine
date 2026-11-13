@@ -19,5 +19,3 @@ opt-level = 1
 # Keep the standalone engine workspace on the same patched binding as Oak's
 # downstream workspace. Besides the GCC/zlib fixes, this revision models C
 # strings with c_char, which is required on aarch64 Linux.
-[patch.crates-io]
-ocio-rs = { git = "https://github.com/Mike-Solar/ocio-rs.git", rev = "30338c6a169bbbada862fb3ac256e79b656159cf" }

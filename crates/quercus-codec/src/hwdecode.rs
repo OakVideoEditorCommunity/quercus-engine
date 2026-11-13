@@ -225,7 +225,7 @@ pub fn device_type_name(device_type: sys::AVHWDeviceType) -> &'static str {
 /// `device_type` attached — FFmpeg then engages the matching hwaccel
 /// (e.g. `h264_videotoolbox_hwaccel`) on open. Returns the opened codec
 /// The hardware pixel format paired with `device_type`.
-fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::AVPixelFormat> {
+pub(crate) fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::AVPixelFormat> {
 	use sys::AVHWDeviceType;
 	use sys::AVPixelFormat;
 	match device_type {
@@ -423,7 +423,7 @@ pub fn open_hw_accel(
 	unsafe { (*context.as_mut_ptr()).hw_device_ctx = device };
 	unsafe { attach_hw_get_format(context.as_mut_ptr()); }
 	let mut opts = Dictionary::new();
-	opts.set("threads", &crate::ffmpeg::decoder_threads());
+	opts.set("threads", "1");
 	let decoder_started = std::time::Instant::now();
 	let opened = match context.decoder().open_as_with(codec, opts) {
 		Ok(opened) => opened,
@@ -568,11 +568,16 @@ mod tests {
 			codec,
 			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
 		);
-		let Some((_opened, _device)) = opened else {
+		let Some((opened, _device)) = opened else {
 			// Headless runners and FFmpeg builds without VideoToolbox support
 			// use the mandated software fallback; there is no device to assert.
 			return;
 		};
+		assert_eq!(
+			unsafe { (*opened.as_ptr()).thread_count },
+			1,
+			"hardware decoding stays single-threaded"
+		);
 	}
 
 	/// A device type marked unavailable is short-circuited before any

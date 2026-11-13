@@ -44,6 +44,7 @@ unsafe extern "C" {
 	fn quercus_render_manager_set_graph_snapshot(project: *const c_void, revision: u64) -> bool;
 	fn quercus_render_manager_resync_graph_snapshot(project: *const c_void, revision: u64) -> bool;
 	fn quercus_render_manager_clear_graph_snapshot();
+	fn quercus_render_gpu_init(backend_kind: i32) -> bool;
 	fn quercus_render_gpu_install(
 		wgpu_device: *const c_void,
 		wgpu_queue: *const c_void,
@@ -266,6 +267,24 @@ impl GpuBackend {
 	}
 }
 
+/// Initializes the engine-owned shared GPU context with the requested
+/// backend, before the first render. Unlike [`gpu_install`] this needs no
+/// host wgpu device/queue pointers, so pure C hosts can use it too: the
+/// engine creates and owns the device exactly like the lazy first-render
+/// path, just eagerly and with an explicit backend choice.
+///
+/// Only the first initialization chooses the backend — once the shared
+/// context exists (an earlier init, render, or adopt), later calls are
+/// no-ops. Returns whether a GPU context is available afterwards; `false`
+/// means rendering stays on the CPU path (requesting [`GpuBackend::Cpu`]
+/// therefore always returns `false`). Does not set the host-installed
+/// flag: call [`gpu_mark_host`] for the hardware-surface import gate.
+/// A driver panic during device creation is contained and reported as
+/// `false`.
+pub fn gpu_init(backend: GpuBackend) -> bool {
+	unsafe { quercus_render_gpu_init(backend as i32) }
+}
+
 /// Hands the host's wgpu device/queue to the engine so the render thread
 /// creates its textures on the presenter's device (zero-copy present).
 ///
@@ -443,6 +462,13 @@ mod tests {
 		assert!(swizzle_bgra8_to_rgba8(&src, &mut dst));
 		assert_eq!(dst, [30, 20, 10, 255]);
 		assert!(!swizzle_bgra8_to_rgba8(&src, &mut dst[..3]));
+	}
+
+	#[test]
+	fn gpu_init_is_idempotent_and_matches_kind() {
+		let available = gpu_init(GpuBackend::Auto);
+		assert_eq!(available, gpu_kind().is_some());
+		assert_eq!(available, gpu_init(GpuBackend::Auto), "init is idempotent");
 	}
 
 	#[test]

@@ -72,18 +72,18 @@ unsafe extern "C" {
 
 	fn quercus_otio_composable_kind(c: *const c_void) -> i32;
 	fn quercus_otio_composable_name(c: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_otio_composable_source_range(c: *const c_void, out: *mut TimeRange) -> bool;
+	fn quercus_otio_composable_source_range(c: *const c_void, out: *mut QuercusOtioTimeRange) -> bool;
 	fn quercus_otio_clip_new(
 		name: *const u8,
 		name_len: usize,
 		url: *const u8,
 		url_len: usize,
-		source_range: *const TimeRange,
+		source_range: *const QuercusOtioTimeRange,
 	) -> *mut c_void;
 	fn quercus_otio_gap_new(
 		name: *const u8,
 		name_len: usize,
-		source_range: *const TimeRange,
+		source_range: *const QuercusOtioTimeRange,
 	) -> *mut c_void;
 	fn quercus_otio_transition_new(
 		name: *const u8,
@@ -91,7 +91,7 @@ unsafe extern "C" {
 		in_offset: RationalTime,
 		out_offset: RationalTime,
 	) -> *mut c_void;
-	fn quercus_otio_clip_set_source_range(c: *mut c_void, range: TimeRange) -> bool;
+	fn quercus_otio_clip_set_source_range(c: *mut c_void, range: QuercusOtioTimeRange) -> bool;
 	fn quercus_otio_clip_media_url(c: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_otio_clip_set_media_url(c: *mut c_void, url: *const u8, url_len: usize) -> bool;
 	fn quercus_otio_clip_enabled(c: *const c_void) -> i32;
@@ -138,20 +138,23 @@ impl RationalTime {
 	}
 }
 
+/// Backwards-compatible alias for [`QuercusOtioTimeRange`].
+pub type TimeRange = QuercusOtioTimeRange;
+
 /// A duration and its start time (OTIO `TimeRange`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct TimeRange {
+pub struct QuercusOtioTimeRange {
 	/// The `start_time` field.
 	pub start_time: RationalTime,
 	/// The `duration` field.
 	pub duration: RationalTime,
 }
 
-impl TimeRange {
-	/// Builds a `TimeRange` spanning `duration` from `start_time`.
+impl QuercusOtioTimeRange {
+	/// Builds a `QuercusOtioTimeRange` spanning `duration` from `start_time`.
 	///
-	/// Arguments follow the C++ `TimeRange(start_time, duration)` order, which is the
+	/// Arguments follow the C++ `QuercusOtioTimeRange(start_time, duration)` order, which is the
 	/// reverse of the OTIO JSON field order; both times are stored verbatim and are
 	/// expected to share the same `rate` — nothing is converted or validated. Used by
 	/// `Composable::clip`/`Composable::gap` to describe a used source portion.
@@ -622,11 +625,11 @@ impl Composable {
 	///
 	/// Panics if the engine returns a null handle, which the wrapper treats as
 	/// impossible for valid input.
-	pub fn clip(name: &str, url: Option<&str>, source_range: Option<TimeRange>) -> Composable {
+	pub fn clip(name: &str, url: Option<&str>, source_range: Option<QuercusOtioTimeRange>) -> Composable {
 		let (u, ul) = url.map_or((std::ptr::null(), 0), |u| (u.as_ptr(), u.len()));
 		let range = source_range
 			.as_ref()
-			.map_or(std::ptr::null(), |r| r as *const TimeRange);
+			.map_or(std::ptr::null(), |r| r as *const QuercusOtioTimeRange);
 		let ptr = unsafe { quercus_otio_clip_new(name.as_ptr(), name.len(), u, ul, range) };
 		assert!(!ptr.is_null(), "valid input always builds a clip");
 		Composable { ptr }
@@ -642,10 +645,10 @@ impl Composable {
 	///
 	/// Panics if the engine returns a null handle, which the wrapper treats as
 	/// impossible for valid input.
-	pub fn gap(name: &str, source_range: Option<TimeRange>) -> Composable {
+	pub fn gap(name: &str, source_range: Option<QuercusOtioTimeRange>) -> Composable {
 		let range = source_range
 			.as_ref()
-			.map_or(std::ptr::null(), |r| r as *const TimeRange);
+			.map_or(std::ptr::null(), |r| r as *const QuercusOtioTimeRange);
 		let ptr = unsafe { quercus_otio_gap_new(name.as_ptr(), name.len(), range) };
 		assert!(!ptr.is_null(), "valid input always builds a gap");
 		Composable { ptr }
@@ -695,8 +698,8 @@ impl Composable {
 
 	/// The source range of clips and gaps (None for other kinds or an
 	/// unset range).
-	pub fn source_range(&self) -> Option<TimeRange> {
-		let mut out = TimeRange::default();
+	pub fn source_range(&self) -> Option<QuercusOtioTimeRange> {
+		let mut out = QuercusOtioTimeRange::default();
 		unsafe { quercus_otio_composable_source_range(self.ptr, &mut out) }.then_some(out)
 	}
 
@@ -705,7 +708,7 @@ impl Composable {
 	/// `range` is in the media's own rate and replaces the previous value. Returns
 	/// `false` when the composable is not a clip; the range is then unchanged. Getter:
 	/// `Composable::source_range`, which also reports gaps.
-	pub fn set_clip_source_range(&self, range: TimeRange) -> bool {
+	pub fn set_clip_source_range(&self, range: QuercusOtioTimeRange) -> bool {
 		unsafe { quercus_otio_clip_set_source_range(self.ptr, range) }
 	}
 
@@ -812,7 +815,7 @@ mod tests {
 		assert!(timeline.set_global_start_time(RationalTime::new(0.0, 24.0)));
 
 		let track = Track::new(track_kind::VIDEO);
-		let range = TimeRange::new(RationalTime::new(10.0, 24.0), RationalTime::new(48.0, 24.0));
+		let range = QuercusOtioTimeRange::new(RationalTime::new(10.0, 24.0), RationalTime::new(48.0, 24.0));
 		let clip = Composable::clip("clip1", Some("file:///tmp/a.mov"), Some(range));
 		assert_eq!(clip.kind(), Some(ComposableKind::Clip));
 		track.append_child(&clip);

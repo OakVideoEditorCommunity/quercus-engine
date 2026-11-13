@@ -675,46 +675,12 @@ fn output_transfer_fn(transfer: OutputTransfer) -> fn(f32) -> f32 {
 /// worth the spawn overhead (a single 1080p frame is ~8 Mpx; the per-
 /// pixel work below is memory- and ALU-bound, so bands scale).
 fn par_pixels_f32(samples: &mut [f32], f: impl Fn(&mut [f32]) + Sync) {
-	par_bands(samples, 4, f);
+	crate::cpuparallel::for_each_band(samples, 4, f);
 }
 
 /// The `&mut [u8]` analog of [`par_pixels_f32`] (16 bytes per pixel).
 fn par_pixels_bytes(bytes: &mut [u8], f: impl Fn(&mut [u8]) + Sync) {
-	par_bands(bytes, 16, f);
-}
-
-/// Run `f` over `buf` in aligned bands, optionally on scoped threads.
-///
-/// `buf` is the whole slab; `align` is the element count of one logical
-/// unit (4 for F32 RGBA, 16 for byte RGBA) so a band never splits a pixel.
-/// Splits into up to 8 bands only when `buf.len() / align >= 2^19` units (a
-/// 1080p frame clears the threshold); otherwise it calls `f(buf)` on the
-/// caller thread. Each band is passed as `&mut [T]`; `f` must not assume
-/// equal-length bands. Used by [`par_pixels_f32`]/[`par_pixels_bytes`].
-fn par_bands<T: Send>(buf: &mut [T], align: usize, f: impl Fn(&mut [T]) + Sync) {
-	let len = buf.len();
-	let bands = if len / align >= (1 << 19) {
-		std::thread::available_parallelism()
-			.map(|n| n.get())
-			.unwrap_or(1)
-			.min(8)
-	} else {
-		1
-	};
-	if bands <= 1 {
-		f(buf);
-		return;
-	}
-	let band_len = (len / bands).div_ceil(align) * align;
-	let f = &f;
-	std::thread::scope(|s| {
-		let mut rest = buf;
-		while !rest.is_empty() {
-			let (band, tail) = rest.split_at_mut(band_len.min(rest.len()));
-			s.spawn(move || f(band));
-			rest = tail;
-		}
-	});
+	crate::cpuparallel::for_each_band(bytes, 16, f);
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1022,7 @@ pub fn yuv444p16_to_rgb_f32(
 	} else {
 		1.0 / 56064.0
 	};
-	for row in 0..height {
+	crate::cpuparallel::for_each_row(out, width * 4, height, width, |row, out_row| {
 		let y_row = row * y_stride;
 		let u_row = row * u_stride;
 		let v_row = row * v_stride;
@@ -1071,13 +1037,13 @@ pub fn yuv444p16_to_rgb_f32(
 			let r = yn + 2.0 * (1.0 - kr) * crn;
 			let b = yn + 2.0 * (1.0 - kb) * cbn;
 			let g = (yn - kr * r - kb * b) / kg;
-			let px = (row * width + x) * 4;
-			out[px] = r;
-			out[px + 1] = g;
-			out[px + 2] = b;
-			out[px + 3] = 1.0;
+			let px = x * 4;
+			out_row[px] = r;
+			out_row[px + 1] = g;
+			out_row[px + 2] = b;
+			out_row[px + 3] = 1.0;
 		}
-	}
+	});
 }
 
 #[cfg(test)]

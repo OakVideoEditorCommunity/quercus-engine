@@ -276,6 +276,12 @@ fn create_lock() -> MutexGuard<'static, ()> {
 	lock(&LOCK)
 }
 
+fn backend_diagnostic(message: impl std::fmt::Display) {
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!("[gpu-backend] {message}");
+	}
+}
+
 /// The context surface textures depend on (trait object in
 /// [`Texture::Gpu`]). `GpuContext` is the production implementor; tests
 /// can supply a fake.
@@ -854,6 +860,7 @@ impl GpuContext {
 		// crashes on concurrent instance creation (see `create_lock`).
 		let _create_guard = create_lock();
 		for backends in prefer.wgpu_fallbacks() {
+			backend_diagnostic(format_args!("trying {backends:?}"));
 			let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
 				backends,
 				..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -865,9 +872,18 @@ impl GpuContext {
 					force_fallback_adapter: false,
 				})) {
 					Ok(a) => a,
-					Err(_) => continue, // try the next backend in the fallback order
+					Err(error) => {
+						backend_diagnostic(format_args!(
+							"request_adapter({backends:?}) failed: {error}"
+						));
+						continue;
+					}
 				};
 			let info = adapter.get_info();
+			backend_diagnostic(format_args!(
+				"adapter: name={:?} backend={:?} vendor=0x{:x} device=0x{:x} driver={:?} {}",
+				info.name, info.backend, info.vendor, info.device, info.driver, info.driver_info
+			));
 			// The pipeline's canonical render target is Rgba32Float;
 			// adapters that cannot render it (downlevel GL/GLES without
 			// GL_EXT_color_buffer_float — e.g. some software Mesa
@@ -878,6 +894,10 @@ impl GpuContext {
 				.allowed_usages
 				.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
 			{
+				backend_diagnostic(format_args!(
+					"skipping {}: Rgba32Float is not renderable",
+					info.name
+				));
 				continue;
 			}
 			// Linear sampling on Rgba32Float needs FLOAT32_FILTERABLE
@@ -935,12 +955,26 @@ impl GpuContext {
 					trace: wgpu::Trace::Off,
 				})) {
 					Ok(dq) => dq,
-					Err(_) => continue,
+					Err(error) => {
+						backend_diagnostic(format_args!(
+							"request_device({} / {:?}) failed: {error}",
+							info.name, info.backend
+						));
+						continue;
+					}
 				};
 			let kind = BackendKind::from_wgpu_backend(info.backend);
 			if kind == BackendKind::Cpu {
+				backend_diagnostic(format_args!(
+					"skipping {}: unsupported reported backend {:?}",
+					info.name, info.backend
+				));
 				continue;
 			}
+			backend_diagnostic(format_args!(
+				"selected {} with {:?}",
+				info.name, info.backend
+			));
 			let device_lost = Arc::new(AtomicBool::new(false));
 			install_device_lost_logging(&device, device_lost.clone());
 			return Some(Arc::new(Self {
@@ -3150,6 +3184,29 @@ impl GpuContext {
 			slot.decided = true;
 		}
 		slot.ctx.clone()
+	}
+
+	/// Eagerly create the engine-owned shared context with an explicit
+	/// backend preference, instead of the user config [`GpuContext::shared`]
+	/// would read. This is the entry point for hosts that cannot hand over a
+	/// wgpu device (a pure C ABI consumer): the engine creates and owns the
+	/// device exactly as the lazy path would.
+	///
+	/// Only the first initialization chooses the backend: when the slot is
+	/// already decided (an earlier init, render, or adopt), this is a no-op.
+	/// Does not set the host-installed flag — the hardware-surface import
+	/// gate keeps its lazy-path behavior; [`GpuContext::mark_host_context`]
+	/// remains the way to declare the device as the host's. Returns whether
+	/// a GPU context exists afterwards (`false` means rendering stays on the
+	/// CPU path; requesting [`BackendKind::Cpu`] therefore always returns
+	/// `false`).
+	pub fn init_shared(kind: BackendKind) -> bool {
+		let mut slot = lock(shared_slot());
+		if !slot.decided {
+			slot.ctx = Self::create(kind);
+			slot.decided = true;
+		}
+		slot.ctx.is_some()
 	}
 
 	/// Install (or clear) the process-wide shared context (M2). Called by

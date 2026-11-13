@@ -80,6 +80,8 @@ pub mod texture;
 pub mod frame;
 pub mod backend;
 pub mod lut;
+#[doc(hidden)]
+pub mod cpuparallel;
 
 pub use handle::CHandle;
 pub use rational::Rational;

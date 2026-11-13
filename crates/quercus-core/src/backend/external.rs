@@ -193,6 +193,51 @@ unsafe extern "system" {
 	fn CloseHandle(h_object: *mut c_void) -> i32;
 }
 
+#[cfg(target_os = "windows")]
+#[link(name = "opengl32")]
+unsafe extern "system" {
+	fn wglGetProcAddress(name: *const u8) -> *mut c_void;
+	fn glDeleteTextures(count: i32, names: *const u32);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn wgl_function<T: Copy>(name: &[u8]) -> Option<T> {
+	let address = unsafe { wglGetProcAddress(name.as_ptr()) };
+	if address.is_null() {
+		None
+	} else {
+		Some(unsafe { std::mem::transmute_copy(&address) })
+	}
+}
+
+/// Release one registered D3D11/GL object while its WGL context is current.
+#[cfg(target_os = "windows")]
+unsafe fn destroy_wgl_d3d11_texture(device: usize, object: usize, name: u32) {
+	if object != 0 {
+		if let Some(unlock) = wgl_function::<unsafe extern "system" fn(usize, i32, *const usize) -> i32>(
+			b"wglDXUnlockObjectsNV\0",
+		) {
+			unsafe { unlock(device, 1, &object) };
+		}
+		if let Some(unregister) =
+			wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
+				b"wglDXUnregisterObjectNV\0",
+			) {
+			unsafe { unregister(device, object) };
+		}
+	}
+	if name != 0 {
+		unsafe { glDeleteTextures(1, &name) };
+	}
+	if device != 0 {
+		if let Some(close) = wgl_function::<unsafe extern "system" fn(usize) -> i32>(
+			b"wglDXCloseDeviceNV\0",
+		) {
+			unsafe { close(device) };
+		}
+	}
+}
+
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 struct AshDispatch {
 	_entry: ash::Entry,
@@ -648,6 +693,103 @@ impl GpuContext {
 				layer: None,
 			},
 		)
+	}
+
+	/// Run `f` with the engine-owned WGL context current and exclusively locked.
+	///
+	/// Adopted GL devices do not expose their owning instance/adapter through
+	/// wgpu, so they return [`Error::State`] and use CPU staging instead.
+	#[cfg(target_os = "windows")]
+	pub fn with_wgl_context<R>(&self, f: impl FnOnce() -> R) -> Result<R> {
+		use wgpu::hal;
+
+		if self.kind != BackendKind::Gl {
+			return Err(Error::State);
+		}
+		let adapter = self._adapter.as_ref().ok_or(Error::State)?;
+		let hal_adapter = unsafe { adapter.as_hal::<hal::api::Gles>() }.ok_or(Error::State)?;
+		let _context = hal_adapter.adapter_context().lock();
+		Ok(f())
+	}
+
+	/// Wrap an RGBA8 D3D11 texture registered through `WGL_NV_DX_interop`.
+	///
+	/// The caller creates and locks the registration with
+	/// [`GpuContext::with_wgl_context`]. Ownership of the WGL device/object,
+	/// GL texture name and `keep_alive` passes here for both success and error.
+	/// They are released with the same WGL context when the token is destroyed.
+	#[cfg(target_os = "windows")]
+	pub fn import_d3d11_gl_texture(
+		self: &Arc<Self>,
+		wgl_device: usize,
+		wgl_object: usize,
+		texture_name: u32,
+		width: u32,
+		height: u32,
+		keep_alive: ImportGuard,
+	) -> Result<u64> {
+		use std::num::NonZeroU32;
+		use wgpu::hal;
+
+		let mut keep_alive = Some(keep_alive);
+		let result = (|| {
+			if self.kind != BackendKind::Gl || width == 0 || height == 0 {
+				return Err(Error::State);
+			}
+			let Some(name) = NonZeroU32::new(texture_name) else {
+				return Err(Error::Invalid);
+			};
+			let guard = unsafe { self.device.as_hal::<hal::api::Gles>() }.ok_or(Error::State)?;
+			let hal_device: &hal::gles::Device = &guard;
+			let hal_desc = hal::TextureDescriptor {
+				label: Some("quercusrender-imported-d3d11-gl"),
+				size: wgpu::Extent3d {
+					width,
+					height,
+					depth_or_array_layers: 1,
+				},
+				mip_level_count: 1,
+				sample_count: 1,
+				dimension: wgpu::TextureDimension::D2,
+				format: wgpu::TextureFormat::Rgba8Unorm,
+				usage: wgpu_types::TextureUses::RESOURCE,
+				memory_flags: hal::MemoryFlags::empty(),
+				view_formats: Vec::new(),
+			};
+			let weak = Arc::downgrade(self);
+			let drop_keep = keep_alive.take();
+			let drop_guard: hal::DropCallback = Box::new(move || {
+				if let Some(ctx) = weak.upgrade() {
+					let _ = ctx.with_wgl_context(|| unsafe {
+						destroy_wgl_d3d11_texture(wgl_device, wgl_object, texture_name)
+					});
+				}
+				if let Some(keep) = drop_keep {
+					keep();
+				}
+			});
+			let hal_texture = unsafe { hal_device.texture_from_raw(name, &hal_desc, Some(drop_guard)) };
+			self.register_imported_texture::<hal::api::Gles>(
+				hal_texture,
+				ImportedTextureDesc {
+					width,
+					height,
+					array_layers: 1,
+					format: wgpu::TextureFormat::Rgba8Unorm,
+					aspect: wgpu::TextureAspect::All,
+					layer: None,
+				},
+			)
+		})();
+		if result.is_err() {
+			let _ = self.with_wgl_context(|| unsafe {
+				destroy_wgl_d3d11_texture(wgl_device, wgl_object, texture_name)
+			});
+			if let Some(keep) = keep_alive.take() {
+				keep();
+			}
+		}
+		result
 	}
 
 	/// Import one slice of a D3D11VA texture array shared as an NT handle

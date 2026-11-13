@@ -50,6 +50,14 @@ python3 tooling/gen_c_header.py --check   # CI guard
 ```
 
 The public C interface is `crates/quercus-engine/include/quercus_engine.h`.
+The host-facing guide, generated per-function reference and Windows
+build/link instructions are in [`docs/c-api/`](c-api/README.md); regenerate
+the reference with:
+
+```sh
+python3 tooling/gen_c_api_docs.py --write   # regenerate
+python3 tooling/gen_c_api_docs.py --check   # CI guard
+```
 
 ## Linking the dylib into an application
 
@@ -73,6 +81,13 @@ xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --workspace
 Use the MSYS2 UCRT64 shell for `tooling/install-deps.sh`, or point
 `FFMPEG_DIR` at a prebuilt FFmpeg 8.x shared build (BtbN's GPL archive is
 what CI uses).
+
+Set `OAK_DEBUG_HW=1` to print the adapter selected at each backend attempt,
+the concrete `request_adapter` / `request_device` error, and D3D11→GL interop
+failures. D3D11VA decoding uses native NV12/P010 import on Vulkan. On GL it
+first tries D3D11 VideoProcessor → RGBA8 → `WGL_NV_DX_interop`; if the driver
+does not expose that path, decoding stays hardware-accelerated but frames use
+CPU staging. The GL conversion quantizes P010 to 8-bit RGBA.
 
 ## macOS
 

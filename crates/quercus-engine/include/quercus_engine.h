@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 58 POD structs, 14 enums, 742 functions. */
+/* 60 POD structs, 14 enums, 743 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -92,81 +92,81 @@ typedef enum RetrieveAudioStatus {
     QUERCUS_RETRIEVEAUDIOSTATUS_DECODERERROR = 4
 } RetrieveAudioStatus;
 typedef uint32_t QuercusEditOp;
-#define QUERCUS_RCUSEDITOP_ADDTRACK 0U
-#define QUERCUS_RCUSEDITOP_REMOVETRACK 1U
-#define QUERCUS_RCUSEDITOP_SETTRACKHEIGHT 2U
-#define QUERCUS_RCUSEDITOP_SETTRACKMUTED 3U
-#define QUERCUS_RCUSEDITOP_SETTRACKLOCKED 4U
-#define QUERCUS_RCUSEDITOP_CREATESEQUENCE 5U
-#define QUERCUS_RCUSEDITOP_SETSEQUENCEPARAMETERS 6U
-#define QUERCUS_RCUSEDITOP_SETSEQUENCEPLAYHEAD 7U
-#define QUERCUS_RCUSEDITOP_CREATEFOLDER 8U
-#define QUERCUS_RCUSEDITOP_CREATETEXTFOOTAGE 9U
-#define QUERCUS_RCUSEDITOP_IMPORTFOOTAGE 10U
-#define QUERCUS_RCUSEDITOP_ENSURESEQUENCESMOUNTED 11U
-#define QUERCUS_RCUSEDITOP_REPROBEUNPROBEDFOOTAGE 12U
-#define QUERCUS_RCUSEDITOP_CREATEADJUSTMENTLAYER 13U
-#define QUERCUS_RCUSEDITOP_PLACEFOOTAGECLIP 14U
-#define QUERCUS_RCUSEDITOP_PLACENESTEDSEQUENCECLIP 15U
-#define QUERCUS_RCUSEDITOP_PLACETEXTCLIP 16U
-#define QUERCUS_RCUSEDITOP_PLACEGENERATORCLIP 17U
-#define QUERCUS_RCUSEDITOP_PLACEFOOTAGECLIPSLINKED 18U
-#define QUERCUS_RCUSEDITOP_ADDTRANSITIONATSEAM 19U
-#define QUERCUS_RCUSEDITOP_ADDTRANSITIONATEDGE 20U
-#define QUERCUS_RCUSEDITOP_ADDDEFAULTTRANSITION 21U
-#define QUERCUS_RCUSEDITOP_SETTRANSITIONLENGTH 22U
-#define QUERCUS_RCUSEDITOP_SPLITCLIP 23U
-#define QUERCUS_RCUSEDITOP_SPLITCLIPSPRESERVINGLINKS 24U
-#define QUERCUS_RCUSEDITOP_TRIMCLIP 25U
-#define QUERCUS_RCUSEDITOP_RIPPLETRIMCLIP 26U
-#define QUERCUS_RCUSEDITOP_ROLLEDIT 27U
-#define QUERCUS_RCUSEDITOP_SLIDECLIP 28U
-#define QUERCUS_RCUSEDITOP_SLIPCLIP 29U
-#define QUERCUS_RCUSEDITOP_MOVECLIP 30U
-#define QUERCUS_RCUSEDITOP_MOVECLIPTOTRACK 31U
-#define QUERCUS_RCUSEDITOP_MOVECLIPWITHLINKS 32U
-#define QUERCUS_RCUSEDITOP_SETCLIPSLINKED 33U
-#define QUERCUS_RCUSEDITOP_DELETECLIP 34U
-#define QUERCUS_RCUSEDITOP_RIPPLEDELETECLIP 35U
-#define QUERCUS_RCUSEDITOP_DELETEAREA 36U
-#define QUERCUS_RCUSEDITOP_ROLLCLIPEDGETO 37U
-#define QUERCUS_RCUSEDITOP_MARKERADD 38U
-#define QUERCUS_RCUSEDITOP_MARKERREMOVE 39U
-#define QUERCUS_RCUSEDITOP_WORKAREASET 40U
-#define QUERCUS_RCUSEDITOP_WORKAREASETUNDOABLE 41U
-#define QUERCUS_RCUSEDITOP_REMOVENODE 42U
-#define QUERCUS_RCUSEDITOP_CONNECT 43U
-#define QUERCUS_RCUSEDITOP_DISCONNECT 44U
-#define QUERCUS_RCUSEDITOP_SETCONTEXTPOSITION 45U
-#define QUERCUS_RCUSEDITOP_COPYCLIPS 46U
-#define QUERCUS_RCUSEDITOP_PASTECLIPS 47U
-#define QUERCUS_RCUSEDITOP_SETBLOCKSENABLED 48U
-#define QUERCUS_RCUSEDITOP_SETCLIPSSPEED 49U
-#define QUERCUS_RCUSEDITOP_RENAMEBLOCKS 50U
-#define QUERCUS_RCUSEDITOP_DUPLICATECLIPS 51U
-#define QUERCUS_RCUSEDITOP_PASTECLIPSINSERT 52U
-#define QUERCUS_RCUSEDITOP_NESTCLIPS 53U
-#define QUERCUS_RCUSEDITOP_EFFECTINSERT 54U
-#define QUERCUS_RCUSEDITOP_EFFECTREMOVE 55U
-#define QUERCUS_RCUSEDITOP_EFFECTMOVE 56U
-#define QUERCUS_RCUSEDITOP_EFFECTSETENABLED 57U
-#define QUERCUS_RCUSEDITOP_SETNODESTANDARDVALUE 58U
-#define QUERCUS_RCUSEDITOP_UPSERTNODEKEYFRAME 59U
-#define QUERCUS_RCUSEDITOP_REMOVENODEKEYFRAME 60U
-#define QUERCUS_RCUSEDITOP_SETNODEVALUEATTIME 61U
-#define QUERCUS_RCUSEDITOP_PUSHNODEBUTTON 62U
-#define QUERCUS_RCUSEDITOP_SETNODETEXTVALUE 63U
-#define QUERCUS_RCUSEDITOP_REPLACEFOOTAGE 64U
-#define QUERCUS_RCUSEDITOP_DELETEENTRY 65U
-#define QUERCUS_RCUSEDITOP_SETFOOTAGEPROXYPARAMS 66U
-#define QUERCUS_RCUSEDITOP_CLEARFOOTAGEPROXYPARAMS 67U
-#define QUERCUS_RCUSEDITOP_CREATESEQUENCEFROMFOOTAGE 68U
-#define QUERCUS_RCUSEDITOP_DELETEPROXY 69U
-#define QUERCUS_RCUSEDITOP_SETPROXYENABLED 70U
-#define QUERCUS_RCUSEDITOP_SETMULTICAMENABLED 71U
-#define QUERCUS_RCUSEDITOP_SWITCHMULTICAM 72U
-#define QUERCUS_RCUSEDITOP_CREATEMULTICAMSEQUENCE 73U
-#define QUERCUS_RCUSEDITOP_CREATENODE 74U
+#define QUERCUS_EDITOP_ADDTRACK 0U
+#define QUERCUS_EDITOP_REMOVETRACK 1U
+#define QUERCUS_EDITOP_SETTRACKHEIGHT 2U
+#define QUERCUS_EDITOP_SETTRACKMUTED 3U
+#define QUERCUS_EDITOP_SETTRACKLOCKED 4U
+#define QUERCUS_EDITOP_CREATESEQUENCE 5U
+#define QUERCUS_EDITOP_SETSEQUENCEPARAMETERS 6U
+#define QUERCUS_EDITOP_SETSEQUENCEPLAYHEAD 7U
+#define QUERCUS_EDITOP_CREATEFOLDER 8U
+#define QUERCUS_EDITOP_CREATETEXTFOOTAGE 9U
+#define QUERCUS_EDITOP_IMPORTFOOTAGE 10U
+#define QUERCUS_EDITOP_ENSURESEQUENCESMOUNTED 11U
+#define QUERCUS_EDITOP_REPROBEUNPROBEDFOOTAGE 12U
+#define QUERCUS_EDITOP_CREATEADJUSTMENTLAYER 13U
+#define QUERCUS_EDITOP_PLACEFOOTAGECLIP 14U
+#define QUERCUS_EDITOP_PLACENESTEDSEQUENCECLIP 15U
+#define QUERCUS_EDITOP_PLACETEXTCLIP 16U
+#define QUERCUS_EDITOP_PLACEGENERATORCLIP 17U
+#define QUERCUS_EDITOP_PLACEFOOTAGECLIPSLINKED 18U
+#define QUERCUS_EDITOP_ADDTRANSITIONATSEAM 19U
+#define QUERCUS_EDITOP_ADDTRANSITIONATEDGE 20U
+#define QUERCUS_EDITOP_ADDDEFAULTTRANSITION 21U
+#define QUERCUS_EDITOP_SETTRANSITIONLENGTH 22U
+#define QUERCUS_EDITOP_SPLITCLIP 23U
+#define QUERCUS_EDITOP_SPLITCLIPSPRESERVINGLINKS 24U
+#define QUERCUS_EDITOP_TRIMCLIP 25U
+#define QUERCUS_EDITOP_RIPPLETRIMCLIP 26U
+#define QUERCUS_EDITOP_ROLLEDIT 27U
+#define QUERCUS_EDITOP_SLIDECLIP 28U
+#define QUERCUS_EDITOP_SLIPCLIP 29U
+#define QUERCUS_EDITOP_MOVECLIP 30U
+#define QUERCUS_EDITOP_MOVECLIPTOTRACK 31U
+#define QUERCUS_EDITOP_MOVECLIPWITHLINKS 32U
+#define QUERCUS_EDITOP_SETCLIPSLINKED 33U
+#define QUERCUS_EDITOP_DELETECLIP 34U
+#define QUERCUS_EDITOP_RIPPLEDELETECLIP 35U
+#define QUERCUS_EDITOP_DELETEAREA 36U
+#define QUERCUS_EDITOP_ROLLCLIPEDGETO 37U
+#define QUERCUS_EDITOP_MARKERADD 38U
+#define QUERCUS_EDITOP_MARKERREMOVE 39U
+#define QUERCUS_EDITOP_WORKAREASET 40U
+#define QUERCUS_EDITOP_WORKAREASETUNDOABLE 41U
+#define QUERCUS_EDITOP_REMOVENODE 42U
+#define QUERCUS_EDITOP_CONNECT 43U
+#define QUERCUS_EDITOP_DISCONNECT 44U
+#define QUERCUS_EDITOP_SETCONTEXTPOSITION 45U
+#define QUERCUS_EDITOP_COPYCLIPS 46U
+#define QUERCUS_EDITOP_PASTECLIPS 47U
+#define QUERCUS_EDITOP_SETBLOCKSENABLED 48U
+#define QUERCUS_EDITOP_SETCLIPSSPEED 49U
+#define QUERCUS_EDITOP_RENAMEBLOCKS 50U
+#define QUERCUS_EDITOP_DUPLICATECLIPS 51U
+#define QUERCUS_EDITOP_PASTECLIPSINSERT 52U
+#define QUERCUS_EDITOP_NESTCLIPS 53U
+#define QUERCUS_EDITOP_EFFECTINSERT 54U
+#define QUERCUS_EDITOP_EFFECTREMOVE 55U
+#define QUERCUS_EDITOP_EFFECTMOVE 56U
+#define QUERCUS_EDITOP_EFFECTSETENABLED 57U
+#define QUERCUS_EDITOP_SETNODESTANDARDVALUE 58U
+#define QUERCUS_EDITOP_UPSERTNODEKEYFRAME 59U
+#define QUERCUS_EDITOP_REMOVENODEKEYFRAME 60U
+#define QUERCUS_EDITOP_SETNODEVALUEATTIME 61U
+#define QUERCUS_EDITOP_PUSHNODEBUTTON 62U
+#define QUERCUS_EDITOP_SETNODETEXTVALUE 63U
+#define QUERCUS_EDITOP_REPLACEFOOTAGE 64U
+#define QUERCUS_EDITOP_DELETEENTRY 65U
+#define QUERCUS_EDITOP_SETFOOTAGEPROXYPARAMS 66U
+#define QUERCUS_EDITOP_CLEARFOOTAGEPROXYPARAMS 67U
+#define QUERCUS_EDITOP_CREATESEQUENCEFROMFOOTAGE 68U
+#define QUERCUS_EDITOP_DELETEPROXY 69U
+#define QUERCUS_EDITOP_SETPROXYENABLED 70U
+#define QUERCUS_EDITOP_SETMULTICAMENABLED 71U
+#define QUERCUS_EDITOP_SWITCHMULTICAM 72U
+#define QUERCUS_EDITOP_CREATEMULTICAMSEQUENCE 73U
+#define QUERCUS_EDITOP_CREATENODE 74U
 typedef enum NodeCategory {
     QUERCUS_NODECATEGORY_OUTPUT = 0,
     QUERCUS_NODECATEGORY_EFFECT = 1,
@@ -218,7 +218,6 @@ typedef enum PixelFormat {
 } PixelFormat;
 
 typedef struct Rational Rational;
-typedef struct RationalTime RationalTime;
 typedef struct TimeRange TimeRange;
 typedef struct AudioBlockInfo AudioBlockInfo;
 typedef struct AudioParams AudioParams;
@@ -244,6 +243,7 @@ typedef struct ProxyParams ProxyParams;
 typedef struct QuercusClipAudioEffectInfo QuercusClipAudioEffectInfo;
 typedef struct QuercusClipAudioState QuercusClipAudioState;
 typedef struct QuercusClipboardClip QuercusClipboardClip;
+typedef struct QuercusCodecEncodingParams QuercusCodecEncodingParams;
 typedef struct QuercusCodecProxyResult QuercusCodecProxyResult;
 typedef struct QuercusCodecTaskRequest QuercusCodecTaskRequest;
 typedef struct QuercusConfigSourceVTable QuercusConfigSourceVTable;
@@ -256,6 +256,8 @@ typedef struct QuercusMediaIoError QuercusMediaIoError;
 typedef struct QuercusMediaIoVTable QuercusMediaIoVTable;
 typedef struct QuercusOfxCurvePoint QuercusOfxCurvePoint;
 typedef struct QuercusOfxRectD QuercusOfxRectD;
+typedef struct RationalTime RationalTime;
+typedef struct QuercusOtioTimeRange QuercusOtioTimeRange;
 typedef struct QuercusPluginDescriptor QuercusPluginDescriptor;
 typedef struct QuercusStorageError QuercusStorageError;
 typedef struct QuercusStorageProjectInfo QuercusStorageProjectInfo;
@@ -279,10 +281,6 @@ typedef struct WaveformInfo WaveformInfo;
 struct Rational {
     int64_t num;
     int64_t den;
-};
-struct RationalTime {
-    double value;
-    double rate;
 };
 struct TimeRange {
     Rational in_;
@@ -466,6 +464,50 @@ struct QuercusClipboardClip {
     int64_t length_ts;
     double speed;
 };
+struct QuercusCodecEncodingParams {
+    uint8_t filename[1024];
+    int32_t format;
+    int32_t video_enabled;
+    int32_t video_codec;
+    int32_t video_width;
+    int32_t video_height;
+    int32_t video_time_base_num;
+    int32_t video_time_base_den;
+    int32_t video_pixel_format;
+    int32_t video_interlacing;
+    int32_t video_pixel_aspect_num;
+    int32_t video_pixel_aspect_den;
+    int64_t video_bit_rate;
+    int64_t video_min_bit_rate;
+    int64_t video_max_bit_rate;
+    int64_t video_buffer_size;
+    int32_t video_threads;
+    uint8_t video_pix_fmt[64];
+    int32_t video_is_image_sequence;
+    int32_t video_scaling_method;
+    int32_t audio_enabled;
+    int32_t audio_codec;
+    int32_t audio_sample_rate;
+    uint64_t audio_channel_layout;
+    int32_t audio_sample_format;
+    int64_t audio_bit_rate;
+    int32_t subtitles_enabled;
+    int32_t subtitles_codec;
+    int32_t subtitles_are_sidecar;
+    int32_t subtitles_sidecar_format;
+    uint8_t color_transform_output[256];
+    int32_t export_length_num;
+    int32_t export_length_den;
+    int32_t has_custom_range;
+    int64_t custom_range_in_num;
+    int64_t custom_range_in_den;
+    int64_t custom_range_out_num;
+    int64_t custom_range_out_den;
+    int32_t color_primaries;
+    int32_t color_trc;
+    int32_t color_space;
+    int32_t color_range;
+};
 struct QuercusCodecProxyResult {
     int32_t state;
     uint8_t filename[1024];
@@ -578,6 +620,14 @@ struct QuercusOfxRectD {
     double y1;
     double x2;
     double y2;
+};
+struct RationalTime {
+    double value;
+    double rate;
+};
+struct QuercusOtioTimeRange {
+    RationalTime start_time;
+    RationalTime duration;
 };
 struct QuercusPluginDescriptor {
     uint8_t id[128];
@@ -829,7 +879,7 @@ void* quercus_codec_decoder_retrieve_video_frame(void* session, const void* para
 int32_t quercus_codec_decoder_transform_image_sequence_filename(const uint8_t* filename, size_t filename_len, int64_t number, uint8_t* buf, size_t buf_len);
 void quercus_codec_encoder_add_ref(const void* session);
 bool quercus_codec_encoder_close(void* session);
-void* quercus_codec_encoder_create(const EncodingParams* params);
+void* quercus_codec_encoder_create(const QuercusCodecEncodingParams* params);
 bool quercus_codec_encoder_filename_contains_digit_placeholder(const uint8_t* filename, size_t len);
 int32_t quercus_codec_encoder_filename_remove_digit_placeholder(const uint8_t* filename, size_t filename_len, uint8_t* buf, size_t buf_len);
 bool quercus_codec_encoder_flush(void* session);
@@ -839,7 +889,7 @@ void quercus_codec_encoder_release(const void* session);
 bool quercus_codec_encoder_write_audio(void* session, const float* samples, size_t sample_count, int32_t frame_count);
 bool quercus_codec_encoder_write_subtitle(void* session, const uint8_t* text, size_t text_len, double in_seconds, double out_seconds);
 bool quercus_codec_encoder_write_video(void* session, const void* frame);
-EncodingParams quercus_codec_encoding_params_default(void);
+QuercusCodecEncodingParams quercus_codec_encoding_params_default(void);
 void quercus_codec_footage_add_ref(const void* fd);
 int32_t quercus_codec_footage_audio_stream_count(const void* fd);
 int32_t quercus_codec_footage_decoder_name(const void* fd, uint8_t* buf, size_t buf_len);
@@ -915,7 +965,7 @@ int32_t quercus_core_color_get_working_space(uint8_t* buf, size_t buf_len);
 bool quercus_core_color_set_pipeline_settings(const uint8_t* working, size_t working_len, const uint8_t* gamut, size_t gamut_len, const uint8_t* transfer, size_t transfer_len);
 bool quercus_core_color_set_up_default_config(void);
 bool quercus_core_color_set_up_default_config_from(const uint8_t* path, size_t path_len);
-float quercus_core_colormath_chromatic_adaptation(Xy src_white, Xy dst_white);
+QuercusMat3 quercus_core_colormath_chromatic_adaptation(Xy src_white, Xy dst_white);
 float quercus_core_colormath_gamma_eotf(float v, float gamma);
 float quercus_core_colormath_gamma_oetf(float v, float gamma);
 float quercus_core_colormath_hlg_eotf(float v);
@@ -927,8 +977,8 @@ Primaries quercus_core_colormath_primaries_ap1(void);
 Primaries quercus_core_colormath_primaries_bt2020(void);
 Primaries quercus_core_colormath_primaries_display_p3(void);
 Primaries quercus_core_colormath_primaries_srgb(void);
-float quercus_core_colormath_rgb_to_rgb(Primaries src, Primaries dst);
-float quercus_core_colormath_rgb_to_xyz(Primaries primaries);
+QuercusMat3 quercus_core_colormath_rgb_to_rgb(Primaries src, Primaries dst);
+QuercusMat3 quercus_core_colormath_rgb_to_xyz(Primaries primaries);
 float quercus_core_colormath_srgb_eotf(float v);
 float quercus_core_colormath_srgb_oetf(float v);
 bool quercus_core_colormath_working_to_display_target(float* data, size_t len, const uint8_t* working, size_t working_len, const uint8_t* gamut, size_t gamut_len, const uint8_t* transfer, size_t transfer_len);
@@ -970,9 +1020,15 @@ bool quercus_core_config_set_int64(const uint8_t* group, size_t group_len, const
 bool quercus_core_config_set_source(const QuercusConfigSourceVTable* vt, void* userdata, QuercusConfigDropFn drop_cb);
 int32_t quercus_core_displayicc_system_display_icc(uint8_t* buf, size_t buf_len);
 int32_t quercus_core_displayicc_system_display_icc_for_monitor(const uint8_t* fingerprint, size_t fingerprint_len, uint8_t* buf, size_t buf_len);
+#if defined(_WIN32)
 bool quercus_core_displayicc_windows_acm_active(void);
+#endif
+#if defined(_WIN32)
 int32_t quercus_core_displayicc_windows_monitor_fingerprint(uint64_t hmonitor, uint8_t* buf, size_t buf_len);
+#endif
+#if defined(__linux__)
 int32_t quercus_core_displayicc_x11_monitor_fingerprint_at(double x, double y, uint8_t* buf, size_t buf_len);
+#endif
 int32_t quercus_core_file_default_disk_cache_path(uint8_t* buf, size_t buf_len);
 bool quercus_core_file_directory_is_valid(const uint8_t* dir, size_t dir_len, bool try_to_create);
 int32_t quercus_core_file_ensure_filename_extension(const uint8_t* filename, size_t filename_len, const uint8_t* extension, size_t extension_len, uint8_t* buf, size_t buf_len);
@@ -1258,15 +1314,15 @@ void quercus_ofx_set_viewer_time(double time, double range_min, double range_max
 void quercus_ofx_shutdown(void);
 int32_t quercus_otio_clip_enabled(const void* c);
 int32_t quercus_otio_clip_media_url(const void* c, uint8_t* buf, size_t buf_len);
-void* quercus_otio_clip_new(const uint8_t* name, size_t name_len, const uint8_t* url, size_t url_len, const TimeRange* source_range);
+void* quercus_otio_clip_new(const uint8_t* name, size_t name_len, const uint8_t* url, size_t url_len, const QuercusOtioTimeRange* source_range);
 bool quercus_otio_clip_set_enabled(void* c, bool enabled);
 bool quercus_otio_clip_set_media_url(void* c, const uint8_t* url, size_t url_len);
-bool quercus_otio_clip_set_source_range(void* c, TimeRange range);
+bool quercus_otio_clip_set_source_range(void* c, QuercusOtioTimeRange range);
 void quercus_otio_composable_add_ref(const void* c);
 int32_t quercus_otio_composable_kind(const void* c);
 int32_t quercus_otio_composable_name(const void* c, uint8_t* buf, size_t buf_len);
 void quercus_otio_composable_release(const void* c);
-bool quercus_otio_composable_source_range(const void* c, TimeRange* out);
+bool quercus_otio_composable_source_range(const void* c, QuercusOtioTimeRange* out);
 void quercus_otio_document_add_ref(const void* doc);
 void* quercus_otio_document_collection_timeline_at(const void* doc, int32_t index);
 int32_t quercus_otio_document_collection_timeline_count(const void* doc);
@@ -1276,7 +1332,7 @@ int32_t quercus_otio_document_kind(const void* doc);
 void quercus_otio_document_release(const void* doc);
 void* quercus_otio_document_timeline(const void* doc);
 int32_t quercus_otio_document_to_json(const void* doc, uint8_t* buf, size_t buf_len);
-void* quercus_otio_gap_new(const uint8_t* name, size_t name_len, const TimeRange* source_range);
+void* quercus_otio_gap_new(const uint8_t* name, size_t name_len, const QuercusOtioTimeRange* source_range);
 void quercus_otio_timeline_add_ref(const void* t);
 bool quercus_otio_timeline_append_track(void* tl, const void* track);
 bool quercus_otio_timeline_global_start_time(const void* tl, RationalTime* out);
@@ -1359,6 +1415,7 @@ bool quercus_render_disk_cache_set_path(const uint8_t* path, size_t path_len);
 int64_t quercus_render_disk_cache_size(void);
 int32_t quercus_render_frame_f32(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, float* dst, size_t dst_capacity);
 bool quercus_render_gpu_host_installed(void);
+bool quercus_render_gpu_init(int32_t backend_kind);
 bool quercus_render_gpu_install(const void* wgpu_device, const void* wgpu_queue, int32_t backend_kind);
 bool quercus_render_gpu_is_adopted(void);
 int32_t quercus_render_gpu_kind(void);
