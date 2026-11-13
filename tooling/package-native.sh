@@ -57,3 +57,7 @@ rpmbuild --define "_topdir $RPMROOT" --buildroot "$RPM_STAGE" -bb "$RPMROOT/SPEC
 cp "$RPMROOT"/RPMS/*/*.rpm "$OUT/" 2>/dev/null || cp "$RPMROOT"/RPMS/*.rpm "$OUT/"
 
 tar -czf "$OUT/quercus-engine-native-linux-${ARCH}.tar.gz" -C "$STAGE" .
+
+GLIBC_VERSION="$(ldd --version | sed -n '1s/.* //p')"
+printf 'glibc %s\n' "$GLIBC_VERSION" > "$STAGE/GLIBC_VERSION"
+zip -qr "$OUT/quercus-engine-native-linux-${ARCH}-glibc${GLIBC_VERSION}.zip" -C "$STAGE" .
