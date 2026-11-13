@@ -283,5 +283,6 @@ jobs:
       - name: Upload libraries, import libraries and headers
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
             release-assets/**/*
