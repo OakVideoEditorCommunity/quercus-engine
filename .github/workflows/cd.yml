@@ -150,6 +150,12 @@ jobs:
         shell: bash
         run: brew install ffmpeg
 
+      - name: Rebuild FFmpeg link helper after cache restore
+        shell: bash
+        # rust-cache can restore the helper's old build-script output even
+        # when build.rs changed. Force a fresh pkg-config/link-directive pass.
+        run: cargo clean -p quercus-ffmpeg-link
+
       - name: Test (Linux)
         if: matrix.platform == 'linux'
         shell: bash
