@@ -140,6 +140,12 @@ impl Task {
 	}
 
 	/// Attach the concrete behavior (defaults to a no-op).
+	///
+	/// `behavior` is boxed and owned by the task; [`Task::start`] takes it out,
+	/// calls [`TaskBehavior::run`], and puts it back, so a task can be re-run.
+	/// Attaching a new behavior replaces the previous one. Without a behavior
+	/// `start` succeeds immediately (the no-op default). The `Send` bound lets
+	/// the task move to a worker thread.
 	pub fn set_behavior(&mut self, behavior: Box<dyn TaskBehavior + Send>) {
 		self.behavior = Some(behavior);
 	}
@@ -209,16 +215,33 @@ impl Task {
 
 	/// Replace the cancel atom. Used to share one atom between a task and
 	/// its behavior's inner base task.
+	///
+	/// `atom` is the new shared handle; the previous `Arc` is dropped here,
+	/// but any holder that cloned it keeps the old atom alive. Cancellation
+	/// state is not transferred: after this call [`Self::is_cancelled`] and
+	/// [`Task::cancel`] operate on `atom`, so the caller must pass one that is
+	/// still uncancelled if the task is to run.
 	pub fn set_cancel_atom(&mut self, atom: Arc<CancelAtom>) {
 		self.cancel_atom = atom;
 	}
 
 	/// Register the event listener. Replaces any previous listener.
+	///
+	/// `listener` receives every [`TaskEvent`] synchronously on the thread that
+	/// emits it (the task's own thread for `Started` / `Finished` / progress),
+	/// and is dropped by [`Task::start`] after the final `Finished` event
+	/// (one-shot subscription). A listener that needs to touch the UI must
+	/// forward the event to the main thread itself.
 	pub fn set_event_listener(&mut self, listener: EventListener) {
 		self.event_listener = Some(listener);
 	}
 
 	/// Register a hook invoked when [`Task::cancel`] is called.
+	///
+	/// `cb` is owned by the task and replaces any previous hook; it runs after
+	/// the cancel atom has been flipped, on whichever thread calls `cancel`
+	/// (so implementations must be cheap and thread-safe). The hook is not
+	/// called when the task is merely dropped or when it finishes normally.
 	pub fn set_cancel_event(&mut self, cb: Box<dyn FnMut() + Send>) {
 		self.cancel_event = Some(cb);
 	}
@@ -249,16 +272,34 @@ impl Task {
 	}
 
 	/// Record a failure message and mark the task failed.
+	///
+	/// `message` is copied into `self.error` (overwriting any earlier message)
+	/// and is returned later by [`Self::error`]. The finished/succeeded flags
+	/// are not touched here: a behavior normally calls this and then returns
+	/// `Err(..)` from [`TaskBehavior::run`], which is what marks the task
+	/// failed. Must not be called while another thread reads the message.
 	pub fn set_error(&mut self, message: &str) {
 		self.error = Some(message.to_string());
 	}
 
 	/// Change the task title.
+	///
+	/// `title` is copied into the task (no borrow kept) and replaces the
+	/// previous title; the displayed name in the task manager updates on the
+	/// next read. A concrete task usually calls this once at the start of its
+	/// behavior to describe the work it will do (e.g. the file being
+	/// conformed). Must not be called while the task is running concurrently
+	/// with a reader.
 	pub fn set_title(&mut self, title: &str) {
 		self.title = title.to_string();
 	}
 
 	/// The task title.
+	///
+	/// Returns the current title as a borrowed `&str` (set by [`Task::new`] or
+	/// [`Self::set_title`]); it stays valid only while `self` is borrowed. The
+	/// title is shown in the task manager. Safe to read from any thread only
+	/// while the task is not running (see the module's concurrency contract).
 	pub fn title(&self) -> &str {
 		&self.title
 	}

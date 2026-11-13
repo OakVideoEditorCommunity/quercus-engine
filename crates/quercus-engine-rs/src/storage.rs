@@ -1,20 +1,21 @@
 //! Safe wrapper over the engine's storage C ABI (`quercus_storage_*`):
 //! project open/save through the backend registry, backend
-//! enumeration, URI validation, and the project library (the database
-//! backend).
+//! enumeration, URI validation, the project library (the database
+//! backend), and registration of caller-implemented byte transports.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void, CString};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use thiserror::Error;
 
 use crate::codec::string_out;
 use crate::node::Project;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_storage_open(uri: *const u8, uri_len: usize, version_info: *mut i32) -> *mut c_void;
 	fn quercus_storage_save(
@@ -102,6 +103,94 @@ unsafe extern "C" {
 		file_uri_len: usize,
 	) -> i32;
 	fn quercus_storage_flush();
+	fn quercus_storage_register_transport(
+		vt: *const QuercusStorageTransportVTable,
+		userdata: *mut c_void,
+	) -> i32;
+	fn quercus_storage_unregister_transport(slot: i32) -> bool;
+	fn quercus_storage_library_supported(uri: *const u8, uri_len: usize) -> bool;
+}
+
+/// Current transport vtable ABI version (mirrors the engine constant).
+const TRANSPORT_VERSION: u32 = 1;
+
+/// Error code used when a trampoline cannot report a specific engine code
+/// (invalid arguments or a panicking backend).
+const E_TRANSPORT: i32 = -1;
+/// Engine code for "this backend does not implement the capability".
+const E_UNSUPPORTED: i32 = -100009;
+
+/// `repr(C)` mirror of the engine's `QuercusStorageError`.
+#[repr(C)]
+#[allow(dead_code)] // Fields are written through the raw pointer only.
+struct QuercusStorageError {
+	code: i32,
+	message: [u8; 512],
+}
+
+impl QuercusStorageError {
+	/// Replace the message with `text`, truncated to fit and
+	/// NUL-terminated. Never splits a UTF-8 code point.
+	fn set_message(&mut self, text: &str) {
+		self.message = [0; 512];
+		let max = self.message.len() - 1;
+		let mut end = text.len().min(max);
+		while !text.is_char_boundary(end) {
+			end -= 1;
+		}
+		self.message[..end].copy_from_slice(&text.as_bytes()[..end]);
+	}
+}
+
+/// `repr(C)` mirror of the engine's `QuercusStorageProjectInfo` (a
+/// library row in a caller-owned array). Field order is the ABI.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct QuercusStorageProjectInfo {
+	uuid: [u8; 40],
+	name: [u8; 256],
+	created_at: i64,
+	modified_at: i64,
+	schema_ver: i32,
+	reserved: i32,
+}
+
+impl Default for QuercusStorageProjectInfo {
+	fn default() -> Self {
+		QuercusStorageProjectInfo {
+			uuid: [0; 40],
+			name: [0; 256],
+			created_at: 0,
+			modified_at: 0,
+			schema_ver: 0,
+			reserved: 0,
+		}
+	}
+}
+
+/// `repr(C)` mirror of the engine-side transport vtable.
+/// The field order is the ABI and must stay byte-identical with the engine
+/// struct.
+#[repr(C)]
+#[allow(dead_code)] // Fields are read by the engine through the raw pointer.
+struct QuercusStorageTransportVTable {
+	struct_size: u32,
+	abi_version: u32,
+	name: *const c_char,
+	scheme: *const c_char,
+	write_policy: u32,
+	// ABI: order matters — byte-identical with the engine struct.
+	// The header generator parses these types textually, so keep each
+	// `fn(...)` on one line.
+	can_handle: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut QuercusStorageError) -> i32>,
+	load: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut *mut u8, *mut usize, *mut i32, *mut QuercusStorageError) -> i32>,
+	free_bytes: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize)>,
+	save: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize, u32, *mut QuercusStorageError) -> i32>,
+	// Optional project-library capability (NULL when unsupported).
+	library_list: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut QuercusStorageProjectInfo, usize, *mut usize, *mut QuercusStorageError) -> i32>,
+	library_delete: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize, *mut QuercusStorageError) -> i32>,
+	library_rename: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize, *const u8, usize, *mut QuercusStorageError) -> i32>,
+	library_snapshot: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize, *mut QuercusStorageError) -> i32>,
 }
 
 /// The save succeeded / load carried no version note.
@@ -123,6 +212,717 @@ fn check(code: i32) -> Result<(), StorageError> {
 		Ok(())
 	} else {
 		Err(StorageError(code))
+	}
+}
+
+/// A caller-implemented byte transport for project documents.
+///
+/// The engine owns serialization and schema: `load` returns the opaque
+/// project bytes the host stored earlier, `save` receives the
+/// engine-serialized bytes. Implementations may do network I/O and must
+/// be safe to call from several threads (the engine serializes
+/// `load`/`save` per registration, but `can_handle` may run concurrently).
+pub trait TransportBackend: Send + Sync + 'static {
+	/// Backend name: unique and non-empty (copied at registration).
+	fn name(&self) -> &str;
+
+	/// Primary URI scheme (e.g. "s3"); empty means "rely on `can_handle`".
+	fn scheme(&self) -> &str;
+
+	/// Whether this transport claims `uri`. Must be cheap, I/O-free and
+	/// safe to call from several threads.
+	fn can_handle(&self, uri: &str) -> bool;
+
+	/// Load the opaque project bytes stored at `uri`.
+	fn load(&self, uri: &str) -> Result<Vec<u8>, StorageError>;
+
+	/// Save engine-serialized project bytes to `uri`. `options` is the
+	/// engine's save bitmask (unknown bits are ignored).
+	fn save(&self, uri: &str, bytes: &[u8], options: u32) -> Result<(), StorageError>;
+
+	/// Write policy hint: 0 = engine default (coalesced for foreign
+	/// transports), 1 = immediate, 2 = coalesced, 3 = explicit flush only.
+	fn write_policy(&self) -> u32 {
+		0
+	}
+
+	/// Whether this transport also implements the project-library
+	/// capability below. The default is `false`: a pure byte transport.
+	fn supports_library(&self) -> bool {
+		false
+	}
+
+	/// The library rows at `uri` (only when [`Self::supports_library`]).
+	fn library_list(&self, _uri: &str) -> Result<Vec<TransportProjectInfo>, StorageError> {
+		Err(StorageError(E_UNSUPPORTED))
+	}
+
+	/// Deletes the library row `uuid` from the library at `uri`.
+	///
+	/// `uri` names the library, `uuid` the row to remove together with its
+	/// stored document. Only called when [`Self::supports_library`] is
+	/// `true` (the library vtable slots are null otherwise). The default
+	/// implementation reports the capability as unsupported rather than
+	/// silently succeeding.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] with `E_UNSUPPORTED` in the default implementation;
+	/// real backends report their own code (e.g. an unknown row).
+	fn library_delete(&self, _uri: &str, _uuid: &str) -> Result<(), StorageError> {
+		Err(StorageError(E_UNSUPPORTED))
+	}
+
+	/// Renames the library row `uuid` at `uri` to `name`.
+	///
+	/// `uri` names the library, `uuid` the row and `name` the new display
+	/// name. Only called when [`Self::supports_library`] is `true` (the
+	/// library vtable slots are null otherwise). The default implementation
+	/// reports the capability as unsupported rather than silently
+	/// succeeding.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] with `E_UNSUPPORTED` in the default implementation;
+	/// real backends report their own code.
+	fn library_rename(&self, _uri: &str, _uuid: &str, _name: &str) -> Result<(), StorageError> {
+		Err(StorageError(E_UNSUPPORTED))
+	}
+
+	/// Snapshots the row `uuid` of the library at `uri`.
+	///
+	/// Asks the backend to capture a restore point for the row's stored
+	/// document, e.g. before a destructive edit. Whole-document transports
+	/// can keep the default no-op, because every `save` already stores a
+	/// complete document. `_uri`/`_uuid` are ignored by the default
+	/// implementation, which always succeeds and does not check that the
+	/// row exists.
+	fn library_snapshot(&self, _uri: &str, _uuid: &str) -> Result<(), StorageError> {
+		Ok(())
+	}
+}
+
+/// One project-library row returned by a [`TransportBackend`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportProjectInfo {
+	/// Project uuid.
+	pub uuid: String,
+	/// Display name.
+	pub name: String,
+	/// Creation time (Unix seconds).
+	pub created_at: i64,
+	/// Last-write time (Unix seconds).
+	pub modified_at: i64,
+	/// Payload schema version.
+	pub schema_ver: i32,
+}
+
+/// Heap-owned transport userdata: the backend plus its NUL-terminated
+/// name/scheme strings. The engine copies both strings at registration;
+/// they live here so they stay valid for the registration call.
+struct TransportBox<B: TransportBackend> {
+	backend: B,
+	name: CString,
+	scheme: CString,
+}
+
+/// A registered transport. Dropping it unregisters the backend (waiting
+/// for in-flight callbacks to finish) and then frees the heap userdata.
+pub struct TransportRegistration {
+	slot: i32,
+	userdata: *mut c_void,
+	drop_userdata: unsafe fn(*mut c_void),
+}
+
+impl TransportRegistration {
+	/// The engine's slot index for this registration (opaque).
+	pub fn slot(&self) -> i32 {
+		self.slot
+	}
+}
+
+impl Drop for TransportRegistration {
+	fn drop(&mut self) {
+		// Unregister first: the engine removes the backend from the
+		// registry, then waits for in-flight callbacks, so the userdata
+		// box is unreachable when it is freed below.
+		unsafe { quercus_storage_unregister_transport(self.slot) };
+		unsafe { (self.drop_userdata)(self.userdata) };
+	}
+}
+
+/// Registers `backend` as a process-wide transport and returns a guard
+/// that unregisters it on drop.
+///
+/// The engine copies the vtable and the name/scheme strings. Reserved
+/// schemes (`file`, `quercusdb`, `quercusdb+*`) are rejected with the
+/// engine's `QUERCUSSTORAGE_E_INVALID` code and duplicate names with
+/// `QUERCUSSTORAGE_E_STATE`.
+///
+/// The transport serves opaque project bytes; the engine keeps owning the
+/// document format and schema. `write_policy` is hardcoded to 0 (engine
+/// default) for now; the field exists for a future coalesced/immediate
+/// choice.
+pub fn register_transport<B: TransportBackend>(
+	backend: B,
+) -> Result<TransportRegistration, StorageError> {
+	let name = CString::new(backend.name()).map_err(|_| StorageError(E_TRANSPORT))?;
+	let scheme = CString::new(backend.scheme()).map_err(|_| StorageError(E_TRANSPORT))?;
+	let write_policy = backend.write_policy();
+	let supports_library = backend.supports_library();
+	// The box is the engine's `userdata`; it is reclaimed by
+	// `TransportRegistration::drop`.
+	let transport = Box::into_raw(Box::new(TransportBox {
+		backend,
+		name,
+		scheme,
+	}));
+	let vt = QuercusStorageTransportVTable {
+		struct_size: std::mem::size_of::<QuercusStorageTransportVTable>() as u32,
+		abi_version: TRANSPORT_VERSION,
+		// SAFETY: `transport` is live for the whole call; the engine
+		// copies the strings before returning.
+		name: unsafe { (*transport).name.as_ptr() },
+		scheme: unsafe { (*transport).scheme.as_ptr() },
+		write_policy,
+		can_handle: Some(transport_can_handle::<B>),
+		load: Some(transport_load::<B>),
+		free_bytes: Some(transport_free_bytes::<B>),
+		save: Some(transport_save::<B>),
+		library_list: supports_library.then_some(transport_library_list::<B>),
+		library_delete: supports_library.then_some(transport_library_delete::<B>),
+		library_rename: supports_library.then_some(transport_library_rename::<B>),
+		library_snapshot: supports_library.then_some(transport_library_snapshot::<B>),
+	};
+	let slot = unsafe { quercus_storage_register_transport(&vt, transport as *mut c_void) };
+	if slot < 0 {
+		// Rejected: the engine never took ownership of the userdata.
+		unsafe { drop(Box::from_raw(transport)) };
+		return Err(StorageError(slot));
+	}
+	Ok(TransportRegistration {
+		slot,
+		userdata: transport as *mut c_void,
+		drop_userdata: drop_transport::<B>,
+	})
+}
+
+/// Type-erased drop for the registration guard: frees a `TransportBox<B>`.
+///
+/// Stored as `drop_userdata` in [`TransportRegistration`] and called
+/// exactly once from the guard's `Drop`, after the engine has
+/// unregistered the transport and drained in-flight callbacks. A null
+/// `userdata` is a no-op, so a partially built registration can be torn
+/// down safely.
+///
+/// # Safety
+///
+/// `userdata` must be null or the pointer produced by
+/// `Box::into_raw(Box<TransportBox<B>>)` in [`register_transport`] for the
+/// same `B`, and it must not have been freed already.
+unsafe fn drop_transport<B: TransportBackend>(userdata: *mut c_void) {
+	if userdata.is_null() {
+		return;
+	}
+	// SAFETY: `userdata` came from `Box::into_raw(Box<TransportBox<B>>)`
+	// in `register_transport` and is freed exactly once, by the guard.
+	unsafe { drop(Box::from_raw(userdata as *mut TransportBox<B>)) };
+}
+
+/// Borrow a `(ptr, len)` URI argument; the pointer is valid only for the
+/// callback duration.
+///
+/// # Safety
+/// `uri` must be null or point to `len` readable bytes.
+unsafe fn transport_uri<'a>(uri: *const u8, len: usize) -> Result<&'a str, &'static str> {
+	if uri.is_null() {
+		return Err("null URI");
+	}
+	// SAFETY: the caller guarantees `len` readable bytes.
+	let bytes = unsafe { std::slice::from_raw_parts(uri, len) };
+	std::str::from_utf8(bytes).map_err(|_| "URI is not valid UTF-8")
+}
+
+/// Fill the engine's error record (a null record is ignored).
+///
+/// # Safety
+/// `err` must be null or point to a writable `QuercusStorageError`.
+unsafe fn transport_error(err: *mut QuercusStorageError, code: i32, message: &str) {
+	let Some(err) = (unsafe { err.as_mut() }) else {
+		return;
+	};
+	err.code = code;
+	err.set_message(message);
+}
+
+/// C trampoline for `can_handle`: reports whether the backend claims
+/// `uri` as `1` (claimed) or `0` (not claimed).
+///
+/// The `extern "C"` half of [`TransportBackend::can_handle`], installed
+/// for every registration. `uri` is a `(ptr, len)` pair borrowed for the
+/// call only. Bad arguments, a non-UTF-8 URI and a panicking `can_handle`
+/// all become `-1` with `err` filled, because panics must never cross the
+/// ABI boundary.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `err` must be null or point
+/// to a writable `QuercusStorageError`.
+unsafe extern "C" fn transport_can_handle<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<i32, (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		// SAFETY: engine invariant — `userdata` is the `TransportBox<B>`
+		// installed by `register_transport` while this backend is
+		// registered, and unregistration waits for this callback.
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		Ok(i32::from(transport.backend.can_handle(uri)))
+	}));
+	match outcome {
+		Ok(Ok(claimed)) => claimed,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport can_handle") };
+			-1
+		}
+	}
+}
+
+/// C trampoline for `load`: hands a heap buffer to the engine, which
+/// releases it through [`transport_free_bytes`].
+///
+/// The `extern "C"` half of [`TransportBackend::load`]. On success it
+/// writes the payload pointer into `out_bytes`, its length into `out_len`
+/// (ownership moves to the engine) and, when `out_format` is non-null, the
+/// document format hint `0` = AUTO, letting the engine's codec pick (v1:
+/// XML). `uri` is a `(ptr, len)` pair borrowed for the call. A null
+/// `out_bytes` or `out_len` is rejected rather than dereferenced. Returns
+/// `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic); on failure no buffer is leaked
+/// to the caller.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `out_bytes` and `out_len`
+/// must point to writable `*mut u8`/`usize` storage; `out_format` may be
+/// null or writable; `err` must be null or point to a writable
+/// `QuercusStorageError`.
+unsafe extern "C" fn transport_load<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	out_bytes: *mut *mut u8,
+	out_len: *mut usize,
+	out_format: *mut i32,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		if out_bytes.is_null() || out_len.is_null() {
+			return Err((E_TRANSPORT, "null load out-parameter".to_string()));
+		}
+		// SAFETY: see `transport_can_handle`.
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let bytes = transport
+			.backend
+			.load(uri)
+			.map_err(|e| (e.0, e.to_string()))?;
+		// Ownership moves to the engine; `transport_free_bytes`
+		// reconstructs the boxed slice from `(ptr, len)`.
+		let boxed = bytes.into_boxed_slice();
+		let len = boxed.len();
+		let ptr = Box::into_raw(boxed) as *mut u8;
+		// SAFETY: out-parameters are non-null (checked above); the
+		// engine's adapter initializes them before calling.
+		unsafe {
+			*out_bytes = ptr;
+			*out_len = len;
+			if !out_format.is_null() {
+				// AUTO: the engine's document codec decides (v1: XML).
+				*out_format = 0;
+			}
+		}
+		Ok(())
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport load") };
+			-1
+		}
+	}
+}
+
+/// C trampoline for `free_bytes`: reclaims a buffer handed out by
+/// [`transport_load`].
+///
+/// The `free_bytes` vtable slot; the engine calls it once per successful
+/// `load` with the exact `(bytes, len)` pair it received back, and the
+/// boxed slice is reconstructed and dropped here. `_userdata` is unused —
+/// the allocation is a plain `u8` box, not tied to the transport — and a
+/// null `bytes` is a no-op. Never reports an error and never panics across
+/// the ABI.
+///
+/// # Safety
+///
+/// `bytes` must be null or the pointer returned by [`transport_load`] for
+/// a [`TransportBackend`] of the same registration, with its original
+/// `len`, and must not be freed twice or read afterwards.
+unsafe extern "C" fn transport_free_bytes<B: TransportBackend>(
+	_userdata: *mut c_void,
+	bytes: *mut u8,
+	len: usize,
+) {
+	if bytes.is_null() {
+		return;
+	}
+	// A `u8` slice has no destructor, so this cannot panic; still keep
+	// any unwind inside the trampoline.
+	let _ = catch_unwind(AssertUnwindSafe(|| {
+		let slice = std::ptr::slice_from_raw_parts_mut(bytes, len);
+		// SAFETY: `(bytes, len)` came from `Box::into_raw` on a boxed
+		// slice of exactly this length in `transport_load`.
+		unsafe { drop(Box::from_raw(slice)) };
+	}));
+}
+
+/// C trampoline for `save`: hands the engine-serialized project bytes to
+/// the backend.
+///
+/// The `extern "C"` half of [`TransportBackend::save`]. `uri` is a
+/// `(ptr, len)` pair and `bytes`/`bytes_len` is the payload, both borrowed
+/// only for the call; the backend must copy anything it keeps. `options`
+/// is passed through unchanged as the engine's save bitmask (0 =
+/// defaults), and a null payload is accepted only when `bytes_len == 0`.
+/// Returns `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` must be
+/// null or point to `uri_len` readable bytes; `bytes` must be null or
+/// point to `bytes_len` readable bytes; `err` must be null or point to a
+/// writable `QuercusStorageError`.
+unsafe extern "C" fn transport_save<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	bytes: *const u8,
+	bytes_len: usize,
+	options: u32,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		if bytes.is_null() && bytes_len != 0 {
+			return Err((E_TRANSPORT, "null save payload".to_string()));
+		}
+		// SAFETY: see `transport_can_handle`.
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		// The payload is borrowed for the call duration only.
+		let payload: &[u8] = if bytes.is_null() {
+			&[]
+		} else {
+			unsafe { std::slice::from_raw_parts(bytes, bytes_len) }
+		};
+		transport
+			.backend
+			.save(uri, payload, options)
+			.map_err(|e| (e.0, e.to_string()))
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport save") };
+			-1
+		}
+	}
+}
+
+/// Fill one C project-info POD; rejects values that do not fit the
+/// fixed-size fields rather than truncating a name or uuid silently.
+fn write_project_info_pod(
+	out: *mut QuercusStorageProjectInfo,
+	info: &TransportProjectInfo,
+) -> Result<(), (i32, String)> {
+	let uuid = info.uuid.as_bytes();
+	let name = info.name.as_bytes();
+	if uuid.len() >= 40 {
+		return Err((E_TRANSPORT, "library row uuid exceeds 39 bytes".to_string()));
+	}
+	if name.len() >= 256 {
+		return Err((E_TRANSPORT, "library row name exceeds 255 bytes".to_string()));
+	}
+	let mut pod = QuercusStorageProjectInfo::default();
+	pod.uuid[..uuid.len()].copy_from_slice(uuid);
+	pod.name[..name.len()].copy_from_slice(name);
+	pod.created_at = info.created_at;
+	pod.modified_at = info.modified_at;
+	pod.schema_ver = info.schema_ver;
+	// SAFETY: `out` points into the engine's caller-owned array.
+	unsafe { out.write(pod) };
+	Ok(())
+}
+
+/// C trampoline for `library_list`: fills a caller-owned array with the
+/// library rows of `uri`.
+///
+/// Two-phase, like the other C string APIs: with a null `out` or
+/// `cap == 0` the intent is "how many rows?" and the backing backend is
+/// queried only to write that count into `out_count`; otherwise up to
+/// `cap` [`QuercusStorageProjectInfo`] PODs are written and `out_count`
+/// receives the number written. A uuid longer than 39 bytes or a name
+/// longer than 255 bytes is rejected instead of being silently truncated,
+/// and a backend that returns more rows than `cap` is an error after the
+/// rows that fit were written. Returns `0` on success, or `-1` after
+/// writing `err`.
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`]; `uri` must be null or point to `uri_len`
+/// readable bytes; `out` must be null or point to `cap` writable
+/// `QuercusStorageProjectInfo`; `out_count` must be a writable `usize`;
+/// `err` must be null or point to a writable `QuercusStorageError`.
+unsafe extern "C" fn transport_library_list<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	out: *mut QuercusStorageProjectInfo,
+	cap: usize,
+	out_count: *mut usize,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() || out_count.is_null() {
+			return Err((E_TRANSPORT, "null library_list argument".to_string()));
+		}
+		// SAFETY: see `transport_can_handle`.
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let rows = transport
+			.backend
+			.library_list(uri)
+			.map_err(|e| (e.0, e.to_string()))?;
+		if out.is_null() || cap == 0 {
+			// SAFETY: non-null (checked above).
+			unsafe { *out_count = rows.len() };
+			return Ok(());
+		}
+		let written = rows.len().min(cap);
+		for (index, info) in rows.iter().take(written).enumerate() {
+			// SAFETY: `out` has room for `cap` rows (engine contract).
+			unsafe { write_project_info_pod(out.add(index), info)? };
+		}
+		// SAFETY: non-null (checked above).
+		unsafe { *out_count = written };
+		if rows.len() > cap {
+			return Err((
+				E_TRANSPORT,
+				"library_list returned more rows than the caller's array".to_string(),
+			));
+		}
+		Ok(())
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport library_list") };
+			-1
+		}
+	}
+}
+
+/// C trampoline for `library_delete`: deletes the library row `uuid` at
+/// `uri`.
+///
+/// The `extern "C"` half of [`TransportBackend::library_delete`], put in
+/// the vtable only when `supports_library()` is true. Returns `0` on
+/// success, or `-1` after writing `err` (bad arguments, the backend's own
+/// code such as "no such row", or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri` and
+/// `uuid` must be null or point to `uri_len`/`uuid_len` readable bytes;
+/// `err` must be null or point to a writable `QuercusStorageError`.
+unsafe extern "C" fn transport_library_delete<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	uuid: *const u8,
+	uuid_len: usize,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let uuid = unsafe { transport_uri(uuid, uuid_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		transport
+			.backend
+			.library_delete(uri, uuid)
+			.map_err(|e| (e.0, e.to_string()))
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport library_delete") };
+			-1
+		}
+	}
+}
+
+/// C trampoline for `library_rename`: renames the library row `uuid` at
+/// `uri` to the UTF-8 string `name`.
+///
+/// The `extern "C"` half of [`TransportBackend::library_rename`], put in
+/// the vtable only when `supports_library()` is true. All three strings
+/// are `(ptr, len)` pairs borrowed for the call duration; a null pointer
+/// or invalid UTF-8 is reported as `E_TRANSPORT` rather than panicking.
+/// Returns `0` on success, or `-1` after writing `err` (bad arguments, the
+/// backend's own code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error); `uri`, `uuid`
+/// and `name` must be null or point to `uri_len`/`uuid_len`/`name_len`
+/// readable bytes; `err` must be null or point to a writable
+/// `QuercusStorageError`.
+unsafe extern "C" fn transport_library_rename<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	uuid: *const u8,
+	uuid_len: usize,
+	name: *const u8,
+	name_len: usize,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let uuid = unsafe { transport_uri(uuid, uuid_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let name = unsafe { transport_uri(name, name_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		transport
+			.backend
+			.library_rename(uri, uuid, name)
+			.map_err(|e| (e.0, e.to_string()))
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport library_rename") };
+			-1
+		}
+	}
+}
+
+/// C trampoline for `library_snapshot`: asks the backend to capture the
+/// library row `uuid` at `uri` as a restore point.
+///
+/// The `extern "C"` half of [`TransportBackend::library_snapshot`], put in
+/// the vtable only when `supports_library()` is true. `uri` and `uuid`
+/// are `(ptr, len)` byte slices valid for the call only; the backend is
+/// expected to no-op when every save is already a snapshot. Returns `0` on
+/// success, or `-1` after writing `err` (bad arguments, the backend's own
+/// code, or a caught panic).
+///
+/// # Safety
+///
+/// `userdata` must be the live `TransportBox<B>` installed by
+/// [`register_transport`] or null (rejected with an error). `uri` and
+/// `uuid` must be null or point to `uri_len`/`uuid_len` readable bytes.
+/// `err` must be null or point to a writable `QuercusStorageError`.
+unsafe extern "C" fn transport_library_snapshot<B: TransportBackend>(
+	userdata: *mut c_void,
+	uri: *const u8,
+	uri_len: usize,
+	uuid: *const u8,
+	uuid_len: usize,
+	err: *mut QuercusStorageError,
+) -> i32 {
+	let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), (i32, String)> {
+		if userdata.is_null() {
+			return Err((E_TRANSPORT, "null transport userdata".to_string()));
+		}
+		let transport = unsafe { &*(userdata as *const TransportBox<B>) };
+		let uri = unsafe { transport_uri(uri, uri_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		let uuid = unsafe { transport_uri(uuid, uuid_len) }
+			.map_err(|message| (E_TRANSPORT, message.to_string()))?;
+		transport
+			.backend
+			.library_snapshot(uri, uuid)
+			.map_err(|e| (e.0, e.to_string()))
+	}));
+	match outcome {
+		Ok(Ok(())) => 0,
+		Ok(Err((code, message))) => {
+			unsafe { transport_error(err, code, &message) };
+			-1
+		}
+		Err(_) => {
+			unsafe { transport_error(err, E_TRANSPORT, "panic in transport library_snapshot") };
+			-1
+		}
 	}
 }
 
@@ -165,8 +965,25 @@ pub fn save(project: &Project, uri: &str, options: u32) -> Result<(), StorageErr
 }
 
 /// Whether `uri` parses as a storage URI.
+///
+/// Only the syntactic shape is checked: the empty string is rejected,
+/// while a bare filesystem path is accepted and treated as `file://` (see
+/// `StorageUri::parse`). Whether a backend actually claims the URI is a
+/// separate question — use [`backend_for_uri`] or [`library_supported`]
+/// for that. Used by [`ProjectLibrary::new`] before building a client.
+///
+/// # Returns
+///
+/// `true` for any non-empty URI; `false` only for the empty string.
 pub fn uri_is_valid(uri: &str) -> bool {
 	unsafe { quercus_storage_uri_is_valid(uri.as_ptr(), uri.len()) }
+}
+
+/// Whether the backend claiming `uri` implements the project-library
+/// operations (`projects/create/delete/rename/duplicate/import/export`).
+/// A backend may support plain project `open`/`save` without a library.
+pub fn library_supported(uri: &str) -> bool {
+	unsafe { quercus_storage_library_supported(uri.as_ptr(), uri.len()) }
 }
 
 /// A registered backend (name + URI scheme).
@@ -220,7 +1037,17 @@ pub struct LibraryProject {
 	pub footage_count: i32,
 }
 
-/// The projects in the library at `uri` (an `quercusdb+sqlite:///…` URI).
+/// Lists the project rows of the library at `uri`.
+///
+/// `uri` is a library URI (`quercusdb+sqlite:///…`, or any scheme whose
+/// backend implements the project library), not a project document URI.
+/// Free function behind [`ProjectLibrary::projects`]; rows come back in
+/// backend order and the vector is empty for an empty library.
+///
+/// # Errors
+///
+/// [`StorageError`] when no backend claims `uri`, when the backend lacks
+/// the library capability, or when enumeration fails.
 pub fn library_projects(uri: &str) -> Result<Vec<LibraryProject>, StorageError> {
 	let count = unsafe { quercus_storage_library_count(uri.as_ptr(), uri.len()) };
 	if count < 0 {
@@ -246,12 +1073,32 @@ pub fn library_projects(uri: &str) -> Result<Vec<LibraryProject>, StorageError> 
 		.collect())
 }
 
-/// Deletes a project from the library.
+/// Deletes the library row `uuid` from the library at `uri`.
+///
+/// Free function behind [`ProjectLibrary::delete`]. `uri` names the
+/// library, `uuid` the row to remove along with its stored document.
+/// Deleting an unknown row is an error, not a no-op; close any session
+/// bound to the row first if the backend locks open rows.
+///
+/// # Errors
+///
+/// [`StorageError`] when `uri` is not a library URI or the row does not
+/// exist.
 pub fn library_delete(uri: &str, uuid: &str) -> Result<(), StorageError> {
 	check(unsafe { quercus_storage_library_delete(uri.as_ptr(), uri.len(), uuid.as_ptr(), uuid.len()) })
 }
 
-/// Renames a project in the library.
+/// Renames the library row `uuid` at `uri` to `new_name`.
+///
+/// Free function behind [`ProjectLibrary::rename`]. `uri` names the
+/// library (not the row), `uuid` is the row to rename and `new_name`
+/// replaces only its display name. Use [`library_projects`] to see the
+/// names.
+///
+/// # Errors
+///
+/// [`StorageError`] when `uri` is not a library URI, the row does not
+/// exist, or the backend rejects the name.
 pub fn library_rename(uri: &str, uuid: &str, new_name: &str) -> Result<(), StorageError> {
 	check(unsafe {
 		quercus_storage_library_rename(
@@ -275,6 +1122,20 @@ pub fn flush() {
 	unsafe { quercus_storage_flush() }
 }
 
+/// Runs a side-effecting library call that returns a string through one
+/// fixed-size buffer.
+///
+/// `f` is called exactly once with a 4096-byte scratch buffer and its
+/// length; it returns the number of bytes written, or a negative engine
+/// error code. A single call is deliberate: `create`, `duplicate` and
+/// `import` mutate the library, so the two-pass "query the size, then call
+/// again" convention used by read-only getters is not safe here.
+///
+/// # Errors
+///
+/// Returns `StorageError` carrying `f`'s code when it is negative, and
+/// `StorageError(-1)` when the result does not fit the buffer or is not
+/// valid UTF-8.
 fn string_result(f: impl Fn(*mut u8, usize) -> i32) -> Result<String, StorageError> {
 	// Unlike read-only getters, create/duplicate/import are side-effecting:
 	// never use the two-pass "query size, then call again" convention here.
@@ -298,31 +1159,70 @@ pub struct ProjectLibrary {
 }
 
 impl ProjectLibrary {
-	/// Creates a new value.
+	/// Creates a client for `uri` when a registered backend claims it and
+	/// implements the library capability. The backend name is irrelevant:
+	/// any scheme (including a caller-registered transport) is accepted.
 	pub fn new(uri: impl Into<String>) -> Result<Self, StorageError> {
 		let uri = uri.into();
-		if !uri_is_valid(&uri) || backend_for_uri(&uri).as_deref() != Some("quercusdb") {
+		if !uri_is_valid(&uri) || !library_supported(&uri) {
 			return Err(StorageError(-1));
 		}
 		Ok(Self { uri })
 	}
 
-	/// The `configured` operation.
+	/// The project library configured for this session, if any.
+	///
+	/// Returns `Ok(Some(client))` when a default library URI is configured
+	/// (see [`default_library_uri`]), and `Ok(None)` when storage is
+	/// disabled (`Storage/Backend` = `off`) or no default URI is set.
+	/// Unlike [`Self::new`] the URI is not validated, so a client built
+	/// here trusts the configuration.
+	///
+	/// # Errors
+	///
+	/// Reserved for backend failures; the current implementation never
+	/// fails.
 	pub fn configured() -> Result<Option<Self>, StorageError> {
 		Ok(default_library_uri().map(|uri| Self { uri }))
 	}
 
-	/// The `uri` operation.
+	/// The library URI this client was built for.
+	///
+	/// Returned verbatim as passed to [`Self::new`] (no normalization) and
+	/// forwarded to every backend call. Useful for logging and for
+	/// comparing clients with `==`, since [`PartialEq`] compares this
+	/// field only.
 	pub fn uri(&self) -> &str {
 		&self.uri
 	}
 
-	/// The `projects` operation.
+	/// Lists every project row in this library.
+	///
+	/// Rows come back in the backend's own order (the sqlite backend orders
+	/// by last modification, most recent first) and the vector is empty for
+	/// an empty library. Each [`LibraryProject`] carries the uuid, display
+	/// name, timestamps and summary counters, so a browser UI needs no
+	/// further calls. Thin wrapper over [`library_projects`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when the backend cannot enumerate the library.
 	pub fn projects(&self) -> Result<Vec<LibraryProject>, StorageError> {
 		library_projects(&self.uri)
 	}
 
-	/// The `create` operation.
+	/// Creates a new, empty project row named `name` in this library.
+	///
+	/// `name` is the display name of the new row and must not be blank.
+	/// Returns the new row's uuid, which is the handle accepted by
+	/// [`Self::open`], [`Self::rename`], [`Self::delete`] and friends. The
+	/// row is created empty (no sequences or footages); it lives in the
+	/// library, not in a process session, until [`Self::open`] loads it.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when the backend rejects `name` (e.g. blank) or
+	/// cannot write the row.
 	pub fn create(&self, name: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_create(
@@ -336,17 +1236,47 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `delete` operation.
+	/// Deletes the library row `uuid`, dropping its stored document.
+	///
+	/// The row and its payload are removed from the library; this is not
+	/// undoable and not a no-op for a stale uuid — an unknown uuid is an
+	/// error. A session still bound to the row (see [`Self::open`]) should
+	/// be closed first where the backend locks open rows.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library.
 	pub fn delete(&self, uuid: &str) -> Result<(), StorageError> {
 		library_delete(&self.uri, uuid)
 	}
 
-	/// The `rename` operation.
+	/// Renames the library row `uuid` to `name`.
+	///
+	/// `uuid` is the row to rename and `name` is the new display name,
+	/// stored as given (no trimming or case folding). Only the name
+	/// changes: the uuid, the stored document and the timestamps used for
+	/// ordering are unaffected. Renaming an unknown row is an error.
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library or the
+	/// backend rejects the name.
 	pub fn rename(&self, uuid: &str, name: &str) -> Result<(), StorageError> {
 		library_rename(&self.uri, uuid, name)
 	}
 
-	/// The `duplicate` operation.
+	/// Copies the library row `uuid` into a new row with a fresh uuid.
+	///
+	/// Returns the new row's uuid. The copy is independent of the source:
+	/// both rows share the same initial document, but subsequent edits to
+	/// either one do not affect the other (see [`Self::open`]). The source
+	/// row keeps its uuid and name; the copy starts out named
+	/// "`<source name> (copy)`" and can be renamed with [`Self::rename`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library or the
+	/// backend cannot write the copy.
 	pub fn duplicate(&self, uuid: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_duplicate(
@@ -360,7 +1290,18 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `import` operation.
+	/// Imports the project document at `file_uri` into this library as a
+	/// new row.
+	///
+	/// `file_uri` is the source document URI; it is read, parsed and copied
+	/// into the library, so the source is left untouched. Returns the new
+	/// row's uuid (never empty), which the row operations below accept.
+	/// Counterpart of [`Self::export`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `file_uri` cannot be loaded or parsed, or the
+	/// backend cannot write the new row.
 	pub fn import(&self, file_uri: &str) -> Result<String, StorageError> {
 		string_result(|buf, len| unsafe {
 			quercus_storage_library_import(
@@ -374,7 +1315,17 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// The `export` operation.
+	/// Exports the library row `uuid` to the project file at `file_uri`.
+	///
+	/// `file_uri` is the destination document URI and must be claimed by a
+	/// registered backend (normally `file:///…/name.ove`), because the engine
+	/// saves the document through that backend. Export copies: the library
+	/// row and its payload are left untouched. Pairs with [`Self::import`].
+	///
+	/// # Errors
+	///
+	/// [`StorageError`] when `uuid` is not a row of this library, no backend
+	/// claims `file_uri`, or the destination cannot be written.
 	pub fn export(&self, uuid: &str, file_uri: &str) -> Result<(), StorageError> {
 		check(unsafe {
 			quercus_storage_library_export(
@@ -388,13 +1339,11 @@ impl ProjectLibrary {
 		})
 	}
 
-	/// Opens a row from the configured default library. Like the app,
-	/// sessions bind only to the default library, not an arbitrary client.
+	/// Opens the row `uuid` from this client's library (any backend, not
+	/// only the configured default library), then binds it for
+	/// write-through persistence.
 	pub fn open(&self, uuid: &str) -> Result<crate::editor::EditorSession, StorageError> {
-		if default_library_uri().as_deref() != Some(self.uri.as_str()) {
-			return Err(StorageError(-1));
-		}
-		crate::editor::EditorSession::open_project_from_library(uuid)
+		crate::editor::EditorSession::open_project_from_library_uri(&self.uri, uuid)
 	}
 }
 
@@ -544,7 +1493,7 @@ mod tests {
 			std::env::temp_dir().display()
 		))
 		.expect("custom library URI");
-		assert!(custom.open(&duplicate).is_err(), "custom client cannot open the default library");
+		assert!(custom.open(&duplicate).is_err(), "a different library does not contain the row");
 
 		imported_session.close();
 		opened.close();
@@ -564,5 +1513,67 @@ mod tests {
 		let _ = std::fs::remove_file(path);
 		let _ = std::fs::remove_file(exported);
 		let _ = std::fs::remove_file(media);
+	}
+
+	/// A transport that only implements the library capability: exercises
+	/// the SDK's `repr(C)` project-info mirror and the library trampolines
+	/// end-to-end through the engine.
+	struct LibraryTransport;
+
+	impl TransportBackend for LibraryTransport {
+		fn name(&self) -> &str {
+			"sdk-lib-mock"
+		}
+
+		fn scheme(&self) -> &str {
+			"sdklibmock"
+		}
+
+		fn can_handle(&self, uri: &str) -> bool {
+			uri.starts_with("sdklibmock://")
+		}
+
+		fn load(&self, _uri: &str) -> Result<Vec<u8>, StorageError> {
+			Err(StorageError(-1))
+		}
+
+		fn save(&self, _uri: &str, _bytes: &[u8], _options: u32) -> Result<(), StorageError> {
+			Ok(())
+		}
+
+		fn supports_library(&self) -> bool {
+			true
+		}
+
+		fn library_list(&self, _uri: &str) -> Result<Vec<TransportProjectInfo>, StorageError> {
+			Ok(vec![TransportProjectInfo {
+				uuid: "{sdk-lib-row}".to_string(),
+				name: "SDK Library Row".to_string(),
+				created_at: 1_700_000_000,
+				modified_at: 1_700_000_100,
+				schema_ver: 1,
+			}])
+		}
+	}
+
+	#[test]
+	fn transport_library_capability_round_trips() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let registration = register_transport(LibraryTransport).expect("register transport");
+		assert!(library_supported("sdklibmock://library"));
+		let library = ProjectLibrary::new("sdklibmock://library").expect("library client");
+		let rows = library.projects().expect("library list through the transport");
+		assert_eq!(rows.len(), 1);
+		assert_eq!(rows[0].uuid, "{sdk-lib-row}");
+		assert_eq!(rows[0].name, "SDK Library Row");
+		assert_eq!(rows[0].created_at, 1_700_000_000);
+		assert_eq!(rows[0].modified_at, 1_700_000_100);
+		drop(registration);
+		assert!(
+			!library_supported("sdklibmock://library"),
+			"an unregistered transport stops claiming its scheme"
+		);
 	}
 }

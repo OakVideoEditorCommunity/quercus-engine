@@ -59,15 +59,43 @@ impl CommandLineParser {
 		}
 	}
 
-	/// Set the application name/version shown by `print_help`.
+	/// Set the application name and version printed at the top of the help
+	/// text.
+	///
+	/// `name` and `version` replace the previous values (`new()` starts with
+	/// `"quercus"` and an empty version). `print_help` writes them as
+	/// `"<name> <version>"` on the first line, so an empty version still leaves
+	/// the separating space; they are not used in the `Usage:` line, which comes
+	/// from the argv[0] basename instead.
 	pub fn set_app_info(&mut self, name: &str, version: &str) {
 		self.app_name = name.to_string();
 		self.app_version = version.to_string();
 	}
 
-	/// Register an option with one or more name strings.
+	/// Register a named option with one or more aliases.
 	///
-	/// Returns the option, which remains owned by the parser.
+	/// The option is appended to the parser's list and stays owned by the parser;
+	/// callers retrieve it by index (the C ABI layer uses `option_count` right
+	/// after registration). Duplicate names are not rejected, and `process`
+	/// matches the first registered option whose alias matches, so registration
+	/// order breaks ties.
+	///
+	/// # Arguments
+	///
+	/// * `names` - Alias strings as C strings, without the leading `-` (e.g.
+	///   `["h", "help"]`); matched case-insensitively. Must be valid UTF-8.
+	/// * `description` - Help text, printed under the option by `print_help`.
+	/// * `takes_arg` - Whether `process` consumes the following argv entry as the
+	///   option's value.
+	/// * `arg_placeholder` - Name shown as `<PLACEHOLDER>` in help; an empty
+	///   string prints no placeholder (used for flags).
+	/// * `hidden` - Whether to omit the option from `print_help` output; it is
+	///   still parsed.
+	///
+	/// # Errors
+	///
+	/// Returns `Error::Invalid` if any entry of `names` is not valid UTF-8 (the C
+	/// ABI rejects null/empty names before this point).
 	pub fn add_option(
 		&mut self,
 		names: &[CString],
@@ -97,7 +125,20 @@ impl CommandLineParser {
 		Ok(())
 	}
 
-	/// Register a positional argument.
+	/// Register a positional argument, in the order they appear on the command
+	/// line.
+	///
+	/// `name` is printed in the usage line inside square brackets (`[name]`);
+	/// `description` is stored for help output; `required` is recorded but not
+	/// enforced — `process` never checks it, so a missing required argument is
+	/// silently left unset. Registration order defines which argv entry fills
+	/// which argument.
+	///
+	/// # Returns
+	///
+	/// Always `Ok(())`; the `Result` only mirrors the C API's try/catch boundary.
+	/// There is no handle: the argument is owned by the parser and can be read
+	/// later through the `pub(crate)` index accessors.
 	pub fn add_positional_argument(
 		&mut self,
 		name: &str,
@@ -114,8 +155,33 @@ impl CommandLineParser {
 		Ok(())
 	}
 
-	/// Parse an argv-style argument list (argv[0] is the program name and
-	/// is skipped).
+	/// Parse an argv-style argument list and record which options and positional
+	/// arguments were supplied.
+	///
+	/// `argv[0]` is the program name and is skipped. Each later entry is
+	/// classified as follows:
+	///
+	/// * an entry starting with `-` is an option: the first `-` is stripped and
+	///   the remainder is matched case-insensitively against every registered
+	///   names alias. Only one dash is stripped, so a GNU-style `--name` is looked
+	///   up as `-name` and matches only an option literally registered under that
+	///   spelling. A match sets `is_set`; if the option takes an argument and
+	///   another entry follows, that entry is stored as the option's setting and
+	///   also consumed. Unknown options are reported to stderr and ignored (the
+	///   parse still succeeds).
+	/// * anything else fills the next free positional argument in registration
+	///   order; entries beyond the registered count are reported to stderr and
+	///   ignored.
+	///
+	/// Non-UTF-8 entries cannot match anything and are also reported as unknown
+	/// parameters. `required` positional arguments are *not* enforced, so a
+	/// missing required argument does not fail.
+	///
+	/// # Returns
+	///
+	/// Always `Ok(())`; the `Result` only mirrors the C API's try/catch boundary.
+	/// Calls are cumulative: re-parsing does not clear previous `is_set`/
+	/// `setting` values.
 	pub fn process(&mut self, argv: &[CString]) -> Result<()> {
 		let mut positional_index = 0usize;
 		let mut i = 1usize; // CPP-PARITY: argv[0] is the program name, skipped.
@@ -181,7 +247,22 @@ impl CommandLineParser {
 		Ok(())
 	}
 
-	/// Print usage/help text to stdout.
+	/// Write the usage/help text for this parser to stdout.
+	///
+	/// The output is the application name and version line, the copyright line, a
+	/// `Usage: <basename> [options] [arg] ...` line built from the registered
+	/// positional arguments, then one block per non-hidden option (`-name, -alias
+	/// <PLACEHOLDER>`) followed by its description, and a trailing blank line.
+	///
+	/// `filename` is the program path from argv[0]; only the part after the last
+	/// `/` is printed, so the usage line shows the program name rather than the
+	/// full path. It is not otherwise interpreted.
+	///
+	/// # Errors
+	///
+	/// Returns `Error::Failed` if writing to stdout fails (for example a closed
+	/// pipe). Help is rendered through a locked stdout handle so the blocks are
+	/// not interleaved with other writers.
 	pub fn print_help(&self, filename: &str) -> Result<()> {
 		let stdout = io::stdout();
 		let mut out = stdout.lock();
@@ -334,7 +415,16 @@ impl CommandLineOption {
 		}
 	}
 
-	/// Set the option's argument value.
+	/// Set the option's argument value from outside parsing.
+	///
+	/// `value` is stored as the option's setting, replacing any value `process`
+	/// had captured, and `get_setting` returns it afterwards. Note that this does
+	/// **not** mark the option as present: `is_set` is only set by `process`
+	/// matching the option on the command line.
+	///
+	/// # Returns
+	///
+	/// Always `Ok(())`; the `Result` only mirrors the C API's try/catch boundary.
 	pub fn set_setting(&mut self, value: &str) -> Result<()> {
 		self.setting = Some(value.to_string());
 		Ok(())
@@ -365,7 +455,16 @@ impl CommandLinePositionalArgument {
 		}
 	}
 
-	/// Set the argument's value.
+	/// Set the positional argument's value from outside parsing.
+	///
+	/// `value` replaces whatever `process` had stored (including `None`), which
+	/// lets the C ABI layer supply a value for arguments it handles itself.
+	/// `get_setting` then returns it. This does not mark anything as required or
+	/// validated.
+	///
+	/// # Returns
+	///
+	/// Always `Ok(())`; the `Result` only mirrors the C API's try/catch boundary.
 	pub fn set_setting(&mut self, value: &str) -> Result<()> {
 		self.setting = Some(value.to_string());
 		Ok(())

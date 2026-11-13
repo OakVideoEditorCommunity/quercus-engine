@@ -46,8 +46,14 @@ impl TimeOffsetNode {
 		input_time + Self::time_offset(core, input_time)
 	}
 
-	/// C++ `get_remapped_output_time()`: the inverse of
-	/// [`Self::get_remapped_time`] — `input - time_in`.
+	/// Maps a time from the connected input's timeline back to this node's
+	/// timeline.
+	///
+	/// `core` supplies the node's `time_in` offset, evaluated at `input_time`;
+	/// `input_time` is a time in the input's space and the result is
+	/// `input_time - time_in`. Exact inverse of [`Self::get_remapped_time`] and
+	/// the mapping behind [`Self::output_time_adjustment_with`] (C++
+	/// `get_remapped_output_time()`).
 	pub fn get_remapped_output_time(core: &NodeCore, input_time: Rational) -> Rational {
 		input_time - Self::time_offset(core, input_time)
 	}
@@ -227,9 +233,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TimeOffsetNode))
 }
 
-/// Register this node type (C++ factory listing for
-/// `org.olivevideoeditor.Olive.timeoffset`; see the note on
-/// [`NodeBehavior::categories`] about the missing `Time` category).
+/// Registers the Time Offset node type into the factory listing.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.timeoffset`, display name "Time Offset",
+/// [`create`] as the constructor and an empty category list: C++ files this
+/// type under `Time`, but the [`Category`] enum has no such variant, so the
+/// entry opts out of categorized menus (see [`NodeBehavior::categories`]).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.timeoffset",

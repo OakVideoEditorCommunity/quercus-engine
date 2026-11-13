@@ -150,6 +150,13 @@ pub fn windows_monitor_fingerprint(hmonitor: u64) -> Option<String> {
 /// when no RandR monitor list is available (headless, no `xrandr`) or none
 /// covers the point.
 #[cfg(target_os = "linux")]
+/// The monitor fingerprint (`x11:<RandR output>`) for the display covering a point.
+///
+/// `x`/`y` are in device pixels (global X11 screen coordinates, possibly negative)
+/// and are rounded to integers before the RandR geometry test. Uses a 30 s cached
+/// `xrandr --listmonitors` snapshot so a poll loop does not spawn a process every
+/// tick. Returns `None` when no RandR monitor list is available (headless, no
+/// `xrandr`) or no monitor contains the point.
 pub fn x11_monitor_fingerprint_at(x: f64, y: f64) -> Option<String> {
 	linux::x11_monitor_fingerprint_at(x, y)
 }
@@ -264,6 +271,13 @@ struct RandRMonitor {
 /// and any malformed line are skipped.
 #[cfg(any(target_os = "linux", test))]
 fn parse_xrandr_monitors(output: &str) -> Vec<RandRMonitor> {
+	/// Parse one `xrandr --listmonitors` geometry token
+	/// (`W/MMWxH/MMH[+-]X[+-]Y`) into `(x, y, width, height)` in device pixels.
+	///
+	/// Physical sizes after `/` are ignored. Negative coordinates are carried by the
+	/// leading `+`/`-` signs and restored here. Returns `None` when the token lacks the
+	/// `WxH` part, has fewer than three `+`/`-`-separated pieces, or a component is not
+	/// a valid `i32`.
 	fn parse_geometry(token: &str) -> Option<(i32, i32, i32, i32)> {
 		// `W/MMWxH/MMH[+-]X[+-]Y` — `[+-]` splits off the coordinates but
 		// drops their signs, which the leading `+`/`-` in the body carries.
@@ -388,6 +402,13 @@ mod macos {
 		fn CFRelease(obj: *const c_void);
 	}
 
+	/// macOS: ICC profile of the main display, materialized as a cache file.
+	///
+	/// Reads the main display's CoreGraphics color space, copies its ICC bytes out,
+	/// releases the Core Foundation objects, and writes the bytes under
+	/// `<disk cache>/icc/<hash>.icc` via `write_icc_cache`. Returns the file path;
+	/// `None` when the display has no color space, the color space carries no ICC data,
+	/// or the cache directory is not writable.
 	pub(super) fn display_icc() -> Option<String> {
 		display_icc_for(unsafe { CGMainDisplayID() })
 	}
@@ -610,6 +631,13 @@ mod windows {
 		}
 	}
 
+	/// Windows: ICM profile path of the main display.
+	///
+	/// Opens a screen device context (`GetDC(NULL)`), asks GDI for the ICM profile
+	/// (`GetICMProfileW`, two-stage size query), validates that the result is an
+	/// existing file, and releases the device context. Returns the profile path; `None`
+	/// when the DC or profile is unavailable (e.g. headless) or points to a missing
+	/// file.
 	pub(super) fn display_icc() -> Option<String> {
 		let hdc = unsafe { GetDC(std::ptr::null()) };
 		if hdc.is_null() {
@@ -722,6 +750,14 @@ mod linux {
 
 	use super::*;
 
+	/// Linux: ICC profile as a cache file, from X11 root-window properties first, then
+	/// colord.
+	///
+	/// Tries `xprop -root _ICC_PROFILE`, `_ICC_PROFILE_1`, `_ICC_PROFILE_2` (the bare
+	/// name belongs to the primary monitor) with a 2 s timeout each, caches the first
+	/// parsable byte blob, and falls back to the colord `colormgr` CLI. Returns the
+	/// cached `.icc` path; `None` when neither source yields a profile (headless,
+	/// missing tools, or unwritable cache).
 	pub(super) fn display_icc() -> Option<String> {
 		// 1. X11 (and XWayland) publish the ICC bytes as root-window
 		//    properties. The primary monitor keeps the bare `_ICC_PROFILE`

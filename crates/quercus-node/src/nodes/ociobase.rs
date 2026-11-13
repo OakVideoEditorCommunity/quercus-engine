@@ -95,14 +95,21 @@ impl OcioBase {
 		*self.processor.lock().unwrap_or_else(|e| e.into_inner()) = processor;
 	}
 
-	/// Shared output evaluation (C++ `OCIOBaseNode::value()`): no texture
-	/// on [`TEXTURE_INPUT`] -> push nothing; texture present and
-	/// processor ready -> push a boxed
-	/// [`crate::jobs::ColorTransformJobPayload`] built from the processor
-	/// and the input texture (the C++ `t->to_job(ColorTransformJob)`,
-	/// resolved by the render seam via the processor); texture present
-	/// but processor not ready (e.g. still being generated
-	/// asynchronously) -> pass the input texture through unchanged.
+	/// Shared output evaluation (C++ `OCIOBaseNode::value()`): no texture on
+	/// [`TEXTURE_INPUT`] → push nothing; texture present and processor ready →
+	/// push a boxed [`crate::jobs::ColorTransformJobPayload`] built from the
+	/// processor and the input texture (the C++ `t->to_job(ColorTransformJob)`,
+	/// resolved by the render seam via the processor); texture present but
+	/// processor not ready (e.g. still being generated asynchronously) → pass
+	/// the input texture through unchanged.
+	///
+	/// `core` is unused here (the C++ base read its config from the captured
+	/// color manager; this Rust port keeps no borrowed manager field — see the
+	/// type doc — and takes the processor from `self` instead); `inputs`
+	/// supplies the [`TEXTURE_INPUT`] value, `time` is forwarded unchanged into
+	/// the job payload for time-dependent transforms, and `table` receives
+	/// exactly one value tagged [`crate::value::ValueType::Texture`] — either
+	/// the job or the pass-through texture.
 	/// `// CPP-PARITY: ociobase.cpp` `value()`.
 	pub fn value(
 		&self,

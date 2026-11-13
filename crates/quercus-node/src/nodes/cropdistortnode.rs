@@ -390,9 +390,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Helper mirroring the C++ `create_crop_side_input()`: a float input
-/// with default 0.0 and `min = 0.0`, `max = 1.0`, `view = percentage`
-/// properties.
+/// Adds one crop-side float input to a Crop/Distort node core.
+///
+/// The input defaults to `0.0`, is constrained to `0.0..=1.0` through its
+/// `min`/`max` properties, and is displayed as a percentage (`view` =
+/// "percentage"). Called by `create` for the left/top/right/bottom sides.
+///
+/// # Arguments
+///
+/// * `core` - Node core being built; the input is appended to its input list.
+/// * `id` - Input identifier persisted with the node (one of the `*_INPUT`
+///   constants, e.g. [`LEFT_INPUT`]).
 fn create_crop_side_input(core: &mut NodeCore, id: &str) {
 	let mut input = crate::input::Input::new(
 		id,
@@ -410,8 +418,15 @@ fn create_crop_side_input(core: &mut NodeCore, id: &str) {
 	core.add_input(input);
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.crop`).
+/// Appends the Crop/Distort effect to the node registry.
+///
+/// The descriptor uses type id `org.olivevideoeditor.Olive.crop`, the
+/// display name "Crop", and [`Category::Distort`]; `create` is the factory
+/// used to instantiate the node.
+///
+/// # Arguments
+///
+/// * `meta` - Mutable node registry the descriptor is appended to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.crop",

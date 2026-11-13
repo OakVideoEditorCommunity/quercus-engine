@@ -2,16 +2,21 @@
 
 use std::ffi::c_void;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_video_buffer_add_ref(frame: *const c_void);
 	fn quercus_video_buffer_release(frame: *const c_void);
 	fn quercus_video_buffer_info(frame: *const c_void, out: *mut VideoFrameInfo) -> bool;
 	fn quercus_video_buffer_copy_bytes(frame: *const c_void, dst: *mut u8, capacity: usize) -> usize;
+	fn quercus_video_buffer_take_texture(
+		frame: *mut c_void,
+		width: *mut i32,
+		height: *mut i32,
+	) -> *const c_void;
 }
 
 /// Original producer of an owned frame's bytes.
@@ -77,6 +82,15 @@ unsafe impl Send for VideoFrame {}
 unsafe impl Sync for VideoFrame {}
 
 impl VideoFrame {
+	/// Wrap a raw `quercus_video_buffer` pointer as an owned [`VideoFrame`].
+	///
+	/// `ptr` must be a live engine frame pointer whose reference the caller
+	/// already owns (for example the result of `quercus_task_take_video`); the
+	/// returned frame adopts that reference and releases it on drop, and `Clone`
+	/// adds a reference first. Returns `None` for a null pointer, in which case
+	/// nothing is adopted and there is no reference to release. It is
+	/// `pub(crate)` because the pointer is the C ABI's type, not part of the safe
+	/// public surface.
 	pub(crate) fn from_raw(ptr: *const c_void) -> Option<Self> {
 		(!ptr.is_null()).then_some(Self { ptr })
 	}
@@ -101,6 +115,19 @@ impl VideoFrame {
 		} else {
 			Vec::new()
 		}
+	}
+
+	/// Clones the optional zero-copy presentation texture. The returned
+	/// pointer is an `Arc<wgpu::Texture>` raw pointer; the caller owns it and
+	/// must wrap it with `Arc::from_raw` (using the same wgpu 29 generation).
+	/// Returns `None` when the engine produced CPU pixels.
+	pub fn take_gpu_texture(&self) -> Option<(*const c_void, i32, i32)> {
+		let mut width = 0i32;
+		let mut height = 0i32;
+		let ptr = unsafe {
+			quercus_video_buffer_take_texture(self.ptr as *mut c_void, &mut width, &mut height)
+		};
+		(!ptr.is_null()).then_some((ptr, width, height))
 	}
 
 	/// Converts either representation into tightly packed F32 RGBA samples.

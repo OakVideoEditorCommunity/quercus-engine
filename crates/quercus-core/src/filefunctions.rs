@@ -64,8 +64,24 @@ impl FileFunctions {
 		Self
 	}
 
-	/// Deterministic identifier string for a file (empty if it does not
-	/// exist).
+	/// A deterministic identifier for the file at `filename`, used as a
+	/// cache key for project media.
+	///
+	/// The identifier is the FNV-1a hex hash of the absolute path (not
+	/// symlink-resolved) plus the file's modification time in nanoseconds
+	/// since the Unix epoch. It therefore changes when the file is
+	/// touched, and the empty string means "no identifier": the path
+	/// cannot be made absolute, or the file does not exist, or its
+	/// metadata/mtime cannot be read.
+	///
+	/// # Arguments
+	///
+	/// * `filename` - path to the file, absolute or relative to the
+	///   current directory.
+	///
+	/// # Returns
+	///
+	/// Always `Ok`; the `Result` exists for C ABI uniformity.
 	pub fn get_unique_file_identifier(&self, filename: &str) -> Result<String> {
 		// `std::path::absolute` is the std analog of `fs::absolute`: it
 		// yields an absolute path without resolving symlinks or normalizing.
@@ -103,7 +119,19 @@ impl FileFunctions {
 		Ok(fnv1a_hex(hash_input.as_bytes()))
 	}
 
-	/// Configuration directory.
+	/// The directory holding user configuration (and, since most other
+	/// locations derive from it, the cache/data roots).
+	///
+	/// Resolution order: `$QUERCUS_CONFIG_DIR` when set and non-empty
+	/// (also created here), the application directory in portable mode,
+	/// then `~/Library/Application Support/quercus` on macOS or
+	/// `$XDG_CONFIG_HOME/quercus` (falling back to `~/.config/quercus`)
+	/// elsewhere; when no home is known the system temp directory is
+	/// used. The resulting directory is created on a best-effort basis and
+	/// returned as a lossy UTF-8 path.
+	///
+	/// Returns `Ok` unconditionally; the `Result` exists for C ABI
+	/// uniformity.
 	pub fn get_configuration_location(&self) -> Result<String> {
 		// Tests and tooling can redirect the configuration (and, since most
 		// locations derive from it, the cache/data) root.
@@ -146,7 +174,13 @@ impl FileFunctions {
 		Ok(config_dir.to_string_lossy().into_owned())
 	}
 
-	/// Application path.
+	/// The directory containing the application executable.
+	///
+	/// Resolved from the canonicalised `current_exe` (macOS),
+	/// `/proc/self/exe` (other Unix) or the current working directory as a
+	/// last resort; the empty string means no path could be determined.
+	/// Returns `Ok` unconditionally; the `Result` exists for C ABI
+	/// uniformity.
 	pub fn get_application_path(&self) -> Result<String> {
 		Ok(Self::application_path())
 	}
@@ -188,7 +222,12 @@ impl FileFunctions {
 			.unwrap_or_default()
 	}
 
-	/// Temporary file path.
+	/// A per-user scratch directory for temporary files:
+	/// `<system temp>/quercus`, created on a best-effort basis.
+	///
+	/// No file is created, and callers are responsible for cleaning up
+	/// what they place there. Returns `Ok` unconditionally; the `Result`
+	/// exists for C ABI uniformity.
 	pub fn get_temp_file_path(&self) -> Result<String> {
 		// CPP-PARITY: `std::env::temp_dir()` never fails the way
 		// `fs::temp_directory_path(ec)` can, so the `"." / "quercus-temp"`
@@ -207,7 +246,18 @@ impl FileFunctions {
 			.into_owned())
 	}
 
-	/// Whether `source` can be copied to `dest` without overwriting.
+	/// Whether copying `source` into `dest` would leave every existing
+	/// destination file untouched.
+	///
+	/// Walks both trees: returns `false` as soon as a source file has a
+	/// same-named entry under `dest`, and recurses for subdirectories.
+	/// A `source` that cannot be read counts as empty, so the answer is
+	/// `true` (matching the C++ iterator semantics).
+	///
+	/// # Arguments
+	///
+	/// * `source` - directory that would be copied.
+	/// * `dest` - target directory, which need not exist.
 	pub fn can_copy_directory_without_overwriting(&self, source: &str, dest: &str) -> bool {
 		// CPP-PARITY: a failed `directory_iterator` (e.g. `source` missing)
 		// yields an empty iteration, so the function returns `true`.
@@ -232,7 +282,29 @@ impl FileFunctions {
 		true
 	}
 
-	/// Recursively copy a directory, optionally overwriting.
+	/// Recursively copies the directory `source` into `dest`, creating
+	/// both `dest` and any missing subdirectories.
+	///
+	/// With `overwrite` the destination files are replaced (on Unix their
+	/// write bits are granted first so read-only files can be removed);
+	/// without it an existing destination file is reported and skipped.
+	/// The function is deliberately forgiving: a missing `source`, a
+	/// `dest` that cannot be created, an unreadable source directory and
+	/// individual copy failures are logged and skipped rather than
+	/// returned as errors, so a partial copy is possible.
+	///
+	/// # Arguments
+	///
+	/// * `source` - directory to copy; when it is not a directory the call
+	///   is a no-op.
+	/// * `dest` - destination directory, created if absent.
+	/// * `overwrite` - `true` to replace existing files, `false` to keep
+	///   them.
+	///
+	/// # Errors
+	///
+	/// Does not currently return `Err`; the `Result` exists for C ABI
+	/// uniformity.
 	pub fn copy_directory(&self, source: &str, dest: &str, overwrite: bool) -> Result<()> {
 		if !Path::new(source).is_dir() {
 			eprintln!("Failed to copy directory, source {} didn't exist", source);
@@ -307,7 +379,15 @@ impl FileFunctions {
 		Ok(())
 	}
 
-	/// Whether a directory exists, optionally creating it.
+	/// Whether `dir` is an existing directory, optionally creating it when
+	/// it is missing.
+	///
+	/// # Arguments
+	///
+	/// * `dir` - path to check.
+	/// * `try_to_create` - when `true` and `dir` is absent, attempt
+	///   `create_dir_all` and report whether that succeeded; when `false`
+	///   a missing directory simply yields `false`.
 	pub fn directory_is_valid(&self, dir: &str, try_to_create: bool) -> bool {
 		// Return whether the directory exists, or whether it could be created
 		// if it doesn't
@@ -317,7 +397,17 @@ impl FileFunctions {
 		try_to_create && std::fs::create_dir_all(dir).is_ok()
 	}
 
-	/// Filename with a (dotless) extension ensured.
+	/// Returns `filename` with `.<extension>` appended unless it already
+	/// ends with that suffix (compared case-insensitively).
+	///
+	/// The extension is given without the leading dot. Empty `filename` or
+	/// `extension` makes the function a no-op, and the path is otherwise
+	/// returned unchanged.
+	///
+	/// # Arguments
+	///
+	/// * `filename` - path to normalise; directories are not inspected.
+	/// * `extension` - extension without the dot, e.g. `"ofx"` or `"xml"`.
 	pub fn ensure_filename_extension(&self, filename: &str, extension: &str) -> Result<String> {
 		let mut fn_str = filename.to_string();
 		// No-op if either input is empty
@@ -342,7 +432,20 @@ impl FileFunctions {
 		}
 	}
 
-	/// A non-existing temporary variant of `original`.
+	/// A sibling path of `original` that is free at the moment of the
+	/// call, for writing a temporary replacement next to the real file.
+	///
+	/// The name is built as `<basename>.tmp<counter><complete suffix>`
+	/// in the same directory, incrementing `counter` from `0` until the
+	/// path does not exist. The suffix starts at the first dot (so
+	/// `clip.v2.mkv` yields `clip.tmp0.v2.mkv`). The file is not
+	/// created, so another process can still claim the name before the
+	/// caller does.
+	///
+	/// # Arguments
+	///
+	/// * `original` - path of the file being replaced; its parent
+	///   directory is reused.
 	pub fn get_safe_temporary_filename(&self, original: &str) -> Result<String> {
 		let mut counter: i32 = 0;
 
@@ -377,7 +480,17 @@ impl FileFunctions {
 		Ok(temp_abs_path.to_string_lossy().into_owned())
 	}
 
-	/// Rename `from` to `to`, deleting `to` first if it exists.
+	/// Renames `from` to `to`, deleting `to` first when it exists.
+	///
+	/// Returns `false` (after logging to stderr) when the existing `to`
+	/// cannot be removed or the rename fails, e.g. a missing source or a
+	/// cross-device target. Only files are removed: an existing `to` that
+	/// is a directory makes the call fail rather than recurse.
+	///
+	/// # Arguments
+	///
+	/// * `from` - existing source path.
+	/// * `to` - destination path, replaced if present.
 	pub fn rename_file_allow_overwrite(&self, from: &str, to: &str) -> bool {
 		if Path::new(to).exists() {
 			// CPP-PARITY: C++ `fs::remove` handles both files and dirs; Rust
@@ -399,7 +512,16 @@ impl FileFunctions {
 		true
 	}
 
-	/// Append the platform executable suffix (".exe" on Windows).
+	/// Returns the name of a helper executable for this platform.
+	///
+	/// On Windows `".exe"` is appended to `unformatted`; on every other
+	/// platform the input is returned unchanged. No existence check is
+	/// performed.
+	///
+	/// # Arguments
+	///
+	/// * `unformatted` - executable name or path without a platform
+	///   suffix.
 	pub fn get_formatted_executable_for_platform(&self, unformatted: &str) -> Result<String> {
 		#[cfg(target_os = "windows")]
 		{

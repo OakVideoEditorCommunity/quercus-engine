@@ -24,6 +24,12 @@ pub struct QuercusEditorProxyStatus {
 	pub has_proxy: bool,
 }
 
+/// Resolves `footage` to its `FootageBehavior`, or `None` when the id does not
+/// name a footage node.
+///
+/// Used by the proxy mutations in this module to change generation state in
+/// the project graph. The graph is borrowed mutably, so the returned reference
+/// must not outlive the caller's borrow or be held across another project lock.
 fn footage_mut(
 	project: &mut quercus_node::project::Project,
 	footage: NodeId,
@@ -38,9 +44,33 @@ fn footage_mut(
 /// Starts a proxy transcode without blocking the calling/UI thread.
 ///
 /// On success the footage is immediately marked generating and the returned
-/// nonzero task ID can be polled through `quercus_task_*`. The caller must eventually
-/// call [`quercus_editor_proxy_complete`] with that same ID and release the task.
-/// Duplicate generation for one footage in the same session is rejected.
+/// nonzero task ID can be polled through `quercus_task_*`; the caller must
+/// eventually call [`quercus_editor_proxy_complete`] with that same ID and
+/// release the task. Duplicate generation for one footage in the same session
+/// is rejected.
+///
+/// # Arguments
+///
+/// * `session` - live editor session handle.
+/// * `footage` - identity of a footage node with a media file and a video
+///   stream.
+/// * `cache_path` - proxy cache directory (UTF-8); the final file name is
+///   derived from it, the source filename, the stream index and the effective
+///   proxy parameters.
+/// * `cache_path_len` - byte length of `cache_path`.
+/// * `error` - output buffer for a failure message; may be null with
+///   `error_len == 0`. Written NUL-terminated and truncated like
+///   `snprintf`.
+/// * `error_len` - capacity of `error` in bytes.
+///
+/// Returns the nonzero task id on success, or 0 on failure (with a message in
+/// `error` when provided).
+///
+/// # Safety
+///
+/// `session` must be null or a live handle; `cache_path` must be null or point
+/// to `cache_path_len` readable bytes; `error` must be null or writable for
+/// `error_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_proxy_generate(
 	session: *const EditorSessionHandle,
@@ -109,8 +139,21 @@ pub unsafe extern "C" fn quercus_editor_proxy_generate(
 
 /// Applies the terminal state of a previously started proxy task.
 ///
-/// Returns false when the footage/task pair is not the active generation. This
-/// guards against an old worker overwriting metadata for a newer request.
+/// On success the footage's proxy state becomes ready (2) when `succeeded` is
+/// true, or failed (3) otherwise; a success also enables the proxy. Returns
+/// false when the footage/task pair is not the active generation, which guards
+/// against an old worker overwriting metadata for a newer request.
+///
+/// # Arguments
+///
+/// * `session` - live editor session handle.
+/// * `footage` - identity of the footage the task was started for.
+/// * `task_id` - nonzero task id returned by [`quercus_editor_proxy_generate`].
+/// * `succeeded` - whether the transcode finished without error.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle from `quercus_editor_*`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_proxy_complete(
 	session: *const EditorSessionHandle,
@@ -139,8 +182,26 @@ pub unsafe extern "C" fn quercus_editor_proxy_complete(
 	true
 }
 
-/// Reads one footage's proxy status, giving active session tasks priority over
-/// working files left by an interrupted process.
+/// Reads one footage's proxy status into `out`.
+///
+/// An active session task takes priority over the on-disk working file (which
+/// may have been left behind by an interrupted process), then a previously
+/// failed generation is reported. The returned `state` uses the public codec
+/// proxy-state numbering: 0 missing, 1 generating, 2 ready, 3 failed.
+///
+/// # Arguments
+///
+/// * `session` - live editor session handle.
+/// * `footage` - identity of a footage node.
+/// * `out` - receives the status; must be writable for one
+///   `QuercusEditorProxyStatus`.
+///
+/// Returns false when any pointer/id is invalid or the node is not footage.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle; `out` must be null or writable for
+/// one `QuercusEditorProxyStatus`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_proxy_status(
 	session: *const EditorSessionHandle,
@@ -187,7 +248,12 @@ pub unsafe extern "C" fn quercus_editor_proxy_status(
 		state: proxy_state as i32,
 		enabled: footage_behavior.proxy_enabled,
 		has_custom_params: footage_behavior.has_custom_proxy_params(),
-		can_generate: footage_behavior.valid
+		// Generation only needs a media file and a video stream; `valid` is
+		// the C++ probe flag and can be false for a project loaded without a
+		// probe (or while a deleted proxy is being reset). The generate ABI
+		// checks exactly these two facts, so gating the menu on `valid` made
+		// Generate permanently gray for otherwise usable footage.
+		can_generate: !footage_behavior.filename.is_empty()
 			&& footage_behavior
 				.streams
 				.iter()
@@ -197,7 +263,26 @@ pub unsafe extern "C" fn quercus_editor_proxy_status(
 	true
 }
 
-/// Returns the recorded proxy path, including a path whose file is missing.
+/// Copies the footage's recorded proxy path into `buf`, snprintf-style.
+///
+/// The path is returned even when the file is missing on disk (the caller
+/// decides whether to regenerate). Returns the full byte length of the path
+/// (excluding the NUL), or `-1` for a null session, an invalid footage id, or
+/// a node that is not footage.
+///
+/// # Arguments
+///
+/// * `session` - live editor session handle.
+/// * `footage` - identity of a footage node.
+/// * `buf` - output buffer; null with `buf_len == 0` queries the required
+///   length. Otherwise written NUL-terminated and truncated to `buf_len - 1`
+///   bytes when too small.
+/// * `buf_len` - capacity of `buf` in bytes.
+///
+/// # Safety
+///
+/// `session` must be null or a live handle; `buf` must be null or writable for
+/// `buf_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_proxy_path(
 	session: *const EditorSessionHandle,

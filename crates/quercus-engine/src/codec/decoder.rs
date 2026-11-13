@@ -21,8 +21,34 @@ pub extern "C" fn quercus_codec_decoder_ids() -> *mut QuercusVecString {
 		.into_ffi_vec()
 }
 
-/// Substitutes the frame number into an image-sequence filename,
-/// snprintf-style; -1 on invalid input.
+/// Rewrites an image-sequence filename with `number` substituted for the
+/// trailing digit run, keeping the placeholder width (zero-padded), and copies
+/// the result into `buf` snprintf-style.
+///
+/// `"frame_0001.png"` with `number = 42` and a 4-digit placeholder becomes
+/// `"frame_0042.png"`; every occurrence of the original base name inside the
+/// file name is rewritten. When the base name has no trailing digits (a
+/// zero-width placeholder) the number is appended to it instead.
+///
+/// # Arguments
+///
+/// * `filename` - Source path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `number` - Frame number baked into the result.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the result excluding the NUL, or -1 on invalid
+/// input. A return value `>= buf_len` means the output was truncated to
+/// `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `filename` must be valid for `filename_len` bytes when non-null; `buf` must
+/// be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_transform_image_sequence_filename(
 	filename: *const u8,
@@ -41,8 +67,16 @@ pub unsafe extern "C" fn quercus_codec_decoder_transform_image_sequence_filename
 	)
 }
 
-/// The digit count of the sequence placeholder in `filename` (0 when it
-/// is not an image sequence); -1 on invalid input.
+/// The digit count of the sequence placeholder in `filename`: the length of the
+/// trailing ASCII digit run of its stem (file name up to the first `.`), e.g. 4
+/// for `"frame_0001.png"`.
+///
+/// Returns 0 when the name is not an image sequence, and -1 when `filename` is
+/// null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `filename` must be valid for `filename_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_image_sequence_digit_count(
 	filename: *const u8,
@@ -54,7 +88,16 @@ pub unsafe extern "C" fn quercus_codec_decoder_image_sequence_digit_count(
 	decoder::get_image_sequence_digit_count(filename)
 }
 
-/// The sequence index encoded in `filename`; -1 on invalid input.
+/// The sequence index encoded in `filename`, i.e. the numeric value of the
+/// trailing ASCII digit run of its stem (file name up to the first `.`), so
+/// `"frame_0001.png"` yields 1.
+///
+/// Returns 0 when the stem has no trailing digits (not an image sequence), and
+/// -1 when `filename` is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `filename` must be valid for `filename_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_image_sequence_index(
 	filename: *const u8,
@@ -236,11 +279,33 @@ impl NativeMirror for QuercusSubtitleParams {
 	}
 }
 
-/// Probes `filename` and returns its stream inventory as an opaque
-/// handle (release with `quercus_codec_footage_release`). `decoder_id` null
-/// or empty tries every registered decoder in order; otherwise only the
-/// named decoder. `cancel` is an optional `CancelAtom` (null = none); a
-/// cancelled atom aborts the probe. Null when nothing can read the file.
+/// Probes `filename` (metadata only, no decoding) and returns its stream
+/// inventory as an opaque handle; release it with
+/// `quercus_codec_footage_release`.
+///
+/// # Arguments
+///
+/// * `decoder_id` - Decoder id bytes (e.g. `"ffmpeg"`); null or empty tries
+///   every registered decoder in registration order and keeps the first that
+///   probes successfully.
+/// * `decoder_id_len` - Length of `decoder_id` in bytes; invalid UTF-8 fails.
+/// * `filename` - Media path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `cancel` - Optional `CancelAtom` that can abort a slow probe; null means
+///   no cancellation. A pre-cancelled atom makes the call fail.
+///
+/// # Returns
+///
+/// The probe handle, or null when the file is missing/unreadable, the named
+/// decoder is unknown, the probe is cancelled, or an argument is invalid. A
+/// null return says nothing about the file's stream types.
+///
+/// # Safety
+///
+/// Both string pointers must be valid for their stated lengths; `cancel` must
+/// be a valid `CancelAtom` or null. The atom must stay alive for the call (it
+/// is borrowed, not retained), and the returned handle must be released
+/// exactly once with `quercus_codec_footage_release`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_probe(
 	decoder_id: *const u8,
@@ -270,7 +335,26 @@ pub unsafe extern "C" fn quercus_codec_decoder_probe(
 	}
 }
 
-/// The probing decoder's id, snprintf-style; -1 on null.
+/// Copies the id of the decoder that produced the probe (e.g. `"ffmpeg"`) into
+/// `buf`, snprintf-style.
+///
+/// # Arguments
+///
+/// * `fd` - Probe handle from `quercus_codec_decoder_probe`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the id excluding the NUL, or -1 when `fd` is null.
+/// A return value `>= buf_len` means the output was truncated to `buf_len - 1`
+/// bytes plus a NUL.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null, `fd` must be a valid
+/// probe handle or null, and neither may be used concurrently.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_decoder_name(
 	fd: *const FootageDescription,
@@ -283,7 +367,16 @@ pub unsafe extern "C" fn quercus_codec_footage_decoder_name(
 	copy_str_out(unsafe { &*fd }.decoder(), buf, buf_len)
 }
 
-/// Total stream count (video + audio + subtitle); 0 on null.
+/// The total number of streams in the probe, i.e. video + audio + subtitle
+/// streams combined; 0 when `fd` is null.
+///
+/// This is the bound for `quercus_codec_footage_stream_type`; it is not the
+/// per-type counts (those come from the `*_stream_count` accessors).
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, and no other thread may release
+/// it during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_total_stream_count(
 	fd: *const FootageDescription,
@@ -294,8 +387,20 @@ pub unsafe extern "C" fn quercus_codec_footage_total_stream_count(
 	unsafe { &*fd }.total_stream_count() as i32
 }
 
-/// The kind of the `index`-th stream in probe order: 0 = video,
-/// 1 = audio, 2 = subtitle, -1 = invalid index.
+/// Reports the media kind of the `index`-th stream in probe order: 0 = video,
+/// 1 = audio, 2 = subtitle.
+///
+/// `index` runs over the probe's combined stream list, so bound it with
+/// `quercus_codec_footage_total_stream_count`; the per-type accessors
+/// (`quercus_codec_footage_get_*_stream`) instead take per-type ordinals.
+///
+/// Returns -1 when `fd` is null, `index` is negative, or `index` is at or past
+/// the stream count.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, and no other thread may release
+/// it during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_stream_type(
 	fd: *const FootageDescription,
@@ -338,8 +443,27 @@ footage_count_getter! {
 	quercus_codec_footage_subtitle_stream_count => subtitle_stream_count,
 }
 
-/// The `ordinal`-th video stream's params (per-type ordinal, NOT the
-/// probe-order index). False when out of range or on null input.
+/// Writes the parameters of the `ordinal`-th video stream into `out` (size,
+/// frame rate, pixel format, container stream index, time base, ...).
+///
+/// # Arguments
+///
+/// * `fd` - Probe handle from `quercus_codec_decoder_probe`.
+/// * `ordinal` - Zero-based index among video streams only. This is a per-type
+///   ordinal, NOT the probe-order index accepted by
+///   `quercus_codec_footage_stream_type`.
+/// * `out` - Caller-owned output slot, written only on success.
+///
+/// # Returns
+///
+/// `true` when the stream exists and `out` was written; `false` when `ordinal`
+/// is negative or out of range, or when `fd`/`out` is null.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, `out` must be valid for one
+/// `QuercusVideoParams` write when non-null, and neither may be used
+/// concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_get_video_stream(
 	fd: *const FootageDescription,
@@ -358,7 +482,28 @@ pub unsafe extern "C" fn quercus_codec_footage_get_video_stream(
 	}
 }
 
-/// The `ordinal`-th audio stream's params (per-type ordinal).
+/// Writes the parameters of the `ordinal`-th audio stream into `out`:
+/// sample rate, channel-layout bitset, sample format, container stream index,
+/// duration and time base.
+///
+/// # Arguments
+///
+/// * `fd` - Probe handle from `quercus_codec_decoder_probe`.
+/// * `ordinal` - Zero-based index among audio streams only (a per-type
+///   ordinal, not the probe-order index used by
+///   `quercus_codec_footage_stream_type`).
+/// * `out` - Caller-owned output slot, written only on success.
+///
+/// # Returns
+///
+/// `true` when the stream exists and `out` was written; `false` when `ordinal`
+/// is negative or out of range, or when `fd`/`out` is null.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, `out` must be valid for one
+/// `QuercusAudioStreamParams` write when non-null, and neither may be used
+/// concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_get_audio_stream(
 	fd: *const FootageDescription,
@@ -377,7 +522,29 @@ pub unsafe extern "C" fn quercus_codec_footage_get_audio_stream(
 	}
 }
 
-/// The `ordinal`-th subtitle stream's params (per-type ordinal).
+/// Writes the parameters of the `ordinal`-th subtitle stream into `out`.
+///
+/// Subtitle entries themselves are content and are not exposed; only the
+/// stream index, enabled flag and entry count are mirrored.
+///
+/// # Arguments
+///
+/// * `fd` - Probe handle from `quercus_codec_decoder_probe`.
+/// * `ordinal` - Zero-based index among subtitle streams only (a per-type
+///   ordinal, not the probe-order index used by
+///   `quercus_codec_footage_stream_type`).
+/// * `out` - Caller-owned output slot, written only on success.
+///
+/// # Returns
+///
+/// `true` when the stream exists and `out` was written; `false` when `ordinal`
+/// is negative or out of range, or when `fd`/`out` is null.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, `out` must be valid for one
+/// `QuercusSubtitleParams` write when non-null, and neither may be used
+/// concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_get_subtitle_stream(
 	fd: *const FootageDescription,
@@ -398,7 +565,16 @@ pub unsafe extern "C" fn quercus_codec_footage_get_subtitle_stream(
 	}
 }
 
-/// Whether the media carries a source start time.
+/// Whether the media carries a source start time (a nonzero origin offset
+/// derived from container metadata such as a timecode or BWF time reference).
+///
+/// Returns `false` for a null `fd` and when the probe found no such metadata;
+/// guard `quercus_codec_footage_source_start_time` with this.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, and no other thread may release
+/// it during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_has_source_start_time(
 	fd: *const FootageDescription,
@@ -406,7 +582,15 @@ pub unsafe extern "C" fn quercus_codec_footage_has_source_start_time(
 	!fd.is_null() && unsafe { &*fd }.has_source_start_time()
 }
 
-/// The source start time (the null rational when absent).
+/// The media's source start time.
+///
+/// Only meaningful when `quercus_codec_footage_has_source_start_time` reports
+/// `true`; otherwise, and for a null `fd`, the null rational `0/0` is returned.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, and no other thread may release
+/// it during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_source_start_time(
 	fd: *const FootageDescription,
@@ -417,7 +601,24 @@ pub unsafe extern "C" fn quercus_codec_footage_source_start_time(
 	QuercusRational::from_native(&unsafe { &*fd }.source_start_time())
 }
 
-/// The total duration; false when unknown or on null input.
+/// Writes the media's total duration as a half-open `[in, out)` time range.
+///
+/// # Arguments
+///
+/// * `fd` - Probe handle from `quercus_codec_decoder_probe`.
+/// * `out` - Caller-owned output slot, written only on success.
+///
+/// # Returns
+///
+/// `true` when a duration is known and written to `out`; `false` when the
+/// container exposes no duration, or when `fd`/`out` is null (nothing is
+/// written). Callers that need a value should have a fallback.
+///
+/// # Safety
+///
+/// `fd` must be a valid probe handle or null, `out` must be valid for one
+/// `QuercusTimeRange` write when non-null, and no other thread may release
+/// `fd` during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_footage_duration(
 	fd: *const FootageDescription,
@@ -592,8 +793,27 @@ pub extern "C" fn quercus_codec_retrieve_params_new() -> *mut RetrieveVideoParam
 	}) as *mut RetrieveVideoParams
 }
 
-/// The stream to read from (filename + stream index). False on invalid
-/// input.
+/// Sets the stream to read from: a media filename plus a container stream
+/// index.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null fails.
+/// * `filename` - Media path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes; may be 0, but an empty
+///   name makes the stream invalid (`CodecStream::is_valid`).
+/// * `stream_index` - Container stream index (not a per-type ordinal); a
+///   negative value is stored but makes the stream invalid.
+///
+/// # Returns
+///
+/// `true` when the stream was stored, `false` when `p` is null or `filename`
+/// cannot be decoded as UTF-8 (nothing is written in that case).
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set, and
+/// `filename` must be valid for `filename_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_stream(
 	p: *mut RetrieveVideoParams,
@@ -612,7 +832,18 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_stream(
 	true
 }
 
-/// The timestamp to retrieve (rational seconds).
+/// Sets the timestamp to retrieve, as rational seconds.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `time` - Frame time on the footage's timeline; defaults to `0/1`. The
+///   value is re-canonicalized (reduced, negative denominators flipped, a zero
+///   numerator becomes `0/1`, `0/0` stays the null sentinel).
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_time(
 	p: *mut RetrieveVideoParams,
@@ -624,7 +855,18 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_time(
 	unsafe { &mut *p }.time = time.to_native();
 }
 
-/// The footage range (for early-seek semantics).
+/// Sets the footage's overall time range, which the decoder may consult for
+/// early-seek decisions (picking a keyframe before the requested time).
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `length` - Half-open `[in, out)` span of the source footage in rational
+///   seconds, used as-is; defaults to an empty `TimeRange` on a fresh set.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_length(
 	p: *mut RetrieveVideoParams,
@@ -636,7 +878,19 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_length(
 	unsafe { &mut *p }.length = length.to_native();
 }
 
-/// Force a color range (`-1` = don't force, the default).
+/// Overrides the color range used when interpreting the decoded frames,
+/// bypassing the range reported by the media itself.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `range` - `-1` (`K_COLOR_RANGE_DEFAULT`) means "don't force" and is the
+///   default; `0` forces limited/TV range and `1` forces full/PC range (the
+///   `quercus_core_COLOR_RANGE_*` values).
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_force_range(
 	p: *mut RetrieveVideoParams,
@@ -648,7 +902,24 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_force_range(
 	unsafe { &mut *p }.force_range = range;
 }
 
-/// Marks the source as an image sequence and bakes in the frame number.
+/// Marks the source as an image sequence and records the placeholder width plus
+/// the frame number to address.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `digits` - Digit count of the numeric placeholder in the filename (as
+///   reported by `quercus_codec_decoder_image_sequence_digit_count`); 0 when
+///   unknown.
+/// * `number` - Frame number substituted for the placeholder (the sequence
+///   index reported by `quercus_codec_decoder_image_sequence_index`).
+///
+/// The flag is only ever set, never cleared: a fresh parameter set (or a new
+/// one) starts with `is_image_sequence == false`.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_image_sequence(
 	p: *mut RetrieveVideoParams,
@@ -664,7 +935,21 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_image_sequence(
 	p.image_sequence_number = number;
 }
 
-/// The target output size (`Some((w, h))`); decode scales in one step.
+/// Requests a scaled output size, so the decoder scales directly to
+/// `width` x `height` in a single step instead of decoding at native size.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `width` - Target width in pixels, stored as given (not validated).
+/// * `height` - Target height in pixels, stored as given (not validated).
+///
+/// The size can be removed again with
+/// `quercus_codec_retrieve_params_clear_target_size`.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_target_size(
 	p: *mut RetrieveVideoParams,
@@ -677,7 +962,15 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_target_size(
 	unsafe { &mut *p }.target_size = Some((width, height));
 }
 
-/// Decode at native size (the default).
+/// Drops the target output size so frames are decoded at native resolution
+/// (the default of a fresh parameter set).
+///
+/// Counterpart of `quercus_codec_retrieve_params_set_target_size`; a null `p`
+/// is silently ignored.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_clear_target_size(
 	p: *mut RetrieveVideoParams,
@@ -688,7 +981,17 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_clear_target_size(
 	unsafe { &mut *p }.target_size = None;
 }
 
-/// Render mode: 0 = offline, 1 = online.
+/// Selects the render mode hint used for the retrieve request.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `mode` - `1` selects online mode (favor latency over quality); every
+///   other value, including 0, selects offline mode, which is the default.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_mode(
 	p: *mut RetrieveVideoParams,
@@ -704,7 +1007,20 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_mode(
 	};
 }
 
-/// Whether the frame's alpha is premultiplied.
+/// Records whether the frames retrieved with this parameter set carry
+/// premultiplied alpha, so compositing code knows which convention to expect.
+///
+/// Defaults to `false` (straight alpha) on a fresh set.
+///
+/// # Arguments
+///
+/// * `p` - Parameter set to mutate; null is silently ignored.
+/// * `premultiplied` - `true` when color channels are already multiplied by
+///   alpha.
+///
+/// # Safety
+///
+/// `p` must be null or a valid, exclusively accessed parameter set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_retrieve_params_set_premultiplied_alpha(
 	p: *mut RetrieveVideoParams,
@@ -716,10 +1032,30 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_premultiplied_alpha(
 	unsafe { &mut *p }.alpha_is_premultiplied = premultiplied;
 }
 
-/// Opens a decode session for `filename`'s `stream_index`. `decoder_id`
-/// null/empty auto-picks by probing every registered decoder (first
-/// success wins); otherwise only the named decoder. Null when nothing
-/// can open the stream.
+/// Opens a decode session for stream `stream_index` of `filename`.
+///
+/// # Arguments
+///
+/// * `decoder_id` - Decoder id bytes (e.g. `"ffmpeg"`). Null or empty selects
+///   auto mode: every registered decoder is probed in registration order and
+///   the first one that can probe the file is used.
+/// * `decoder_id_len` - Length of `decoder_id` in bytes; invalid UTF-8 fails.
+/// * `filename` - Media path bytes; null or invalid UTF-8 fails.
+/// * `filename_len` - Length of `filename` in bytes.
+/// * `stream_index` - Container stream index to decode (as reported by the
+///   probe's per-type accessors), not an ordinal within a stream type.
+///
+/// # Returns
+///
+/// An opaque, refcounted session handle, or null when no decoder probes the
+/// file, the named id is unknown, or the decoder's `open` fails (which also
+/// covers a missing file or a bad stream index).
+///
+/// # Safety
+///
+/// Both string pointers must be valid for their stated lengths (or null with
+/// length 0 for `decoder_id`). The returned handle must be released with
+/// `quercus_codec_decoder_release`; calls on it must be externally serialized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_open(
 	decoder_id: *const u8,
@@ -751,8 +1087,16 @@ pub unsafe extern "C" fn quercus_codec_decoder_open(
 	into_ffi(DecoderSession { decoder }) as *mut DecoderSession
 }
 
-/// Closes the session's stream (safe when already closed). False on
-/// null.
+/// Closes the session's stream, letting the decoder release its file and codec
+/// resources; the handle itself stays alive until `quercus_codec_decoder_release`.
+///
+/// Safe to call repeatedly: closing an already-closed session reports `false`
+/// rather than panicking, and a null `session` reports `false` too.
+///
+/// # Safety
+///
+/// `session` must be null or a valid handle. The session must not be released
+/// or used by another thread concurrently.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_close(session: *mut DecoderSession) -> bool {
 	if session.is_null() {
@@ -761,8 +1105,27 @@ pub unsafe extern "C" fn quercus_codec_decoder_close(session: *mut DecoderSessio
 	unsafe { &*session }.decoder.close().is_ok()
 }
 
-/// Retrieves one video frame into CPU memory as a `Frame` handle
-/// (release with `quercus_codec_frame_release`). Null on error.
+/// Retrieves the video frame described by `params` into CPU memory as a
+/// `Frame` handle; release it with `quercus_codec_frame_release`.
+///
+/// # Arguments
+///
+/// * `session` - Open decode session from `quercus_codec_decoder_open`.
+/// * `params` - Retrieve-parameter set built from
+///   `quercus_codec_retrieve_params_new` plus its setters. It is borrowed for
+///   this call only (never retained) and may be mutated or released afterwards.
+///
+/// # Returns
+///
+/// The frame handle, or null when either argument is null, the decoder reports
+/// an error, or the session was already closed (a closed session fails cleanly
+/// instead of crashing).
+///
+/// # Safety
+///
+/// `session` and `params` must be null or valid, exclusively accessible
+/// pointers for the duration of the call. The returned handle owns one
+/// reference and must be released exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_retrieve_video_frame(
 	session: *mut DecoderSession,
@@ -782,9 +1145,35 @@ pub unsafe extern "C" fn quercus_codec_decoder_retrieve_video_frame(
 	}
 }
 
-/// Retrieves interleaved f32 audio covering [in, out) into `dest`.
-/// Returns a RetrieveAudioStatus code (0=success, 1=invalid range,
-/// 2=unsupported, 3=conform needed, 4=decoder error); -1 on ABI misuse.
+/// Retrieves interleaved f32 audio covering the half-open range `[in_, out)`
+/// into `dest`, at the requested sample rate and channel layout.
+///
+/// # Arguments
+///
+/// * `session` - Open decode session from `quercus_codec_decoder_open`.
+/// * `dest` - Caller-owned interleaved sample buffer; null is accepted only
+///   together with `dest_len == 0`.
+/// * `dest_len` - Capacity of `dest` in `f32` values; how many frames fit is
+///   `dest_len` divided by the channel count of `channel_layout`.
+/// * `in_` - Inclusive range start, in rational seconds.
+/// * `out` - Exclusive range end, in rational seconds.
+/// * `sample_rate` - Output sample rate in Hz.
+/// * `channel_layout` - `quercus_core` channel-layout bitset; also fixes the
+///   interleaving order.
+///
+/// # Returns
+///
+/// A `RetrieveAudioStatus` code: 0 = success, 1 = invalid range (outside the
+/// footage), 2 = unsupported (the stream carries no audio), 3 = conform needed,
+/// 4 = decoder error; -1 on ABI misuse (null `session`, or null `dest` with a
+/// nonzero `dest_len`) or when the decoder returns `Err`.
+///
+/// # Safety
+///
+/// `session` must be null or a valid handle; `dest` must be valid for writes of
+/// `dest_len` `f32` values when non-null (no allocation size is known here).
+/// The session must not be closed or released concurrently, so the decoder
+/// cannot be torn down mid-retrieve.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_decoder_retrieve_audio(
 	session: *mut DecoderSession,

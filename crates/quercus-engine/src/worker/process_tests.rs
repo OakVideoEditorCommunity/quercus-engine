@@ -75,6 +75,13 @@ fn worker_binary() -> Option<PathBuf> {
 		.find(|path| path.is_file())
 }
 
+/// Builds an OFX host client that spawns the worker binary in host mode.
+///
+/// `bin` is the worker executable, `plugin_dir` the directory exported to the
+/// host as `OFX_PLUGIN_PATH`, `args` extra host arguments (the crash hooks these
+/// tests rely on) and `max_failures` the consecutive-crash budget after which
+/// the client is permanently dead (a successful job resets it). Panics if the
+/// host client cannot be constructed — tests treat that as a setup failure.
 fn host(
 	bin: PathBuf,
 	plugin_dir: &Path,
@@ -94,6 +101,14 @@ fn host(
 	.expect("host client")
 }
 
+/// Builds a `w`×`h` test source texture filled with the constant RGBA color
+/// (0.1, 0.2, 0.3, 1.0).
+///
+/// `w`/`h` are the frame dimensions in pixels and must be positive (the job
+/// generator panics otherwise), matching the job spec the host receives. The
+/// frame is generated in `PixelFormat::F32` and wrapped into a `Texture` so it
+/// can be handed to a plugin job; any generation failure panics, as this is
+/// test-only setup.
 fn source_texture(w: i32, h: i32) -> Texture {
 	let mut frame = generate_frame(Rational::new(0, 1), (w, h), PixelFormat::F32).unwrap();
 	for px in frame.data.chunks_exact_mut(16) {

@@ -80,6 +80,12 @@ impl KeyframeTrack {
 	}
 
 	/// Remove the keyframe at `time`; false when absent.
+	///
+	/// The time is compared exactly against the sorted track (binary search),
+	/// so a near-miss leaves the track untouched; true when a key was
+	/// removed. Pair with [`set_key`](Self::set_key) and
+	/// [`set_key_value`](Self::set_key_value), which share the same exact-time
+	/// lookup.
 	pub fn remove_key(&mut self, time: Rational) -> bool {
 		match self.keys.binary_search_by(|k| k.time.cmp(&time)) {
 			Ok(i) => {
@@ -263,6 +269,11 @@ fn interpolate(before: &Keyframe, after: &Keyframe, time: Rational) -> NodeValue
 /// The keyframe's out-handle clamped so the curve never overlaps the
 /// next keyframe's time (C++
 /// `NodeKeyframe::valid_bezier_control_out`).
+///
+/// `key` supplies the handle offsets; `next_time` is the next keyframe's
+/// time (the upper bound). Returns `(x_offset, y)` where `x_offset` is
+/// relative to `key.time` and never reaches past `next_time`; the y offset
+/// is passed through unchanged.
 fn valid_bezier_out(key: &Keyframe, next_time: Rational) -> (f64, f64) {
 	let t = key.time.to_f64();
 	let adjusted_x = (t + key.bezier_out.0).min(next_time.to_f64());
@@ -272,6 +283,11 @@ fn valid_bezier_out(key: &Keyframe, next_time: Rational) -> (f64, f64) {
 /// The keyframe's in-handle clamped so the curve never overlaps the
 /// previous keyframe's time (C++
 /// `NodeKeyframe::valid_bezier_control_in`).
+///
+/// `key` supplies the handle offsets; `prev_time` is the previous
+/// keyframe's time (the lower bound). Returns `(x_offset, y)` where
+/// `x_offset` is relative to `key.time` and never reaches before
+/// `prev_time`; the y offset is passed through unchanged.
 fn valid_bezier_in(key: &Keyframe, prev_time: Rational) -> (f64, f64) {
 	let t = key.time.to_f64();
 	let adjusted_x = (t + key.bezier_in.0).max(prev_time.to_f64());
@@ -295,7 +311,16 @@ fn quadratic_xto_t(x: f64, a: f64, b: f64, c: f64) -> f64 {
 	calculate_t_from_x(false, x, a, b, c, 0.0)
 }
 
-/// The C++ `Bezier::calculate_t_from_x` bisection loop.
+/// Solve for the curve parameter that reaches `x`, by bisection over 0..=1
+/// (the C++ `Bezier::calculate_t_from_x`).
+///
+/// `cubic` selects the polynomial: with `true` the four-value
+/// [`cubic_tto_y`] is used; with `false` the three-value
+/// [`quadratic_tto_y`] is used and `d` is ignored. `x` is the target value
+/// and `a..d` the control values on that axis. Returns `t` as soon as
+/// `|f(t) - x| < 1e-6`, or the collapsed bracket endpoint when the interval
+/// closes first. The `*_xto_t` callers clamp `x` into the curve's range
+/// before calling, so the loop always converges.
 fn calculate_t_from_x(cubic: bool, x: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
 	let mut bottom = 0.0;
 	let mut top = 1.0;
@@ -322,12 +347,24 @@ fn calculate_t_from_x(cubic: bool, x: f64, a: f64, b: f64, c: f64, d: f64) -> f6
 	}
 }
 
+/// Evaluate the quadratic Bezier `y` at parameter `t`:
 /// `(1-t)^2*a + 2*(1-t)*t*b + t^2*c`.
+///
+/// `a` and `c` are the endpoints' y values, `b` the control point's; `t` is
+/// the curve parameter (0..=1; not clamped here). Used by
+/// [`calculate_t_from_x`] and by the single-sided bezier branches of the
+/// keyframe interpolation.
 fn quadratic_tto_y(a: f64, b: f64, c: f64, t: f64) -> f64 {
 	(1.0 - t).powi(2) * a + 2.0 * (1.0 - t) * t * b + t.powi(2) * c
 }
 
+/// Evaluate the cubic Bezier `y` at parameter `t`:
 /// `(1-t)^3*a + 3*(1-t)^2*t*b + 3*(1-t)*t^2*c + t^3*d`.
+///
+/// `a` and `d` are the endpoints' y values, `b` and `c` the control points';
+/// `t` is the curve parameter (0..=1; not clamped here). Used by
+/// [`calculate_t_from_x`] and by the cubic branch of the keyframe
+/// interpolation.
 fn cubic_tto_y(a: f64, b: f64, c: f64, d: f64, t: f64) -> f64 {
 	(1.0 - t).powi(3) * a
 		+ 3.0 * (1.0 - t).powi(2) * t * b

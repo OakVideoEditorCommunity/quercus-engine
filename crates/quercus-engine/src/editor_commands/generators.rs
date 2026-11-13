@@ -61,6 +61,30 @@ pub fn clip_transition_widths(
 /// The clip reads the sequence's output during playback; the sequence's
 /// own tracks stay in the source sequence (a frame, not a folder of
 /// tracks, on the host timeline).
+///
+/// The clip's stored range is `[in_ts, out_ts)` converted to the host
+/// sequence's timebase; it is placed on video track `track_index` and its
+/// `tex_in` is connected to `source_seq`, all as one undoable "Add Clip".
+/// Returns the new clip's node id.
+///
+/// # Arguments
+///
+/// * `p` - project reference to mutate.
+/// * `host_seq` - sequence that receives the clip.
+/// * `source_seq` - sequence whose output feeds the clip; it must be in the
+///   same project.
+/// * `track_index` - zero-based video-track index in `host_seq`; must be in
+///   range.
+/// * `in_ts` - clip start, a frame timestamp in the host sequence's timebase.
+/// * `out_ts` - exclusive clip end, a frame timestamp; must be greater than
+///   `in_ts`.
+///
+/// # Errors
+///
+/// Returns `Err` when `in_ts < 0` or `out_ts <= in_ts`, the source sequence is
+/// not in the project, the host has no valid frame rate or no video track
+/// list, `track_index` is out of range, or the placement/connect commands
+/// fail.
 pub fn place_nested_sequence_clip(
 	p: &ProjectRef,
 	host_seq: NodeId,
@@ -343,7 +367,7 @@ pub fn place_footage_clips_linked(
 /// Split `clip` at `time_ts` (a frame timestamp strictly inside the
 /// clip's range), undoable "Split Clip" (the module's
 /// `BlockSplitCommand`).
-pub fn split_clip(p: &ProjectRef, clip: NodeId, time_ts: i64) -> Result<(), String> {
+pub fn split_clip(p: &ProjectRef, clip: NodeId, time_ts: i64) -> Result<NodeId, String> {
 	let (tb, in_r, out_r) = {
 		let g = lock(p);
 		let tb = clip_track(&g.graph, clip)
@@ -366,7 +390,19 @@ pub fn split_clip(p: &ProjectRef, clip: NodeId, time_ts: i64) -> Result<(), Stri
 	push(
 		quercus_timeline::undosplit::BlockSplitCommand::new(node_ref(p, clip), point).to_command(),
 		"Split Clip",
-	)
+	)?;
+	// The split command creates the rear half; resolve it so callers can
+	// return a primary node (SDK consumers no longer need a snapshot diff).
+	let g = lock(p);
+	let track = clip_track(&g.graph, clip).ok_or_else(|| "the clip has no track".to_string())?;
+	clip_ids(&g.graph, track)
+		.into_iter()
+		.find(|&block| {
+			block != clip
+				&& clip_range(&g.graph, block)
+					.is_some_and(|(in_r, _, _)| in_r == point)
+		})
+		.ok_or_else(|| "the split command produced no rear half".to_string())
 }
 
 /// Split every clip of `blocks` at `time_ts` as ONE undoable

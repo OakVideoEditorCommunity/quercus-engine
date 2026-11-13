@@ -48,7 +48,12 @@ pub struct ProjectSaveTask {
 }
 
 impl ProjectSaveTask {
-	/// Set the output filename override.
+	/// Set the output filename used instead of the project's stored filename.
+	///
+	/// `filename` is copied into the task's override slot; the next `run` writes
+	/// there instead of `Project::filename()`. An empty string still counts as an
+	/// override, so the save then fails with "Project has no filename to save to."
+	/// A new value replaces the previous override; the public field can also be set to `None` to restore the project's own filename.
 	pub fn set_override_filename(&mut self, filename: &str) {
 		self.override_filename = Some(filename.to_string());
 	}

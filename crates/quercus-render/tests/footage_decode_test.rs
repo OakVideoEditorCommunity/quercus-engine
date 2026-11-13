@@ -24,8 +24,6 @@
 
 use quercus_core::{PixelFormat, Rational};
 
-use quercus_core::texture::Texture;
-
 mod common;
 
 fn test_clip_path() -> std::path::PathBuf {
@@ -57,9 +55,7 @@ fn footage_decode_renders_known_content() {
 		PixelFormat::F32,
 	)
 	.expect("decode frame 0");
-	let Texture::Cpu(frame) = &tex else {
-		panic!("decode produced a non-CPU texture");
-	};
+	let frame = tex.to_frame().expect("read back decoded frame");
 	assert_eq!((frame.width, frame.height), (64, 64));
 	assert_eq!(frame.format, PixelFormat::F32);
 	assert!(
@@ -108,9 +104,7 @@ fn footage_decode_renders_known_content() {
 		PixelFormat::F32,
 	)
 	.expect("decode proxy");
-	let Texture::Cpu(proxy_frame) = &proxy else {
-		panic!("proxy decode produced a non-CPU texture");
-	};
+	let proxy_frame = proxy.to_frame().expect("read back proxy frame");
 	assert_eq!((proxy_frame.width, proxy_frame.height), (32, 32));
 	let pstride = proxy_frame.linesize_bytes();
 	let off = 4 * pstride + 4 * 16;

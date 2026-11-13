@@ -46,7 +46,14 @@ impl CancelAtom {
 		Self::default()
 	}
 
-	/// Set the cancel flag (C++ `CancelAtom::cancel()`).
+	/// Request cancellation: set the flag every consumer of this atom observes.
+	///
+	/// This is the only mutating operation and it is idempotent — calling it
+	/// again leaves the atom cancelled. The caller (for example the render loop
+	/// behind a Cancel button) does not have to check whether anyone is
+	/// listening: consumers poll `is_cancelled` themselves and `heard_cancel`
+	/// reports whether one has. Takes the internal lock, so it is safe to call
+	/// from any thread.
 	pub fn cancel(&self) {
 		lock(&self.state).cancelled = true;
 	}

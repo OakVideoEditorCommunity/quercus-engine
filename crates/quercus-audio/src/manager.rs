@@ -146,6 +146,10 @@ impl ManagerInner {
 	}
 
 	/// Bytes between output-notify pulses (0 disables).
+	///
+	/// Sets the callback boundary used by the output buffer; the notify
+	/// callback itself is installed by the consumer. Returns an error for a
+	/// negative interval.
 	pub fn set_output_notify_interval(&self, bytes: i64) -> Result<()> {
 		if bytes < 0 {
 			return Err(Box::new(Error::Invalid));
@@ -188,6 +192,9 @@ impl ManagerInner {
 	}
 
 	/// Discard buffered output.
+	///
+	/// Drops every queued sample without stopping the stream or resetting the
+	/// playback clock (see [`reset_output_clock`](Self::reset_output_clock)).
 	pub fn clear_buffered_output(&self) -> Result<()> {
 		self.output_buffer.clear();
 		Ok(())
@@ -215,6 +222,10 @@ impl ManagerInner {
 	}
 
 	/// Stop the output stream.
+	///
+	/// Marks the output as stopped and clears the buffered samples; the real
+	/// device stream is left open, so the next
+	/// [`push_to_output`](Self::push_to_output) resumes writing.
 	///
 	/// `// CPP-PARITY: src/audio/src/audiomanager.cpp:229` (`stop_output` aborts
 	/// the stream and clears the buffer).
@@ -258,6 +269,11 @@ impl ManagerInner {
 
 	/// Set the output device index.
 	///
+	/// Records `device` (`-1` = `paNoDevice`), stops the output, clears the
+	/// buffer, drops the cached params and closes the device stream, so the
+	/// next [`push_to_output`](Self::push_to_output) re-opens with the new
+	/// device. No index validation or device-name logging is performed.
+	///
 	/// `// CPP-PARITY: src/audio/src/audiomanager.cpp:238` (the device is
 	/// recorded and the stream closed; PortAudio's index validation and name
 	/// logging are not bridged).
@@ -280,6 +296,11 @@ impl ManagerInner {
 	}
 
 	/// Set the input device index.
+	///
+	/// `-1` is PortAudio's `paNoDevice` sentinel (no device), which makes
+	/// [`start_recording`](Self::start_recording) fail; the index is only
+	/// recorded, with no validation and no PortAudio call. Always returns
+	/// `Ok`.
 	pub fn set_input_device(&mut self, device: i32) -> Result<()> {
 		self.input_device = device;
 		Ok(())
@@ -299,6 +320,13 @@ impl ManagerInner {
 	/// Start recording the input device to a file via the quercuscodec encoder
 	/// (direct Rust calls; the encoder is a `dyn Encoder` value). The input
 	/// stream is always captured as interleaved f32.
+	///
+	/// `params` selects the container/codec and destination filename;
+	/// `_error_buf` is currently unused (the FFI layer formats the message
+	/// from the returned `Result`). Fails when no input device is configured
+	/// (`paNoDevice`), when no encoder supports `params`, or when configure
+	/// or open fails (the encoder's last-error text is included when
+	/// available).
 	///
 	/// `// CPP-PARITY: src/audio/src/audiomanager.cpp:278` (encoder init/open;
 	/// the PortAudio input stream is not bridged). On failure the encoder's
@@ -329,7 +357,12 @@ impl ManagerInner {
 		Ok(())
 	}
 
-	/// Stop recording.
+	/// Stop the active recording: flush the encoder, write its trailer and
+	/// close it.
+	///
+	/// Taking the encoder out leaves the manager idle; when nothing is
+	/// recording this is a no-op. Flush/close errors are ignored, so `Ok` does
+	/// not prove that the trailer was written.
 	///
 	/// `// CPP-PARITY: src/audio/src/audiomanager.cpp:328` (the PortAudio input
 	/// stream is not bridged; the encoder is flushed and closed).
@@ -476,6 +509,10 @@ pub fn input_device_names() -> Vec<String> {
 /// Enumerates the default host's devices, keeping only the ones that
 /// support the requested direction; unnamed devices are skipped.
 fn device_names(output: bool) -> Vec<String> {
+	if std::env::var_os("OAK_DISABLE_AUDIO_DEVICE_ENUMERATION").is_some() {
+		return Vec::new();
+	}
+
 	let host = cpal::default_host();
 	let devices = if output {
 		host.output_devices()
@@ -486,7 +523,12 @@ fn device_names(output: bool) -> Vec<String> {
 		return Vec::new();
 	};
 	devices
-		.filter_map(|d| d.id().ok().map(|id| id.id().to_string()))
+		.filter_map(|device| {
+			device
+				.description()
+				.ok()
+				.map(|description| description.name().to_string())
+		})
 		.collect()
 }
 

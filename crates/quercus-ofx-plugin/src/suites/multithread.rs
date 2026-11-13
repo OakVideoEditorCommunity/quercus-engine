@@ -14,16 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxMultiThreadSuite v1：插件自起线程的登记与索引分配。
+//! OfxMultiThreadSuite v1: registration and index assignment for plugin-spawned threads.
 //!
-//! 纪律：插件线程可在本 suite 存活期回调任意 suite——所有共享状态
-//! 必须 Mutex（README §3）。线程经 `std::thread::scope` 启动并同步
-//! join（OFX 语义：multiThread 返回时全部线程已完成；
-//! HS: ofxhImageEffect.cpp gMultiThreadSuite），故无需常驻线程表。
-//! 线程索引经 TLS 分配：宿主线程 [`index`] 为 -1、
-//! [`is_spawned`] 为 0。
+//! Discipline: plugin threads may call back into any suite while this suite is
+//! alive — all shared state must be Mutex-protected (README §3). Threads are
+//! started with `std::thread::scope` and joined synchronously (OFX semantics:
+//! when multiThread returns all threads have finished;
+//! HS: ofxhImageEffect.cpp gMultiThreadSuite), so no persistent thread table is
+//! needed.
+//! Thread indices are assigned through TLS: the host thread gets [`index`] -1
+//! and [`is_spawned`] 0.
 //!
-//! 参照：HS: ofxhImageEffect.cpp gMultiThreadSuite。
+//! Reference: HS: ofxhImageEffect.cpp gMultiThreadSuite.
 
 use std::collections::HashMap;
 use std::ffi::{c_int, c_uint, c_void};
@@ -33,15 +35,15 @@ use std::sync::{Arc, Mutex};
 use crate::suites::status;
 
 thread_local! {
-	/// 本线程的 OFX 线程索引（宿主线程 = None）。
+	/// This thread's OFX thread index (host thread = None).
 	static THREAD_INDEX: std::cell::Cell<Option<c_uint>> = const { std::cell::Cell::new(None) };
 }
 
-/// 函数表布局（OfxMultiThreadSuiteV1）。
+/// Function-table layout (OfxMultiThreadSuiteV1).
 #[repr(C)]
 pub struct MultiThreadSuiteV1 {
-	/// multiThread：启动 `n_threads` 个线程跑 `func`，线程索引
-	/// 0..n_threads-1 经 `thread_arg` 传入。
+	/// multiThread: start `n_threads` threads running `func`, with thread indices
+	/// 0..n_threads-1 passed through `thread_arg`.
 	pub multi_thread: unsafe extern "C" fn(
 		func: unsafe extern "C" fn(c_uint, c_uint, *mut c_void),
 		n_threads: c_uint,
@@ -49,11 +51,11 @@ pub struct MultiThreadSuiteV1 {
 	) -> c_int,
 	/// multiThreadNumCPUs
 	pub num_cpus: unsafe extern "C" fn(*mut c_int) -> c_int,
-	/// multiThreadIndex：当前线程的 OFX 线程索引（宿主线程为 -1）。
+	/// multiThreadIndex: the current thread's OFX thread index (host thread is -1).
 	pub index: unsafe extern "C" fn(*mut c_int) -> c_int,
-	/// multiThreadIsSpawnedThread：当前线程是否插件线程。
+	/// multiThreadIsSpawnedThread: whether the current thread is a plugin thread.
 	pub is_spawned: unsafe extern "C" fn(*mut c_int) -> c_int,
-	/// mutexCreate：`count` 是初始可用计数（>1 时是信号量语义）。
+	/// mutexCreate: `count` is the initial available count (>1 means semaphore semantics).
 	pub mutex_create: unsafe extern "C" fn(*mut *mut c_void, c_int) -> c_int,
 	/// mutexDestroy
 	pub mutex_destroy: unsafe extern "C" fn(*mut c_void) -> c_int,
@@ -65,13 +67,31 @@ pub struct MultiThreadSuiteV1 {
 	pub mutex_try_lock: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
 
-/// 公共入口模板：panic 兜底。
+/// Common entry template: wrap a possibly-panicking closure into an OFX status code.
+///
+/// The closure returns the status code directly; a panic → `status::FAILED`
+/// (panics must not cross the C ABI boundary). The closure has no separate error
+/// channel; failures are always expressed by the return code.
 fn caught(f: impl FnOnce() -> c_int) -> c_int {
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
 }
 
-/// multiThread 实现：同步起 n 个线程（0..n-1），join 后返回。
-/// 线程体只做两件事：登记 TLS 索引、调 `func`（C 代码，不 panic）。
+/// multiThread: synchronously start `n_threads` worker threads and wait for all of them.
+///
+/// One thread is started per index `0..n-1`; the thread body does only two
+/// things: publish the TLS index, then call
+/// `func(index, n_threads, thread_arg)` (a C callback that does not panic per the
+/// OFX contract), clearing the TLS index on exit; after all joins it returns
+/// `status::OK`. `thread_arg` is passed through unchanged to every call (carried
+/// as `usize`, because raw pointers are not `Send`). `n_threads = 0` is a legal
+/// no-op. A panic inside a thread is caught by `caught` and reported as
+/// `status::FAILED`.
+///
+/// # Safety
+///
+/// `func` must be a valid C function pointer; the memory `thread_arg` points to
+/// must stay valid for the whole callback and must allow concurrent access from
+/// `n_threads` threads (the plugin is responsible for synchronisation).
 unsafe extern "C" fn multi_thread(
 	func: unsafe extern "C" fn(c_uint, c_uint, *mut c_void),
 	n_threads: c_uint,
@@ -99,6 +119,16 @@ unsafe extern "C" fn multi_thread(
 	})
 }
 
+/// multiThreadNumCPUs: write the number of CPUs available for rendering.
+///
+/// Uses `std::thread::available_parallelism()` (logical core count) with a
+/// fallback of 1; a null `out` → `status::ERR_VALUE`. Plugins use it to pick the
+/// thread count for `multi_thread`; it reflects the cores available to the
+/// process, not the physical package.
+///
+/// # Safety
+///
+/// `out` must point to a writable `c_int`.
 unsafe extern "C" fn multi_thread_num_cpus(out: *mut c_int) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -113,6 +143,16 @@ unsafe extern "C" fn multi_thread_num_cpus(out: *mut c_int) -> c_int {
 	})
 }
 
+/// multiThreadIndex: write the current worker thread's index (0..n).
+///
+/// Inside a thread started by `multi_thread` it writes that thread's index; on
+/// the host thread or any thread outside the pool it writes `-1` (HS convention).
+/// A null `out` → `status::ERR_VALUE`. Pairs with `multi_thread`; plugins use it
+/// to partition pixel regions.
+///
+/// # Safety
+///
+/// `out` must point to a writable `c_int`.
 unsafe extern "C" fn multi_thread_index(out: *mut c_int) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -124,6 +164,15 @@ unsafe extern "C" fn multi_thread_index(out: *mut c_int) -> c_int {
 	})
 }
 
+/// multiThreadIsSpawned: report whether the current thread is a worker started by `multi_thread`.
+///
+/// Writes 1 inside a worker thread and 0 on any other thread (the host render
+/// thread, external threads); a null `out` → `status::ERR_VALUE`. Plugins use it
+/// to decide whether thread-local state can safely be assumed initialised.
+///
+/// # Safety
+///
+/// `out` must point to a writable `c_int`.
 unsafe extern "C" fn multi_thread_is_spawned(out: *mut c_int) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -142,17 +191,17 @@ unsafe extern "C" fn multi_thread_is_spawned(out: *mut c_int) -> c_int {
 // ofxsThreadSuiteCheck 在 load 时逐一检查这些函数非空，缺一个整批插件
 // 直接拒载。
 
-/// 计数信号量（count==1 时即普通互斥锁）。
+/// Counting semaphore (a plain mutex when count==1).
 struct OfxMutex {
 	permits: std::sync::Mutex<c_int>,
 	released: std::sync::Condvar,
 }
 
-/// 句柄注册表（句柄即下一个递增 id 转指针；0 保留给空）。
+/// Handle registry (the handle is the next incrementing id cast to a pointer; 0 is reserved for empty).
 static MUTEXES: std::sync::LazyLock<Mutex<HashMap<usize, Arc<OfxMutex>>>> =
 	std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 下一个互斥锁 id。
+/// The next mutex id.
 static NEXT_MUTEX: AtomicUsize = AtomicUsize::new(1);
 
 fn mutex_lookup(handle: *mut c_void) -> Option<Arc<OfxMutex>> {
@@ -166,6 +215,17 @@ fn mutex_lookup(handle: *mut c_void) -> Option<Arc<OfxMutex>> {
 		.cloned()
 }
 
+/// mutexCreate: create a mutex or counting semaphore and write its handle to `out`.
+///
+/// `count` is the initial available count: 1 = plain mutex, >1 = counting
+/// semaphore (see ofxMultiThread.h); values below 1 are treated as 1. The handle
+/// is an incrementing id issued by the global registry, with 0 reserved for the
+/// null pointer. A null `out` → `status::ERR_VALUE`; a successfully created
+/// handle must be returned through `mutex_destroy`.
+///
+/// # Safety
+///
+/// `out` must point to a writable `*mut c_void`.
 unsafe extern "C" fn mutex_create(out: *mut *mut c_void, count: c_int) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -184,6 +244,18 @@ unsafe extern "C" fn mutex_create(out: *mut *mut c_void, count: c_int) -> c_int 
 	})
 }
 
+/// mutexDestroy: unregister the handle and release the lock object.
+///
+/// Removes it from the global handle table; an unknown or null handle →
+/// `status::ERR_BAD_HANDLE`. `Arc`s held by waiters keep the object alive until
+/// they are woken, so destroying a lock that still has blocked threads does not
+/// free the memory immediately, but the caller must still guarantee that no
+/// thread uses the handle afterwards.
+///
+/// # Safety
+///
+/// `handle` must be a handle returned by `mutex_create`; it must not be passed to
+/// any mutex function after destruction.
 unsafe extern "C" fn mutex_destroy(handle: *mut c_void) -> c_int {
 	caught(|| {
 		if mutex_lookup(handle).is_none() {
@@ -197,6 +269,17 @@ unsafe extern "C" fn mutex_destroy(handle: *mut c_void) -> c_int {
 	})
 }
 
+/// mutexLock: take the lock; block while the available count is exhausted.
+///
+/// With `count > 1` this is a counting semaphore (see ofxMultiThread.h), and
+/// taking it decrements the available count; at 0 it sleeps on the condition
+/// variable until `mutex_unlock` wakes it. An unknown or null handle →
+/// `status::ERR_BAD_HANDLE`, without blocking. May be called from any thread.
+///
+/// # Safety
+///
+/// `handle` must be a handle returned by `mutex_create` and not yet destroyed; no
+/// thread may still be blocked on the handle before destruction.
 unsafe extern "C" fn mutex_lock(handle: *mut c_void) -> c_int {
 	caught(|| {
 		let Some(m) = mutex_lookup(handle) else {
@@ -211,6 +294,18 @@ unsafe extern "C" fn mutex_lock(handle: *mut c_void) -> c_int {
 	})
 }
 
+/// mutexUnlock: release one permit and wake one waiter.
+///
+/// Increments the available count, then calls `notify_one`; for a plain mutex
+/// (count=1) that is the unlock. An unknown or null handle →
+/// `status::ERR_BAD_HANDLE`. Over-release (beyond the initial `count`) is not
+/// detected and pushes the count past its initial value. Pairs with
+/// `mutex_lock`.
+///
+/// # Safety
+///
+/// `handle` must be a handle returned by `mutex_create` and not yet destroyed, and
+/// the caller must actually hold one permit.
 unsafe extern "C" fn mutex_unlock(handle: *mut c_void) -> c_int {
 	caught(|| {
 		let Some(m) = mutex_lookup(handle) else {
@@ -225,6 +320,17 @@ unsafe extern "C" fn mutex_unlock(handle: *mut c_void) -> c_int {
 	})
 }
 
+/// mutexTryLock: try to take the lock without blocking.
+///
+/// Cannot take it (available count is 0) → `status::FAILED`, which is the normal
+/// OFX response rather than an error; took it → `status::OK` and the available
+/// count is decremented. An unknown or null handle → `status::ERR_BAD_HANDLE`.
+/// Semantics for a counting semaphore are the same as `mutex_lock`.
+///
+/// # Safety
+///
+/// `handle` must be a handle returned by `mutex_create` and not yet destroyed, or
+/// a null pointer (→ `ERR_BAD_HANDLE`).
 unsafe extern "C" fn mutex_try_lock(handle: *mut c_void) -> c_int {
 	caught(|| {
 		let Some(m) = mutex_lookup(handle) else {
@@ -240,7 +346,7 @@ unsafe extern "C" fn mutex_try_lock(handle: *mut c_void) -> c_int {
 	})
 }
 
-/// 静态函数表实例。
+/// The static function-table instance.
 pub fn suite_v1() -> &'static MultiThreadSuiteV1 {
 	static SUITE: std::sync::OnceLock<MultiThreadSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| MultiThreadSuiteV1 {
@@ -261,7 +367,7 @@ mod tests {
 	use super::*;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	/// 每个插件线程把 (index, count) 累计进 userdata。
+	/// Each plugin thread accumulates (index, count) into the userdata.
 	unsafe extern "C" fn worker(index: c_uint, count: c_uint, arg: *mut c_void) {
 		let state = unsafe { &mut *(arg as *mut (AtomicUsize, AtomicUsize)) };
 		state.0.fetch_add(index as usize, Ordering::Relaxed);
@@ -291,8 +397,9 @@ mod tests {
 		}
 	}
 
-	/// 插件线程内查询 index/isSpawned 并把结果写回 arg 指向的槽。
-	/// （闭包捕获 suite 无法转 fn 指针，用具名函数 + 静态槽。）
+	/// Query index/isSpawned inside a plugin thread and write the result back into
+	/// the slot `arg` points to. (A closure capturing the suite cannot be converted to
+	/// an fn pointer, hence a named function plus a static slot.)
 	static SPAWNED_RESULT: std::sync::LazyLock<std::sync::Mutex<Option<(c_int, c_int)>>> =
 		std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 

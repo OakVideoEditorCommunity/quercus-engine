@@ -158,7 +158,22 @@ impl Format {
 		}
 	}
 
-	/// Codecs that can carry audio in this format.
+	/// The audio codecs this container/format can mux, in the order the
+	/// export dialog should offer them.
+	///
+	/// Video containers list their muxable audio codecs (Matroska is the
+	/// widest), audio-only formats list their native codec, and formats
+	/// that carry no audio return an empty vector.
+	///
+	/// # Arguments
+	///
+	/// * `f` - export container/format to query; `Format::Count` and any
+	///   format without audio support yield `Vec::new()`.
+	///
+	/// # Returns
+	///
+	/// Supported audio [`Codec`]s; an empty vector means "no audio in this
+	/// format", never an error.
 	///
 	/// CPP-PARITY: `src/codec/src/exportformat.cpp` `get_audio_codecs`.
 	pub fn get_audio_codecs(f: Format) -> Vec<Codec> {
@@ -207,23 +222,48 @@ impl Format {
 		}
 	}
 
-	/// Pixel formats the given codec supports in this format.
+	/// The pixel formats the given codec can encode in this format.
 	///
 	/// The C++ side computes this by instantiating the format's encoder and
 	/// asking the FFmpeg bridge (`fb_encoder_codec_get_pixel_formats`); the
 	/// base `Encoder::get_pixel_formats_for_codec` returns an empty list.
 	/// There is no pure-Rust table, so this returns an empty list (matching
-	/// the C++ base default). CPP-PARITY: `exportformat.cpp:222`.
+	/// the C++ base default).
+	///
+	/// # Arguments
+	///
+	/// * `_f` - export format; currently unused (kept for C++ parity).
+	/// * `_c` - codec to query; currently unused (kept for C++ parity).
+	///
+	/// # Returns
+	///
+	/// Always empty in this build; callers should fall back to the
+	/// codec/format defaults rather than reporting the codec unsupported.
+	///
+	/// CPP-PARITY: `exportformat.cpp:222`.
 	pub fn get_pixel_formats_for_codec(_f: Format, _c: Codec) -> Vec<i32> {
 		Vec::new()
 	}
 
-	/// Sample formats the given codec supports in this format.
+	/// The audio sample formats the given codec can encode in this format.
 	///
-	/// CPP-PARITY: `ffmpegencoder.cpp:175`. PCM is pure (signed-16 first so
-	/// the export dialog's default matches FFmpeg's); all other codecs query
-	/// the FFmpeg bridge and return empty here (see
-	/// `get_pixel_formats_for_codec`).
+	/// `Codec::PCM` is handled purely in Rust and returns the full integer
+	/// and float set with signed 16-bit first, so the export dialog's
+	/// default matches FFmpeg's. Every other codec queries the FFmpeg
+	/// bridge in C++ and has no pure-Rust table here, so it returns empty
+	/// (see [`get_pixel_formats_for_codec`]).
+	///
+	/// # Arguments
+	///
+	/// * `_f` - export format; currently unused.
+	/// * `c` - codec to query; only `Codec::PCM` has a built-in answer.
+	///
+	/// # Returns
+	///
+	/// The [`SampleFormat`]s to offer, `S16` first for PCM; an empty vector
+	/// means "no table here", not necessarily "codec unsupported".
+	///
+	/// CPP-PARITY: `ffmpegencoder.cpp:175`.
 	pub fn get_sample_formats_for_codec(_f: Format, c: Codec) -> Vec<SampleFormat> {
 		if c == Codec::PCM {
 			vec![

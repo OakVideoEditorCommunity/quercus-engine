@@ -8,8 +8,8 @@ use crate::editor::EditorSession;
 #[cfg(test)]
 mod tests;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_editor_edit_subscribe(
 		session: *mut c_void,
@@ -26,6 +26,25 @@ struct ObserverCallback {
 	callback: Mutex<Box<dyn FnMut(u32, i64) + Send>>,
 }
 
+/// C trampoline for an edit notification: reinterprets `data` as the
+/// [`ObserverCallback`] installed by [`EditorSession::subscribe_edit`], locks
+/// its closure and runs it with `(op, revision)`. A panic from the closure is
+/// caught and swallowed so it cannot unwind across the C ABI; a poisoned
+/// mutex is recovered.
+///
+/// # Arguments
+///
+/// * `data` - the `Box::into_raw` pointer of the observer's
+///   [`ObserverCallback`]; it must stay valid until `drop_observer` runs.
+/// * `op` - the operation code forwarded to the Rust closure.
+/// * `revision` - the session revision forwarded to the Rust closure.
+///
+/// # Safety
+///
+/// `data` must be the pointer the engine received from
+/// `quercus_editor_edit_subscribe` for the matching subscription (a live
+/// [`ObserverCallback`] allocation) and must remain valid for the duration of
+/// the call; the engine keeps it alive while a notification is in flight.
 unsafe extern "C" fn call_observer(data: *mut c_void, op: u32, revision: i64) {
 	let observer = unsafe { &*(data as *const ObserverCallback) };
 	let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -34,6 +53,15 @@ unsafe extern "C" fn call_observer(data: *mut c_void, op: u32, revision: i64) {
 	}));
 }
 
+/// C trampoline releasing an observer: reconstructs the boxed
+/// [`ObserverCallback`] from `data` and drops it, which releases the Rust
+/// closure. The engine calls it when the subscription is unregistered.
+///
+/// # Safety
+///
+/// `data` must come from `Box::into_raw` for an [`ObserverCallback`] created
+/// in [`EditorSession::subscribe_edit`], and must be passed exactly once
+/// (after this call the pointer is dangling).
 unsafe extern "C" fn drop_observer(data: *mut c_void) {
 	drop(unsafe { Box::from_raw(data as *mut ObserverCallback) });
 }

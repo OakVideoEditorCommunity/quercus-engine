@@ -71,7 +71,15 @@ impl Graph {
 		}
 	}
 
-	/// Insert a node; returns its id.
+	/// Insert a node built from `core` and `behavior`, returning its fresh
+	/// [`NodeId`].
+	///
+	/// A vacant slot from the free list is reused with an incremented
+	/// generation (so ids of the previous occupant never alias the new node);
+	/// otherwise a slot is appended. `core` and `behavior` are moved into the
+	/// arena and owned by the [`NodeEntry`] until the node is removed. Other
+	/// ways in: [`Graph::add_entry`] (identity-preserving re-insertion after
+	/// [`Graph::take_node`]) and [`Graph::ensure_endpoints`].
 	pub fn add_node(&mut self, core: NodeCore, behavior: Box<dyn NodeBehavior>) -> NodeId {
 		let (index, generation) = match self.free_list.pop() {
 			Some(i) => {
@@ -195,7 +203,12 @@ impl Graph {
 		Some(entry.behavior)
 	}
 
-	/// Validated access; `None` for stale ids.
+	/// Read-only access to the entry of `id`, or `None` when the id is stale.
+	///
+	/// Same live-slot check as [`Graph::is_valid`]; use it when the caller
+	/// needs the core or behavior without a separate validity call. Edges are
+	/// not part of the entry — query them with [`Graph::input_connections`] /
+	/// [`Graph::output_connections`].
 	pub fn get(&self, id: NodeId) -> Option<&NodeEntry> {
 		if !self.is_valid(id) {
 			return None;
@@ -203,7 +216,12 @@ impl Graph {
 		Some(&self.entries[id.index() as usize])
 	}
 
-	/// Mutable access; `None` for stale ids.
+	/// Mutable access to the entry of `id`, or `None` when the id is stale.
+	///
+	/// Same live-slot check as [`Graph::is_valid`], returning `&mut NodeEntry`
+	/// for in-place edits of the core or behavior. Structural changes (adding
+	/// or removing nodes/edges) need the whole `&mut Graph` and cannot run
+	/// while the returned borrow is alive.
 	pub fn get_mut(&mut self, id: NodeId) -> Option<&mut NodeEntry> {
 		if !self.is_valid(id) {
 			return None;
@@ -211,7 +229,12 @@ impl Graph {
 		Some(&mut self.entries[id.index() as usize])
 	}
 
-	/// True when `id` names a live slot.
+	/// True when `id` names a live slot in this graph.
+	///
+	/// A [`NodeId`] is `(index, generation)`; the check requires an in-range
+	/// index, a non-vacant entry and a matching generation, so ids of removed
+	/// or slot-reused nodes report `false` instead of aliasing the slot's new
+	/// occupant. Every accessor funnels through this test.
 	pub fn is_valid(&self, id: NodeId) -> bool {
 		id.valid()
 			&& (id.index() as usize) < self.entries.len()
@@ -258,7 +281,14 @@ impl Graph {
 		}
 	}
 
-	/// The live node whose behavior reports `type_id`, if any.
+	/// The first live node, in slot order, whose behavior reports `type_id`;
+	/// `None` when no such node exists.
+	///
+	/// Linear scan over [`Graph::node_ids`]. Used for the singleton virtual
+	/// endpoints (see [`Graph::endpoints`] and [`Graph::ensure_endpoints`]) and
+	/// for type lookups where at most one node of a type is expected. `type_id`
+	/// is the behavior's `type_id()` string (e.g.
+	/// `org.olivevideoeditor.Olive.graphinput`), not a node id.
 	fn endpoint_of_type(&self, type_id: &str) -> Option<NodeId> {
 		self.node_ids()
 			.into_iter()
@@ -392,7 +422,14 @@ impl Graph {
 		Ok(())
 	}
 
-	/// Disconnect one edge (no-op when absent).
+	/// Remove the edge `from -> to.input[element]` if it exists; no-op
+	/// otherwise.
+	///
+	/// `input` is the input id and `element` the array element (`-1` for
+	/// scalar inputs). A missing edge is not an error — the graph is left
+	/// unchanged. Use [`Graph::disconnect_input`] to remove whatever feeds an
+	/// input and learn the source, or [`Graph::connected_output`] to query
+	/// first.
 	pub fn disconnect(&mut self, from: NodeId, to: NodeId, input: &str, element: i32) {
 		let key = self.input_key(input);
 		let edge = Edge {
@@ -412,7 +449,13 @@ impl Graph {
 		Some(from)
 	}
 
-	/// The node feeding `to.input[element]`, if any.
+	/// The source node feeding `to.input[element]`, or `None` when nothing is
+	/// connected there (also when `to` is stale or `input` is unknown).
+	///
+	/// `input` is the input id and `element` the array element (`-1` for
+	/// scalar inputs); the search is over the edge set, so a vacant `to` slot
+	/// simply finds no edge. Counterpart of [`Graph::disconnect_input`], which
+	/// removes the edge this returns.
 	pub fn connected_output(&self, to: NodeId, input: &str, element: i32) -> Option<NodeId> {
 		let key = self.input_key(input);
 		self.edges
@@ -421,7 +464,11 @@ impl Graph {
 			.map(|e| e.from)
 	}
 
-	/// True when `to.input[element]` has a connected edge.
+	/// True when `to.input[element]` is fed by some edge.
+	///
+	/// `input` is the input id and `element` the array element (`-1` for
+	/// scalar inputs). A stale `to`, an unknown `input` or a missing edge all
+	/// report `false`; thin wrapper over [`Graph::connected_output`].
 	pub fn is_input_connected(&self, to: NodeId, input: &str, element: i32) -> bool {
 		self.connected_output(to, input, element).is_some()
 	}
@@ -483,7 +530,13 @@ impl Graph {
 			.collect()
 	}
 
-	/// Nodes directly upstream of `id` (evaluation order helper).
+	/// Nodes directly feeding `id`: the sources of its incoming edges, sorted
+	/// ascending by [`NodeId`] and **not** deduplicated (one entry per edge,
+	/// so a source wired to two elements appears twice).
+	///
+	/// Evaluation-order helper for a single level; use
+	/// [`Graph::topological_order`] for a full ordering. Empty for a stale id
+	/// or an unconnected node.
 	pub fn upstream(&self, id: NodeId) -> Vec<NodeId> {
 		let mut v: Vec<NodeId> = self
 			.edges
@@ -495,7 +548,13 @@ impl Graph {
 		v
 	}
 
-	/// Nodes directly downstream of `id` (invalidation fan-out).
+	/// Nodes directly fed by `id`: the targets of its outgoing edges, sorted
+	/// ascending and deduplicated (one entry per node even when it is wired to
+	/// several elements of `id`).
+	///
+	/// This is the invalidation fan-out. [`Graph::upstream`] is the mirror
+	/// image; both are one level deep. Empty for a stale id or a node with no
+	/// outgoing edges.
 	pub fn downstream(&self, id: NodeId) -> Vec<NodeId> {
 		let mut v: Vec<NodeId> = self
 			.edges
@@ -566,7 +625,14 @@ impl Graph {
 		order
 	}
 
-	/// Intern an input id string, returning its stable key.
+	/// Intern an input-id string for edge storage, returning its deterministic
+	/// key (`u64`); the string itself is stored in `input_names` the first
+	/// time it is seen.
+	///
+	/// Edges keep only this key, so each distinct input id is stored once per
+	/// graph and rendered back by [`Graph::input_connections`] and
+	/// [`Graph::output_connections`]. Entries are never removed; use
+	/// [`Graph::input_key`] for a read-only lookup that must not insert.
 	fn intern_input(&mut self, input: &str) -> u64 {
 		let key = hash_str(input);
 		self.input_names
@@ -609,7 +675,12 @@ impl Graph {
 		true
 	}
 
-	/// Unlink two nodes (C++ `Node::unlink`); false when not linked.
+	/// Remove the link between `a` and `b` in both directions.
+	///
+	/// Returns `false` and changes nothing when [`Graph::are_linked`] is false
+	/// (not linked either way, or a stale id); returns `true` after clearing
+	/// both sides. A one-way link left by a delete-then-undo is cleared on the
+	/// side that has it. Counterpart of [`Graph::link`].
 	pub fn unlink(&mut self, a: NodeId, b: NodeId) -> bool {
 		if !self.are_linked(a, b) {
 			return false;
@@ -639,7 +710,13 @@ impl Graph {
 				.unwrap_or(false)
 	}
 
-	/// Linked node ids of `id` (C++ `Node::links`).
+	/// Linked node ids of `id`, in insertion order; empty for a stale id or a
+	/// node without links.
+	///
+	/// Links are a separate, mostly one-way-tolerant relation from edges (see
+	/// [`Graph::link`]). After a delete-then-undo a stored link may be one-way,
+	/// so a returned partner need not list `id` back — [`Graph::are_linked`]
+	/// reads both directions.
 	pub fn links_of(&self, id: NodeId) -> Vec<NodeId> {
 		self.get(id)
 			.map(|e| e.core.links.clone())
@@ -684,8 +761,18 @@ impl Graph {
 		Ok(())
 	}
 
-	/// Remove an array element, shifting per-element values, keyframes
-	/// and edges up (C++ `Node::input_array_remove`).
+	/// Remove the element at `index` from array input `input` of node `id`,
+	/// shifting per-element values, keyframes and connections up by one.
+	///
+	/// The connection on the removed element is dropped; connections on
+	/// elements above it are renumbered to `element - 1`. `input` is the input
+	/// id and `index` the element position, which must satisfy
+	/// `0 <= index < array_size`.
+	///
+	/// # Errors
+	///
+	/// `NotFound` when `id` is stale or the node has no input `input`;
+	/// `Invalid` when the input is not an array or `index` is out of range.
 	pub fn input_array_remove(
 		&mut self,
 		id: NodeId,
@@ -785,7 +872,16 @@ impl Graph {
 	}
 
 	/// Recursive worker of
-	/// [`Graph::copy_node_and_dependency_graph_minus_items`].
+	/// [`Graph::copy_node_and_dependency_graph_minus_items`]: duplicate `node`,
+	/// then recurse into its upstream sources and reconnect the copies,
+	/// returning the copy's id.
+	///
+	/// `created` is the original -> copy memo (items map to themselves) and
+	/// makes the walk terminate on shared upstream nodes; a node already in it
+	/// is returned without being copied again. Each copy loses its links and
+	/// gets context positions remapped to copies. Returns `None` when `node` is
+	/// stale or its behavior's `duplicate` returns `None`; upstream edges that
+	/// [`Graph::connect`] rejects (duplicate input, cycle) are skipped.
 	fn copy_dependency_graph_internal(
 		&mut self,
 		node: NodeId,
@@ -831,7 +927,12 @@ impl Graph {
 		Some(copy)
 	}
 
-	/// Drop every edge touching `id` (C++ `disconnect_all`).
+	/// Remove every edge whose source or destination is `id`, leaving both
+	/// endpoint nodes live.
+	///
+	/// Called from [`Graph::take_node`] (and therefore [`Graph::remove_node`]):
+	/// a detached node must not leave edges pointing at a vacant slot. `id` is
+	/// not validated — a stale id simply matches no edge.
 	fn drop_edges_touching(&mut self, id: NodeId) {
 		let doomed: Vec<Edge> = self
 			.edges

@@ -32,13 +32,43 @@ fn node_ref(project: *const ProjectHandle, id: u64) -> Option<quercus_timeline::
 	})
 }
 
-/// Pushes the command onto the global undo stack (executing it).
+/// Pushes `cmd` onto the process-global undo stack under `name`, executing it
+/// immediately (C++ push semantics). The stack is shared by all engine
+/// entry points, so callers group related edits with the undo-group API when
+/// they must undo as one row.
+///
+/// Returns `false` when the stack rejects the command; today `push` always
+/// accepts, but the timeline entry points still map this to their failure
+/// value.
+///
+/// # Arguments
+///
+/// * `cmd` - the command to execute and own; consumed.
+/// * `name` - human-readable undo-row label shown to the user.
 fn push(cmd: UndoCommand, name: &str) -> bool {
 	quercus_undo::global::push(cmd, name).is_ok()
 }
 
-/// Splits a block at `point` (seconds, project timebase). The second
-/// half becomes a new block (re-query the track for it).
+/// Splits `block` at `point` (seconds, project timebase) as one undoable
+/// "Split Clip" step. The first half keeps the original block's id; the
+/// second half becomes a new block inserted right after it, so callers must
+/// re-query the track to obtain its id.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the block to split.
+/// * `point` - split time in seconds, strictly inside the block's range for a
+///   split to occur.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_split(
 	project: *const ProjectHandle,
@@ -54,9 +84,27 @@ pub unsafe extern "C" fn quercus_timeline_block_split(
 	)
 }
 
-/// Splits every block of `blocks` at `point` as ONE undoable command
-/// (originally linked pairs keep their rear halves linked — the Cmd+K
-/// semantics).
+/// Splits every block in the `blocks` array at `point` as ONE undoable
+/// command ("Split Clips"), so the whole multi-clip split is a single undo
+/// step. Blocks that were linked before the split keep their rear halves
+/// linked (the Cmd+K semantics).
+///
+/// Returns `false` when `project` is null, `blocks` is null, `count` is zero,
+/// any token is stale/unknown, or the undo stack rejects the command.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning every block in `blocks`.
+/// * `blocks` - pointer to `count` `u64` block identity tokens.
+/// * `count` - number of tokens readable at `blocks`; must be non-zero.
+/// * `point` - split time in seconds (project timebase), applied to every
+///   block.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; when `blocks` is non-null it must point to
+/// `count` readable `u64` identity tokens from that project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_split_preserving_links(
 	project: *const ProjectHandle,
@@ -83,7 +131,24 @@ pub unsafe extern "C" fn quercus_timeline_split_preserving_links(
 	)
 }
 
-/// Splits every block of a track at `point`.
+/// Splits every block of `track` that contains `point` at that time, as one
+/// undoable "Split Track" step. `point` is in seconds (project timebase);
+/// blocks that do not span it are untouched.
+///
+/// Returns `false` for a null `project`, a stale/unknown `track` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `track`.
+/// * `track` - identity token of the track to split.
+/// * `point` - split time in seconds, relative to the sequence start.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `track` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_track_split_at(
 	project: *const ProjectHandle,
@@ -100,8 +165,25 @@ pub unsafe extern "C" fn quercus_timeline_track_split_at(
 	)
 }
 
-/// Ripple-removes `[in_, out)` from every track of a timeline (the
-/// sequence node), closing the gap.
+/// Ripple-removes the half-open time range `[in_, out)` from every track of
+/// `timeline` (the sequence node), closing the gap by sliding later content
+/// left. Pushed as one undoable "Ripple Delete" step.
+///
+/// Returns `false` for a null `project`, a stale/unknown `timeline` token, or
+/// a command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `timeline`.
+/// * `timeline` - identity token of the sequence whose tracks are edited.
+/// * `in_` - start of the removed range, in seconds (inclusive).
+/// * `out` - end of the removed range, in seconds (exclusive).
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `timeline` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_ripple_remove_area(
 	project: *const ProjectHandle,
@@ -123,7 +205,24 @@ pub unsafe extern "C" fn quercus_timeline_ripple_remove_area(
 	)
 }
 
-/// Resizes a block (out point moves, in anchored).
+/// Resizes `block` to `new_length` (seconds) with the in point anchored, so
+/// the out point moves. The media in point is untouched. Pushed as one
+/// undoable "Resize Block" step.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the clip block.
+/// * `new_length` - requested length in seconds (project timebase).
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_resize(
 	project: *const ProjectHandle,
@@ -140,7 +239,24 @@ pub unsafe extern "C" fn quercus_timeline_block_resize(
 	)
 }
 
-/// Resizes a block keeping the out point (the media in point shifts).
+/// Resizes `block` to `new_length` (seconds) keeping its out point fixed, so
+/// the media in point shifts by the length delta. Pushed as one undoable
+/// "Resize Block" step.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the clip block.
+/// * `new_length` - requested length in seconds (project timebase).
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_resize_media_in(
 	project: *const ProjectHandle,
@@ -160,7 +276,24 @@ pub unsafe extern "C" fn quercus_timeline_block_resize_media_in(
 	)
 }
 
-/// Sets a clip's media in point.
+/// Sets a clip's media in point — the source frame shown at the clip's in
+/// edge — as one undoable "Set Media In" step. The clip's timeline range is
+/// unchanged.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the clip block.
+/// * `media_in` - new media in point, in seconds of source media.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_set_media_in(
 	project: *const ProjectHandle,
@@ -177,7 +310,24 @@ pub unsafe extern "C" fn quercus_timeline_block_set_media_in(
 	)
 }
 
-/// Enables/disables a block.
+/// Enables (`enabled == true`) or disables a block, as one undoable
+/// "Enable Block"/"Disable Block" step. A disabled block is skipped during
+/// playback/rendering but keeps its place on the track.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the block to toggle.
+/// * `enabled` - the new enabled state.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_set_enabled(
 	project: *const ProjectHandle,
@@ -206,9 +356,28 @@ pub const QUERCUS_TIMELINE_TRIM_IN: i32 = 2;
 /// Trim the out point.
 pub const QUERCUS_TIMELINE_TRIM_OUT: i32 = 3;
 
-/// Trims a block to `new_length` with trim semantics: `mode` selects
-/// which end moves and how neighbours react (one of
-/// `QUERCUS_TIMELINE_TRIM_*`).
+/// Trims `block` to `new_length` (seconds) with pointer-trim semantics: the
+/// `mode` selects which end moves and how the adjacent block compensates
+/// (one of the `QUERCUS_TIMELINE_TRIM_*` constants). Pushed as one undoable
+/// "Trim Block" step.
+///
+/// Returns `false` for an unknown `mode`, a null `project`, a stale/unknown
+/// `track` or `block` token, or a command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `track` and `block`.
+/// * `track` - identity token of the track that owns `block` (used to find
+///   the compensating neighbour).
+/// * `block` - identity token of the block to trim.
+/// * `new_length` - requested length in seconds (project timebase).
+/// * `mode` - which edge moves: `QUERCUS_TIMELINE_TRIM_NONE`,
+///   `..._MOVE`, `..._IN`, or `..._OUT`.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine, and both node tokens must come from that project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_trim(
 	project: *const ProjectHandle,
@@ -240,8 +409,26 @@ pub unsafe extern "C" fn quercus_timeline_block_trim(
 	)
 }
 
-/// Places a block onto track `track_index` of `timeline` at `in_`
-/// (moving a block across tracks / inserting at a point).
+/// Places `block` onto track `track_index` of `timeline` at `in_`, as one
+/// undoable "Place Block" step. Placement is destructive: blocks occupying
+/// the target range are trimmed or removed, and a gap is inserted when the
+/// block extends past the sequence end.
+///
+/// Returns `false` for a null `project`, a stale/unknown `timeline` or
+/// `block` token, or a command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `timeline` and `block`.
+/// * `timeline` - identity token of the owning timeline/sequence node.
+/// * `track_index` - destination track index; indices past the last track
+///   make the command add the missing tracks.
+/// * `in_` - placement in point, in seconds (project timebase).
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine, and both node tokens must come from that project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_place(
 	project: *const ProjectHandle,
@@ -266,8 +453,26 @@ pub unsafe extern "C" fn quercus_timeline_block_place(
 	)
 }
 
-/// Moves a block to track `track_index` of `timeline` at `in_` (the
-/// source slot becomes a gap).
+/// Moves `block` to track `track_index` of `timeline` at `in_`, as one
+/// undoable "Move Block" step: the source slot becomes a gap and the block is
+/// placed destructively at the destination (trimming/removing occupants and
+/// adding tracks if `track_index` is past the end).
+///
+/// Returns `false` for a null `project`, a stale/unknown `timeline` or
+/// `block` token, or a command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `timeline` and `block`.
+/// * `timeline` - identity token of the owning timeline/sequence node.
+/// * `track_index` - destination track index in that timeline; a different
+///   track than the block's current one is a cross-track move.
+/// * `in_` - new in point, in seconds (project timebase).
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine, and both node tokens must come from that project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_block_move(
 	project: *const ProjectHandle,
@@ -292,9 +497,27 @@ pub unsafe extern "C" fn quercus_timeline_block_move(
 	)
 }
 
-/// Adds a track to a track list (a sequence's video/audio/subtitle
-/// list node — see `quercus_sequence_track_list_at`). Returns the new
-/// track's node id, 0 on failure.
+/// Adds a new track to `track_list` — a sequence's video, audio, or subtitle
+/// track-list node (see `quercus_sequence_track_list_at`) — as one undoable
+/// "Add Track" step, and returns the new track's node id.
+///
+/// The track node is created in the list's project graph as part of the
+/// command; the returned token can be used immediately with the other
+/// `quercus_timeline_*` entry points. Returns `0` for a null `project`, a
+/// stale/unknown `track_list` token, or a rejected command (the track's node
+/// id is not valid then).
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `track_list`.
+/// * `track_list` - identity token of the sequence's track-list node to
+///   append the new track to.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `track_list` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_add_track(
 	project: *const ProjectHandle,
@@ -311,7 +534,22 @@ pub unsafe extern "C" fn quercus_timeline_add_track(
 	id
 }
 
-/// Removes a track (its blocks go with it).
+/// Removes `track` and everything attached under it (its blocks go with it),
+/// as one undoable "Remove Track" step.
+///
+/// Returns `false` for a null `project`, a stale/unknown `track` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `track`.
+/// * `track` - identity token of the track to remove.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `track` must be an identity token from that
+/// project.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_remove_track(
 	project: *const ProjectHandle,
@@ -326,7 +564,26 @@ pub unsafe extern "C" fn quercus_timeline_remove_track(
 	)
 }
 
-/// Sets a transition's in/out offsets.
+/// Sets a transition block's in/out wedge offsets to `in_offset`/`out_offset`
+/// (seconds), pushing one undoable "Set Transition Offsets" step. The
+/// transition spans `seam - in_offset .. seam + out_offset`, so the stored
+/// range moves with the offsets while the block stays pinned to its seam.
+///
+/// Returns `false` for a null `project`, a stale/unknown `block` token, or a
+/// command the undo stack rejects.
+///
+/// # Arguments
+///
+/// * `project` - engine project handle owning `block`.
+/// * `block` - identity token of the transition block to resize.
+/// * `in_offset` - new in-wedge duration, in seconds (project timebase).
+/// * `out_offset` - new out-wedge duration, in seconds.
+///
+/// # Safety
+///
+/// `project` must be null or a valid pointer to a live [`ProjectHandle`]
+/// created by this engine; `block` must be an identity token from that
+/// project (a stale or foreign token is rejected).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_timeline_transition_set_offsets(
 	project: *const ProjectHandle,

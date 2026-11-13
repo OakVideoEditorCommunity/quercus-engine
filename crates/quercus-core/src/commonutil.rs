@@ -29,7 +29,16 @@ pub fn config_get_string(group: Option<&str>, key: &str) -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// `quercus_core_config_get_int(group, key, default)`.
+/// Reads an integer setting from the process-wide config store.
+///
+/// `group` is the optional section (`None` addresses the top level), `key` the
+/// setting name, and `default` the value returned when the entry is missing or
+/// stored as a non-integer type, so the read never fails. The `(group, key)`
+/// pair addresses the same entry as [`config_get_string`].
+///
+/// This is the Rust half of the C ABI `quercus_core_config_get_int`. Values
+/// are returned as `i32`; a stored 64-bit value is narrowed with `as i32`, so
+/// out-of-range values wrap.
 pub fn config_get_int(group: Option<&str>, key: &str, default: i32) -> i32 {
 	crate::configstore::ConfigStore::instance().get_int(group, key, default)
 }

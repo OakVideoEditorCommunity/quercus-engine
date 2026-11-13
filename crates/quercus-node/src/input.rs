@@ -54,7 +54,15 @@ pub struct Input {
 }
 
 impl Input {
-	/// New input with the given id/type/default and normal flags.
+	/// Creates an input descriptor with the given id, accepted type and default.
+	///
+	/// `id` is the stable input key used by connections and project files (e.g.
+	/// `"tex_in"`); it is also copied into `display_name`, which the node may override
+	/// for localization. `value_type` is the accepted value type and `default` the
+	/// value used when nothing is set or keyframed — the caller should keep the two
+	/// consistent. The descriptor starts with `flags == 0` (connectable and
+	/// keyframable), no properties and `array_size == 0`; set
+	/// `flags`/`properties`/`array_size` afterwards for special inputs.
 	pub fn new(id: &str, value_type: ValueType, default: NodeValue) -> Input {
 		Input {
 			id: id.to_string(),

@@ -141,6 +141,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ factory entry for
 /// `org.olivevideoeditor.Olive.solidgenerator`).
+///
+/// `meta` is the process-wide node-type table; this pushes one
+/// [`NodeMeta`] with the type id, the display name "Solid", the
+/// [`Category::Generator`] category and [`create`] as the constructor,
+/// so the generator is offered in the create menu.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.solidgenerator",

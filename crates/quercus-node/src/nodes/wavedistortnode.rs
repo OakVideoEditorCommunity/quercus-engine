@@ -241,8 +241,20 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(WaveDistortNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.wave`).
+/// Appends this node type's factory entry (the C++ factory entry for
+/// `org.olivevideoeditor.Olive.wave`) to a metadata list.
+///
+/// The entry publishes type id `"org.olivevideoeditor.Olive.wave"`, menu name
+/// "Wave" and category [`Category::Distort`], with [`create`] as its
+/// constructor (texture input plus frequency/intensity/evolution/direction
+/// params and the video-effect flag). It is appended unconditionally, so call
+/// it exactly once (from `nodes::register_all`); the push order defines the
+/// create-menu order.
+///
+/// # Arguments
+///
+/// * `meta` - Factory metadata list to append to; `crate::nodes::register_all`
+///   later installs the collected list into the global registry.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.wave",

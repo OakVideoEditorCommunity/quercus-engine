@@ -211,7 +211,11 @@ fn add_float_input(core: &mut NodeCore, id: &str, default: f64, min: f64, max: f
 	core.add_input(input);
 }
 
-/// Register this node type.
+/// Add the Gamma node type to the factory registry.
+///
+/// `meta` is the registry list (the factory's global table); one entry is
+/// appended with type id `org.olivevideoeditor.Olive.gamma`, display name
+/// "Gamma" and the Color category. Called once during node registration.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.gamma",

@@ -478,7 +478,16 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TransitionFxNode))
 }
 
-/// Register this node type.
+/// Register this node type with the built-in node table.
+///
+/// Appends one [`NodeMeta`] to the list accumulated by
+/// [`crate::nodes::register_all`]: type id
+/// `org.olivevideoeditor.Olive.transitionfx` (the id serialized into
+/// project files and compared by [`NodeBehavior::type_id`]), display
+/// name `"Transition FX"`, menu category [`Category::Effect`], and
+/// [`create`] as the constructor. Only appends, so the call order in
+/// `register_all` decides the menu order; registering twice yields two
+/// entries.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.transitionfx",

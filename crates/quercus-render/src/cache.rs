@@ -72,10 +72,20 @@ pub fn create_uuid_text() -> String {
 
 // ---- binary stream helpers (QDataStream big-endian subset) -----------------
 
+/// Appends `v` to `out` as 4 big-endian bytes.
+///
+/// `QDataStream` default byte order, used for the version and event tags at the
+/// start of the shared state file; the buffer grows in place and nothing is
+/// returned.
 fn write_be_u32(out: &mut Vec<u8>, v: u32) {
 	out.extend_from_slice(&v.to_be_bytes());
 }
 
+/// Appends `v` to `out` as 4 big-endian bytes.
+///
+/// `QDataStream` default byte order, used for the rational numerator/denominator
+/// fields of the shared state file; the buffer grows in place and nothing is
+/// returned.
 fn write_be_i32(out: &mut Vec<u8>, v: i32) {
 	out.extend_from_slice(&v.to_be_bytes());
 }
@@ -110,7 +120,12 @@ fn uuid_text_to_bytes(uuid: &str) -> [u8; 16] {
 	bytes
 }
 
-/// Canonical "{8-4-4-4-12}" lowercase text from 16 raw bytes.
+/// Formats 16 raw UUID bytes as canonical lowercase "{8-4-4-4-12}" text.
+///
+/// `bytes` are in RFC 4122 / network order, the order stored in state files; the
+/// braces and dashes are added by the `uuid` crate, matching C++
+/// `create_uuid_text`. Counterpart of the crate-internal lenient text-to-bytes
+/// parse used when loading state.
 fn bytes_to_uuid_text(bytes: &[u8; 16]) -> String {
 	uuid::Uuid::from_bytes(*bytes).braced().to_string()
 }
@@ -230,7 +245,16 @@ pub struct PlaybackCache {
 }
 
 impl PlaybackCache {
-	/// New cache for `owner` (C++ `PlaybackCache(parent)`).
+	/// Creates an empty cache of `kind` owned by `owner`.
+	///
+	/// `kind` selects the flavor (frame-hash kinds are disk-backed and time-based);
+	/// `owner` is the owning node's identity, or a synthetic value from
+	/// [`next_owner_identity`] — it is only compared, never dereferenced. The cache
+	/// gets a fresh random v4 UUID text, no timebase (call
+	/// [`PlaybackCache::set_timebase`] for frame-hash kinds), empty
+	/// validated/requested/passthrough sets, saving enabled and the process-wide
+	/// default disk cache root. Nothing is written to disk until a range is
+	/// validated or a save runs.
 	pub fn new(kind: CacheKind, owner: OwnerIdentity) -> Self {
 		let disk_dir = quercus_core::commonutil::default_disk_cache_path();
 		Self {
@@ -253,7 +277,12 @@ impl PlaybackCache {
 		&self.uuid
 	}
 
-	/// Set the UUID and reload the disk state (C++ `set_uuid`).
+	/// Replaces the cache UUID and reloads the on-disk state that belongs to it.
+	///
+	/// `uuid` is canonical "{8-4-4-4-12}" text stored as given (not validated) and
+	/// selects the `<disk_dir>/<uuid>` subdirectory. The call then reads that
+	/// directory's state file through [`PlaybackCache::load_state`]: a missing file
+	/// clears the validated ranges and passthroughs, and read errors are ignored.
 	pub fn set_uuid(&mut self, uuid: &str) {
 		self.uuid = uuid.to_string();
 		let dir = self.disk_dir.clone();
@@ -275,12 +304,23 @@ impl PlaybackCache {
 		&self.disk_dir
 	}
 
-	/// Re-point the disk cache root (project-owned caches).
+	/// Re-points the root disk cache directory used for state and frame files.
+	///
+	/// `dir` is stored verbatim — no validation, no directory creation; the UUID
+	/// subdirectory is appended later by [`PlaybackCache::cache_directory`].
+	/// Project-owned caches use this to keep their files under the project. State is
+	/// not reloaded and existing links are not rewritten.
 	pub fn set_disk_dir(&mut self, dir: &str) {
 		self.disk_dir = dir.to_string();
 	}
 
-	/// Mark a range invalid (C++ `invalidate`).
+	/// Marks `range` as invalid, forcing it to be rendered again.
+	///
+	/// Removes `range` from the validated set (splitting a validated range that
+	/// strictly contains it) and drops every passthrough link overlapping it, then
+	/// persists the state file when saving is enabled; save errors are ignored. A
+	/// zero-length range (`in == out`) is rejected with an `eprintln!` warning and
+	/// changes nothing.
 	pub fn invalidate(&mut self, range: TimeRange) {
 		if range.in_() == range.out() {
 			eprintln!("Tried to invalidate zero-length range");
@@ -294,7 +334,13 @@ impl PlaybackCache {
 		}
 	}
 
-	/// Mark a range valid (C++ `validate`).
+	/// Marks `range` as validated, i.e. already rendered and stored on disk.
+	///
+	/// Inserts into the normalized validated set (merging overlapping and touching
+	/// neighbours) and, when saving is enabled, persists the state file; save errors
+	/// are ignored, so a failed write leaves the in-memory set updated. Unlike
+	/// [`PlaybackCache::invalidate`], a zero-length range is accepted instead of
+	/// being rejected.
 	pub fn validate(&mut self, range: TimeRange) {
 		self.validated.insert(range);
 		if self.saving_enabled {
@@ -309,13 +355,21 @@ impl PlaybackCache {
 		!self.validated.is_empty()
 	}
 
-	/// The validated ranges (C++ `get_validated_ranges`).
+	/// Returns the ranges already rendered and stored on disk.
+	///
+	/// The list is normalized (merged, non-overlapping) and drives frame-file
+	/// lookup; treat it as read-only and move ranges through
+	/// [`PlaybackCache::validate`] / [`PlaybackCache::invalidate`].
 	pub fn validated_ranges(&self) -> &TimeRangeList {
 		&self.validated
 	}
 
-	/// Invalidated sub-ranges of `within` (C++
-	/// `get_invalidated_ranges`).
+	/// Returns the sub-ranges of `within` that still need rendering.
+	///
+	/// Starts from `within` clamped to `>= 0` on both ends and subtracts every
+	/// validated range and every passthrough range, so an empty result means the
+	/// whole request is already cached. The renderer uses this to schedule only the
+	/// missing work.
 	pub fn invalidated_ranges(&self, within: TimeRange) -> TimeRangeList {
 		// Clamp to >= 0 (C++ does this for safety).
 		let zero = Rational::new(0, 1);
@@ -341,7 +395,11 @@ impl PlaybackCache {
 		invalidated
 	}
 
-	/// Record a request (C++ `request`).
+	/// Records `range` as requested (queued for rendering).
+	///
+	/// The request set is in-memory only and exists so the same work is not
+	/// scheduled twice; entries are removed again with
+	/// [`PlaybackCache::clear_request_range`] and the set is never persisted.
 	pub fn request(&mut self, range: TimeRange) {
 		self.requested.insert(range);
 	}
@@ -351,12 +409,24 @@ impl PlaybackCache {
 		&self.requested
 	}
 
-	/// Clear a requested range (C++ `clear_request_range`).
+	/// Removes `range` from the requested set so it is no longer queued.
+	///
+	/// Only the in-memory request bookkeeping changes: nothing is persisted and the
+	/// validated set is untouched. Counterpart of [`PlaybackCache::request`], called
+	/// when a queued render finishes or is cancelled.
 	pub fn clear_request_range(&mut self, range: TimeRange) {
 		self.requested.remove(range);
 	}
 
-	/// Passthrough link (C++ `set_passthrough`).
+	/// Links this cache to `other`, so `other`'s cached frames cover this cache.
+	///
+	/// Every validated range of `other`, plus every passthrough `other` already
+	/// holds, is appended to this cache's passthroughs tagged with the corresponding
+	/// source UUID; frame-hash flavors also adopt `other`'s timebase when it has
+	/// one. The links are persisted when saving is enabled. Because only a
+	/// `&PlaybackCache` is taken, the caller must ensure `other` is not this same
+	/// cache — use [`PlaybackCache::set_passthrough_snapshot`] when the two handles
+	/// may alias.
 	pub fn set_passthrough(&mut self, other: &PlaybackCache) {
 		for range in other.validated.ranges() {
 			self.passthroughs.push((*range, other.uuid.clone()));
@@ -396,12 +466,23 @@ impl PlaybackCache {
 		}
 	}
 
-	/// The passthrough ranges (C++ `get_passthroughs`).
+	/// Returns the passthrough links as `(range, uuid)` pairs.
+	///
+	/// Each entry says that `range` is served from the cache directory of the cache
+	/// with that UUID, so this cache need not render it. Entries are appended by
+	/// [`PlaybackCache::set_passthrough`] (and its snapshot variant) and pruned when
+	/// they overlap an invalidated range.
 	pub fn passthroughs(&self) -> &[(TimeRange, String)] {
 		&self.passthroughs
 	}
 
-	/// Persist toggle (C++ `set_saving_enabled`).
+	/// Enables or disables persisting the range bookkeeping to disk.
+	///
+	/// With `enabled == false`, [`PlaybackCache::invalidate`],
+	/// [`PlaybackCache::validate`] and [`PlaybackCache::set_passthrough`] skip their
+	/// `save_state` call (transient caches and tests); the in-memory ranges still
+	/// update. Defaults to `true`. Pairs with
+	/// [`PlaybackCache::saving_enabled`].
 	pub fn set_saving_enabled(&mut self, enabled: bool) {
 		self.saving_enabled = enabled;
 	}
@@ -411,7 +492,13 @@ impl PlaybackCache {
 		self.saving_enabled
 	}
 
-	/// `<cache_dir>/<uuid>` (C++ `get_this_cache_directory`).
+	/// Returns `<cache_dir>/<uuid>`, the directory holding this cache's state file
+	/// and frame files.
+	///
+	/// `cache_dir` is the caller's root cache directory (not necessarily
+	/// [`PlaybackCache::disk_dir`]); the path is only built, never created or
+	/// written. Used by [`PlaybackCache::load_state`] and
+	/// [`PlaybackCache::save_state`].
 	pub fn cache_directory(&self, cache_dir: &std::path::Path) -> std::path::PathBuf {
 		cache_dir.join(&self.uuid)
 	}
@@ -484,7 +571,17 @@ impl PlaybackCache {
 		Ok(())
 	}
 
-	/// See [`PlaybackCache::load_state`].
+	/// Writes this cache's bookkeeping to `<cache_dir>/<uuid>/state` in the C++
+	/// `BinaryStreamWriter` format (big-endian version/event tags, counts, rational
+	/// in/out pairs and raw 16-byte UUIDs), creating the directory as needed.
+	///
+	/// With no validated ranges and no passthroughs the state file is deleted
+	/// instead of written, so an empty cache leaves nothing on disk. Frame-hash
+	/// flavors additionally write the timebase (1/1 when unset). After a successful
+	/// write the process-wide disk-cache quota is enforced (debounced and
+	/// best-effort). Returns `Err` when the directory cannot be created or the file
+	/// cannot be created/written/flushed; the in-memory state is unaffected either
+	/// way. Counterpart of [`PlaybackCache::load_state`].
 	pub fn save_state(&self, cache_dir: &std::path::Path) -> Result<()> {
 		let dir = self.cache_directory(cache_dir);
 		let state_path = dir.join("state");
@@ -530,6 +627,9 @@ impl PlaybackCache {
 			.map_err(|e| Error::Failed(format!("write state: {e}")))?;
 		file.flush()
 			.map_err(|e| Error::Failed(format!("flush state: {e}")))?;
+		// The state file counts toward the disk-cache budget; enforce it
+		// after the write (debounced, best-effort, and lock-free).
+		crate::manager::enforce_disk_cache_quota();
 		Ok(())
 	}
 
@@ -583,7 +683,11 @@ impl PlaybackCache {
 	}
 }
 
-/// Half-open overlap (C++ `TimeRange::overlaps_with`, default inclusivity).
+/// True when the two half-open ranges `a` and `b` intersect.
+///
+/// Ranges are half-open (`in` inclusive, `out` exclusive), the C++ `TimeRange`
+/// default inclusivity, so ranges that merely touch (`a.out == b.in`) do not
+/// overlap. Used to prune passthrough links that cover an invalidated range.
 fn overlaps(a: TimeRange, b: TimeRange) -> bool {
 	!(b.out() <= a.in_() || b.in_() >= a.out())
 }

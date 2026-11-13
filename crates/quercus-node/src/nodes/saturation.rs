@@ -202,7 +202,13 @@ fn add_float_input(core: &mut NodeCore, id: &str, default: f64, min: f64, max: f
 	core.add_input(input);
 }
 
-/// Register this node type.
+/// Registers the saturation node type with the node factory.
+///
+/// Appends one [`NodeMeta`] to `meta` describing the type: id
+/// `org.olivevideoeditor.Olive.saturation`, display name "Saturation", the
+/// [`Category::Color`] category, and the [`create`] constructor. `meta` is the
+/// vec assembled by `crate::nodes::register_all`; this only fills it in, it
+/// does not register the type globally by itself.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.saturation",

@@ -54,7 +54,12 @@ pub struct Xy {
 }
 
 impl Xy {
-	/// Build a chromaticity.
+	/// Build a chromaticity coordinate pair from CIE 1931 xy values.
+	///
+	/// `x` and `y` are the normalized chromaticity coordinates (for colors
+	/// inside the spectral locus `x + y <= 1`); `y` is a chromaticity
+	/// component, not luminance. Returns the `Xy` value consumed by
+	/// [`Primaries`] and the [`WHITE_D65`]/[`WHITE_ACES`] constants.
 	pub const fn new(x: f32, y: f32) -> Self {
 		Self { x, y }
 	}
@@ -120,6 +125,11 @@ pub const PRIMARIES_AP1: Primaries = Primaries {
 // Matrix plumbing
 // ---------------------------------------------------------------------------
 
+/// Multiply two row-major 3x3 matrices (`a * b`).
+///
+/// `a` is the left matrix and `b` the right matrix, both `[[f32; 3]; 3]`
+/// in row-major order. Returns the product; used by the RGB-to-XYZ and
+/// chromatic-adaptation builders. No normalization or validation.
 fn mat_mul(a: Mat3, b: Mat3) -> Mat3 {
 	let mut out = [[0.0f32; 3]; 3];
 	for r in 0..3 {
@@ -130,6 +140,11 @@ fn mat_mul(a: Mat3, b: Mat3) -> Mat3 {
 	out
 }
 
+/// Multiply a row-major 3x3 matrix by a length-3 column vector.
+///
+/// `m` is the matrix and `v` the vector; each output component is the dot
+/// product of one matrix row with `v`. Used for XYZ conversions and white
+/// point scaling.
 fn mat_vec(m: Mat3, v: [f32; 3]) -> [f32; 3] {
 	[
 		m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -138,6 +153,11 @@ fn mat_vec(m: Mat3, v: [f32; 3]) -> [f32; 3] {
 	]
 }
 
+/// Invert a row-major 3x3 matrix via its adjugate and determinant.
+///
+/// `m` is the matrix to invert. Returns the inverse. The determinant is not
+/// checked for zero or near-zero: a singular input produces non-finite
+/// entries instead of `None`.
 fn mat_inv(m: Mat3) -> Mat3 {
 	let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
 		- m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -174,7 +194,12 @@ const BRADFORD_CONE: Mat3 = [
 	[0.0389, -0.0685, 1.0296],
 ];
 
-/// Bradford chromatic adaptation from one white point to another.
+/// Build the Bradford chromatic-adaptation matrix between two white points.
+///
+/// `src_white` and `dst_white` are CIE 1931 xy white points (for example
+/// [`WHITE_D65`] and [`WHITE_ACES`]); both must have `y != 0`. Returns the
+/// row-major 3x3 matrix that maps source-white XYZ to destination-white
+/// XYZ; [`rgb_to_rgb_matrix`] applies it only when the white points differ.
 pub fn chromatic_adaptation(src_white: Xy, dst_white: Xy) -> Mat3 {
 	let cone = BRADFORD_CONE;
 	let cone_inv = mat_inv(cone);
@@ -222,7 +247,11 @@ pub fn rgb_to_rgb_matrix(src: Primaries, dst: Primaries) -> Mat3 {
 	mat_mul(mat_mul(from_xyz, middle), to_xyz)
 }
 
-/// Apply a 3x3 matrix to the RGB channels of one pixel in place.
+/// Apply a row-major 3x3 color matrix to the RGB components of one pixel.
+///
+/// `m` is the matrix; `px` is a slice whose first three elements are R, G
+/// and B (any further elements, such as alpha in an RGBA row, are left
+/// untouched). The transform is in place and requires `px.len() >= 3`.
 #[inline]
 fn apply_mat(m: Mat3, px: &mut [f32]) {
 	let r = px[0];
@@ -250,7 +279,13 @@ pub enum WorkingColorSpace {
 }
 
 impl WorkingColorSpace {
-	/// Parse the persisted project-setting value.
+	/// Parse a persisted working-colorspace project setting.
+	///
+	/// `value` is matched case-insensitively: `"srgb"`, `"srgb_legacy"` or
+	/// `"legacy"` select [`WorkingColorSpace::SrgbLegacy`]; any other value
+	/// (including the canonical `"acescg"`) falls back to the default
+	/// [`WorkingColorSpace::AcesCg`]. Counterpart of
+	/// [`WorkingColorSpace::as_setting`].
 	pub fn from_setting(value: &str) -> Self {
 		match value.to_ascii_lowercase().as_str() {
 			"srgb" | "srgb_legacy" | "legacy" => WorkingColorSpace::SrgbLegacy,
@@ -280,7 +315,12 @@ pub enum OutputGamut {
 }
 
 impl OutputGamut {
-	/// Parse the persisted project-setting value.
+	/// Parse a persisted output-gamut project setting.
+	///
+	/// `value` is matched case-insensitively: `"displayp3"`/`"p3"` select
+	/// [`OutputGamut::DisplayP3`], `"bt2020"`/`"rec2020"`/`"2020"` select
+	/// [`OutputGamut::Bt2020`]; any other value falls back to
+	/// [`OutputGamut::Srgb`]. Counterpart of [`OutputGamut::as_setting`].
 	pub fn from_setting(value: &str) -> Self {
 		match value.to_ascii_lowercase().as_str() {
 			"displayp3" | "p3" => OutputGamut::DisplayP3,
@@ -298,7 +338,12 @@ impl OutputGamut {
 		}
 	}
 
-	/// The primaries of this gamut.
+	/// Return the RGB primaries and white point for this output gamut.
+	///
+	/// `Srgb` maps to [`PRIMARIES_SRGB`], `DisplayP3` to
+	/// [`PRIMARIES_DISPLAY_P3`] and `Bt2020` to [`PRIMARIES_BT2020`]. The
+	/// result feeds the gamut matrices in [`rgb_to_rgb_matrix`] and
+	/// [`acescg_to_output`].
 	pub fn primaries(self) -> Primaries {
 		match self {
 			OutputGamut::Srgb => PRIMARIES_SRGB,
@@ -342,7 +387,13 @@ pub enum OutputTransfer {
 }
 
 impl OutputTransfer {
-	/// Parse the persisted project-setting value.
+	/// Parse a persisted output-transfer project setting.
+	///
+	/// `value` is matched case-insensitively: `"gamma22"`/`"2.2"` select
+	/// [`OutputTransfer::Gamma22`], `"pq"`/`"st2084"` select
+	/// [`OutputTransfer::Pq`], `"hlg"` selects [`OutputTransfer::Hlg`]; any
+	/// other value falls back to [`OutputTransfer::Srgb`]. Counterpart of
+	/// [`OutputTransfer::as_setting`].
 	pub fn from_setting(value: &str) -> Self {
 		match value.to_ascii_lowercase().as_str() {
 			"gamma22" | "2.2" => OutputTransfer::Gamma22,
@@ -384,7 +435,14 @@ pub struct OutputColorSpec {
 }
 
 impl OutputColorSpec {
-	/// The spec from persisted project-setting values.
+	/// Build a complete output color spec from two persisted project settings.
+	///
+	/// `gamut` is parsed by [`OutputGamut::from_setting`] (for example
+	/// `"srgb"`, `"displayp3"`, `"bt2020"`) and `transfer` by
+	/// [`OutputTransfer::from_setting`] (for example `"srgb"`, `"gamma22"`,
+	/// `"pq"`, `"hlg"`); unknown strings fall back to the enum defaults
+	/// (sRGB gamut / sRGB transfer). Used when loading the project's output
+	/// target; persistence uses `OutputGamut::as_setting` / `OutputTransfer::as_setting`.
 	pub fn from_settings(gamut: &str, transfer: &str) -> Self {
 		Self {
 			gamut: OutputGamut::from_setting(gamut),
@@ -409,7 +467,12 @@ pub fn srgb_oetf(v: f32) -> f32 {
 	}
 }
 
-/// sRGB EOTF: gamma-encoded code → linear.
+/// Decode an sRGB code value to linear light (IEC 61966-2-1 EOTF).
+///
+/// `v` is a gamma-encoded component, nominally in `[0, 1]`; the piecewise
+/// curve (linear toe at `0.04045`, then the `2.4` power) is applied to the
+/// absolute value and mirrored for negatives so scene-linear negatives
+/// survive. Returns linear light. Counterpart of [`srgb_oetf`].
 pub fn srgb_eotf(v: f32) -> f32 {
 	let sign = if v < 0.0 { -1.0 } else { 1.0 };
 	let v = v.abs();
@@ -420,13 +483,23 @@ pub fn srgb_eotf(v: f32) -> f32 {
 	}
 }
 
-/// Pure-power gamma OETF (linear → code).
+/// Encode linear light with a pure-power gamma curve.
+///
+/// `v` is linear light (nominally `[0, 1]`); `gamma` is the corresponding
+/// EOTF exponent (`2.2` for BT.1886-style SDR, `2.8` for some film scans).
+/// Returns `v^(1/gamma)` with negatives mirrored. Counterpart of
+/// [`gamma_eotf`].
 pub fn gamma_oetf(v: f32, gamma: f32) -> f32 {
 	let sign = if v < 0.0 { -1.0 } else { 1.0 };
 	sign * v.abs().powf(1.0 / gamma)
 }
 
-/// Pure-power gamma EOTF (code → linear).
+/// Decode a pure-power gamma code value to linear light.
+///
+/// `v` is the gamma-encoded component (nominally `[0, 1]`) and `gamma` the
+/// EOTF exponent (`2.2` or `2.8` in the LUTs below). Returns
+/// `sign(v) * |v|^gamma`, so negatives are mirrored. Counterpart of
+/// [`gamma_oetf`].
 pub fn gamma_eotf(v: f32, gamma: f32) -> f32 {
 	let sign = if v < 0.0 { -1.0 } else { 1.0 };
 	sign * v.abs().powf(gamma)
@@ -448,7 +521,11 @@ pub fn pq_eotf(v: f32) -> f32 {
 	sign * (num / den).powf(1.0 / PQ_M1)
 }
 
-/// PQ OETF (inverse of [`pq_eotf`]).
+/// Encode linear light with the SMPTE ST 2084 (PQ) OETF.
+///
+/// `v` is linear light normalized so `1.0 = 10 000 nits`; negatives are
+/// mirrored like the other transfer functions. Returns the PQ code value
+/// (`0..1` for the nominal range). Inverse of [`pq_eotf`].
 pub fn pq_oetf(v: f32) -> f32 {
 	let sign = if v < 0.0 { -1.0 } else { 1.0 };
 	let y = v.abs().powf(PQ_M1);
@@ -474,7 +551,11 @@ pub fn hlg_eotf(v: f32) -> f32 {
 	}
 }
 
-/// HLG OETF (inverse of [`hlg_eotf`]).
+/// Encode linear light with the ARIB STD-B67 (HLG) OETF.
+///
+/// `v` is scene-linear light with the nominal reference white near `1.0`
+/// (the curve's own input/output range is `[0, 1]`); negatives are
+/// mirrored. Returns the HLG code value. Inverse of [`hlg_eotf`].
 pub fn hlg_oetf(v: f32) -> f32 {
 	let sign = if v < 0.0 { -1.0 } else { 1.0 };
 	let v = v.abs();
@@ -555,7 +636,14 @@ fn srgb_oetf_fast(v: f32) -> f32 {
 	}
 }
 
-/// The fast decode-side linearizer for `transfer`.
+/// Select the fast decode-side linearizer for a source transfer.
+///
+/// `transfer` is the source's transfer characteristic from container/codec
+/// metadata. Returns a function pointer mapping one encoded component to
+/// linear light: LUT-backed for sRGB/gamma/PQ/HLG (see [`lut_tf`]), the
+/// identity for [`SourceTransfer::Linear`], and the SDR-gamma path for
+/// [`SourceTransfer::Unknown`] (matching that variant's documented
+/// fallback). Used by [`decode_to_acescg`].
 fn decode_transfer_fn(transfer: SourceTransfer) -> fn(f32) -> f32 {
 	match transfer {
 		SourceTransfer::SdrGamma | SourceTransfer::Unknown => srgb_eotf_fast,
@@ -567,7 +655,12 @@ fn decode_transfer_fn(transfer: SourceTransfer) -> fn(f32) -> f32 {
 	}
 }
 
-/// The fast output-side encoder for `transfer`.
+/// Select the fast output-side encoder for an output transfer.
+///
+/// `transfer` is the delivery target's transfer characteristic. Returns a
+/// function pointer mapping one linear component to the encoded code value:
+/// LUT-backed for sRGB/gamma/PQ/HLG (see [`lut_tf`]). Used by
+/// [`acescg_to_output`] and [`acescg_to_output_bytes`].
 fn output_transfer_fn(transfer: OutputTransfer) -> fn(f32) -> f32 {
 	match transfer {
 		OutputTransfer::Srgb => srgb_oetf_fast,
@@ -590,6 +683,14 @@ fn par_pixels_bytes(bytes: &mut [u8], f: impl Fn(&mut [u8]) + Sync) {
 	par_bands(bytes, 16, f);
 }
 
+/// Run `f` over `buf` in aligned bands, optionally on scoped threads.
+///
+/// `buf` is the whole slab; `align` is the element count of one logical
+/// unit (4 for F32 RGBA, 16 for byte RGBA) so a band never splits a pixel.
+/// Splits into up to 8 bands only when `buf.len() / align >= 2^19` units (a
+/// 1080p frame clears the threshold); otherwise it calls `f(buf)` on the
+/// caller thread. Each band is passed as `&mut [T]`; `f` must not assume
+/// equal-length bands. Used by [`par_pixels_f32`]/[`par_pixels_bytes`].
 fn par_bands<T: Send>(buf: &mut [T], align: usize, f: impl Fn(&mut [T]) + Sync) {
 	let len = buf.len();
 	let bands = if len / align >= (1 << 19) {
@@ -754,15 +855,15 @@ pub fn decode_to_acescg_bytes(
 	});
 }
 
-/// Output-direction transform: ACEScg linear → the output colorspace
-/// (gamut matrix + transfer encoding). In place.
+/// Convert ACEScg linear pixels to the output colorspace in place.
 ///
-/// Gamut mapping is the contract's P1 semantics (simple clip): after the
-/// AP1 → target-gamut matrix, the RGB channels are clamped to [0, 1] before
-/// the transfer encoding, so out-of-gamut values are clipped rather than
-/// wrapped. This applies to HDR targets too (PQ/HLG code 1.0 = 10 000 nits);
-/// alpha is untouched. Matrix, clamp and encoding are fused into a single
-/// pass (LUT'd transfer, row-band parallel).
+/// `samples` is a tightly packed F32 RGBA buffer (4 floats per pixel; a
+/// trailing partial pixel is ignored). `spec` selects the target gamut and
+/// transfer: the AP1-to-target-gamut matrix is applied to RGB, the result is
+/// clamped to `[0, 1]` (the contract's P1 simple-clip gamut mapping, also
+/// used for HDR targets) and then encoded with the LUT-backed transfer.
+/// Alpha is untouched; the whole transform is fused into one
+/// row-band-parallel pass. Counterpart of [`decode_to_acescg`].
 pub fn acescg_to_output(samples: &mut [f32], spec: OutputColorSpec) {
 	let matrix = rgb_to_rgb_matrix(PRIMARIES_AP1, spec.gamut.primaries());
 	let encode = output_transfer_fn(spec.transfer);

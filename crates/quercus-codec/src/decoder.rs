@@ -209,6 +209,12 @@ impl CodecStream {
 	}
 
 	/// New stream for `(filename, stream)` with an optional block.
+	///
+	/// `filename` is stored verbatim (not canonicalized), `stream` is the
+	/// index inside the file (a negative index makes [`Self::is_valid`]
+	/// return false), and `block` is the opaque timeline-block token that
+	/// this type only stores and compares. Read the parts back with
+	/// [`Self::filename`], [`Self::stream`] and [`Self::block`].
 	pub fn with_block(
 		filename: String,
 		stream: i32,
@@ -226,8 +232,12 @@ impl CodecStream {
 		!self.filename.is_empty() && self.stream >= 0
 	}
 
-	/// The file exists on disk.
+	/// The file exists: either on disk or through the installed media-I/O
+	/// provider (a custom source need not map to a local path).
 	pub fn exists(&self) -> bool {
+		if crate::mediaio::provider_handles(&self.filename) {
+			return true;
+		}
 		Path::new(&self.filename).exists()
 	}
 
@@ -239,6 +249,11 @@ impl CodecStream {
 	}
 
 	/// Source filename.
+	///
+	/// The exact string the stream was built with (not canonicalized);
+	/// empty for [`Self::new`] and after [`Self::reset`]. It is the key
+	/// the decoder resolves and [`Self::exists`] checks it through the
+	/// installed media-I/O provider before the filesystem.
 	pub fn filename(&self) -> &str {
 		&self.filename
 	}
@@ -474,6 +489,14 @@ pub fn transform_image_sequence_file_name(filename: &str, number: i64) -> String
 }
 
 /// Number of trailing digits in the filename stem (0 = not a sequence).
+///
+/// The stem is the final path component up to its first '.' (the
+/// `QFileInfo::completeBaseName()` rule), and only trailing ASCII
+/// digits are counted; a full path may be passed, but only the file
+/// name is inspected. The count is the zero-padding width used by
+/// [`transform_image_sequence_file_name`] and the digit slice read by
+/// [`get_image_sequence_index`], so `0` means "not part of an image
+/// sequence".
 pub fn get_image_sequence_digit_count(filename: &str) -> i32 {
 	let file_name = Path::new(filename)
 		.file_name()

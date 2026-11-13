@@ -14,13 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! describe 的产物：效果描述符与 clip 描述符。
+//! The products of describe: the effect descriptor and the clip descriptor.
 //!
-//! 参照：HS: ofxhImageEffect.cpp `Descriptor`（describe action 期间
-//! 插件可读写的属性容器）。
+//! Reference: HS: ofxhImageEffect.cpp `Descriptor` (the property container
+//! that plugins can read and write during the describe action).
 //!
-//! 句柄约定（[`crate::suites::tag`]）：`props` 在偏移 0 且
-//! `#[repr(C)]`；`params`/`clips` 元素装箱（Vec 重分配不移动对象）。
+//! Handle convention ([`crate::suites::tag`]): `props` sits at offset 0 and
+//! is `#[repr(C)]`; `params`/`clips` elements are boxed (a Vec reallocation
+//! does not move the objects).
 
 use std::ffi::CString;
 
@@ -33,39 +34,41 @@ fn cs(s: &str) -> CString {
 
 // ---- clip 描述符属性（ofxImageEffect.h / ofxCore.h）----
 
-/// kOfxImageClipPropOptional。
+/// kOfxImageClipPropOptional.
 pub(crate) const CLIP_OPTIONAL: &str = "OfxImageClipPropOptional";
-/// kOfxImageClipPropIsMask。
+/// kOfxImageClipPropIsMask.
 pub(crate) const CLIP_IS_MASK: &str = "OfxImageClipPropIsMask";
-/// kOfxImageClipPropFieldExtraction。
+/// kOfxImageClipPropFieldExtraction.
 pub(crate) const CLIP_FIELD_EXTRACTION: &str = "OfxImageClipPropFieldExtraction";
-/// kOfxImageEffectPropSupportedComponents。
+/// kOfxImageEffectPropSupportedComponents.
 pub(crate) const CLIP_SUPPORTED_COMPONENTS: &str = "OfxImageEffectPropSupportedComponents";
-/// kOfxImageEffectPropTemporalClipAccess。
+/// kOfxImageEffectPropTemporalClipAccess.
 pub(crate) const CLIP_TEMPORAL_ACCESS: &str = "OfxImageEffectPropTemporalClipAccess";
-/// kOfxImageEffectPropSupportsTiles。
+/// kOfxImageEffectPropSupportsTiles.
 pub(crate) const CLIP_SUPPORTS_TILES: &str = "OfxImageEffectPropSupportsTiles";
-/// kOfxImageFieldDoubled（FieldExtraction 默认值）。
+/// kOfxImageFieldDoubled (the FieldExtraction default).
 pub(crate) const CLIP_FIELD_DOUBLED: &str = "OfxImageFieldDoubled";
-/// kOfxTypeClip。
+/// kOfxTypeClip.
 pub(crate) const CLIP_TYPE: &str = "OfxTypeClip";
 
-/// clip 描述符（describe 期间由插件定义）。
-/// `#[repr(C)]` + props 在偏移 0（句柄约定；describe 期 clip handle
-/// 即 &props，与实例期 [`crate::clip::ClipInstance`] 共用 CLIP 标签）。
+/// Clip descriptor (defined by the plugin during describe).
+/// `#[repr(C)]` + props at offset 0 (the handle convention; during describe
+/// the clip handle is &props, sharing the CLIP tag with the instance-phase
+/// [`crate::clip::ClipInstance`]).
 #[repr(C)]
 pub struct ClipDescriptor {
-	/// 描述属性：label、可选性（kOfxImageClipPropOptional）、支持分量
-	/// （kOfxImageEffectPropSupportedComponents）、field 支持等。
+	/// Descriptive properties: label, optionality (kOfxImageClipPropOptional),
+	/// supported components (kOfxImageEffectPropSupportedComponents), field
+	/// support, and so on.
 	pub props: PropertySet,
-	/// clip 名（如 "Source"/"Output"）。
+	/// The clip name (e.g. "Source"/"Output").
 	pub name: String,
 }
 
 impl ClipDescriptor {
-	/// 按名构建（镜像 HS ofxhClip.cpp `ClipDescriptor::ClipDescriptor`
-	/// + clipDescriptorStuffs 属性表，ofxhClip.cpp:22-38）。公开：
-	/// 测试构造 clip 实例（GL suite 往返）。
+	/// Build by name (mirrors HS ofxhClip.cpp `ClipDescriptor::ClipDescriptor`
+	/// plus the clipDescriptorStuffs property table, ofxhClip.cpp:22-38).
+	/// Public: tests construct clip instances with it (GL suite round-trip).
 	pub fn new(name: &str) -> Self {
 		let props = PropertySet::new();
 		props.set_one(crate::param::PROP_TYPE, Value::String(cs(CLIP_TYPE)));
@@ -99,22 +102,26 @@ impl ClipDescriptor {
 	}
 }
 
-/// 效果描述符。
-/// `#[repr(C)]` + props 在偏移 0（句柄约定：describe 期 effect/
-/// param-set handle 即 &props）。
+/// Effect descriptor.
+/// `#[repr(C)]` + props at offset 0 (the handle convention: during describe
+/// the effect/param-set handle is &props).
 #[repr(C)]
 pub struct EffectDescriptor {
-	/// 效果级属性：label、描述、分组、单帧/时间域标记等。
+	/// Effect-level properties: label, description, grouping, single-frame/
+	/// temporal flags, and so on.
 	pub props: PropertySet,
-	/// 参数定义集（describe 期间插件经 Param suite 填充；
-	/// 值类型见 [`crate::param::ParamDef`]；Box 保证句柄地址稳定）。
+	/// Parameter definition set (filled by the plugin through the Param suite
+	/// during describe; for the value types see [`crate::param::ParamDef`];
+	/// boxing keeps handle addresses stable).
 	pub params: Vec<Box<ParamDef>>,
-	/// clip 定义集（含 "Output"；Box 保证句柄地址稳定）。
+	/// Clip definition set (includes "Output"; boxing keeps handle addresses
+	/// stable).
 	pub clips: Vec<Box<ClipDescriptor>>,
 }
 
 impl EffectDescriptor {
-	/// 空描述符（describe action 前由 host 创建并预置根属性）。
+	/// An empty descriptor (created by the host before the describe action, with
+	/// the root properties pre-set).
 	pub fn new() -> Self {
 		Self {
 			props: PropertySet::new(),
@@ -123,7 +130,16 @@ impl EffectDescriptor {
 		}
 	}
 
-	/// 按名找 clip。
+	/// Look up an input/output clip definition by clip name.
+	///
+	/// Linear search; returns the first definition whose name matches exactly
+	/// (`"Output"` included). `None` when nothing matches. Compare
+	/// [`Self::param`], which searches the parameter table instead.
+	///
+	/// # Arguments
+	///
+	/// * `name` - the clip name (in the `kOfxImageEffectPropClipName` sense,
+	///   e.g. `"Source"`, `"Output"`).
 	pub fn clip(&self, name: &str) -> Option<&ClipDescriptor> {
 		self.clips
 			.iter()
@@ -131,7 +147,18 @@ impl EffectDescriptor {
 			.map(|b| b.as_ref())
 	}
 
-	/// 按名找参数定义。
+	/// Look up a parameter definition by parameter name (the definition the
+	/// plugin filled in during describe, not an instance value).
+	///
+	/// Linear search; returns the first definition whose name matches exactly;
+	/// `None` when nothing matches (case-sensitive). Runtime parameter values
+	/// live on the instance side (`find` on
+	/// [`crate::instance::Instance::params`]); do not read them with this method.
+	///
+	/// # Arguments
+	///
+	/// * `name` - the parameter's internal name (`kOfxParamPropName`, not the
+	///   display label).
 	pub fn param(&self, name: &str) -> Option<&ParamDef> {
 		self.params
 			.iter()

@@ -30,11 +30,21 @@ role and links to the C header and the SDK; the full API lives in
 
 ## Build prerequisite
 
-The engine is pinned to the project FFmpeg 8.1 static build. Do not use a
-system/Homebrew/distro FFmpeg and do not leave `FFMPEG_DIR` pointing at one:
-run `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh` from the
-repository, then build with the generated `.cache/ffmpeg` prefix. Otherwise
-the link fails or the dylib loads the wrong FFmpeg.
+**`FFMPEG_DIR` is required.** Crate packages do not download or build FFmpeg.
+Point it at a development prefix containing `include/`, `lib/` and
+`lib/pkgconfig/`. Dynamic linking is the default; use BtbN's `gpl-shared`
+packages or an equivalent shared FFmpeg development install. Shared libraries
+must be discoverable at run time through the platform loader path or an rpath.
+
+Static archives are optional. Enable the `ffmpeg-static` feature and point
+`FFMPEG_DIR` at a static development prefix.
+
+When developing this repository on Linux/macOS, run
+`tooling/install-deps.sh` before `tooling/ffmpeg/build-ffmpeg.sh --shared`.
+
+The crate produces an rlib, a cdylib and a static library. The native CD
+package contains only the dynamic library, static library, this C header and
+the Windows import library.
 
 ## C API
 

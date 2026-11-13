@@ -207,6 +207,12 @@ pub enum EditCommand {
 		old_range: WireTimeRange,
 	},
 	// Generic graph operations.
+	CreateNode {
+		context: u64,
+		type_id: String,
+		x: f64,
+		y: f64,
+	},
 	RemoveNode {
 		node: u64,
 	},

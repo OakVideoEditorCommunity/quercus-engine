@@ -24,6 +24,15 @@ struct CommandArgs {
 }
 
 impl CommandArgs {
+	/// Build the ABI request for `command`, keeping every pointer it references
+	/// alive for the duration of the call.
+	///
+	/// Starts from `QuercusEditParams::default()`, points the two result buffers
+	/// at 1024-entry vectors owned by `self` (so the engine can write its output
+	/// into stable storage) and then maps `command`'s variant fields into the
+	/// opcode-specific slots. The pointers target heap buffers owned by `self`,
+	/// so they stay valid until `self` is dropped or a setter replaces the
+	/// corresponding buffer — moving the struct does not invalidate them.
 	fn new(command: EditCommand) -> Self {
 		let mut result = Self {
 			op: QuercusEditOp::AddTrack,
@@ -87,14 +96,27 @@ impl CommandArgs {
 		self.params.values_len = self._values.len();
 	}
 
-	/// Packs variant fields into the opcode-specific slots documented by the ABI.
+	/// Pack the opcode plus its single node operand into the request slots.
+	///
+	/// `op` selects the edit and `a` is stored raw in `params.a`. Used for the
+	/// commands that take exactly one [`NodeId`]; the multi-argument commands
+	/// fill several opcode-specific slots through the other helpers instead.
 
 	fn simple(&mut self, op: QuercusEditOp, a: NodeId) {
 		self.op = op;
 		self.params.a = a.raw();
 	}
 
-	/// Copies bounded engine output into safe, owned IDs and clipboard entries.
+	/// Convert the engine's bounded output into an owned [`EditResult`].
+	///
+	/// `raw` carries the fixed fields (primary node, value, rational, revision)
+	/// plus counts into the two result buffers this `CommandArgs` owns. The
+	/// counts must respect the capacities advertised to the engine (1024 IDs and
+	/// 1024 clipboard entries) — the slices would panic otherwise. `primary`
+	/// becomes `None` when its id is invalid, `rational` becomes `None` when the
+	/// engine left the pointer null, and the ID/clipboard arrays are copied into
+	/// owned `NodeId`s / [`ClipboardClip`]s, so the result borrows nothing from
+	/// the FFI buffers.
 	fn into_result(self, raw: QuercusEditResult) -> EditResult {
 		let primary = NodeId::from_raw(raw.primary);
 		let primary = primary.is_valid().then_some(primary);

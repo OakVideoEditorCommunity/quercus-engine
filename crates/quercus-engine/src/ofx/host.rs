@@ -35,8 +35,28 @@ pub extern "C" fn quercus_ofx_scan() -> i32 {
 	host.cache.count() as i32
 }
 
-/// Scans one extra plugin directory. False on invalid input or scan
-/// failure.
+/// Scans one extra plugin directory and loads every OFX bundle found in it,
+/// adding them to the host's plugin cache.
+///
+/// The path is canonicalized and remembered, so scanning the same directory
+/// again is a no-op; a path that is not a directory is also a successful no-op.
+/// Bundles are searched up to 3 directory levels deep. Complements
+/// `quercus_ofx_scan`, which covers the standard locations.
+///
+/// # Arguments
+///
+/// * `path` - Directory path bytes; null or invalid UTF-8 fails.
+/// * `path_len` - Length of `path` in bytes.
+///
+/// # Returns
+///
+/// `false` only when `path` is null or not valid UTF-8; an empty or missing
+/// path is a successful no-op, and individual bundle load failures are ignored,
+/// so `true` does not guarantee that plugins were added.
+///
+/// # Safety
+///
+/// `path` must be valid for `path_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_scan_path(path: *const u8, path_len: usize) -> bool {
 	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
@@ -72,8 +92,28 @@ fn plugin_string_at(
 	copy_str_out(&f(&plugin), buf, buf_len)
 }
 
-/// The plugin identifier at `index`, snprintf-style; -1 when out of
-/// range.
+/// Copies the unique plugin identifier at `index` into `buf`, snprintf-style.
+///
+/// The identifier is the value passed back to `quercus_ofx_instance_create`
+/// (e.g. `"org.olivevideoeditor.Olive.blur"`).
+///
+/// # Arguments
+///
+/// * `index` - Plugin index in probe order, bounded by
+///   `quercus_ofx_plugin_count`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the identifier excluding the NUL, or -1 when `index`
+/// is negative or out of range. A return value `>= buf_len` means the output
+/// was truncated to `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_plugin_identifier_at(
 	index: i32,
@@ -83,8 +123,29 @@ pub unsafe extern "C" fn quercus_ofx_plugin_identifier_at(
 	plugin_string_at(index, buf, buf_len, |p| p.identifier.clone())
 }
 
-/// The plugin display label at `index` (`kOfxPropLabel` from the
-/// descriptor), snprintf-style; -1 when out of range.
+/// Copies the plugin's display label at `index` into `buf`, snprintf-style.
+///
+/// The label is the `OfxPropLabel` string property of the plugin's root
+/// descriptor; an absent or non-string value produces an empty string.
+///
+/// # Arguments
+///
+/// * `index` - Plugin index in probe order, bounded by
+///   `quercus_ofx_plugin_count`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the label excluding the NUL (0 when the descriptor
+/// has no label), or -1 when `index` is negative or out of range. A return
+/// value `>= buf_len` means the output was truncated to `buf_len - 1` bytes
+/// plus a NUL.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_plugin_label_at(index: i32, buf: *mut u8, buf_len: usize) -> i32 {
 	plugin_string_at(index, buf, buf_len, |p| {
@@ -95,8 +156,27 @@ pub unsafe extern "C" fn quercus_ofx_plugin_label_at(index: i32, buf: *mut u8, b
 	})
 }
 
-/// The plugin bundle path at `index`, snprintf-style; -1 when out of
-/// range.
+/// Copies the plugin's bundle path (e.g. `".../Foo.ofx.bundle"`) at `index`
+/// into `buf`, snprintf-style.
+///
+/// # Arguments
+///
+/// * `index` - Plugin index in probe order, bounded by
+///   `quercus_ofx_plugin_count`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the path excluding the NUL, or -1 when `index` is
+/// negative or out of range. A return value `>= buf_len` means the output was
+/// truncated to `buf_len - 1` bytes plus a NUL; non-UTF-8 path bytes are
+/// replaced with U+FFFD.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_plugin_path_at(index: i32, buf: *mut u8, buf_len: usize) -> i32 {
 	plugin_string_at(index, buf, buf_len, |p| {
@@ -104,7 +184,25 @@ pub unsafe extern "C" fn quercus_ofx_plugin_path_at(index: i32, buf: *mut u8, bu
 	})
 }
 
-/// The plugin version at `index`. False when out of range.
+/// Reads the plugin version advertised by the plugin at `index` in its
+/// `OfxPlugin` struct.
+///
+/// # Arguments
+///
+/// * `index` - Plugin index in probe order, bounded by
+///   `quercus_ofx_plugin_count`.
+/// * `major` - Output for the major version; may be null to skip it.
+/// * `minor` - Output for the minor version; may be null to skip it.
+///
+/// # Returns
+///
+/// `true` when the index is valid (and the non-null outputs were written);
+/// `false` when `index` is negative or out of range, in which case nothing is
+/// written.
+///
+/// # Safety
+///
+/// `major`/`minor` must be valid for one `u32` write when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_plugin_version_at(
 	index: i32,
@@ -141,8 +239,29 @@ pub extern "C" fn quercus_ofx_plugin_context_count_at(index: i32) -> i32 {
 		.unwrap_or(-1)
 }
 
-/// The context string at `context_index` of the plugin at `index`,
-/// snprintf-style; -1 when either index is out of range.
+/// Copies one of the plugin's supported image-effect context strings
+/// (`"OfxImageEffectContextFilter"`, `"OfxImageEffectContextGenerator"`,
+/// `"OfxImageEffectContextTransition"`, ...) into `buf`, snprintf-style.
+///
+/// # Arguments
+///
+/// * `index` - Plugin index in probe order, bounded by
+///   `quercus_ofx_plugin_count`.
+/// * `context_index` - Zero-based context index for that plugin, bounded by
+///   `quercus_ofx_plugin_context_count_at`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the context excluding the NUL, or -1 when either
+/// index is negative or out of range. A return value `>= buf_len` means the
+/// output was truncated to `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_plugin_context_at(
 	index: i32,
@@ -183,11 +302,28 @@ pub extern "C" fn quercus_ofx_alive_count() -> i32 {
 // Instances (node_factory registry ids; 0 = invalid)
 // ---------------------------------------------------------------------------
 
-/// Creates an instance of `plugin_id` and registers it, returning the
-/// registry id (0 on failure: unknown plugin, no supported context, or
-/// the plugin's describe/createInstance failed). A null/empty
-/// `context` uses the host's preferred-context fallback chain
-/// (filter → general → tracker → paint → rest).
+/// Creates a plugin instance and registers it, returning its nonzero registry
+/// id.
+///
+/// # Arguments
+///
+/// * `plugin_id` - Plugin identifier bytes (e.g.
+///   `"org.olivevideoeditor.Olive.blur"`); null or invalid UTF-8 fails.
+/// * `plugin_id_len` - Length of `plugin_id` in bytes.
+/// * `context` - Desired OFX context string; null or empty falls back to the
+///   host's preferred-context chain (filter → general → tracker → paint → rest).
+/// * `context_len` - Length of `context` in bytes.
+///
+/// # Returns
+///
+/// The registry id used by the other instance entry points, or 0 when the
+/// plugin id is unknown, no supported context was found, or the plugin's
+/// describe/createInstance failed.
+///
+/// # Safety
+///
+/// Both string pointers must be valid for their stated lengths when non-null;
+/// the returned id must be released with `quercus_ofx_instance_release`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_instance_create(
 	plugin_id: *const u8,
@@ -222,8 +358,26 @@ pub extern "C" fn quercus_ofx_instance_count() -> i32 {
 	node_factory::registered_instance_count() as i32
 }
 
-/// The context an instance was created in, snprintf-style; -1 when
-/// the id is unknown.
+/// Copies the image-effect context the instance was created in (e.g.
+/// `"OfxImageEffectContextFilter"`) into `buf`, snprintf-style.
+///
+/// # Arguments
+///
+/// * `id` - Registry id from `quercus_ofx_instance_create`.
+/// * `buf` - Caller-owned output buffer; null (or `buf_len == 0`) only queries
+///   the required length.
+/// * `buf_len` - Capacity of `buf` in bytes, including room for the NUL.
+///
+/// # Returns
+///
+/// The full byte length of the context excluding the NUL, or -1 when `id` is
+/// unknown. A return value `>= buf_len` means the output was truncated to
+/// `buf_len - 1` bytes plus a NUL.
+///
+/// # Safety
+///
+/// `buf` must be valid for `buf_len` writes when non-null; the instance must not
+/// be released concurrently.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_instance_context(id: u64, buf: *mut u8, buf_len: usize) -> i32 {
 	let Some(inst) = node_factory::instance_from_id(id) else {
@@ -232,9 +386,25 @@ pub unsafe extern "C" fn quercus_ofx_instance_context(id: u64, buf: *mut u8, buf
 	copy_str_out(&inst.value.context, buf, buf_len)
 }
 
-/// Triggers a push-button parameter (the inspector's button path).
-/// False on invalid input, unknown instance, or no such push-button
-/// parameter.
+/// Clicks a push-button parameter on an instance, as the inspector's button
+/// does (invokes the plugin's button callback).
+///
+/// # Arguments
+///
+/// * `id` - Registry id from `quercus_ofx_instance_create`.
+/// * `param` - Push-button parameter name bytes as the plugin defines it; null
+///   or invalid UTF-8 fails.
+/// * `param_len` - Length of `param` in bytes.
+///
+/// # Returns
+///
+/// `false` on invalid input, an unknown instance id, or when the instance has
+/// no push-button parameter of that name (in which case nothing is invoked).
+///
+/// # Safety
+///
+/// `param` must be valid for `param_len` bytes when non-null; the instance must
+/// not be released concurrently by another thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_instance_push_button(
 	id: u64,
@@ -247,8 +417,17 @@ pub unsafe extern "C" fn quercus_ofx_instance_push_button(
 	node_factory::push_button_clicked(id, param)
 }
 
-/// Sets/clears the instance's cancel flag: a running render aborts at
-/// the next progress batch boundary.
+/// Sets or clears the instance's cooperative cancel flag.
+///
+/// A render already running for this instance aborts at its next progress batch
+/// boundary; the flag is a relaxed atomic, so no synchronization with the
+/// render thread is required. Unknown ids are a no-op.
+///
+/// # Arguments
+///
+/// * `id` - Registry id from `quercus_ofx_instance_create`.
+/// * `cancelled` - `true` to request cancellation, `false` to clear it (a new
+///   render may then proceed).
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_instance_set_cancelled(id: u64, cancelled: bool) {
 	let Some(inst) = node_factory::instance_from_id(id) else {
@@ -393,6 +572,15 @@ static PROGRESS_HANDLER: Mutex<(Option<QuercusOfxProgressFn>, Option<QuercusOfxP
 	Mutex::new((None, None, 0));
 static RENDER_CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// Bridges the render procpool's plugin-progress hook to the C progress
+/// callback registered in `PROGRESS_HANDLER`, so plugin work that runs in
+/// process workers reports progress through the same
+/// `QuercusOfxProgressFn`.
+///
+/// Called by `quercus_ofx_set_progress_handler`; each call replaces the hook.
+/// The hook re-reads the handler slot on every update (a later clear turns it
+/// into a no-op) and ignores the callback's return value — worker cancellation
+/// is driven by `quercus_ofx_cancel_render` instead.
 fn install_worker_progress_handler() {
 	quercus_render::procpool::set_plugin_progress_cb(Some(Arc::new(|label, message, fraction| {
 		let (cb, _, userdata) = *PROGRESS_HANDLER.lock().unwrap_or_else(|e| e.into_inner());
@@ -412,10 +600,30 @@ fn install_worker_progress_handler() {
 	})));
 }
 
-/// Registers the progress handler (or with a null `cb` clears it).
-/// The handler bridges into the OFX progress suite's reporter
-/// factory: every plugin progressStart builds a reporter that calls
-/// `cb`, and progressEnd calls `end_cb`.
+/// Registers (or clears) the process-wide progress callback used by OFX
+/// renders.
+///
+/// With a non-null `cb`, every plugin `progressStart` builds a reporter that
+/// calls `cb` for each update and `end_cb` (when given) at the end; process
+/// worker renders are additionally bridged through the render procpool.
+/// Passing `cb = null` clears the handler, the end callback and the userdata,
+/// and detaches both bridges; `quercus_ofx_shutdown` does the same.
+///
+/// # Arguments
+///
+/// * `cb` - Progress callback receiving the plugin's label and message, a
+///   fraction in `0.0..=1.0`, and `userdata`. Returning `false` requests
+///   cancellation (the render aborts). It runs on render threads, so it must be
+///   thread-safe and must not block.
+/// * `end_cb` - Optional end-of-progress callback (the progress UI can close).
+/// * `userdata` - Opaque pointer forwarded to both callbacks; it must stay valid
+///   while the handler is registered.
+///
+/// # Safety
+///
+/// `userdata` must remain valid until the handler is replaced or cleared, and
+/// both callback pointers must be valid for the lifetime of the registration.
+/// Callbacks may be invoked from arbitrary render threads.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_set_progress_handler(
 	cb: Option<QuercusOfxProgressFn>,

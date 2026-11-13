@@ -91,10 +91,18 @@ pub enum QuercusEditOp {
 	SetMulticamEnabled,
 	SwitchMulticam,
 	CreateMulticamSequence,
+	CreateNode,
 }
 
 impl QuercusEditOp {
-	/// Validates an opcode received from outside Rust; unknown values are rejected.
+	/// Validates an opcode received from outside Rust and maps it to the matching
+	/// [`QuercusEditOp`].
+	///
+	/// The numeric values follow the enum's declaration order: 0 = `AddTrack` through
+	/// 74 = `CreateNode`, contiguous and append-only (the SDK mirror depends on the
+	/// numbering, so new operations must be appended, never inserted). Returns `None`
+	/// for any value outside that range; the FFI entry point turns that into an error
+	/// result instead of dispatching.
 	fn from_u32(value: u32) -> Option<Self> {
 		Some(match value {
 			0 => Self::AddTrack,
@@ -171,6 +179,7 @@ impl QuercusEditOp {
 			71 => Self::SetMulticamEnabled,
 			72 => Self::SwitchMulticam,
 			73 => Self::CreateMulticamSequence,
+			74 => Self::CreateNode,
 			_ => return None,
 		})
 	}

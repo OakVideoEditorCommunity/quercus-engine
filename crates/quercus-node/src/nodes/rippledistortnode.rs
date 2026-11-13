@@ -299,8 +299,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(RippleDistortNode { gizmo }))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.ripple`).
+/// Append the Ripple distort effect to the factory metadata list.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.ripple`, display name `Ripple`, the
+/// [`Category::Distort`] category and [`create`] as constructor. Called by
+/// [`crate::nodes::register_all`]; the push order there defines the
+/// create-menu order.
+///
+/// # Arguments
+///
+/// * `meta` - metadata list being assembled; the entry is appended in place.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.ripple",

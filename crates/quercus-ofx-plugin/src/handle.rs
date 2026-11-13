@@ -14,30 +14,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 句柄机制的历史遗留：`RefBox<T>` 容器。
+//! A historical remnant of the handle machinery: the `RefBox<T>` container.
 //!
-//! 单库化（M14 R5）后 crate 内部不再传 CHandle——原 CHandle 装拆
-//! （`make_owned`/`make_borrowed`/`get`）、panic 兜底（`guard`/
-//! `guard_handle`/`guard_void`）与身份注册表（`Registry`）均已删除：
-//! 前者只被测试使用，后者在 src 无读取方（param 桥实际走
-//! [`crate::suites::param`] 的 props 地址映射与 [`crate::node`] 的
-//! 身份注册表）。
+//! After the single-library unification (M14 R5) CHandle is no longer passed
+//! inside the crate — the original CHandle boxing/unboxing
+//! (`make_owned`/`make_borrowed`/`get`), panic guards (`guard`/
+//! `guard_handle`/`guard_void`) and identity registry (`Registry`) have all
+//! been deleted: the former was only used by tests, and the latter had no
+//! readers in src (the param bridge actually goes through
+//! [`crate::suites::param`]'s props address mapping and [`crate::node`]'s
+//! identity registry).
 //!
-//! 仅 [`RefBox`] 保留：它是 [`crate::host::Host::create_instance`] 的
-//! 返回值容器（`Arc<RefBox<Instance>>`），该类型被 quercusengine 的
-//! test_support 显式标注消费，是本 crate 在 facade 边界的公开类型。
+//! Only [`RefBox`] remains: it is the return-value container of
+//! [`crate::host::Host::create_instance`] (`Arc<RefBox<Instance>>`), and
+//! quercusengine's test_support explicitly marks that type as consumed, so it
+//! is this crate's public type at the facade boundary.
 
 use std::sync::atomic::AtomicU32;
 
-/// 边界盒：`Arc<RefBox<Instance>>` 的承载类型。
+/// Boundary box: the carrier type for `Arc<RefBox<Instance>>`.
 ///
-/// 原为 C 句柄（`{ctx, addref, release, abi_version}`）背后的堆盒子，
-/// addref/release thunk 经 `refs` 计数；装拆删除后 `refs` 不再被读写，
-/// 仅以固定值 1 构造（"单个拥有者"语义），生命周期完全由外层
-/// `Arc` 管理。
+/// Originally the heap box behind a C handle (`{ctx, addref, release,
+/// abi_version}`), with addref/release thunks counting through `refs`; after
+/// the boxing/unboxing removal `refs` is no longer read or written and is
+/// constructed with the fixed value 1 ("single owner" semantics), with the
+/// lifetime managed entirely by the outer `Arc`.
 pub struct RefBox<T: ?Sized> {
-	/// 引用计数（句柄时代遗留，现无 thunk 读写）。
+	/// Reference count (a handle-era leftover; no thunk reads or writes it now).
 	pub refs: AtomicU32,
-	/// 内含对象。
+	/// The contained object.
 	pub value: T,
 }

@@ -95,7 +95,17 @@ impl Frame {
 		}
 	}
 
-	/// New frame with a copy of `params`.
+	/// Creates an unallocated frame that copies `params`.
+	///
+	/// The timestamp starts at `0/1` and the row stride is recomputed from the
+	/// copied params; the pixel buffer stays empty until [`Frame::allocate`] is
+	/// called. Prefer this over [`Frame::new`] when the caller already knows the
+	/// video parameters.
+	///
+	/// # Arguments
+	///
+	/// * `params` - Video parameters (size/format) taken by value and stored in
+	///   the frame.
 	pub fn with_params(params: VideoParams) -> Self {
 		let mut frame = Frame {
 			params: Some(params),
@@ -251,7 +261,16 @@ impl Frame {
 		self.timestamp
 	}
 
-	/// Set the timestamp.
+	/// Sets the frame timestamp.
+	///
+	/// The value is stored unchanged; it is a rational number of seconds and is
+	/// not validated or re-ordered. Encoders/decoders use it as the presentation
+	/// timestamp of the pixels.
+	///
+	/// # Arguments
+	///
+	/// * `ts` - New timestamp as seconds (`num/den`); any rational is accepted,
+	///   including negative values.
 	pub fn set_timestamp(&mut self, ts: Rational) {
 		self.timestamp = ts;
 	}
@@ -293,7 +312,17 @@ impl Frame {
 		Err(crate::error::Error::State)
 	}
 
-	/// True when `(x, y)` lies inside the allocated buffer.
+	/// Returns whether `(x, y)` names a pixel inside the allocated buffer.
+	///
+	/// The check requires an allocated buffer and `0 <= x < width`,
+	/// `0 <= y < height`; it is the bounds guard used by [`Frame::get_pixel`]
+	/// and [`Frame::set_pixel`]. An unallocated frame therefore contains no
+	/// pixels.
+	///
+	/// # Arguments
+	///
+	/// * `x` - Horizontal pixel coordinate (0 is the left column).
+	/// * `y` - Vertical pixel coordinate (0 is the top row).
 	fn contains_pixel(&self, x: i32, y: i32) -> bool {
 		self.is_allocated() && x >= 0 && x < self.width() && y >= 0 && y < self.height()
 	}

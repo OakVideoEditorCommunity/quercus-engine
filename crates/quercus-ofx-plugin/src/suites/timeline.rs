@@ -14,15 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxTimeLineSuite v1：时间查询转发到当前渲染上下文
-//! （[`crate::suites::RenderCtx`]，frame range 来自 clip 桥）。
-//! 参照 HS: ofxhImageEffect.cpp gTimelineSuite。
+//! OfxTimeLineSuite v1: time queries are forwarded to the current render
+//! context ([`crate::suites::RenderCtx`], frame range from the clip
+//! bridge). Modeled on HS: ofxhImageEffect.cpp gTimelineSuite.
 //!
-//! 无渲染上下文（渲染外调用）→ 回退 app 注入的活动 viewer 时间源
-//! （[`set_active_viewer_provider`]，阶段 6a 注入点）；也未注入则
-//! 时间 0 / 时间域 (0,0) 的 headless 默认。gotoTime 第 1 期无时间线
-//! 驱动 → OK no-op（渲染时间由驱动固定，见
-//! [`crate::suites::set_render_ctx`]）。
+//! No render context (called outside rendering) → falls back to the
+//! active-viewer time source injected by the app
+//! ([`set_active_viewer_provider`], the phase 6a injection point); when
+//! that is absent too, the headless defaults of time 0 / time range (0,0)
+//! apply. In phase 1 there is no timeline driver for gotoTime → OK no-op
+//! (render time is fixed by the driver, see
+//! [`crate::suites::set_render_ctx`]).
 
 use std::ffi::{c_double, c_int, c_void};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -33,18 +35,20 @@ use crate::suites::{render_ctx, status};
 // app 注入点：活动 viewer 时间源
 // ---------------------------------------------------------------------------
 
-/// 活动 viewer 的时间信息（timeline suite 渲染外回退源的最小集）。
+/// Time information of the active viewer (the minimal set used as the
+/// timeline suite's out-of-render fallback).
 #[derive(Clone, Copy, Debug)]
 pub struct ViewerTimeInfo {
-	/// viewer 当前时间（秒）。
+	/// The viewer's current time (seconds).
 	pub time: f64,
-	/// 时间域下界（秒）。
+	/// Lower bound of the time range (seconds).
 	pub range_min: f64,
-	/// 时间域上界（秒）。
+	/// Upper bound of the time range (seconds).
 	pub range_max: f64,
 }
 
-/// 活动 viewer 提供器：返回 None 表示当前无活动 viewer。
+/// Provider of the active viewer: returning `None` means there is no
+/// active viewer.
 pub type ActiveViewerProvider = Arc<dyn Fn() -> Option<ViewerTimeInfo> + Send + Sync>;
 
 static ACTIVE_VIEWER: OnceLock<Mutex<Option<ActiveViewerProvider>>> = OnceLock::new();
@@ -53,7 +57,20 @@ fn viewer_slot() -> &'static Mutex<Option<ActiveViewerProvider>> {
 	ACTIVE_VIEWER.get_or_init(|| Mutex::new(None))
 }
 
-/// 注册/清除活动 viewer 提供器（app 接线点；覆盖式）。
+/// Registers or clears the fallback source for time queries outside
+/// rendering (the app wiring point).
+///
+/// The timeline suite calls this provider when there is no render context
+/// in order to obtain the viewer's current time and time range; passing
+/// `None` unregisters it and restores the headless `0`/`(0,0)` default.
+/// The registration is overwrite-style: a new provider replaces the old
+/// value with no stacking.
+///
+/// # Arguments
+///
+/// * `provider` - a thread-safe closure returning `Some(ViewerTimeInfo)`
+///   (`None` means there is currently no active viewer); passing `None` for
+///   the whole argument clears the registered provider.
 pub fn set_active_viewer_provider(provider: Option<ActiveViewerProvider>) {
 	*viewer_slot().lock().unwrap_or_else(|e| e.into_inner()) = provider;
 }
@@ -66,7 +83,7 @@ fn active_viewer() -> Option<ViewerTimeInfo> {
 	provider()
 }
 
-/// 函数表布局（OfxTimeLineSuiteV1）。
+/// Function table layout (OfxTimeLineSuiteV1).
 #[repr(C)]
 pub struct TimeLineSuiteV1 {
 	/// getTime
@@ -77,7 +94,20 @@ pub struct TimeLineSuiteV1 {
 	pub get_time_bounds: unsafe extern "C" fn(*mut c_void, *mut c_double, *mut c_double) -> c_int,
 }
 
-/// 公共入口模板：handle 空检查 + panic 兜底。
+/// Shared entry template: first check whether `handle` is null (null →
+/// `ERR_BAD_HANDLE`), then run `f` inside `catch_unwind`, converting a
+/// panic raised inside the callback into `FAILED` so unwinding never
+/// crosses the `extern "C"` boundary.
+///
+/// # Arguments
+///
+/// * `handle` - host handle; only checked for null, never dereferenced.
+/// * `f` - the actual suite callback body, returning an OFX status code.
+///
+/// # Safety
+///
+/// `handle` is only used for the null check, so any value is safe; overall
+/// safety depends on how `f` interprets its own pointer arguments.
 unsafe fn caught(handle: *mut c_void, f: impl FnOnce() -> c_int) -> c_int {
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		if handle.is_null() {
@@ -88,6 +118,29 @@ unsafe fn caught(handle: *mut c_void, f: impl FnOnce() -> c_int) -> c_int {
 	.unwrap_or(status::FAILED)
 }
 
+/// OfxTimeLineSuiteV1 `getTime`: writes the current render time into
+/// `time`.
+///
+/// Lookup order: the render context's `time` → the time of the active
+/// viewer injected by the app → `0.0` (headless default).
+///
+/// # Arguments
+///
+/// * `handle` - instance handle passed by the host; only used for the null
+///   check (null → `ERR_BAD_HANDLE`).
+/// * `time` - output: current time in seconds; a null pointer returns
+///   `ERR_VALUE`.
+///
+/// # Returns
+///
+/// An OFX status code: `OK`, `ERR_BAD_HANDLE` or `ERR_VALUE`; `FAILED`
+/// when a panic occurs inside the callback.
+///
+/// # Safety
+///
+/// `time` must be a valid, writable `c_double` pointer (or null) whose
+/// lifetime covers this call; `handle` may be null and is never
+/// dereferenced.
 unsafe extern "C" fn timeline_get_time(handle: *mut c_void, time: *mut c_double) -> c_int {
 	unsafe {
 		caught(handle, || {
@@ -104,12 +157,54 @@ unsafe extern "C" fn timeline_get_time(handle: *mut c_void, time: *mut c_double)
 	}
 }
 
-/// gotoTime：第 1 期宿主不随插件移动时间线（渲染时间由驱动固定），
-/// OK no-op。
+/// OfxTimeLineSuiteV1 `gotoTime`: in phase 1 the host does not move the
+/// timeline for plugins (render time is fixed by the driver), so after
+/// checking the handle it returns `OK` directly without changing any
+/// state.
+///
+/// # Arguments
+///
+/// * `handle` - instance handle passed by the host; only used for the null
+///   check (null → `ERR_BAD_HANDLE`).
+/// * `_time` - time in seconds the plugin asks to jump to; currently
+///   ignored.
+///
+/// # Returns
+///
+/// `OK`, or `ERR_BAD_HANDLE` when the handle is null; `FAILED` when a
+/// panic occurs inside the callback.
+///
+/// # Safety
+///
+/// `handle` is only checked for null and never dereferenced, so any opaque
+/// pointer value may be passed (including null).
 unsafe extern "C" fn timeline_goto_time(handle: *mut c_void, _time: c_double) -> c_int {
 	unsafe { caught(handle, || status::OK) }
 }
 
+/// OfxTimeLineSuiteV1 `getTimeBounds`: writes the current time range into
+/// `min`/`max`.
+///
+/// Lookup order: the render context's frame range → the range of the
+/// active viewer injected by the app → `(0.0, 0.0)` (headless default).
+///
+/// # Arguments
+///
+/// * `handle` - instance handle passed by the host; only used for the null
+///   check (null → `ERR_BAD_HANDLE`).
+/// * `min` - output: lower bound of the time range, seconds.
+/// * `max` - output: upper bound of the time range, seconds.
+///
+/// # Returns
+///
+/// An OFX status code: `OK`, or `ERR_BAD_HANDLE`/`ERR_VALUE`; `FAILED`
+/// when a panic occurs inside the callback.
+///
+/// # Safety
+///
+/// `min` and `max` must be valid, writable, non-overlapping `c_double`
+/// pointers (or null, in which case `ERR_VALUE` is returned), and their
+/// lifetimes must cover this call.
 unsafe extern "C" fn timeline_get_time_bounds(
 	handle: *mut c_void,
 	min: *mut c_double,
@@ -132,7 +227,7 @@ unsafe extern "C" fn timeline_get_time_bounds(
 	}
 }
 
-/// 静态函数表实例。
+/// Static suite instance.
 pub fn suite_v1() -> &'static TimeLineSuiteV1 {
 	static SUITE: std::sync::OnceLock<TimeLineSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| TimeLineSuiteV1 {

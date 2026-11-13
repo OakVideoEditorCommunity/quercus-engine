@@ -38,6 +38,13 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::sync::OnceLock;
+
 use super::*;
 
 /// A DMA-BUF plane of a hardware frame (Linux/Vulkan import).
@@ -57,7 +64,198 @@ pub struct DmaBufPlane {
 	pub modifier: u64,
 }
 
-/// The Metal pixel format for an IOSurface plane (macOS).
+/// Platform external memory backing one wgpu texture (OpenFX GL
+/// zero-copy): a Linux `OPAQUE_FD` or a Windows `OPAQUE_WIN32` NT handle.
+///
+/// The texture itself owns the `VkImage`/`VkDeviceMemory` through the
+/// wgpu-hal drop callback. This struct only keeps the exported handle
+/// (closed on drop) and the metadata GL needs for the matching
+/// `glImportMemory*` / `glTexStorageMem2DEXT` call.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) struct ExternalTexture {
+	#[cfg(target_os = "linux")]
+	fd: OwnedFd,
+	#[cfg(target_os = "windows")]
+	handle: isize,
+	size: u64,
+	width: u32,
+	height: u32,
+	format: wgpu::TextureFormat,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ExternalTexture {
+	fn drop(&mut self) {
+		unsafe {
+			CloseHandle(self.handle as *mut c_void);
+		}
+	}
+}
+
+/// A borrowed handle to a wgpu texture whose Vulkan memory is exportable
+/// (Linux `OPAQUE_FD` / Windows `OPAQUE_WIN32`).
+///
+/// It keeps the wgpu texture alive and exposes a duplicate handle. The
+/// caller imports the duplicate into GL; GL takes ownership of that
+/// duplicate and closes it when the memory object is deleted.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(Clone)]
+pub struct GlMemoryExport {
+	external: Arc<ExternalTexture>,
+	/// Keeps the wgpu/hal texture (and its drop callback) alive while the
+	/// plugin renders into the imported GL texture.
+	_texture: Arc<wgpu::Texture>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl GlMemoryExport {
+	/// Width in pixels of the exported texture.
+	///
+	/// This is the extent the GL memory object is created with (via the
+	/// `glImportMemory*` call), so it must match the image the plugin renders
+	/// into.
+	pub fn width(&self) -> u32 {
+		self.external.width
+	}
+	/// Height in pixels of the exported texture.
+	///
+	/// This is the extent the GL memory object is created with (via the
+	/// `glImportMemory*` call), so it must match the image the plugin renders
+	/// into.
+	pub fn height(&self) -> u32 {
+		self.external.height
+	}
+	/// The `wgpu::TextureFormat` of the exported texture.
+	///
+	/// The GL bridge maps it to the matching internal format when creating the
+	/// imported GL texture; it is the format requested at creation.
+	pub fn format(&self) -> wgpu::TextureFormat {
+		self.external.format
+	}
+	/// Allocation size in bytes (the `size` argument of
+	/// `glImportMemoryFdEXT` / `glImportMemoryWin32HandleEXT`).
+	pub fn size(&self) -> u64 {
+		self.external.size
+	}
+
+	/// Linux: duplicate the exported opaque fd. The caller owns the
+	/// returned fd and must hand it to exactly one GL memory object (or
+	/// close it).
+	#[cfg(target_os = "linux")]
+	pub fn try_clone_fd(&self) -> Result<OwnedFd> {
+		let fd = unsafe { libc::dup(self.external.fd.as_raw_fd()) };
+		if fd < 0 {
+			return Err(Error::Failed("dup(opaque fd) failed".into()));
+		}
+		Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+	}
+
+	/// Windows: duplicate the exported NT handle. The caller owns the
+	/// duplicate and must hand it to exactly one GL memory object (or
+	/// close it).
+	#[cfg(target_os = "windows")]
+	pub fn try_clone_handle(&self) -> Result<isize> {
+		let mut duplicate = 0isize;
+		let ok = unsafe {
+			DuplicateHandle(
+				GetCurrentProcess(),
+				self.external.handle,
+				GetCurrentProcess(),
+				&mut duplicate,
+				0,
+				0,
+				DUPLICATE_SAME_ACCESS,
+			)
+		};
+		if ok == 0 {
+			return Err(Error::Failed("DuplicateHandle(opaque win32) failed".into()));
+		}
+		Ok(duplicate)
+	}
+}
+
+#[cfg(target_os = "windows")]
+const DUPLICATE_SAME_ACCESS: u32 = 0x0000_0002;
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+	fn GetCurrentProcess() -> *mut c_void;
+	fn DuplicateHandle(
+		h_source_process: *mut c_void,
+		h_source_handle: isize,
+		h_target_process: *mut c_void,
+		lp_target_handle: *mut isize,
+		dw_desired_access: u32,
+		b_inherit_handle: i32,
+		dw_options: u32,
+	) -> i32;
+	fn CloseHandle(h_object: *mut c_void) -> i32;
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+struct AshDispatch {
+	_entry: ash::Entry,
+	_instance: ash::Instance,
+	get_device_proc_addr: ash::vk::PFN_vkGetDeviceProcAddr,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl AshDispatch {
+	#[cfg(target_os = "linux")]
+	fn get_memory_fd(&self, device: ash::vk::Device) -> Option<ash::vk::PFN_vkGetMemoryFdKHR> {
+		let name = std::ffi::CStr::from_bytes_with_nul(b"vkGetMemoryFdKHR\0").ok()?;
+		let raw = unsafe { (self.get_device_proc_addr)(device, name.as_ptr()) }?;
+		Some(unsafe { std::mem::transmute(raw) })
+	}
+
+	#[cfg(target_os = "windows")]
+	fn get_memory_win32_handle(
+		&self,
+		device: ash::vk::Device,
+	) -> Option<ash::vk::PFN_vkGetMemoryWin32HandleKHR> {
+		let name = std::ffi::CStr::from_bytes_with_nul(b"vkGetMemoryWin32HandleKHR\0").ok()?;
+		let raw = unsafe { (self.get_device_proc_addr)(device, name.as_ptr()) }?;
+		Some(unsafe { std::mem::transmute(raw) })
+	}
+}
+
+// SAFETY: the dispatch table is immutable after construction; Vulkan
+// function pointers and the instance handle are process-level, and the
+// context method calling this is already Send+Sync.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+unsafe impl Send for AshDispatch {}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+unsafe impl Sync for AshDispatch {}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+/// Lazily creates the process-wide Vulkan instance used for external-memory
+/// handle queries.
+///
+/// The instance is created once (guarded by a `OnceLock`) with API version 1.1
+/// and kept for the process lifetime; later calls return the same dispatch
+/// table. Returns `None` when the Vulkan loader cannot be loaded or instance
+/// creation fails, in which case callers import the memory without the
+/// handle-extension query and fail cleanly instead of panicking.
+fn ash_dispatch() -> Option<&'static AshDispatch> {
+	static DISPATCH: OnceLock<Option<AshDispatch>> = OnceLock::new();
+	DISPATCH
+		.get_or_init(|| unsafe {
+			let entry = ash::Entry::load().ok()?;
+			let app = ash::vk::ApplicationInfo::default().api_version(ash::vk::API_VERSION_1_1);
+			let create = ash::vk::InstanceCreateInfo::default().application_info(&app);
+			let instance = entry.create_instance(&create, None).ok()?;
+			let get_device_proc_addr = instance.fp_v1_0().get_device_proc_addr;
+			Some(AshDispatch {
+				_entry: entry,
+				_instance: instance,
+				get_device_proc_addr,
+			})
+		})
+		.as_ref()
+}
+
+/// The Metal pixel format for an IOSurface plane (macOS)./// The Metal pixel format for an IOSurface plane (macOS).
 #[cfg(target_os = "macos")]
 fn iosurface_pixel_format(format: wgpu::TextureFormat) -> Option<objc2_metal::MTLPixelFormat> {
 	use objc2_metal::MTLPixelFormat;
@@ -266,6 +464,192 @@ impl GpuContext {
 		)
 	}
 
+	/// Import one plane of an opaque Linux FD (CUDA VMM / driver-private
+	/// handle) as a linear Vulkan image.
+	///
+	/// The FD is duplicated and owned by Vulkan after a successful allocation;
+	/// the image is registered like the DMA-BUF path and addressed by the linear
+	/// image extents.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - plane size in pixels; must be non-zero.
+	/// * `format` - plane format; 16-bit normalized formats additionally require
+	///   the device's 16-bit-normalized feature.
+	/// * `fd` - opaque Linux file descriptor; duplicated internally, so the
+	///   caller keeps ownership of `fd`.
+	/// * `offset` - byte offset into the exported allocation.
+	/// * `_pitch` - retained for layout diagnostics only; linear image addressing
+	///   is driven by the image extents.
+	/// * `keep_alive` - optional guard dropped when the imported texture is
+	///   released, keeping the producer's memory alive while GL reads it.
+	///
+	/// # Errors
+	///
+	/// `Error::State` for a non-Vulkan context, a zero size, or a 16-bit
+	/// normalized format the device does not support; `Error::Invalid` for a
+	/// format with no Vulkan equivalent; `Error::Failed` when the fd duplication
+	/// or image/memory creation fails.
+	#[cfg(target_os = "linux")]
+	pub fn import_opaque_fd_plane(
+		&self,
+		width: u32,
+		height: u32,
+		format: wgpu::TextureFormat,
+		fd: i32,
+		offset: u64,
+		_pitch: u64,
+		keep_alive: Option<ImportGuard>,
+	) -> Result<u64> {
+		use ash::vk;
+		use wgpu::hal;
+
+		if self.kind != BackendKind::Vulkan || width == 0 || height == 0 {
+			return Err(Error::State);
+		}
+		// A host-adopted device may not have enabled the 16-bit normalized
+		// texture feature. Creating such an external texture anyway produces
+		// an invalid bind group at draw time; report a capability gap so the
+		// decoder falls back to staging instead.
+		if matches!(
+			format,
+			wgpu::TextureFormat::R16Unorm
+				| wgpu::TextureFormat::Rg16Unorm
+				| wgpu::TextureFormat::Rgba16Unorm
+		) && !self.supports_16bit_norm_planes()
+		{
+			return Err(Error::State);
+		}
+		let Some(vk_format) = import_vk_format(format) else {
+			return Err(Error::Invalid);
+		};
+		let guard = unsafe { self.device.as_hal::<hal::api::Vulkan>() }.ok_or(Error::State)?;
+		let hal_device: &hal::vulkan::Device = &guard;
+		let raw = hal_device.raw_device().clone();
+		let _ = hal_device.raw_physical_device();
+
+		let mut external = vk::ExternalMemoryImageCreateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+		let info = vk::ImageCreateInfo::default()
+			.image_type(vk::ImageType::TYPE_2D)
+			.format(vk_format)
+			.extent(vk::Extent3D {
+				width,
+				height,
+				depth: 1,
+			})
+			.mip_levels(1)
+			.array_layers(1)
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::LINEAR)
+			.usage(vk::ImageUsageFlags::SAMPLED)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED)
+			.push_next(&mut external);
+		let image = unsafe { raw.create_image(&info, None) }
+			.map_err(|e| Error::Failed(format!("vkCreateImage(dmabuf): {e:?}")))?;
+
+		let req = unsafe { raw.get_image_memory_requirements(image) };
+
+		// Duplicate the fd: Vulkan takes ownership of the imported fd on a
+		// successful `vkAllocateMemory` and closes it when the memory is
+		// freed; the decoder keeps its own.
+		let dup_fd = unsafe { libc::dup(fd) };
+		if dup_fd < 0 {
+			unsafe { raw.destroy_image(image, None) };
+			return Err(Error::Failed("dup(dmabuf fd) failed".into()));
+		}
+		// Pick the memory type by trying the compatible ones in order —
+		// `vkGetPhysicalDeviceMemoryProperties` is instance-level and
+		// wgpu-hal keeps its raw instance private. The compatible set is
+		// usually tiny (often one DEVICE_LOCAL type on discrete GPUs).
+		let mut import = vk::ImportMemoryFdInfoKHR::default()
+			.handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD)
+			.fd(dup_fd);
+		let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+		let mut last_err = None;
+		let mut memory = None;
+		for type_index in 0..32u32 {
+			if req.memory_type_bits & (1 << type_index) == 0 {
+				continue;
+			}
+			let alloc = vk::MemoryAllocateInfo::default()
+				.allocation_size(req.size)
+				.memory_type_index(type_index)
+				.push_next(&mut dedicated)
+				.push_next(&mut import);
+			match unsafe { raw.allocate_memory(&alloc, None) } {
+				Ok(m) => {
+					memory = Some(m);
+					break;
+				}
+				Err(e) => last_err = Some((type_index, e)),
+			}
+		}
+		let Some(memory) = memory else {
+			unsafe {
+				libc::close(dup_fd);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!(
+				"vkAllocateMemory(import) failed for every compatible type: {last_err:?}"
+			)));
+		};
+		if let Err(e) = unsafe { raw.bind_image_memory(image, memory, offset) } {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!("vkBindImageMemory: {e:?}")));
+		}
+
+		let hal_desc = hal::TextureDescriptor {
+			label: Some("quercusrender-imported-dmabuf"),
+			size: wgpu::Extent3d {
+				width,
+				height,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage: wgpu_types::TextureUses::RESOURCE,
+			memory_flags: hal::MemoryFlags::empty(),
+			view_formats: Vec::new(),
+		};
+		// wgpu-hal does not destroy external images (it cannot know how);
+		// the drop guard owns both the image and the imported memory, and
+		// carries the decoder's frame-keep-alive with it.
+		let raw_guard = raw.clone();
+		let drop_guard: hal::DropCallback = Box::new(move || unsafe {
+			if let Some(keep) = keep_alive {
+				keep();
+			}
+			raw_guard.destroy_image(image, None);
+			raw_guard.free_memory(memory, None);
+		});
+		let hal_texture = unsafe {
+			hal_device.texture_from_raw(
+				image,
+				&hal_desc,
+				Some(drop_guard),
+				hal::vulkan::TextureMemory::External,
+			)
+		};
+		self.register_imported_texture::<hal::api::Vulkan>(
+			hal_texture,
+			ImportedTextureDesc {
+				width,
+				height,
+				array_layers: 1,
+				format,
+				aspect: wgpu::TextureAspect::All,
+				layer: None,
+			},
+		)
+	}
+
 	/// Import one slice of a D3D11VA texture array shared as an NT handle
 	/// (Windows/Vulkan): one multi-planar image (`NV12`/`P010`) with
 	/// `array_size` layers, registered twice (planes 0/1) for `slice`.
@@ -420,9 +804,8 @@ impl GpuContext {
 			aspect: wgpu::TextureAspect::Plane0,
 			layer: Some((slice, 1)),
 		};
-		let (y, texture) = self.register_imported_texture_shared::<hal::api::Vulkan>(
-			hal_texture, desc,
-		)?;
+		let (y, texture) =
+			self.register_imported_texture_shared::<hal::api::Vulkan>(hal_texture, desc)?;
 		let uv = self.register_texture_entry(
 			texture,
 			ImportedTextureDesc {
@@ -471,8 +854,7 @@ impl GpuContext {
 		};
 		let guard = unsafe { self.device.as_hal::<hal::api::Metal>() }.ok_or(Error::State)?;
 		let hal_device: &hal::metal::Device = &guard;
-		let device: &Retained<ProtocolObject<dyn objc2_metal::MTLDevice>> =
-			hal_device.raw_device();
+		let device: &Retained<ProtocolObject<dyn objc2_metal::MTLDevice>> = hal_device.raw_device();
 
 		let descriptor = MTLTextureDescriptor::new();
 		descriptor.setTextureType(MTLTextureType::Type2D);
@@ -492,7 +874,9 @@ impl GpuContext {
 		// (the caller's planar keep-alive holds the pixel buffer).
 		let texture = device
 			.newTextureWithDescriptor_iosurface_plane(&descriptor, surface, plane as usize)
-			.ok_or_else(|| Error::Failed("newTextureWithDescriptor:iosurface: returned nil".into()))?;
+			.ok_or_else(|| {
+				Error::Failed("newTextureWithDescriptor:iosurface: returned nil".into())
+			})?;
 
 		let raw_type = MTLTextureType::Type2D;
 		let hal_texture = unsafe {
@@ -522,9 +906,17 @@ impl GpuContext {
 		)
 	}
 
-	/// Register a texture created through `create_texture_from_hal` in the
-	/// registry (M5 external imports; also the shared tail of every
-	/// platform import).
+	/// Registers a texture created through `create_texture_from_hal` and returns
+	/// its registry token.
+	///
+	/// Shared tail of every platform import path (Linux dma-buf/opaque FD,
+	/// Windows OPAQUE_WIN32, macOS IOSurface); the token is what later calls such
+	/// as `texture_view` use to find the texture.
+	///
+	/// # Arguments
+	///
+	/// * `hal_texture` - hal texture produced by the platform importer.
+	/// * `desc` - size/format/aspect/layer metadata for the registry entry.
 	fn register_imported_texture<A: wgpu::hal::Api>(
 		&self,
 		hal_texture: A::Texture,
@@ -534,10 +926,20 @@ impl GpuContext {
 			.map(|(token, _)| token)
 	}
 
-	/// The shared registration body; returns the token plus the owning
-	/// `wgpu::Texture` so multi-plane/array imports (one texture, several
-	/// plane aspects or slices) can register aliases without recreating
-	/// the texture.
+	/// Creates the wgpu texture from `hal_texture`, registers it, and returns
+	/// `(token, texture)`.
+	///
+	/// The returned `Arc` lets multi-plane/array importers register aliases for a
+	/// single GPU texture (different plane aspects or layer ranges) without
+	/// recreating it. Marks the context as used.
+	///
+	/// # Arguments
+	///
+	/// * `hal_texture` - hal texture produced by the platform importer.
+	/// * `desc` - size/format/aspect/layer metadata for the registry entry.
+	///
+	/// The `Result` is part of the shared call shape used by every platform
+	/// importer; this implementation currently never returns `Err`.
 	fn register_imported_texture_shared<A: wgpu::hal::Api>(
 		&self,
 		hal_texture: A::Texture,
@@ -567,8 +969,23 @@ impl GpuContext {
 		Ok((token, texture))
 	}
 
-	/// Insert one registry entry for `texture`.
-	fn register_texture_entry(&self, texture: Arc<wgpu::Texture>, desc: ImportedTextureDesc) -> u64 {
+	/// Inserts one registry entry for `texture` and returns its new token.
+	///
+	/// The token is a monotonically increasing `u64` (relaxed atomic) and is the
+	/// handle later texture-API calls use to look the texture up. The entry takes
+	/// one `Arc<wgpu::Texture>` reference and stores the caller-reported
+	/// dimensions, format, aspect and array-layer range.
+	///
+	/// # Arguments
+	///
+	/// * `texture` - wgpu texture to register (shared ownership).
+	/// * `desc` - metadata copied into the entry (size, format, plane aspect,
+	///   optional array layer range).
+	fn register_texture_entry(
+		&self,
+		texture: Arc<wgpu::Texture>,
+		desc: ImportedTextureDesc,
+	) -> u64 {
 		let token = self.next_token.fetch_add(1, Ordering::Relaxed);
 		lock(&self.textures).insert(
 			token,
@@ -579,6 +996,9 @@ impl GpuContext {
 				format: desc.format,
 				aspect: desc.aspect,
 				layer: desc.layer,
+				#[cfg(any(target_os = "linux", target_os = "windows"))]
+				external: None,
+			keep_alive: None,
 			},
 		);
 		token
@@ -606,6 +1026,491 @@ impl GpuContext {
 			dimension: (array_layer_count == Some(1)).then_some(wgpu::TextureViewDimension::D2),
 			..Default::default()
 		}))
+	}
+}
+
+#[cfg(target_os = "linux")]
+impl GpuContext {
+	/// True when this context was configured for OpenFX GL zero-copy.
+	pub fn ofx_zerocopy_enabled(&self) -> bool {
+		self.ofx_zerocopy
+	}
+
+	/// True when the context is a Vulkan device that can export
+	/// `OPAQUE_FD` memory (the Linux/OpenFX zero-copy prerequisite).
+	pub fn supports_gl_zerocopy(&self) -> bool {
+		self.ofx_zerocopy && unsafe { self.device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some()
+	}
+
+	/// Creates an `Rgba32Float` texture backed by exportable Vulkan memory
+	/// (`OPAQUE_FD`).
+	///
+	/// The returned token is registered exactly like
+	/// `GpuContext::create_texture`, but carries an `ExternalTexture` that
+	/// `GpuContext::export_gl_memory` can hand to the GL bridge. Any failure
+	/// leaves no partial Vulkan objects and is reported to the caller, which
+	/// falls back to a normal texture.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - texture size in pixels; must be positive.
+	/// * `format` - must be `wgpu::TextureFormat::Rgba32Float`.
+	/// * `usage` - must include `TextureUsages::TEXTURE_BINDING`.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-positive size, a format other than RGBA32F, or
+	/// a `usage` without texture binding; `Error::State` when the device is not
+	/// Vulkan or the hal device cannot be acquired; `Error::Failed` when
+	/// image/memory allocation or exporting the fd fails.
+	pub fn create_exportable_texture(
+		&self,
+		width: i32,
+		height: i32,
+		format: wgpu::TextureFormat,
+		usage: wgpu::TextureUsages,
+	) -> Result<u64> {
+		use ash::vk;
+		use wgpu::hal;
+
+		if width <= 0
+			|| height <= 0
+			|| format != wgpu::TextureFormat::Rgba32Float
+			|| !usage.contains(wgpu::TextureUsages::TEXTURE_BINDING)
+		{
+			return Err(Error::Invalid);
+		}
+		let guard = unsafe { self.device.as_hal::<hal::api::Vulkan>() }.ok_or(Error::State)?;
+		let hal_device: &hal::vulkan::Device = &guard;
+		let raw = hal_device.raw_device().clone();
+
+		let mut external = vk::ExternalMemoryImageCreateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+		let info = vk::ImageCreateInfo::default()
+			.image_type(vk::ImageType::TYPE_2D)
+			.format(vk::Format::R32G32B32A32_SFLOAT)
+			.extent(vk::Extent3D {
+				width: width as u32,
+				height: height as u32,
+				depth: 1,
+			})
+			.mip_levels(1)
+			.array_layers(1)
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::OPTIMAL)
+			.usage(
+				vk::ImageUsageFlags::SAMPLED
+					| vk::ImageUsageFlags::COLOR_ATTACHMENT
+					| vk::ImageUsageFlags::TRANSFER_SRC
+					| vk::ImageUsageFlags::TRANSFER_DST,
+			)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED)
+			.push_next(&mut external);
+		let image = unsafe { raw.create_image(&info, None) }
+			.map_err(|e| Error::Failed(format!("vkCreateImage(opaque-fd): {e:?}")))?;
+		let req = unsafe { raw.get_image_memory_requirements(image) };
+
+		let mut export = vk::ExportMemoryAllocateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+		let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+		let mut memory = None;
+		let mut last_err = None;
+		for type_index in 0..32u32 {
+			if req.memory_type_bits & (1 << type_index) == 0 {
+				continue;
+			}
+			let alloc = vk::MemoryAllocateInfo::default()
+				.allocation_size(req.size)
+				.memory_type_index(type_index)
+				.push_next(&mut dedicated)
+				.push_next(&mut export);
+			match unsafe { raw.allocate_memory(&alloc, None) } {
+				Ok(m) => {
+					memory = Some(m);
+					break;
+				}
+				Err(e) => last_err = Some((type_index, e)),
+			}
+		}
+		let Some(memory) = memory else {
+			unsafe { raw.destroy_image(image, None) };
+			return Err(Error::Failed(format!(
+				"vkAllocateMemory(opaque-fd) failed for every compatible type: {last_err:?}"
+			)));
+		};
+		if let Err(e) = unsafe { raw.bind_image_memory(image, memory, 0) } {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!("vkBindImageMemory: {e:?}")));
+		}
+
+		let fd = match ash_dispatch().and_then(|d| d.get_memory_fd(raw.handle())) {
+			Some(get_fd) => {
+				let info = vk::MemoryGetFdInfoKHR::default()
+					.memory(memory)
+					.handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+				let mut fd = -1;
+				let res = unsafe { get_fd(raw.handle(), &info, &mut fd) };
+				if res != vk::Result::SUCCESS || fd < 0 {
+					None
+				} else {
+					Some(fd)
+				}
+			}
+			None => None,
+		};
+		let Some(fd) = fd else {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(
+				"vkGetMemoryFdKHR(OPAQUE_FD) unavailable".into(),
+			));
+		};
+		let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+
+		let hal_desc = hal::TextureDescriptor {
+			label: Some("quercusrender-exportable-gl"),
+			size: wgpu::Extent3d {
+				width: width as u32,
+				height: height as u32,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage: wgpu_types::TextureUses::RESOURCE
+				| wgpu_types::TextureUses::COLOR_TARGET
+				| wgpu_types::TextureUses::COPY_SRC
+				| wgpu_types::TextureUses::COPY_DST,
+			memory_flags: hal::MemoryFlags::empty(),
+			view_formats: Vec::new(),
+		};
+		let raw_guard = raw.clone();
+		let drop_guard: hal::DropCallback = Box::new(move || unsafe {
+			raw_guard.destroy_image(image, None);
+			raw_guard.free_memory(memory, None);
+		});
+		let hal_texture = unsafe {
+			hal_device.texture_from_raw(
+				image,
+				&hal_desc,
+				Some(drop_guard),
+				hal::vulkan::TextureMemory::External,
+			)
+		};
+		let texture_desc = wgpu::TextureDescriptor {
+			label: Some("quercusrender-exportable-gl"),
+			size: wgpu::Extent3d {
+				width: width as u32,
+				height: height as u32,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage,
+			view_formats: &[],
+		};
+		let texture = unsafe {
+			self.device
+				.create_texture_from_hal::<hal::api::Vulkan>(hal_texture, &texture_desc)
+		};
+		self.used.store(true, Ordering::Release);
+		let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+		lock(&self.textures).insert(
+			token,
+			GpuTexture {
+				texture: Arc::new(texture),
+				width: width as u32,
+				height: height as u32,
+				format,
+				aspect: wgpu::TextureAspect::All,
+				layer: None,
+				external: Some(Arc::new(ExternalTexture {
+					fd,
+					size: req.size,
+					width: width as u32,
+					height: height as u32,
+					format,
+				})),
+				keep_alive: None,
+			},
+		);
+		Ok(token)
+	}
+
+	/// Export a texture token as an `OPAQUE_FD` GL memory object source.
+	///
+	/// Returns [`Error::State`] for a token that was not created through
+	/// [`GpuContext::create_exportable_texture`] (the caller then uses the
+	/// CPU/GL-readback path).
+	pub fn export_gl_memory(&self, token: u64) -> Result<GlMemoryExport> {
+		let entry = lock(&self.textures)
+			.get(&token)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let external = entry.external.clone().ok_or(Error::State)?;
+		Ok(GlMemoryExport {
+			external,
+			_texture: entry.texture,
+		})
+	}
+}
+
+#[cfg(target_os = "windows")]
+impl GpuContext {
+	/// True when this context was configured for OpenFX GL zero-copy.
+	pub fn ofx_zerocopy_enabled(&self) -> bool {
+		self.ofx_zerocopy
+	}
+
+	/// True when the context is a Vulkan device with
+	/// `VK_KHR_external_memory_win32` enabled (the Windows prerequisites).
+	pub fn supports_gl_zerocopy(&self) -> bool {
+		self.ofx_zerocopy
+			&& self
+				.device
+				.features()
+				.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
+			&& unsafe { self.device.as_hal::<wgpu::hal::api::Vulkan>() }.is_some()
+	}
+
+	/// Creates an `Rgba32Float` texture backed by exportable Vulkan memory
+	/// (`OPAQUE_WIN32`), the Windows counterpart of the Linux `OPAQUE_FD` path.
+	///
+	/// The returned token is registered like `GpuContext::create_texture` but
+	/// carries an `ExternalTexture` that `GpuContext::export_gl_memory` can hand
+	/// to the GL bridge. Any failure leaves no partial Vulkan objects behind.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - texture size in pixels; must be positive.
+	/// * `format` - must be `wgpu::TextureFormat::Rgba32Float`.
+	/// * `usage` - must include `TextureUsages::TEXTURE_BINDING`.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for a non-positive size, a format other than RGBA32F, or
+	/// a `usage` without texture binding; `Error::State` when the device is not
+	/// Vulkan or lacks `VULKAN_EXTERNAL_MEMORY_WIN32`; `Error::Failed` when
+	/// image/memory allocation fails. The caller then falls back to a regular
+	/// texture.
+	pub fn create_exportable_texture(
+		&self,
+		width: i32,
+		height: i32,
+		format: wgpu::TextureFormat,
+		usage: wgpu::TextureUsages,
+	) -> Result<u64> {
+		use ash::vk;
+		use wgpu::hal;
+
+		if width <= 0
+			|| height <= 0
+			|| format != wgpu::TextureFormat::Rgba32Float
+			|| !usage.contains(wgpu::TextureUsages::TEXTURE_BINDING)
+		{
+			return Err(Error::Invalid);
+		}
+		if !self
+			.device
+			.features()
+			.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
+		{
+			return Err(Error::State);
+		}
+		let guard = unsafe { self.device.as_hal::<hal::api::Vulkan>() }.ok_or(Error::State)?;
+		let hal_device: &hal::vulkan::Device = &guard;
+		let raw = hal_device.raw_device().clone();
+
+		let mut external = vk::ExternalMemoryImageCreateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+		let info = vk::ImageCreateInfo::default()
+			.image_type(vk::ImageType::TYPE_2D)
+			.format(vk::Format::R32G32B32A32_SFLOAT)
+			.extent(vk::Extent3D {
+				width: width as u32,
+				height: height as u32,
+				depth: 1,
+			})
+			.mip_levels(1)
+			.array_layers(1)
+			.samples(vk::SampleCountFlags::TYPE_1)
+			.tiling(vk::ImageTiling::OPTIMAL)
+			.usage(
+				vk::ImageUsageFlags::SAMPLED
+					| vk::ImageUsageFlags::COLOR_ATTACHMENT
+					| vk::ImageUsageFlags::TRANSFER_SRC
+					| vk::ImageUsageFlags::TRANSFER_DST,
+			)
+			.sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.initial_layout(vk::ImageLayout::UNDEFINED)
+			.push_next(&mut external);
+		let image = unsafe { raw.create_image(&info, None) }
+			.map_err(|e| Error::Failed(format!("vkCreateImage(opaque-win32): {e:?}")))?;
+		let req = unsafe { raw.get_image_memory_requirements(image) };
+
+		let mut export = vk::ExportMemoryAllocateInfo::default()
+			.handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+		let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+		let mut memory = None;
+		let mut last_err = None;
+		for type_index in 0..32u32 {
+			if req.memory_type_bits & (1 << type_index) == 0 {
+				continue;
+			}
+			let alloc = vk::MemoryAllocateInfo::default()
+				.allocation_size(req.size)
+				.memory_type_index(type_index)
+				.push_next(&mut dedicated)
+				.push_next(&mut export);
+			match unsafe { raw.allocate_memory(&alloc, None) } {
+				Ok(m) => {
+					memory = Some(m);
+					break;
+				}
+				Err(e) => last_err = Some((type_index, e)),
+			}
+		}
+		let Some(memory) = memory else {
+			unsafe { raw.destroy_image(image, None) };
+			return Err(Error::Failed(format!(
+				"vkAllocateMemory(opaque-win32) failed for every compatible type: {last_err:?}"
+			)));
+		};
+		if let Err(e) = unsafe { raw.bind_image_memory(image, memory, 0) } {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(format!("vkBindImageMemory: {e:?}")));
+		}
+
+		let handle = match ash_dispatch().and_then(|d| d.get_memory_win32_handle(raw.handle())) {
+			Some(get_handle) => {
+				let info = vk::MemoryGetWin32HandleInfoKHR::default()
+					.memory(memory)
+					.handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+				let mut handle: vk::HANDLE = 0;
+				let res = unsafe { get_handle(raw.handle(), &info, &mut handle) };
+				(res == vk::Result::SUCCESS && handle != 0).then_some(handle)
+			}
+			None => None,
+		};
+		let Some(handle) = handle else {
+			unsafe {
+				raw.free_memory(memory, None);
+				raw.destroy_image(image, None);
+			}
+			return Err(Error::Failed(
+				"vkGetMemoryWin32HandleKHR(OPAQUE_WIN32) unavailable".into(),
+			));
+		};
+
+		let hal_desc = hal::TextureDescriptor {
+			label: Some("quercusrender-exportable-gl"),
+			size: wgpu::Extent3d {
+				width: width as u32,
+				height: height as u32,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage: wgpu_types::TextureUses::RESOURCE
+				| wgpu_types::TextureUses::COLOR_TARGET
+				| wgpu_types::TextureUses::COPY_SRC
+				| wgpu_types::TextureUses::COPY_DST,
+			memory_flags: hal::MemoryFlags::empty(),
+			view_formats: Vec::new(),
+		};
+		let raw_guard = raw.clone();
+		let drop_guard: hal::DropCallback = Box::new(move || unsafe {
+			raw_guard.destroy_image(image, None);
+			raw_guard.free_memory(memory, None);
+		});
+		let hal_texture = unsafe {
+			hal_device.texture_from_raw(
+				image,
+				&hal_desc,
+				Some(drop_guard),
+				hal::vulkan::TextureMemory::External,
+			)
+		};
+		let texture_desc = wgpu::TextureDescriptor {
+			label: Some("quercusrender-exportable-gl"),
+			size: wgpu::Extent3d {
+				width: width as u32,
+				height: height as u32,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: wgpu::TextureDimension::D2,
+			format,
+			usage,
+			view_formats: &[],
+		};
+		let texture = unsafe {
+			self.device
+				.create_texture_from_hal::<hal::api::Vulkan>(hal_texture, &texture_desc)
+		};
+		self.used.store(true, Ordering::Release);
+		let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+		lock(&self.textures).insert(
+			token,
+			GpuTexture {
+				texture: Arc::new(texture),
+				width: width as u32,
+				height: height as u32,
+				format,
+				aspect: wgpu::TextureAspect::All,
+				layer: None,
+				external: Some(Arc::new(ExternalTexture {
+					handle,
+					size: req.size,
+					width: width as u32,
+					height: height as u32,
+					format,
+				})),
+				keep_alive: None,
+			},
+		);
+		Ok(token)
+	}
+
+	/// Export a texture token as an `OPAQUE_WIN32` GL memory object source.
+	pub fn export_gl_memory(&self, token: u64) -> Result<GlMemoryExport> {
+		let entry = lock(&self.textures)
+			.get(&token)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let external = entry.external.clone().ok_or(Error::State)?;
+		Ok(GlMemoryExport {
+			external,
+			_texture: entry.texture,
+		})
+	}
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+impl GpuContext {
+	/// Other backends do not have the OpenFX GL zero-copy path yet.
+	pub fn supports_gl_zerocopy(&self) -> bool {
+		false
+	}
+
+	/// Other backends never request exportable textures.
+	pub fn ofx_zerocopy_enabled(&self) -> bool {
+		false
 	}
 }
 
@@ -878,5 +1783,72 @@ mod tests {
 			error.is_some(),
 			"a D2Array alias must be rejected by the D2 planar layout"
 		);
+	}
+
+	/// Windows OpenFX zero-copy prerequisite: an `Rgba32Float` texture
+	/// created through the exportable path carries a live NT handle.
+	#[cfg(target_os = "windows")]
+	#[test]
+	fn exportable_texture_exports_opaque_win32_handle() {
+		let Some(ctx) = gpu_or_skip("exportable win32 texture") else {
+			return;
+		};
+		if !ctx.supports_gl_zerocopy() {
+			eprintln!("SKIP: context is not Vulkan / Win32 external memory disabled");
+			return;
+		}
+		let token = ctx
+			.create_exportable_texture(
+				64,
+				64,
+				wgpu::TextureFormat::Rgba32Float,
+				wgpu::TextureUsages::TEXTURE_BINDING
+					| wgpu::TextureUsages::RENDER_ATTACHMENT
+					| wgpu::TextureUsages::COPY_SRC
+					| wgpu::TextureUsages::COPY_DST,
+			)
+			.expect("exportable texture");
+		let export = ctx.export_gl_memory(token).expect("gl memory export");
+		assert_eq!(export.width(), 64);
+		assert_eq!(export.height(), 64);
+		assert!(export.size() >= 64 * 64 * 16);
+		let handle = export.try_clone_handle().expect("duplicate opaque handle");
+		assert!(handle != 0);
+		ctx.destroy_texture(token);
+	}
+
+	/// Linux OpenFX zero-copy prerequisite: an `Rgba32Float` texture
+	/// created through the exportable path carries a live `OPAQUE_FD`.
+	/// Real GL import is covered by the OFX plugin integration test; this
+	/// test only proves the Vulkan export half.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn exportable_texture_exports_opaque_fd() {
+		use std::os::fd::AsRawFd;
+		let Some(ctx) = gpu_or_skip("exportable texture") else {
+			return;
+		};
+		if !ctx.supports_gl_zerocopy() {
+			eprintln!("SKIP: context is not Vulkan / zero-copy disabled");
+			return;
+		}
+		let token = ctx
+			.create_exportable_texture(
+				64,
+				64,
+				wgpu::TextureFormat::Rgba32Float,
+				wgpu::TextureUsages::TEXTURE_BINDING
+					| wgpu::TextureUsages::RENDER_ATTACHMENT
+					| wgpu::TextureUsages::COPY_SRC
+					| wgpu::TextureUsages::COPY_DST,
+			)
+			.expect("exportable texture");
+		let export = ctx.export_gl_memory(token).expect("gl memory export");
+		assert_eq!(export.width(), 64);
+		assert_eq!(export.height(), 64);
+		assert!(export.size() >= 64 * 64 * 16);
+		let fd = export.try_clone_fd().expect("dup opaque fd");
+		assert!(fd.as_raw_fd() >= 0);
+		ctx.destroy_texture(token);
 	}
 }

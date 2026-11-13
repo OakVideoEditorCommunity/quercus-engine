@@ -80,10 +80,10 @@ use std::thread::JoinHandle;
 use quercus_core::texture::Texture;
 use quercus_core::{PixelFormat, Rational};
 
+use crate::eval::montage_prefers_gpu;
 use crate::error::{Error, Result};
 use crate::scheduler::FramePriority;
 use crate::worker::{execute_job, Job, JobDispatch};
-
 /// Render-queue bound (jobs). Small on purpose: the queue exists to keep
 /// the render thread fed across a UI tick, not to buffer a whole
 /// pre-render window — a backlog this deep already means the pipeline is
@@ -96,15 +96,14 @@ pub const RENDER_QUEUE_CAP: usize = 8;
 /// path to the media, but still small enough to bound latency.
 pub const DECODE_QUEUE_CAP: usize = 16;
 
-/// Decoded-frame LRU capacity, in frames (~33 MB each at 1080p F32, so a
-/// small hand-off buffer, not a cache of record). The eval-side
-/// `decoded_frames` LRU (24 frames) is the cache of record; this one only
-/// bridges the decode thread and the render request. Keeping it at the
-/// read-ahead window bounds the double-cache overhead: at 1080p F32 the
-/// service copy stays ~2 frames instead of 8 (~200 MB saved). A request
-/// the hand-off missed is served from the eval cache without a decode —
-/// only the deep copy is paid again.
-pub const DECODE_LRU_CAP: usize = 2;
+/// Decoded-frame LRU capacity, in frames (one 1080p F32 frame is ~33 MB).
+/// This buffer bridges the decode thread and the render request. It must be
+/// at least the number of prefetched frames the render queue can hold ahead
+/// of the consumer, otherwise every prefetch is evicted before the matching
+/// request arrives and the frame is decoded twice. The render queue is
+/// bounded at [`RENDER_QUEUE_CAP`] (8), so keep two slots of headroom for a
+/// priority reorder / in-flight request.
+pub const DECODE_LRU_CAP: usize = 10;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
@@ -129,11 +128,8 @@ fn enqueue_job(queue: &mut VecDeque<Job>, job: Job) {
 	queue.insert(position, job);
 }
 
-/// The decode requests a playback frame needs (M4 read-ahead): one per
-/// montage clip covering `time`, plus the single-footage ticket's stream.
-/// The media arithmetic mirrors `eval::render_montage_frame_into`
-/// (`media_in + (time - in_time)`) so a prefetched frame is the exact key
-/// the render rendezvous asks for.
+/// Builds speculative decode requests with the same media time, size,
+/// format and import mode that the subsequent montage/footage render uses.
 fn playback_decode_requests(
 	params: &crate::ticket::VideoTicketParams,
 	time: Rational,
@@ -143,6 +139,7 @@ fn playback_decode_requests(
 		return Vec::new();
 	}
 	let mut requests = Vec::new();
+	let allow_import = montage_prefers_gpu(params, PixelFormat::F32);
 	for clip in &params.montage {
 		if time < clip.in_time || time >= clip.out_time {
 			continue;
@@ -153,9 +150,7 @@ fn playback_decode_requests(
 			time: clip.media_in + (time - clip.in_time),
 			size,
 			format: PixelFormat::F32,
-			// The montage compositor is CPU-side: importing would only
-			// be downloaded again.
-			allow_import: false,
+			allow_import,
 		});
 	}
 	if let Some((filename, stream_index)) = &params.footage {
@@ -378,16 +373,21 @@ impl DecodeService {
 	/// Blocks while the decode queue is full: that block is the backpressure
 	/// the render side propagates to submission.
 	pub fn request(&self, request: DecodeRequest) -> Option<Result<Texture>> {
+		let started = std::time::Instant::now();
 		let (reply, rx) = mpsc::sync_channel(1);
 		if !self.enqueue(DecodeCommand::Request { request, reply }, true) {
 			return None;
 		}
-		match rx.recv() {
+		let result = match rx.recv() {
 			Ok(result) => Some(result),
 			// The command was dropped (shutdown drained the queue) or the
 			// decode thread died mid-request: the caller falls back inline.
 			Err(_) => None,
-		}
+		};
+		let wait_ms = started.elapsed().as_millis() as u64;
+		LAST_DECODE_WAIT_MS.store(wait_ms, Ordering::Relaxed);
+		MAX_DECODE_WAIT_MS.fetch_max(wait_ms, Ordering::Relaxed);
+		result
 	}
 
 	/// Queue a speculative decode of `request`; `false` when the gate says
@@ -437,6 +437,11 @@ impl DecodeService {
 		self.inner.lru_len.load(Ordering::Relaxed)
 	}
 
+	/// Commands waiting on the decode thread (debug/telemetry).
+	pub fn queue_depth(&self) -> usize {
+		lock(&self.shared.queue).pending.len()
+	}
+
 	/// Stop the decode thread and wait for it to exit. Idempotent; a
 	/// request arriving after this (or racing it) reports `None` and the
 	/// caller decodes inline. Queued commands are drained first (bounded
@@ -483,8 +488,18 @@ fn pop_command(shared: &DecodeShared) -> Option<DecodeCommand> {
 	}
 }
 
-/// The decode thread: one command at a time, LRU in a plain `HashMap`
-/// keyed by [`DecodeRequest`] with a monotonic recency tick.
+/// The decode thread body: consume decode commands until shutdown.
+///
+/// `shared` is the bounded command queue, `inner` the counters and `lru_capacity`
+/// the frame-cache size (0 disables caching). Foreground requests go through
+/// [`serve`] and prefetches through [`prefetch_into`]; both share one plain
+/// `HashMap` LRU keyed by [`DecodeRequest`], with a monotonic `tick` as the
+/// recency clock (the LRU is only ever touched from this thread, so it needs no
+/// lock). A `Sync` command replies immediately, making it a barrier for
+/// everything queued before it. The loop ends only when the queue is empty and
+/// shutdown was requested; commands still in flight are dropped by the service
+/// teardown, whose disconnected reply senders make blocked requesters see
+/// `None` and fall back to inline decode. `lru_len` is reset to 0 on exit.
 fn decode_loop(shared: Arc<DecodeShared>, inner: Arc<DecodeInner>, lru_capacity: usize) {
 	let mut lru: HashMap<DecodeRequest, (Texture, u64)> = HashMap::new();
 	let mut tick: u64 = 1;
@@ -510,6 +525,18 @@ fn decode_loop(shared: Arc<DecodeShared>, inner: Arc<DecodeInner>, lru_capacity:
 	inner.lru_len.store(0, Ordering::Relaxed);
 }
 
+/// Serve one foreground decode request: cache lookup first, then decode.
+///
+/// Counts the request and returns a clone of the cached frame on an LRU hit
+/// (counting `lru_hits` and refreshing recency). On a miss it decodes, inserts
+/// the frame into the LRU under `lru_capacity`, publishes the new length and
+/// returns the frame. `tick` is the recency clock; `inner` carries the counters
+/// and the shared `lru_len`.
+///
+/// # Errors
+///
+/// Propagates the decode error from [`decode`]. Nothing is cached in that case
+/// and `lru_len` is left unchanged.
 fn serve(
 	request: &DecodeRequest,
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
@@ -535,6 +562,14 @@ fn serve(
 	Ok(texture)
 }
 
+/// Speculatively decode `request` into the LRU, ignoring failures.
+///
+/// A cache hit just refreshes recency and returns (nothing is decoded). On a
+/// miss the frame is decoded and inserted under `lru_capacity`; a decode error
+/// is swallowed because no ticket is waiting on it — the foreground request
+/// that follows reports the same error through its own channel. `tick` is the
+/// recency clock and `inner` carries the counters (decodes, errors,
+/// evictions).
 fn prefetch_into(
 	request: &DecodeRequest,
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
@@ -558,8 +593,18 @@ fn prefetch_into(
 	}
 }
 
-/// The real decode: the same producer code the inline path runs, on the
-/// decode thread.
+/// Decode one frame on the decode thread.
+///
+/// `request` supplies the footage filename, stream index, media time (the frame
+/// containing it is decoded), target size/format and the zero-copy import flag;
+/// `inner` is used only for the `decodes`/`errors` counters. Runs the same
+/// producer the inline path uses (`render_footage_frame_inner_opts`), so a
+/// frame decoded here is byte-for-byte what the render thread expects.
+///
+/// # Errors
+///
+/// Propagates the producer's decode/import error unchanged, after bumping the
+/// `errors` counter; there is no retry or inline fallback at this level.
 fn decode(request: &DecodeRequest, inner: &DecodeInner) -> Result<Texture> {
 	inner.counters.decodes.fetch_add(1, Ordering::Relaxed);
 	let result = crate::eval::render_footage_frame_inner_opts(
@@ -576,10 +621,13 @@ fn decode(request: &DecodeRequest, inner: &DecodeInner) -> Result<Texture> {
 	result
 }
 
-/// LRU read + recency refresh. Returns the cached frame; the clone is the
-/// price of handing a texture to the render thread while keeping the
-/// service's copy (a GPU-handle texture makes this a token in M2 — the
-/// texture type is already the seam for it).
+/// Look `key` up in the decode service's frame LRU and refresh its recency.
+///
+/// Returns a clone of the cached [`Texture`] and `None` on a miss (nothing is
+/// decoded here). The clone is the price of handing a frame to the render
+/// thread while the service keeps its copy — a GPU-handle texture makes this a
+/// token in M2. `tick` is the monotonic recency clock, advanced on every hit;
+/// the caller counts the hit separately in `inner.counters.lru_hits`.
 fn lru_get(
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
 	key: &DecodeRequest,
@@ -592,7 +640,15 @@ fn lru_get(
 	Some(texture)
 }
 
-/// LRU insert under the capacity, evicting the least recently used entry.
+/// Insert a decoded frame into the LRU, evicting the least recently used
+/// entries so the cache stays within `capacity`.
+///
+/// `capacity == 0` disables caching (nothing is inserted and `inner` is left
+/// alone). `key` is the full [`DecodeRequest`] (so size/format/import mode are
+/// part of the identity), `texture` is the frame to cache and `tick` is the
+/// monotonic recency clock, bumped after the insert. Re-inserting a key that is
+/// already present just refreshes its recency; otherwise the oldest entry is
+/// evicted (counting `inner.counters.evictions`) until there is room.
 fn lru_insert(
 	lru: &mut HashMap<DecodeRequest, (Texture, u64)>,
 	key: DecodeRequest,
@@ -625,6 +681,11 @@ fn lru_insert(
 
 static DECODE_SERVICE: OnceLock<Mutex<Option<Arc<DecodeService>>>> = OnceLock::new();
 
+/// Last/maximum time a render-side `DecodeService::request` waited for the
+/// decode thread (debug telemetry only).
+static LAST_DECODE_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+static MAX_DECODE_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+
 fn decode_service_slot() -> &'static Mutex<Option<Arc<DecodeService>>> {
 	DECODE_SERVICE.get_or_init(|| Mutex::new(None))
 }
@@ -636,8 +697,12 @@ pub fn install_decode_service(service: Option<Arc<DecodeService>>) {
 	*lock(decode_service_slot()) = service;
 }
 
-/// The installed decode service, if any. `eval` consults this per footage
-/// frame; `None` means "decode inline as before".
+/// The process-wide decode service, if one is installed.
+///
+/// `eval` consults this for every footage frame; `None` means "decode inline as
+/// before" (no backend is installed, or its shutdown already uninstalled the
+/// service). The `Arc` is cloned out of the slot, so callers may hold the
+/// service across a decode without keeping it installed.
 pub fn decode_service() -> Option<Arc<DecodeService>> {
 	lock(decode_service_slot()).clone()
 }
@@ -689,7 +754,20 @@ struct PipelineInner {
 }
 
 impl PipelineBackend {
-	/// Start the render and decode threads and install the decode service.
+	/// Start the pipeline: spawn the render thread, create the decode service
+	/// and install it process-wide.
+	///
+	/// The render queue starts empty and is bounded by [`RENDER_QUEUE_CAP`]; the
+	/// decode service gets [`DECODE_LRU_CAP`] cached frames and a prefetch gate
+	/// that permits speculation only while the render queue has free slots, so
+	/// speculative decodes never delay the frames being rendered. Returns a
+	/// shared backend whose thread is named `quercus-render`. Because the decode
+	/// service is installed in a process-wide slot, only one live backend is
+	/// supported per process (production keeps one via the manager).
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::Failed`] when the render thread cannot be spawned.
 	pub fn new() -> Result<Arc<Self>> {
 		let depth = Arc::new(AtomicUsize::new(0));
 		// Prefetch is allowed only while the render queue has room: it must
@@ -720,6 +798,12 @@ impl PipelineBackend {
 			.map_err(|e| Error::Failed(format!("render thread spawn: {e}")))?;
 		*lock(&backend.inner.handle) = Some(handle);
 		install_decode_service(Some(decode));
+		if queue_debug_enabled() {
+			eprintln!(
+				"[queues] telemetry enabled: render_cap={} decode_cap={} lru_cap={}",
+				RENDER_QUEUE_CAP, DECODE_QUEUE_CAP, DECODE_LRU_CAP
+			);
+		}
 		Ok(backend)
 	}
 
@@ -755,6 +839,18 @@ impl PipelineBackend {
 		self.push(job, false)
 	}
 
+	/// Enqueue `job` on the render queue, optionally waiting for room.
+	///
+	/// `blocking == false` refuses a full queue instead of waiting (the
+	/// `try_post` path); `blocking == true` waits while the queue is at
+	/// [`RENDER_QUEUE_CAP`], with two exceptions: a post made from the render
+	/// thread itself, which is the only thread that drains the queue and would
+	/// deadlock by waiting, and a [`FramePriority::Seek`] job, which may
+	/// over-admit so a backlog of playback/export work cannot stall the UI.
+	/// Playback jobs first queue speculative footage decodes through the decode
+	/// service. Returns `false` when the backend is stopping or the
+	/// non-blocking queue is full; `posted` is bumped and the render thread
+	/// notified only when a job was actually queued.
 	fn push(&self, job: Job, blocking: bool) -> bool {
 		// M4 playback read-ahead: queue the job's footage decodes before it
 		// reaches the render thread, so the decode thread works on frame
@@ -809,6 +905,17 @@ impl PipelineBackend {
 		}
 	}
 
+	/// Stop the backend: drain the render queue, stop the decode service and
+	/// join both threads.
+	///
+	/// Idempotent — `stopping` is swapped first, so a second call returns
+	/// immediately and a concurrent one cannot drain twice. Jobs still queued
+	/// are removed and completed with [`Error::State`] (counted in `drained`);
+	/// the job already running on the render thread is allowed to finish. Waits
+	/// for the render thread unless called *from* that thread. The decode
+	/// service is uninstalled from the process-wide slot before it is shut down,
+	/// so no new request can be routed to a service that is going away, and the
+	/// decode thread is joined last.
 	fn shutdown_impl(&self) {
 		let inner = &self.inner;
 		if inner.stopping.swap(true, Ordering::AcqRel) {
@@ -906,10 +1013,87 @@ fn is_render_thread(inner: &PipelineInner) -> bool {
 	inner.render_thread.get() == Some(&std::thread::current().id())
 }
 
-/// The render thread body: take a job, run it, repeat. Exits when the
-/// queue is empty *and* shutdown has been requested.
+static QUEUE_CLOCK: OnceLock<std::time::Instant> = OnceLock::new();
+
+fn queue_debug_enabled() -> bool {
+	static ENABLED: OnceLock<bool> = OnceLock::new();
+	*ENABLED.get_or_init(|| {
+		std::env::var_os("OAK_DEBUG_QUEUES").is_some()
+			|| std::env::var_os("QUERCUS_DEBUG_QUEUES").is_some()
+	})
+}
+
+/// Print one `[queues]` telemetry line for the pipeline.
+///
+/// Called only from the render thread, so it does not perturb the UI submit
+/// path. Does nothing at all unless `OAK_DEBUG_QUEUES` (or
+/// `QUERCUS_DEBUG_QUEUES`) is set, and without `force` only every tenth
+/// execution is sampled. `inner` supplies the render-queue depth and the decode
+/// service's stats; the decode-queue lock is taken only when the debug switch
+/// is on (through `queue_depth`). `executed` is the job sequence number, and
+/// `job_ms`/`gap_ms` are the job's run time and the idle gap before it, in
+/// milliseconds.
+fn log_queue_sample(
+	inner: &PipelineInner,
+	executed: u64,
+	force: bool,
+	job_ms: u128,
+	gap_ms: u128,
+) {
+	if !queue_debug_enabled() {
+		return;
+	}
+	if !force && executed % 10 != 0 {
+		return;
+	}
+	let render_depth = inner.depth.load(Ordering::Relaxed);
+	let stats = inner.decode.stats();
+	let t_ms = QUEUE_CLOCK
+		.get_or_init(std::time::Instant::now)
+		.elapsed()
+		.as_millis();
+	eprintln!(
+		"[queues] t_ms={t_ms} executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={render_depth}/{} free={} decode_q={} lru={} req={} hit={} dec={} pref={} refuse={} evict={} hw_xfer={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={} hw_video={} sw_video={} sw_audio={} hw_surf={} hw_fmt_fb={}",
+		LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
+		MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
+		RENDER_QUEUE_CAP,
+		RENDER_QUEUE_CAP.saturating_sub(render_depth),
+		inner.decode.queue_depth(),
+		inner.decode.lru_len(),
+		stats.requests,
+		stats.lru_hits,
+		stats.decodes,
+		stats.prefetches,
+		stats.prefetch_refused,
+		stats.evictions,
+		quercus_codec::hwdecode::HW_TRANSFERS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_DECODER_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::SW_DECODER_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_OPEN_FAILURES.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_FALLBACKS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_IMPORTS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_VIDEO_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::SW_VIDEO_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::SW_AUDIO_OPENS.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_SURFACES.load(Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_FORMAT_FALLBACKS.load(Ordering::Relaxed),
+	);
+}
+
+/// The render thread body: pop jobs off the render queue and run them until
+/// shutdown drains the queue.
+///
+/// Records the thread id first so [`PipelineBackend::push`] can recognise
+/// re-posts made from this thread. Each iteration takes a job under the queue
+/// lock (waiting on the `work` condvar while empty) and exits only when the
+/// queue is empty *and* `stopping` is set; otherwise it runs [`execute_job`]
+/// outside the lock, bumps the `executed` counter and, with
+/// `OAK_DEBUG_QUEUES`/`QUERCUS_DEBUG_QUEUES` set, prints the queue sample plus
+/// a slow-job line for jobs of 50 ms or more. All GPU work of the pipeline
+/// backend happens on this thread.
 fn render_loop(inner: Arc<PipelineInner>) {
 	let _ = inner.render_thread.set(std::thread::current().id());
+	let mut last_start = std::time::Instant::now();
 	loop {
 		let job = {
 			let mut queue = lock(&inner.queue);
@@ -927,8 +1111,34 @@ fn render_loop(inner: Arc<PipelineInner>) {
 		};
 		match job {
 			Some(job) => {
+				let gap_ms = last_start.elapsed().as_millis();
+				let started = std::time::Instant::now();
 				execute_job(job);
-				inner.executed.fetch_add(1, Ordering::Relaxed);
+				let job_ms = started.elapsed().as_millis();
+				last_start = started;
+				let executed = inner.executed.fetch_add(1, Ordering::Relaxed) + 1;
+				let force = inner.depth.load(Ordering::Relaxed) == 0;
+				log_queue_sample(&inner, executed, force, job_ms, gap_ms);
+				if queue_debug_enabled() && job_ms >= 50 {
+					eprintln!(
+						"[queues] slow-exec executed={executed} job_ms={job_ms} gap_ms={gap_ms} wait_ms={} wait_max={} render={}/{} decode_q={} lru={} hw_open={} sw_open={} hw_fail={} hw_fb={} hw_import={} hw_video={} sw_video={} sw_audio={} hw_surf={}",
+						LAST_DECODE_WAIT_MS.load(Ordering::Relaxed),
+						MAX_DECODE_WAIT_MS.load(Ordering::Relaxed),
+						inner.depth.load(Ordering::Relaxed),
+						RENDER_QUEUE_CAP,
+						inner.decode.queue_depth(),
+						inner.decode.lru_len(),
+						quercus_codec::hwdecode::HW_DECODER_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_DECODER_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_OPEN_FAILURES.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_FALLBACKS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_IMPORTS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_VIDEO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_VIDEO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::SW_AUDIO_OPENS.load(Ordering::Relaxed),
+						quercus_codec::hwdecode::HW_SURFACES.load(Ordering::Relaxed),
+					);
+				}
 			}
 			None => break,
 		}
@@ -977,7 +1187,7 @@ mod tests {
 			time,
 			size: (64, 64),
 			format: PixelFormat::F32,
-			allow_import: true,
+			allow_import: false,
 		}
 	}
 
@@ -1335,7 +1545,11 @@ mod tests {
 				out_time: out_t,
 				media_in,
 				gain: 1.0,
+				pan: 0.0,
+				fade_in: Rational::new(0, 1),
+				fade_out: Rational::new(0, 1),
 				effects: Vec::new(),
+				audio_effects: Vec::new(),
 			}
 		};
 		let params = crate::ticket::VideoTicketParams {
@@ -1375,6 +1589,10 @@ mod tests {
 		);
 		assert_eq!(requests[0].size, (64, 32));
 		assert_eq!(requests[0].format, PixelFormat::F32);
+		assert_eq!(
+			requests[0].allow_import,
+			montage_prefers_gpu(&params, PixelFormat::F32)
+		);
 
 		// A single-footage ticket prefetches its stream at the ticket time.
 		let mut footage = params;

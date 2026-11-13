@@ -14,104 +14,125 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Golden master：描述符快照 diff 与渲染帧比对（M11 §2.2/§2.3）。
+//! Golden master: descriptor-snapshot diffing and rendered-frame comparison
+//! (M11 §2.2/§2.3).
 //!
-//! 快照在 0 期由**现行 C++ 实现**抓取入库（tests/ofx/snapshots/ 与
-//! tests/ofx/frames/）；本文件的测试断言 Rust 实现与之逐字段/逐像素
-//! 一致。**0 期基建尚未落地**（tests/ofx/ 目录为空）——依赖快照/
-//! 帧库的用例一律 `#[ignore]`，落地后摘掉并补全断言（见
-//! [`descriptor_snapshots_match`] 的说明）。无真实 bundle 的环境
-//! （CI）整文件 skip。
+//! The snapshots were captured from the **current C++ implementation** and
+//! checked in during phase 0 (tests/ofx/snapshots/ and tests/ofx/frames/);
+//! the tests in this file assert that the Rust implementation matches them
+//! field-by-field/pixel-by-pixel. **The phase-0 infrastructure is not in
+//! place yet** (tests/ofx/ is empty) — any test that depends on the
+//! snapshot/frame libraries is `#[ignore]`d; remove the annotation and
+//! complete the assertions once they land (see the notes on
+//! [`descriptor_snapshots_match`]). Environments without a real bundle (CI)
+//! skip this whole file.
 //!
-//! 本文件当前没有实际执行的用例：渲染/GL/色彩链路本身已实现并经
-//! `gl_render_test.rs`/`colour_test.rs` 覆盖，这里缺的只是 golden
-//! 参照物。
+//! No test in this file currently runs: the render/GL/colour pipelines are
+//! implemented and covered by `gl_render_test.rs`/`colour_test.rs`; what is
+//! missing here is only the golden reference material.
 
 mod common;
 
-/// 描述符快照：对快照清单中的每个插件，字段级 diff——标识、版本、
-/// 上下文集合、参数矩阵（名称/类型/默认值/标签/hint/父组/secret/
-/// display range/choice labels+values+排序结果）、clip 表。任何 diff
-/// 打印成 unified diff 供定位。
+/// Descriptor snapshots: for every plugin in the snapshot list, a field-level
+/// diff — identifier, version, context set, parameter matrix (name/type/
+/// default/labels/hint/parent group/secret/display range/choice
+/// labels+values+sorting result), clip table. Any diff is printed as a
+/// unified diff to help locate it.
 ///
-/// # ignore 原因（M11 0 期基建缺失）
+/// # Why ignored (M11 phase-0 infrastructure missing)
 ///
-/// `tests/ofx/snapshots/`（C++ 实现抓取的描述符 JSON 库）尚未生成。
-/// 快照落地后摘掉本注解并实现：扫描快照清单 → 每插件 describe →
-/// 与 JSON 逐字段比对。当前无快照可比对，硬跑必假红。
+/// `tests/ofx/snapshots/` (the descriptor JSON library captured from the C++
+/// implementation) has not been generated yet. Once the snapshots land,
+/// remove this annotation and implement: scan the snapshot list → describe
+/// each plugin → compare field by field against the JSON. There are no
+/// snapshots to compare yet, so running it now would always fail spuriously.
 #[test]
 #[ignore = "M11 0 期快照库（tests/ofx/snapshots/）尚未生成；落地后实现并摘除"]
 fn descriptor_snapshots_match() {
 	todo!("0 期快照落地后实现：扫描快照清单 → describe → 逐字段 diff")
 }
 
-/// clip 协商快照：getClipPreferences 之后的输出分量/位深/像素比/
-/// 帧率/field 与快照一致（隐式行为的主要回归防线）。
+/// Clip negotiation snapshots: after getClipPreferences, the output
+/// components/bit depth/pixel aspect/frame rate/field must match the
+/// snapshot (the main regression guard for implicit behavior).
 ///
-/// # ignore 原因
+/// # Why ignored
 ///
-/// 同 [`descriptor_snapshots_match`]：协商快照（含 getClipPreferences
-/// 协商后结果）在 `tests/ofx/snapshots/`，尚未生成。
+/// Same as [`descriptor_snapshots_match`]: the negotiation snapshots
+/// (including the post-getClipPreferences results) live in
+/// `tests/ofx/snapshots/` and have not been generated.
 #[test]
 #[ignore = "M11 0 期协商快照尚未生成；落地后实现并摘除"]
 fn negotiated_clip_preferences_match() {
 	todo!("0 期协商快照落地后实现")
 }
 
-/// CImg 全量插件冒烟：每个插件 describe + 协商不崩、不泄漏
-/// （不比对快照，只验健壮性——覆盖快照集之外的怪癖）。
+/// CImg full-plugin smoke: describe + negotiate every plugin without
+/// crashing or leaking (no snapshot comparison, only robustness — covers
+/// quirks outside the snapshot set).
 ///
-/// # ignore 原因（本机 CImg bundle 的宿主兼容缺口）
+/// # Why ignored (host-compatibility gap of the local CImg bundle)
 ///
-/// 本机安装的 CImg.ofx.bundle 是 Natron 分支构建：describe 期间写
-/// 专属属性 `NatronOfxImageEffectPropDeprecated`，且其 OFX support
-/// 的 `Property::Set` 句柄语义与本 crate 的打标句柄约定不兼容
-/// （插件侧属性写入在进入本宿主属性套件前失败 → describe 返回
-/// kOfxStatErrMissingHostFeature）。真实插件的端到端加载/建实例/
-/// 协商路径由 Misc.ofx.bundle（标准 openfx-misc 构建）冒烟覆盖。
-/// CImg 兼容属 M11 §3.5「CImg 全量 describe/协商冒烟」的宿主保真
-/// 缺口——属性套件适配插件侧 `Property::Set` 句柄后摘除本注解。
+/// The locally installed CImg.ofx.bundle is a Natron-branch build: during
+/// describe it writes the private property
+/// `NatronOfxImageEffectPropDeprecated`, and the `Property::Set` handle
+/// semantics of its OFX support are incompatible with this crate's
+/// tagged-handle convention (the plugin-side property write fails before
+/// reaching this host's property suite → describe returns
+/// kOfxStatErrMissingHostFeature). The end-to-end load/create-instance/
+/// negotiate path for real plugins is covered by the Misc.ofx.bundle smoke
+/// (the standard openfx-misc build). CImg compatibility is a host-fidelity
+/// gap for M11 §3.5 "CImg full describe/negotiate smoke" — remove this
+/// annotation once the property suite adapts the plugin-side
+/// `Property::Set` handle.
 #[test]
 #[ignore = "本机 CImg.ofx.bundle 为 Natron 分支构建，属性套件句柄语义不兼容（describe 返回 MissingHostFeature）；Misc 系统冒烟已覆盖真实插件路径"]
 fn cimg_full_describe_smoke() {
 	todo!("属性套件适配 Natron 分支的 Property::Set 句柄后实现：全量 describe + 协商不崩、不泄漏")
 }
 
-/// CPU 渲染 golden：代表性效果集逐帧 SHA256 一致（bit 级）。
-/// 输入帧为合成渐变+色块（确定性生成器在 common 里）。
+/// CPU render golden: the representative effect set matches frame-by-frame
+/// SHA256 (bit-exact). Input frames are a synthetic gradient + color blocks
+/// (the deterministic generator lives in common).
 ///
-/// # ignore 原因
+/// # Why ignored
 ///
-/// `tests/ofx/frames/`（C++ 实现抓取的 EXR + SHA256 参照库）尚未生成
-/// ——渲染链路本身已是真实现（render_driver + quercus-render eval），
-/// 缺的只是 golden 参照物。参照库落地后实现并摘除。
+/// `tests/ofx/frames/` (the EXR + SHA256 reference library captured from the
+/// C++ implementation) has not been generated yet—the render pipeline itself
+/// is a real implementation (render_driver + quercus-render eval); only the
+/// golden reference material is missing. Implement and remove this annotation
+/// once the reference library lands.
 #[test]
 #[ignore = "M11 0 期渲染 golden 参照库（tests/ofx/frames/）尚未生成；落地后实现并摘除"]
 fn render_golden_cpu_bitexact() {
 	todo!("0 期渲染 golden 落地后实现")
 }
 
-/// GL 渲染 golden：1e-4 容差（驱动差异）；无 GPU 环境 skip。
+/// GL render golden: 1e-4 tolerance (driver differences); skipped on
+/// machines with no GPU.
 ///
-/// # ignore 原因
+/// # Why ignored
 ///
-/// GL 渲染路径已实现（suites/gl_render.rs，macOS CGL + CPU 回退），
-/// 缺的只是 golden 帧库（tests/ofx/frames/ 未生成）。帧库落地后实现
-/// 并摘除。
+/// The GL render path is implemented (suites/gl_render.rs, macOS CGL + CPU
+/// fallback); only the golden frame library is missing (tests/ofx/frames/ not
+/// generated). Implement and remove this annotation once the frame library
+/// lands.
 #[test]
 #[ignore = "golden 帧库（tests/ofx/frames/）未生成；落地后实现并摘除"]
 fn render_golden_gl_tolerant() {
 	todo!("M11 第 2 期 GL 路径落地后实现")
 }
 
-/// F32+ACEScg 链路断言：golden 帧的像素格式为 F32，且经 OCIO
-/// display transform 后与参考值在容差内（色彩链路没被偷换成 8-bit
-/// 的回归防线）。
+/// F32+ACEScg pipeline assertion: golden frames use the F32 pixel format and,
+/// after the OCIO display transform, stay within tolerance of the reference
+/// values (the regression guard against the colour pipeline being swapped for
+/// 8-bit somewhere).
 ///
-/// # ignore 原因
+/// # Why ignored
 ///
-/// 同 [`render_golden_cpu_bitexact`]：只缺 golden 参照帧库——F32
-/// 管线和 OCIO/ofxColour 链路均已实现（colour_test.rs 覆盖）。
+/// Same as [`render_golden_cpu_bitexact`]: only the golden reference frame
+/// library is missing — the F32 pipeline and the OCIO/ofxColour path are both
+/// implemented (covered by colour_test.rs).
 #[test]
 #[ignore = "golden 帧库（tests/ofx/frames/）未生成；落地后实现并摘除"]
 fn pipeline_is_f32_acescg() {

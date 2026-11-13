@@ -242,7 +242,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(UnpremultiplyNode))
 }
 
-/// Register this node type.
+/// Registers the Unpremultiply node with the node registry by appending a
+/// [`NodeMeta`]: type id `org.olivevideoeditor.Olive.unpremult`, display name
+/// "Unpremultiply", the [`Category::Math`] category, and [`create`] as the
+/// factory.
+///
+/// # Arguments
+///
+/// * `meta` - the registry vector to append to (registration is not
+///   idempotent).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.unpremult",

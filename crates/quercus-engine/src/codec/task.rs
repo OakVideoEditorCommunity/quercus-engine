@@ -53,10 +53,26 @@ pub extern "C" fn quercus_codec_task_submit_is_registered() -> bool {
 	task_submit_is_registered()
 }
 
-/// Registers (or replaces, or with `None` clears) the process-wide task
-/// submit callback. The callback receives a borrowed
-/// `QuercusCodecTaskRequest` valid only for the call duration; return
-/// `QUERCUSCODEC_OK` (0) to accept, a negative `QUERCUSCODEC_E_*` to reject.
+/// Registers (or replaces, or with `None` clears) the process-wide task submit
+/// callback.
+///
+/// `cb` is the extern-C submit callback and `userdata` an opaque pointer handed
+/// back to it unchanged. The registration is process-wide and the last one
+/// wins; a `None` callback disables submission, after which
+/// [`quercus_codec_task_submit`] returns 0. The callback receives a borrowed
+/// `QuercusCodecTaskRequest` valid only for the call duration — its strings are
+/// temporary C strings — so it must copy anything it retains. Returning
+/// `QUERCUSCODEC_OK` (0) accepts the task; any negative `QUERCUSCODEC_E_*`
+/// rejects it. One adapter closure is leaked per registration by design: the
+/// registry is a process-lifetime singleton and the common case registers
+/// exactly once, at startup.
+///
+/// # Safety
+///
+/// `cb`, when set, must be a valid function pointer that is safe to call from
+/// any thread that submits tasks, and `userdata` must stay valid until the
+/// callback is replaced or cleared, because it is passed to the callback after
+/// this call returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_task_set_submit_cb(
 	cb: Option<QuercusCodecTaskSubmitFn>,
@@ -97,8 +113,25 @@ pub unsafe extern "C" fn quercus_codec_task_set_submit_cb(
 	}
 }
 
-/// Submits one task request. Returns 1 when the task was accepted, 0
-/// when no callback is registered, -1 on invalid input or engine error.
+/// Submits one background-task request through the registered callback.
+///
+/// `req` is a `repr(C)` `QuercusCodecTaskRequest` whose string fields are
+/// borrowed C strings (a null pointer reads as the empty string) and only need
+/// to stay valid for the call. `kind` is 0 for a conform task and 1 for a
+/// proxy task; any other value, or a string that is not valid UTF-8, is
+/// rejected.
+///
+/// # Returns
+///
+/// `1` when the callback accepted the task, `0` when no callback is registered
+/// (the caller may fall back to doing the work itself) and `-1` on a null
+/// `req`, invalid input or an engine error.
+///
+/// # Safety
+///
+/// `req` must be null or point to a live `QuercusCodecTaskRequest` whose two
+/// string pointers are null or NUL-terminated and readable for the duration of
+/// the call. The request is only borrowed, never stored.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_task_submit(req: *const QuercusCodecTaskRequest) -> i32 {
 	if req.is_null() {

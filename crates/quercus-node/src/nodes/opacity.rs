@@ -244,8 +244,19 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ `k_opacity_effect` in
-/// `factory.cpp::create_from_factory_index`).
+/// Registers the Opacity video effect with the node factory.
+///
+/// Appends one [`NodeMeta`] entry to `meta`; [`crate::nodes::register_all`]
+/// calls this (along with every other node module) to build the process-wide
+/// factory table. The entry declares:
+///
+/// * type id `org.olivevideoeditor.Olive.opacity`, display name `"Opacity"`;
+/// * category `Filter` (so it appears in the effect library's filter group);
+/// * [`create`] as the constructor.
+///
+/// The type id is the string a clip effect chain stores, and matches the C++
+/// `k_opacity_effect` factory index. `meta` is appended to, never cleared, so
+/// callers can accumulate several registrations.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.opacity",

@@ -32,7 +32,6 @@ Excluding test-only files (integration test binaries and
 | quercus-audio | 1,493 / 1,757 | 85.0% |
 | quercus-engine | 17,914 / 22,486 | 79.7% |
 | quercus-engine-rs | 6,957 / 8,199 | 84.9% |
-| quercus-ffmpeg-link | 0 / 1 | 0.0% (link-only crate) |
 
 Target from the project coverage plan: **line ≥90%, branch ≥80%**.
 Line coverage misses the line target by **0.27 points** on production code

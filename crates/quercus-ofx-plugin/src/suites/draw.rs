@@ -14,38 +14,42 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxDrawSuiteV1（OFX 1.5，vendored ofxDrawSuite.h）：宿主绘制套件。
+//! OfxDrawSuiteV1 (OFX 1.5, vendored ofxDrawSuite.h): the host draw suite.
 //!
-//! 插件在 `kOfxInteractActionDraw` 内经 `kOfxInteractPropDrawContext`
-//! 取到绘制上下文（本模块的 [`DrawContext`]），再调 suite 函数画图：
-//! getColour / setColour / setLineWidth / setLineStipple / draw /
-//! drawText。
+//! During `kOfxInteractActionDraw` a plugin obtains the draw context (this
+//! module's [`DrawContext`]) through `kOfxInteractPropDrawContext`, then calls
+//! the suite functions to draw: getColour / setColour / setLineWidth /
+//! setLineStipple / draw / drawText.
 //!
-//! ## 上下文模型
+//! ## Context model
 //!
-//! - [`DrawContext`] 在每次 draw action 前由宿主创建、经存活表
-//!   [`LIVE_CONTEXTS`] 注册（句柄 = 堆地址；对应 [`crate::suites::tag`]
-//!   的句柄纪律），draw 返回后摘除。插件只在 draw action 内持有上下文
-//!   ——ofxDrawSuite.h 各函数文档注明 "failure, e.g. if function is
-//!   called outside kOfxInteractActionDraw" → 存活表查不到即
-//!   kOfxStatFailed。
-//! - 状态（colour / lineWidth / stipple / viewport / pixelScale）保存在
-//!   [`DrawContext`]，draw action 之间不共享。
-//! - GL 命令要求上下文 current：宿主在调 `kOfxInteractActionDraw` 前经
-//!   [`crate::gl_bridge::acquire`] 保持 current（draw action 全期）。
+//! - [`DrawContext`] is created by the host before every draw action and
+//!   registered through the live table [`LIVE_CONTEXTS`] (handle = heap
+//!   address; the handle discipline of [`crate::suites::tag`]), then removed
+//!   when draw returns. The plugin only holds a context inside a draw action
+//!   - the function docs in ofxDrawSuite.h note "failure, e.g. if function is
+//!   called outside kOfxInteractActionDraw" -> a handle missing from the live
+//!   table means kOfxStatFailed.
+//! - State (colour / lineWidth / stipple / viewport / pixelScale) lives in
+//!   [`DrawContext`] and is not shared between draw actions.
+//! - GL commands require a current context: before calling
+//!   `kOfxInteractActionDraw` the host keeps it current through
+//!   [`crate::gl_bridge::acquire`] (for the whole draw action).
 //!
-//! ## 绘制实现（真实 GL）
+//! ## Drawing implementation (real GL)
 //!
-//! gl_bridge 的 CGL 上下文是 **3.2 core profile**（无固定管线，
-//! glBegin 不可用）——本套件的 draw 用最小着色器 + VAO/VBO 真实渲染：
-//! 正交投影把 canonical 坐标映射到 NDC（canonical 宽 = viewport /
-//! pixelScale），非不透明色按 "over" 合成（ofxDrawSuite.h setColour
-//! 文档要求）。非 macOS 无 GL 桥 → kOfxStatFailed。
+//! The CGL context from gl_bridge is a **3.2 core profile** (no fixed
+//! pipeline, glBegin is unavailable) - this suite's draw uses a minimal
+//! shader plus VAO/VBO for real rendering: an orthographic projection maps
+//! canonical coordinates to NDC (canonical width = viewport / pixelScale),
+//! and non-opaque colours are composited "over" (as the ofxDrawSuite.h
+//! setColour docs require). Non-macOS has no GL bridge -> kOfxStatFailed.
 //!
 //! ## drawText
 //!
-//! 本宿主无字体光栅化器（GL 内画字形需要字库/曲线上采样，超出 Phase
-//! 1 范围），如实返回 kOfxStatErrUnsupported，不假装画了字。
+//! This host has no font rasterizer (drawing glyphs in GL needs a font or
+//! curve sampling, beyond Phase 1), so it faithfully returns
+//! kOfxStatErrUnsupported rather than pretending to draw text.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_float, c_int, c_void, CStr};
@@ -54,7 +58,7 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::suites::status;
 
-/// `OfxStandardColour`（ofxDrawSuite.h:37-46）枚举值。
+/// `OfxStandardColour` (ofxDrawSuite.h:37-46) enum values.
 pub mod std_colour {
 	/// kOfxStandardColourOverlayBackground。
 	pub const BACKGROUND: i32 = 0;
@@ -72,7 +76,7 @@ pub mod std_colour {
 	pub const TEXT: i32 = 6;
 }
 
-/// `OfxDrawLineStipplePattern`（ofxDrawSuite.h:49-56）枚举值。
+/// `OfxDrawLineStipplePattern` (ofxDrawSuite.h:49-56) enum values.
 pub mod stipple {
 	/// kOfxDrawLineStipplePatternSolid。
 	pub const SOLID: i32 = 0;
@@ -86,37 +90,39 @@ pub mod stipple {
 	pub const DOT_DASH: i32 = 4;
 }
 
-/// `OfxDrawPrimitive`（ofxDrawSuite.h:60-68）枚举值。
+/// `OfxDrawPrimitive` (ofxDrawSuite.h:60-68) enum values.
 pub mod primitive {
-	/// kOfxDrawPrimitiveLines（n 点画 n/2 条独立线段）。
+	/// kOfxDrawPrimitiveLines (n points draw n/2 independent line segments).
 	pub const LINES: i32 = 0;
 	/// kOfxDrawPrimitiveLineStrip。
 	pub const LINE_STRIP: i32 = 1;
 	/// kOfxDrawPrimitiveLineLoop。
 	pub const LINE_LOOP: i32 = 2;
-	/// kOfxDrawPrimitiveRectangle（轴对齐实心矩形，2 对角点）。
+	/// kOfxDrawPrimitiveRectangle (axis-aligned filled rectangle, 2 diagonal
+	/// points).
 	pub const RECTANGLE: i32 = 3;
-	/// kOfxDrawPrimitivePolygon（实心 n 边形）。
+	/// kOfxDrawPrimitivePolygon (filled n-gon).
 	pub const POLYGON: i32 = 4;
-	/// kOfxDrawPrimitiveEllipse（2 对角点包围盒内的轴对齐椭圆**线框**）。
+	/// kOfxDrawPrimitiveEllipse (axis-aligned ellipse **wireframe** inside the
+	/// box of 2 diagonal points).
 	pub const ELLIPSE: i32 = 5;
 }
 
-/// `OfxRGBAColourF`（ofxPixels.h）：Draw suite 的颜色值类型。
+/// `OfxRGBAColourF` (ofxPixels.h): the Draw suite colour value type.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OfxRGBAColourF {
-	/// 红。
+/// Red.
 	pub r: f32,
-	/// 绿。
+/// Green.
 	pub g: f32,
-	/// 蓝。
+/// Blue.
 	pub b: f32,
 	/// alpha。
 	pub a: f32,
 }
 
-/// `OfxPointD`（ofxCore.h:819）：canonical 坐标点。
+/// `OfxPointD` (ofxCore.h:819): a canonical coordinate point.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OfxPointD {
@@ -126,26 +132,40 @@ pub struct OfxPointD {
 	pub y: f64,
 }
 
-/// Draw suite 上下文：一次 draw action 期间插件的绘制状态。
+/// Draw suite context: the plugin's drawing state for one draw action.
 ///
-/// 宿主在 [`crate::suites::interact::Interact::draw`] 内创建并注册，
-/// draw 返回后摘除。`viewport`/`pixel_scale` 在创建时快照（canonical
-/// → NDC 正交投影用）；颜色/线宽/虚线样式由插件经 suite 函数写入。
+/// The host creates and registers it inside
+/// [`crate::suites::interact::Interact::draw`] and removes it when draw
+/// returns. `viewport`/`pixel_scale` are snapshotted at creation (used for
+/// the canonical -> NDC orthographic projection); colour/line width/stipple
+/// are written by the plugin through the suite functions.
 pub struct DrawContext {
-	/// 当前绘制颜色（RGBA；setColour 写入，draw 时作为着色器 uniform）。
+	/// Current drawing colour (RGBA; written by setColour, used as the shader
+	/// uniform when drawing).
 	pub colour: [f32; 4],
-	/// 当前线宽（setLineWidth；GL 线绘制 glLineWidth）。
+	/// Current line width (setLineWidth; glLineWidth for GL line drawing).
 	pub line_width: f32,
-	/// 当前虚线样式（setLineStipple；`stipple::*` 枚举）。
+	/// Current stipple pattern (setLineStipple; the `stipple::*` enum).
 	pub stipple: i32,
-	/// 视口尺寸（像素；创建时快照）。
+	/// Viewport size (pixels; snapshotted at creation).
 	pub viewport: (f64, f64),
-	/// canonical→屏幕像素比例（创建时快照）。
+	/// canonical -> screen-pixel ratio (snapshotted at creation).
 	pub pixel_scale: (f64, f64),
 }
 
 impl DrawContext {
-	/// 新上下文（默认颜色不透明黑、线宽 1、实线）。
+	/// Creates a drawing context for one draw action.
+	///
+	/// `viewport` is the viewport size (pixels, width and height);
+	/// `pixel_scale` is the canonical -> screen-pixel scale (usually both are
+	/// the same; `(1.0, 1.0)` means 1:1). Both are snapshotted at creation and
+	/// never change afterwards; the canonical-space size is computed as
+	/// `viewport / pixel_scale` and used by [`ortho`].
+	///
+	/// Initial state: opaque black `[0,0,0,1]`, line width `1.0`, solid line
+	/// ([`stipple::SOLID`]). The context itself is only held by the host,
+	/// boxed into the live table via [`make_context`]; the plugin only gets
+	/// the handle.
 	pub fn new(viewport: (f64, f64), pixel_scale: (f64, f64)) -> Self {
 		Self {
 			colour: [0.0, 0.0, 0.0, 1.0],
@@ -157,9 +177,10 @@ impl DrawContext {
 	}
 }
 
-/// 存活绘制上下文表：draw action 期间注册（地址 → 盒值）。
-/// 插件只在 draw 内持有句柄，draw 返回即摘除（同
-/// [`crate::suites::gl_render`] 的 LIVE_TEXTURES 模式）。
+/// Live draw-context table: registered during a draw action (address ->
+/// boxed value). The plugin only holds the handle inside draw; it is removed
+/// when draw returns (the same LIVE_TEXTURES pattern as
+/// [`crate::suites::gl_render`]).
 static LIVE_CONTEXTS: LazyLock<Mutex<HashMap<usize, Box<DrawContext>>>> =
 	LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -167,8 +188,9 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<usize, Box<DrawContext>>> {
 	LIVE_CONTEXTS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 注册上下文并返回句柄（宿主 draw action 调用；句柄写入 inArgs 的
-/// kOfxInteractPropDrawContext）。
+/// Registers a context and returns the handle (called by the host's draw
+/// action; the handle is written into the inArgs'
+/// kOfxInteractPropDrawContext).
 pub(crate) fn make_context(viewport: (f64, f64), pixel_scale: (f64, f64)) -> *mut c_void {
 	let ctx = Box::new(DrawContext::new(viewport, pixel_scale));
 	let addr = &*ctx as *const DrawContext as usize;
@@ -176,12 +198,21 @@ pub(crate) fn make_context(viewport: (f64, f64), pixel_scale: (f64, f64)) -> *mu
 	addr as *mut c_void
 }
 
-/// 摘除上下文（draw action 返回后调用；后续 suite 调用 → Failed）。
+/// Removes the context (called after the draw action returns; later suite
+/// calls -> Failed).
 pub(crate) fn drop_context(handle: *mut c_void) {
 	lock().remove(&(handle as usize));
 }
 
-/// 公共入口模板：panic 兜底。
+/// Shared wrapper for the suite entry points: runs the closure and folds both
+/// panics and `Err` into OFX status codes.
+///
+/// `f` returning `Ok(())` -> `kOfxStatOK`, `Err(code)` -> that code returned
+/// unchanged; a closure panic (or any unwinding other than an abort) ->
+/// `kOfxStatFailed`. This way no panic in a plugin can cross the C ABI
+/// boundary (unwinding across FFI is undefined behavior). Every vtable
+/// function wraps its body with it, so each function only has to deal with
+/// the `Ok`/`Err` branches.
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	catch_unwind(AssertUnwindSafe(f)).map_or_else(
 		|_| status::FAILED,
@@ -189,8 +220,9 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	)
 }
 
-/// 上下文句柄解析（存活表反查；draw action 外 → Failed，ofxDrawSuite.h
-/// 的 "outside kOfxInteractActionDraw" 语义）。
+/// Resolves a context handle (reverse lookup in the live table; outside a
+/// draw action -> Failed, the "outside kOfxInteractActionDraw" semantics of
+/// ofxDrawSuite.h).
 fn resolve(handle: *mut c_void) -> Result<&'static DrawContext, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -202,14 +234,26 @@ fn resolve(handle: *mut c_void) -> Result<&'static DrawContext, c_int> {
 		.ok_or(status::FAILED)
 }
 
-/// 可变访问（resolve 的写路径；draw 期单线程，存活保证同 resolve）。
+/// Context validation on the write path: returns `Ok(())` once the handle is
+/// confirmed live.
+///
+/// It uses the same live table and error codes as [`resolve`] (null ->
+/// `kOfxStatErrBadHandle`, not found -> `kOfxStatFailed`) but only validates
+/// and returns no reference; each setter then locks and `get_mut`s the field
+/// itself. The two steps exist so `resolve`'s borrow ends and the lock is
+/// left for the setter to hold.
+///
+/// The draw action is single-threaded, so the caller guarantees "live at
+/// validation, still live at write" on the same thread (that is what the
+/// `expect` in each setter relies on).
 fn resolve_mut(handle: *mut c_void) -> Result<(), c_int> {
 	resolve(handle).map(|_| ())
 }
 
 // ---- 宿主标准颜色板（getColour）----
 
-/// 宿主标准颜色板：按 `OfxStandardColour` 枚举序（ofxDrawSuite.h:37-46）。
+/// Host standard colour palette: in `OfxStandardColour` enum order
+/// (ofxDrawSuite.h:37-46).
 const PALETTE: [[f32; 4]; 7] = [
 	// BACKGROUND：宿主视口背景（本宿主 Phase 1 无合成背景，黑）。
 	[0.0, 0.0, 0.0, 1.0],
@@ -227,6 +271,27 @@ const PALETTE: [[f32; 4]; 7] = [
 	[1.0, 1.0, 1.0, 1.0],
 ];
 
+/// Vtable `getColour`: writes the `std_colour`-th entry of the host standard
+/// palette into `out`.
+///
+/// The palette is fixed at 7 entries, laid out in [`std_colour`] enum order
+/// (the index is the `OfxStandardColour` value, see ofxDrawSuite.h:37-46);
+/// out-of-range indexes always return kOfxStatErrValue - no modulo, no
+/// fallback. Components are `f32` in the agreed 0..1 range:
+/// `ACTIVE`/`SELECTED` etc. are the usual overlay colours,
+/// `DESELECTED`/`MARQUEE_BG` carry an alpha of 0.5, and `BACKGROUND` is fixed
+/// to black because this host has no compositing background in Phase 1.
+///
+/// Return codes: success -> kOfxStatOK; `out` null or index out of range ->
+/// kOfxStatErrValue; `ctx` null -> kOfxStatErrBadHandle; `ctx` absent from
+/// the live table (outside a draw action) -> kOfxStatFailed.
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by [`make_context`] that has not yet been
+/// [`drop_context`]ed; `out` must be null or point to a writable
+/// [`OfxRGBAColourF`] (on success all four components are overwritten).
+/// Panics are caught by [`caught`] and never cross the ABI boundary.
 unsafe extern "C" fn get_colour(
 	ctx: *mut c_void,
 	std_colour: c_int,
@@ -252,6 +317,26 @@ unsafe extern "C" fn get_colour(
 	})
 }
 
+/// Vtable `setColour`: sets the foreground colour used by subsequent drawing.
+///
+/// `colour` points to RGBA (each component `f32`, the OFX 0..1 convention);
+/// the value is stored in the context as-is with no clamping, and when
+/// alpha < 1 the render path enables "over" blending. The colour is used for
+/// both lines and fills and stays in effect for the rest of this draw action
+/// until the function is called again; the next draw action resets it to
+/// opaque black.
+///
+/// Return codes: `colour` null or invalid `ctx` -> see below; success ->
+/// kOfxStatOK.
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by [`make_context`] that has not yet been
+/// [`drop_context`]ed (null -> kOfxStatErrBadHandle, not found ->
+/// kOfxStatFailed); `colour` must be null or point to a readable
+/// [`OfxRGBAColourF`] (null -> kOfxStatErrValue). The function only copies
+/// the four components and keeps no pointer. Panics are caught by
+/// [`caught`].
 unsafe extern "C" fn set_colour(ctx: *mut c_void, colour: *const OfxRGBAColourF) -> c_int {
 	caught(|| {
 		if colour.is_null() {
@@ -267,6 +352,24 @@ unsafe extern "C" fn set_colour(ctx: *mut c_void, colour: *const OfxRGBAColourF)
 	})
 }
 
+/// Vtable `setLineWidth`: sets the line width (pixels) used by subsequent
+/// drawing.
+///
+/// `width` is stored in the context as-is, **without validation or
+/// clamping**: 0 means `glLineWidth` is not called (skipped by the
+/// conditional branch in `gl_imp::render`, so the driver default width
+/// stays), negative values are accepted too but GL ignores the call; above
+/// the driver's width limit GL clamps to the nearest supported value. The
+/// width only affects line primitives (LINES/STRIP/LOOP/ELLIPSE) and has no
+/// effect on filled primitives (RECTANGLE/POLYGON). The state only lives for
+/// this draw action.
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by [`make_context`] that has not yet been
+/// [`drop_context`]ed (null -> kOfxStatErrBadHandle, not found ->
+/// kOfxStatFailed); this function dereferences no other pointer. Panics are
+/// caught by [`caught`].
 unsafe extern "C" fn set_line_width(ctx: *mut c_void, width: c_float) -> c_int {
 	caught(|| {
 		resolve_mut(ctx)?;
@@ -278,6 +381,22 @@ unsafe extern "C" fn set_line_width(ctx: *mut c_void, width: c_float) -> c_int {
 	})
 }
 
+/// Vtable `setLineStipple`: sets the stipple pattern used by subsequent
+/// drawing.
+///
+/// `pattern` must be a [`stipple`] enum value (`SOLID`..`DOT_DASH`, i.e.
+/// 0..=4); out-of-range values return [`status::ERR_VALUE`] and are not
+/// clamped. It writes this draw action's context state; the next draw action
+/// does not inherit it. The current real render path only reads the value and
+/// does not implement stippling (`gl_imp::render` never uses `stipple`), so
+/// this function does not change any output pixels yet.
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by [`make_context`] that has not yet been
+/// [`drop_context`]ed (null -> kOfxStatErrBadHandle, not found ->
+/// kOfxStatFailed); this function dereferences no other pointer. Panics are
+/// caught by [`caught`].
 unsafe extern "C" fn set_line_stipple(ctx: *mut c_void, pattern: c_int) -> c_int {
 	caught(|| {
 		if !(0..=stipple::DOT_DASH).contains(&pattern) {
@@ -292,6 +411,29 @@ unsafe extern "C" fn set_line_stipple(ctx: *mut c_void, pattern: c_int) -> c_int
 	})
 }
 
+/// Vtable `draw`: validates the primitive and point count, then does real GL
+/// drawing.
+///
+/// `prim` is a [`primitive`] enum value and `points`/`count` are canonical
+/// coordinate points and their number. The point count is validated per
+/// primitive as ofxDrawSuite.h specifies: LINES must be even and >= 2,
+/// LINE_STRIP/LINE_LOOP >= 2, RECTANGLE/ELLIPSE exactly 2, POLYGON >= 3.
+/// After validation the points are copied out (so no pointer into the
+/// plugin's buffer is held) and handed to [`gl_imp::render`] to draw; on
+/// non-macOS that path always fails.
+///
+/// Return codes: success -> [`status::OK`]; primitive out of range,
+/// `count < 0`, `count > 0` with a null `points`, or an invalid point count ->
+/// [`status::ERR_VALUE`]; a null context handle ->
+/// [`status::ERR_BAD_HANDLE`]; a handle absent from the live table (outside a
+/// draw action) or a failed GL draw -> [`status::FAILED`].
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by [`make_context`] that has not yet been
+/// [`drop_context`]ed; `points` must be null or point to a buffer of at least
+/// `count` consecutive readable [`OfxPointD`] (null is fine when `count` is
+/// 0). Panics are caught by [`caught`] and never cross the ABI boundary.
 unsafe extern "C" fn draw(
 	ctx: *mut c_void,
 	prim: c_int,
@@ -325,6 +467,25 @@ unsafe extern "C" fn draw(
 	})
 }
 
+/// Vtable `drawText`: validates the arguments and faithfully reports
+/// "unsupported".
+///
+/// This host has no font rasterizer (drawing glyphs in GL needs a font or
+/// curve sampling, beyond Phase 1), so even valid text is not drawn: `text`
+/// must be NUL-terminated valid UTF-8 (CStr validation failure ->
+/// kOfxStatErrValue), `pos` must be a canonical coordinate point and `ctx`
+/// must be a live context; after that [`status::ERR_UNSUPPORTED`] is
+/// returned. `_alignment` is ignored (with nothing drawn, alignment is
+/// meaningless).
+///
+/// # Safety
+///
+/// `ctx` must be a handle returned by the host's [`make_context`] that has
+/// not yet been [`drop_context`]ed; `text` must point to a readable
+/// NUL-terminated string; `pos` must point to a readable [`OfxPointD`]; a
+/// null `ctx` returns kOfxStatErrBadHandle, a null `text`/`pos` returns
+/// kOfxStatErrValue, and a null pointer is never dereferenced; any panic is
+/// caught by [`caught`] and never crosses the ABI boundary.
 unsafe extern "C" fn draw_text(
 	ctx: *mut c_void,
 	text: *const c_char,
@@ -344,24 +505,25 @@ unsafe extern "C" fn draw_text(
 	})
 }
 
-/// 函数表布局（与 SDK `OfxDrawSuiteV1` 逐字段一致；ofxDrawSuite.h:85-177）。
+/// Function table layout (field-for-field identical to the SDK
+/// `OfxDrawSuiteV1`; ofxDrawSuite.h:85-177).
 #[repr(C)]
 pub struct DrawSuiteV1 {
-	/// getColour：宿主标准颜色板取色。
+	/// getColour: fetches a colour from the host standard palette.
 	pub get_colour: unsafe extern "C" fn(*mut c_void, c_int, *mut OfxRGBAColourF) -> c_int,
-	/// setColour：设置后续绘制颜色。
+	/// setColour: sets the colour used by subsequent drawing.
 	pub set_colour: unsafe extern "C" fn(*mut c_void, *const OfxRGBAColourF) -> c_int,
-	/// setLineWidth：设置后续线宽。
+	/// setLineWidth: sets the subsequent line width.
 	pub set_line_width: unsafe extern "C" fn(*mut c_void, c_float) -> c_int,
-	/// setLineStipple：设置后续虚线样式。
+	/// setLineStipple: sets the subsequent stipple pattern.
 	pub set_line_stipple: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
-	/// draw：绘制原语（点数组，canonical 坐标）。
+	/// draw: draws a primitive (array of points, canonical coordinates).
 	pub draw: unsafe extern "C" fn(*mut c_void, c_int, *const OfxPointD, c_int) -> c_int,
-	/// drawText：绘制文本（Phase 1 返回 kOfxStatErrUnsupported）。
+	/// drawText: draws text (Phase 1 returns kOfxStatErrUnsupported).
 	pub draw_text: unsafe extern "C" fn(*mut c_void, *const c_char, *const OfxPointD, c_int) -> c_int,
 }
 
-/// 函数表实例。
+/// The function table instance.
 pub fn suite_v1() -> &'static DrawSuiteV1 {
 	static SUITE: std::sync::OnceLock<DrawSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| DrawSuiteV1 {
@@ -378,7 +540,8 @@ pub fn suite_v1() -> &'static DrawSuiteV1 {
 mod tests {
 	use super::*;
 
-	/// 标准颜色板：getColour 按枚举取宿主色板（越界 → ErrValue）。
+	/// Standard palette: getColour picks host colours by enum (out of range ->
+	/// ErrValue).
 	#[test]
 	fn get_colour_palette() {
 		let ctx = make_context((640.0, 480.0), (1.0, 1.0));
@@ -400,8 +563,9 @@ mod tests {
 		drop_context(ctx);
 	}
 
-	/// setColour 真实写入状态：再 setLineWidth/setLineStipple 后从存活
-	/// 表读回（draw action 期插件视图）。
+	/// setColour really writes state: after setLineWidth/setLineStipple it is
+	/// read back from the live table (the plugin's view during a draw
+	/// action).
 	#[test]
 	fn set_colour_and_line_state() {
 		let ctx = make_context((100.0, 100.0), (2.0, 2.0));
@@ -423,7 +587,8 @@ mod tests {
 		drop_context(ctx);
 	}
 
-	/// 摘除后调用 → Failed（"outside kOfxInteractActionDraw" 语义）。
+	/// Calling after removal -> Failed (the "outside kOfxInteractActionDraw"
+	/// semantics).
 	#[test]
 	fn draw_suite_outside_draw_fails() {
 		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
@@ -445,7 +610,8 @@ mod tests {
 		}
 	}
 
-	/// draw 原语参数校验（不触 GL）：非法原语/点数 → ErrValue。
+	/// draw primitive argument validation (does not touch GL): invalid
+	/// primitive/point count -> ErrValue.
 	#[test]
 	fn draw_primitive_argument_validation() {
 		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
@@ -473,7 +639,8 @@ mod tests {
 		drop_context(ctx);
 	}
 
-	/// drawText：有效参数 → Unsupported（如实拒绝）；空指针 → ErrValue。
+	/// drawText: valid arguments -> Unsupported (faithful refusal); null
+	/// pointer -> ErrValue.
 	#[test]
 	fn draw_text_is_honest_unsupported() {
 		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
@@ -552,7 +719,8 @@ mod gl_imp {
 		fn glGetError() -> u32;
 	}
 
-	/// 顶点着色器（canonical 坐标 + 颜色 uniform；投影映射到 NDC）。
+	/// Vertex shader (canonical coordinates + colour uniform; projection maps
+	/// to NDC).
 	const VERT_SRC: &[u8] = b"#version 150\n\
 		in vec2 a_pos;\n\
 		uniform mat4 u_proj;\n\
@@ -568,6 +736,19 @@ mod gl_imp {
 		out vec4 frag_color;\n\
 		void main() { frag_color = v_col; }\n\0";
 
+	/// Compiles one GLSL shader and returns the shader object name on success.
+	///
+	/// `kind` is `GL_VERTEX_SHADER`/`GL_FRAGMENT_SHADER`; `src` must be a
+	/// **NUL-terminated** source byte string (this module's
+	/// `VERT_SRC`/`FRAG_SRC` all end with `\0`), with the length argument
+	/// passed as null, so the source must not contain another NUL.
+	///
+	/// On failure returns [`status::FAILED`]: `glCreateShader` returned 0, or
+	/// the compile status is `GL_FALSE` (in that case the newly created
+	/// object is deleted first, leaving no leak). On success the caller is
+	/// responsible for `glDeleteShader` after linking / on the failure path.
+	/// The GL context must be current when called; this function caches no
+	/// result.
 	fn compile_shader(kind: u32, src: &[u8]) -> Result<u32, i32> {
 		// SAFETY: glCreateShader/glShaderSource/glCompileShader 均为当前
 		// 上下文的合法调用；src 是 NUL 结尾串（b"...\0"）。
@@ -591,8 +772,22 @@ mod gl_imp {
 		Ok(sh)
 	}
 
-	/// 惰性资源组：(program, vao, vbo)。进程级缓存；VAO/VBO 固定复用，
-	/// 每次 draw 用 glBufferData 重灌顶点（避免逐次分配/泄漏）。
+	/// Lazily initialized process-wide draw resource set `(program, vao, vbo)`.
+	///
+	/// On first call it compiles the vertex/fragment shaders, links the
+	/// program, generates and binds one set of fixed VAO/VBO, and caches the
+	/// result in a `OnceLock`; afterwards (including the failure result) it is
+	/// reused directly: on success each draw only re-uploads vertices with
+	/// `glBufferData`, the VAO/VBO are not reallocated, avoiding per-call
+	/// creation/leaks; on failure later calls immediately return the same
+	/// error code and do not retry.
+	///
+	/// Returns `Err(status::FAILED)` when: any shader fails to compile
+	/// (already-compiled objects are deleted), `glCreateProgram` returns 0, or
+	/// linking fails. After linking the shader objects are deleted (the
+	/// program keeps the executable). The caller must ensure the GL context is
+	/// current, and this is the only place in the process that uses these GL
+	/// objects.
 	fn resources() -> Result<(u32, u32, u32), i32> {
 		static RES: std::sync::OnceLock<Result<(u32, u32, u32), i32>> = std::sync::OnceLock::new();
 		*RES.get_or_init(|| {
@@ -646,7 +841,19 @@ mod gl_imp {
 		})
 	}
 
-	/// canonical→NDC 正交投影（列主序 4x4）。
+	/// Builds the canonical -> NDC orthographic projection matrix
+	/// (column-major 4x4).
+	///
+	/// `cw`/`ch` are the canonical-space width and height (computed by the
+	/// host as `viewport / pixel_scale` and passed in) mapped to `[-1, 1]` in
+	/// NDC; both are first clamped with `max(1.0)`, avoiding division by zero
+	/// or flipping for 0/negative sizes. The matrix puts `(0,0)` at the
+	/// bottom-left with the y axis up (matching GL NDC) and z is always 0. It
+	/// returns 16 `f32` values that can be passed straight to
+	/// `glUniformMatrix4fv` (`transpose = 0`).
+	///
+	/// Pairs with [`vertices`]: vertices stay in canonical coordinates and the
+	/// projection happens in the vertex shader's `u_proj * vec4(a_pos, 0, 1)`.
 	fn ortho(cw: f64, ch: f64) -> [f32; 16] {
 		let (cw, ch) = (cw.max(1.0) as f32, ch.max(1.0) as f32);
 		[
@@ -657,7 +864,25 @@ mod gl_imp {
 		]
 	}
 
-	/// 按原语生成 GL 顶点（canonical 坐标；已按图元类型合法）。
+	/// Expands an OFX primitive and canonical point list into GL vertices.
+	///
+	/// `prim` is a [`super::primitive`] enum value and `pts` is that
+	/// primitive's canonical point count (`draw` has already validated by
+	/// type). Returns `(GL primitive mode, interleaved xy vertices)`:
+	/// LINES/LINE_STRIP/LINE_LOOP use the point list directly; RECTANGLE takes
+	/// the two diagonal points and splits them into two triangles (filled);
+	/// POLYGON builds a triangle fan around `pts[0]` (by convex-polygon
+	/// convention; a concave polygon will draw wrong coverage); ELLIPSE takes
+	/// the centre/radius of the box of the diagonal points and draws a
+	/// **wireframe** with 64 `GL_LINE_LOOP` segments.
+	/// An unknown `prim` returns empty vertices (the caller reports
+	/// `ERR_VALUE`).
+	///
+	/// Coordinates are canonical (the input space relative to the viewport,
+	/// before dividing by the pixel scale) and are converted to `f32` as-is;
+	/// no clipping or wrapping. The function only reads `pts` and returns a
+	/// freshly allocated vertex vector, regenerated on every draw (the vertex
+	/// buffer is re-uploaded with `glBufferData`).
 	fn vertices(prim: i32, pts: &[OfxPointD]) -> (u32, Vec<f32>) {
 		match prim {
 			super::primitive::LINES => (
@@ -716,10 +941,30 @@ mod gl_imp {
 		}
 	}
 
-	/// 真实渲染：绑定固定 VAO/VBO、重灌顶点、设置 uniform、绘制。
-	/// 要求 GL 上下文 current（宿主 draw action 已 acquire）；无 current
-	/// 上下文时不发任何 GL 命令（macOS 无 current 调 GL 是未定义行为，
-	/// 直接失败）。
+	/// Real GL rendering: binds the fixed VAO/VBO, re-uploads vertices, sets
+	/// the uniforms and draws.
+	///
+	/// `ctx` provides the snapshotted viewport/pixel scale, current colour,
+	/// line width and stipple pattern; `prim` is a [`primitive`] enum value
+	/// (the caller has already validated it); `pts` are canonical coordinate
+	/// points whose length/meaning depends on the primitive, expanded into GL
+	/// vertices by [`vertices`]. When `ctx.colour` has alpha < 1 it enables
+	/// `GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA` blending ("over" compositing);
+	/// when the line width is > 0 it uses `glLineWidth`; the stipple pattern
+	/// (`stipple`) is currently **not** implemented and only affects state
+	/// reads.
+	///
+	/// Precondition: the GL context must be current (the host keeps it for
+	/// the whole draw action). With no current context it issues no GL command
+	/// and fails immediately - calling GL without a current context on macOS
+	/// is undefined behavior.
+	///
+	/// Returns `Ok(())` on success (`draw` turns it into [`status::OK`]). The
+	/// error codes it returns: [`status::FAILED`] when the context is not
+	/// current, shader/resource initialization fails, `vertices` produces no
+	/// vertices, the `a_pos` attribute is missing, or `glGetError` is not
+	/// `GL_NO_ERROR`; empty vertices themselves map to
+	/// [`status::ERR_VALUE`].
 	pub fn render(ctx: &DrawContext, prim: i32, pts: &[OfxPointD]) -> Result<(), i32> {
 		if !crate::gl_bridge::is_current() {
 			return Err(status::FAILED);
@@ -783,12 +1028,22 @@ mod gl_imp {
 	}
 }
 
-/// 非 macOS：Draw suite 的 GL 绘制 stub（无 GL 桥 → Failed）。
+/// Non-macOS: the Draw suite's GL drawing stub (no GL bridge -> Failed).
 #[cfg(not(target_os = "macos"))]
 mod gl_imp {
 	use super::{DrawContext, OfxPointD};
 	use crate::suites::status;
 
+	/// GL drawing stub for non-macOS platforms: always [`status::FAILED`],
+	/// producing no drawing at all.
+	///
+	/// This host only has the macOS CGL 3.2 core context bridge
+	/// ([`crate::gl_bridge`]); other platforms have no usable GL context, so
+	/// here it faithfully returns a generic failure per OFX semantics (the
+	/// "failure" returns in the ofxDrawSuite.h functions) instead of
+	/// pretending to draw anything. All arguments are ignored - `_pts` is not
+	/// validated because the caller (`draw`) already checked primitive/point
+	/// validity before entering.
 	pub fn render(_ctx: &DrawContext, _prim: i32, _pts: &[OfxPointD]) -> Result<(), i32> {
 		Err(status::FAILED)
 	}

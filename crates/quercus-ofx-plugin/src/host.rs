@@ -14,41 +14,41 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Host 单例与插件缓存。
+//! Host singleton and plugin cache.
 //!
-//! 对应 C++ 的 `OliveHost` + HostSupport 的 `PluginCache`。职责：
-//! bundle 扫描、`dlopen` 插件、调 `setHost`/`load`/`describe`
-//! 建立 [`Plugin`] 记录、按标识创建实例。参照：
-//! HS: ofxhPluginCache.cpp（扫描去重与索引语义）、
-//! HS: ofxhImageEffectAPI.cpp:150-238（load/describe/
-//! describeInContext 的 action 序列）。
+//! Corresponds to C++ `OliveHost` + HostSupport's `PluginCache`. Responsibilities:
+//! bundle scanning, `dlopen`-ing plugins, calling `setHost`/`load`/`describe`,
+//! building [`Plugin`] records, and creating instances by identifier. References:
+//! HS: ofxhPluginCache.cpp (scan dedupe and index semantics),
+//! HS: ofxhImageEffectAPI.cpp:150-238 (the load/describe/
+//! describeInContext action sequence).
 //!
-//! ## 扫描语义（对照 olivehost.cpp:118-191 + OFX 官方规范）
+//! ## Scan semantics (cf. olivehost.cpp:118-191 + the official OFX spec)
 //!
-//! 默认路径集按平台组织：
-//! 用户级（`$HOME` 非空时）——`$HOME/.OFX/Plugins`、
-//! `$HOME/.local/share/OFX/Plugins`、`$HOME/.local/share/olive/ofx/Plugins`
-//! （macOS 另含 `$HOME/Library/OFX/Plugins`）；
-//! 系统级——macOS `/Library/OFX/Plugins`，Linux `/usr/OFX/Plugins`、
-//! `/usr/local/OFX/Plugins`，Windows `%ProgramFiles%\Common Files\OFX\Plugins`
-//! （`%ProgramFiles%` 未设置时回退 `C:\Program Files\...`）；
-//! Olive app-relative——`../OFX/Plugins`、`../share/olive/ofx/Plugins`、
-//! `../lib/olive/ofx/Plugins`（olivehost.cpp:104-107）；
-//! 以及 `OFX_PLUGIN_PATH`（OFX 官方）与 `OLIVE_OFX_PLUGIN_PATH`/
-//! `OLIVE_PLUGIN_PATH`（Olive 扩展）三个环境变量（平台路径分隔符：
-//! Unix ':' / Windows ';'）。不存在的目录直接跳过；重复扫描按规范化
-//! 路径去重。
-//! `// [P2]`：Info.plist 解析（CFBundleExecutable）不做——bundle 内
-//! 二进制以探测方式定位（`Contents/MacOS/*`、`Contents/Linux-*/*`、
-//! 根下 `*.so`/`*.dylib`）。
+//! The default path set is organized per platform:
+//! user level (when `$HOME` is set)—`$HOME/.OFX/Plugins`,
+//! `$HOME/.local/share/OFX/Plugins`, `$HOME/.local/share/olive/ofx/Plugins`
+//! (macOS also has `$HOME/Library/OFX/Plugins`);
+//! system level—macOS `/Library/OFX/Plugins`, Linux `/usr/OFX/Plugins`,
+//! `/usr/local/OFX/Plugins`, Windows `%ProgramFiles%\Common Files\OFX\Plugins`
+//! (falls back to `C:\Program Files\...` when `%ProgramFiles%` is unset);
+//! Olive app-relative—`../OFX/Plugins`, `../share/olive/ofx/Plugins`,
+//! `../lib/olive/ofx/Plugins` (olivehost.cpp:104-107);
+//! plus the three environment variables `OFX_PLUGIN_PATH` (official OFX) and
+//! `OLIVE_OFX_PLUGIN_PATH`/`OLIVE_PLUGIN_PATH` (Olive extensions; platform path
+//! separator: Unix ':' / Windows ';'). Directories that do not exist are skipped;
+//! repeated scans dedupe by canonicalized path.
+//! `// [P2]`: Info.plist parsing (CFBundleExecutable) is not done—the binary inside
+//! a bundle is located by probing (`Contents/MacOS/*`, `Contents/Linux-*/*`,
+//! `*.so`/`*.dylib` at the root).
 //!
-//! ## dlopen（零依赖）
+//! ## dlopen (zero dependencies)
 //!
-//! 直接声明 `dlopen`/`dlsym`/`dlclose`（macOS libSystem / Linux libc
-//! 内建；RTLD 常量按平台取值）。加载顺序按 ofxCore.h:574：
-//! `OfxGetNumberOfPlugins` → `OfxGetPlugin`，随后
-//! `OfxPlugin::setHost`（mandatory，ofxCore.h:124-132）→
-//! `load` → `describe`（HS: ofxhImageEffectAPI.cpp:158-190）。
+//! `dlopen`/`dlsym`/`dlclose` are declared directly (built into macOS libSystem /
+//! Linux libc; RTLD constants take platform-specific values). The load order
+//! follows ofxCore.h:574: `OfxGetNumberOfPlugins` → `OfxGetPlugin`, then
+//! `OfxPlugin::setHost` (mandatory, ofxCore.h:124-132) → `load` → `describe`
+//! (HS: ofxhImageEffectAPI.cpp:158-190).
 
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -82,7 +82,15 @@ extern "C" {
 }
 
 #[cfg(not(target_os = "windows"))]
-/// 动态加载共享库；失败返回 None。
+/// Dynamically loads a shared library and returns an opaque handle (POSIX
+/// `dlopen(RTLD_NOW | RTLD_LOCAL)`).
+///
+/// `path` is first converted to a `CString`: returns `None` when the path is not
+/// valid UTF-8 or contains an embedded NUL. Also returns `None` when the library
+/// file is missing, the architecture does not match, or dependency resolution
+/// fails (`dlopen` returns a null pointer); the specific cause stays in the
+/// system's `dlerror`, which this function does not read. The caller is
+/// responsible for releasing the handle with `dlclose`.
 fn dl_open(path: &Path) -> Option<*mut c_void> {
 	let c = CString::new(path.to_str()?).ok()?;
 	let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL) };
@@ -94,7 +102,12 @@ fn dl_open(path: &Path) -> Option<*mut c_void> {
 }
 
 #[cfg(not(target_os = "windows"))]
-/// 查符号；失败返回 None。
+/// Looks up the address of an exported symbol in an already-loaded library.
+///
+/// `handle` is the handle returned by [`dl_open`], and `name` is the C symbol name
+/// (converted to a `CString` internally). Returns `None` when the symbol does not
+/// exist or the name contains an embedded NUL; the result is a `*mut c_void` and
+/// must be converted with [`dlsym_fn`] to be used as a function pointer.
 fn dl_sym(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
 	let c = CString::new(name).ok()?;
 	let p = unsafe { dlsym(handle, c.as_ptr()) };
@@ -106,11 +119,19 @@ fn dl_sym(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
 }
 
 #[cfg(not(target_os = "windows"))]
-/// 从 `dlsym` 结果取函数指针（libloading 同款转换；调用方保证符号
-/// 类型正确）。
+/// Looks up a symbol in an already-loaded library and converts it to a function
+/// pointer (the same conversion libloading uses).
+///
+/// Returns `None` when the symbol does not exist, the name contains an embedded
+/// NUL, or it cannot be converted to a `CString`. `handle` is the handle returned
+/// by [`dl_open`], and `name` is the exported symbol name (a C symbol such as
+/// `OfxGetNumberOfPlugins`/`OfxGetPlugin`). The conversion is done with
+/// `transmute_copy`, so `T` must be exactly the symbol's real signature.
 ///
 /// # Safety
-/// 符号必须确实是该函数类型。
+///
+/// The symbol must really be the function type `T`, and `handle` must still be
+/// valid.
 unsafe fn dlsym_fn<T>(handle: *mut c_void, name: &str) -> Option<T> {
 	let p = dl_sym(handle, name)?;
 	Some(unsafe { std::mem::transmute_copy(&p) })
@@ -187,6 +208,15 @@ mod win32 {
 
 	/// Unload a library (`FreeLibrary`; reference-counted like POSIX
 	/// `dlclose`).
+	///
+	/// Only the Win32 build uses this wrapper; the POSIX path calls the
+	/// `dlclose` symbol directly from `Drop for LoadedBinary`.
+	///
+	/// # Safety
+	///
+	/// `handle` must be a live `HMODULE` returned by [`dl_open`] and not
+	/// already released; calling it twice, or while plugin entry points from
+	/// the module may still run, is undefined behaviour.
 	pub(super) unsafe fn dlclose(handle: *mut c_void) -> c_int {
 		unsafe { FreeLibrary(handle) }
 	}
@@ -200,7 +230,7 @@ use win32::{dl_open, dl_sym, dlsym_fn, dlclose};
 /// `OfxHost`（ofxCore.h:44）。
 #[repr(C)]
 struct OfxHost {
-	/// 宿主属性集句柄（`Host::props` 的裸指针，标签 0）。
+	/// Host property-set handle (the raw pointer to `Host::props`, tag 0).
 	host: *mut c_void,
 	/// fetchSuite。
 	fetch_suite: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> *const c_void,
@@ -220,8 +250,23 @@ struct OfxPlugin {
 	>,
 }
 
-/// fetchSuite 的宿主出口（插件经 `OfxHost::fetchSuite` 拿到；
-/// 经 [`crate::suites::fetch_suite`] 分发表）。
+/// The host-side exit for `OfxHost::fetchSuite`: forwards the plugin's suite request
+/// to the [`crate::suites::fetch_suite`] dispatch table.
+///
+/// `host` is the host property-set handle (unused by this implementation, kept only
+/// for ABI shape); `name` is the NUL-terminated suite name; `version` is the
+/// requested suite version. Returns the suite function-table pointer on a hit and a
+/// null pointer on a miss. Every failure path—null pointers, a non-UTF-8 name, the
+/// host lacking that suite, and a panic wrapped around the whole operation—returns
+/// `std::ptr::null()` and never unwinds into C. When `QUERCUS_OFX_TRACE` is set,
+/// hits/misses are printed to stderr (vendor suite probing is normal plugin
+/// behaviour, so nothing is logged by default).
+///
+/// # Safety
+///
+/// Called directly by plugins per the OFX ABI: `name` must point to a readable
+/// NUL-terminated string, and `host` must be the pointer returned by
+/// [`global_ofx_host`] or a null pointer.
 unsafe extern "C" fn host_fetch_suite(
 	host: *mut c_void,
 	name: *const c_char,
@@ -258,9 +303,10 @@ unsafe extern "C" fn host_fetch_suite(
 	}
 }
 
-/// 进程级 `OfxHost`（ofxs 支持库的 setHost 只保存**指针**而不拷贝
-/// 结构体——栈上临时变量会在 setHost 返回后悬垂，describe/渲染期
-/// 再经 fetchSuite 回调就是野指针）。堆泄漏一次，永久有效。
+/// Process-level `OfxHost` (the ofxs support library's setHost only stores the
+/// **pointer** and does not copy the struct—a stack temporary would dangle after
+/// setHost returns, and the fetchSuite callback during describe/render would then be
+/// a wild pointer). Leaked on the heap once, valid forever.
 fn global_ofx_host() -> *mut OfxHost {
 	static PTR: OnceLock<usize> = OnceLock::new();
 	*PTR.get_or_init(|| {
@@ -300,28 +346,30 @@ pub(crate) const ACTION_BEGIN_SEQUENCE: &str = "OfxImageEffectActionBeginSequenc
 pub(crate) const ACTION_END_SEQUENCE: &str = "OfxImageEffectActionEndSequenceRender";
 /// kOfxActionOpenGLContextAttached（ofxGPURender.h:345）。
 pub(crate) const ACTION_GL_CONTEXT_ATTACHED: &str = "OfxActionOpenGLContextAttached";
-/// kOfxActionOpenGLContextDetached（ofxGPURender.h:371；宏值自带
-/// "kOfx" 前缀，是规范原文）。
+/// kOfxActionOpenGLContextDetached (ofxGPURender.h:371; the macro value already
+/// carries the "kOfx" prefix in the spec as written).
 pub(crate) const ACTION_GL_CONTEXT_DETACHED: &str = "kOfxActionOpenGLContextDetached";
 /// kOfxImageEffectActionGetOutputColourspace（ofxColour.h:283）。
 pub(crate) const ACTION_GET_OUTPUT_COLOURSPACE: &str = "OfxImageEffectActionGetOutputColourspace";
-/// kOfxActionInstanceChanged（ofxCore.h:449）：宿主侧参数/时间变更
-/// 通知。按下 push button 后宿主须以 kOfxChangeUserEdited 的原因调用
-/// 它（ofxCore.h:405-435 的 inArgs 契约）。
+/// kOfxActionInstanceChanged (ofxCore.h:449): host-side parameter/time change
+/// notification. After a push button is pressed, the host must call it with the
+/// kOfxChangeUserEdited reason (the inArgs contract in ofxCore.h:405-435).
 pub(crate) const ACTION_INSTANCE_CHANGED: &str = "OfxActionInstanceChanged";
 // ---- Interact（OFX 自定义交互；ofxInteract.h / ofxDrawSuite.h / ofxKeySyms.h）----
 
-/// kOfxActionNewInteract：宿主创建 interact 时发给 interact 入口的
-/// 首个 action。vendored ofxInteract.h 未定义该宏（官方头文件无此
-/// action；任务契约按 "向插件 main entry 发 kOfxActionNewInteract"
-/// 命名）——取值 "OfxActionNewInteract"，与 OFX action 命名惯例一致。
-/// 插件不实现该 action 时返回 kOfxStatReplyDefault（宿主视为"无
-/// interact"或"不参与 NewInteract 协议"，见 [`crate::instance::Instance::new_interact`]）。
+/// kOfxActionNewInteract: the first action the host sends to an interact entry when
+/// it creates an interact. The vendored ofxInteract.h does not define this macro
+/// (the official headers have no such action; the task contract names it after
+/// "send kOfxActionNewInteract to the plugin's main entry")—the value is
+/// "OfxActionNewInteract", consistent with the OFX action naming convention. Plugins
+/// that do not implement this action return kOfxStatReplyDefault (the host treats
+/// this as "no interact" or "not participating in the NewInteract protocol"; see
+/// [`crate::instance::Instance::new_interact`]).
 pub(crate) const ACTION_NEW_INTERACT: &str = "OfxActionNewInteract";
-/// kOfxInteractActionIdle：宿主空闲泵（任务契约；vendored ofxInteract.h
-/// 未收录——OFX 官方规范无 Idle action，属本宿主扩展，取值
-/// "OfxInteractActionIdle"）。插件实现与否自愿；未处理返回
-/// kOfxStatReplyDefault。
+/// kOfxInteractActionIdle: the host's idle pump (task contract; not included in the
+/// vendored ofxInteract.h—the official OFX spec has no Idle action, so this is a
+/// host extension, with the value "OfxInteractActionIdle"). Plugins implement it
+/// voluntarily; if unhandled they return kOfxStatReplyDefault.
 pub(crate) const ACTION_INTERACT_IDLE: &str = "OfxInteractActionIdle";
 /// kOfxInteractActionDraw（ofxInteract.h:265）。
 pub(crate) const ACTION_INTERACT_DRAW: &str = "OfxInteractActionDraw";
@@ -340,55 +388,61 @@ pub(crate) const ACTION_INTERACT_GAIN_FOCUS: &str = "OfxInteractActionGainFocus"
 /// kOfxInteractActionLoseFocus（ofxInteract.h:526）。
 pub(crate) const ACTION_INTERACT_LOSE_FOCUS: &str = "OfxInteractActionLoseFocus";
 
-/// kOfxInteractPropPixelScale（ofxInteract.h:58）：canonical→屏幕像素
-/// 换算比例（Double×2）。
+/// kOfxInteractPropPixelScale (ofxInteract.h:58): canonical→screen-pixel conversion
+/// scale (Double×2).
 pub(crate) const PROP_INTERACT_PIXEL_SCALE: &str = "OfxInteractPropPixelScale";
-/// kOfxInteractPropViewportSize（OFX 1.3 命名 "OfxInteractPropViewport"；
-/// vendored 1.5 头文件已删，任务契约要求 draw inArgs 携带视口尺寸）。
+/// kOfxInteractPropViewportSize (named "OfxInteractPropViewport" in OFX 1.3; it was
+/// removed from the vendored 1.5 headers, and the task contract requires the draw
+/// inArgs to carry the viewport size).
 pub(crate) const PROP_INTERACT_VIEWPORT_SIZE: &str = "OfxInteractPropViewport";
-/// kOfxInteractPropBackgroundImage：任务契约的 draw inArgs 背景图像
-/// 句柄（Pointer；无背景时为空——本宿主 Phase 1 无合成背景，恒空）。
-/// 非官方 OFX 属性（官方只有 BackgroundColour），属本宿主扩展。
+/// kOfxInteractPropBackgroundImage: the draw inArgs background-image handle from the
+/// task contract (Pointer; null when there is no background—this host has no
+/// composite background in Phase 1, so it is always null). A non-official OFX
+/// property (the official set only has BackgroundColour), so this is a host
+/// extension.
 pub(crate) const PROP_INTERACT_BACKGROUND_IMAGE: &str = "OfxInteractPropBackgroundImage";
-/// kOfxInteractPropBackgroundColour（ofxInteract.h:71）：宿主视口背景色
-/// （Double×3）。
+/// kOfxInteractPropBackgroundColour (ofxInteract.h:71): the host viewport background
+/// colour (Double×3).
 pub(crate) const PROP_INTERACT_BACKGROUND_COLOUR: &str = "OfxInteractPropBackgroundColour";
-/// kOfxInteractPropSuggestedColour（ofxInteract.h:86）：宿主建议的 overlay
-/// 颜色（Double×3；宿主不支持颜色选择时返回 ReplyDefault）。
+/// kOfxInteractPropSuggestedColour (ofxInteract.h:86): the overlay colour suggested
+/// by the host (Double×3; returns ReplyDefault when the host does not support colour
+/// selection).
 pub(crate) const PROP_INTERACT_SUGGESTED_COLOUR: &str = "OfxInteractPropSuggestedColour";
-/// kOfxInteractPropSlaveToParam（ofxInteract.h:50）：值变化触发 interact
-/// 重绘的参数名（String×N）。
+/// kOfxInteractPropSlaveToParam (ofxInteract.h:50): parameter names whose value
+/// changes trigger an interact redraw (String×N).
 pub(crate) const PROP_INTERACT_SLAVE_TO_PARAM: &str = "OfxInteractPropSlaveToParam";
-/// kOfxInteractPropPenPosition（ofxInteract.h:95）：笔的 canonical 位置
-/// （Double×2，只读 inArgs）。
+/// kOfxInteractPropPenPosition (ofxInteract.h:95): the pen's canonical position
+/// (Double×2, read-only inArgs).
 pub(crate) const PROP_INTERACT_PEN_POSITION: &str = "OfxInteractPropPenPosition";
-/// kOfxInteractPropPenViewportPosition（ofxInteract.h:104）：笔的视口像素
-/// 位置（Int×2，只读 inArgs）。
+/// kOfxInteractPropPenViewportPosition (ofxInteract.h:104): the pen's viewport pixel
+/// position (Int×2, read-only inArgs).
 pub(crate) const PROP_INTERACT_PEN_VIEWPORT_POSITION: &str = "OfxInteractPropPenViewportPosition";
-/// kOfxInteractPropPenPressure（ofxInteract.h:114）：笔压（Double×1，
-/// 0..1；两态笔映射 0/1）。
+/// kOfxInteractPropPenPressure (ofxInteract.h:114): pen pressure (Double×1, 0..1;
+/// two-state pens map to 0/1).
 pub(crate) const PROP_INTERACT_PEN_PRESSURE: &str = "OfxInteractPropPenPressure";
-/// kOfxInteractPropBitDepth（ofxInteract.h:122）：interact 帧缓冲位深
-/// （Int×1，只读）。
+/// kOfxInteractPropBitDepth (ofxInteract.h:122): interact framebuffer bit depth
+/// (Int×1, read-only).
 pub(crate) const PROP_INTERACT_BIT_DEPTH: &str = "OfxInteractPropBitDepth";
-/// kOfxInteractPropHasAlpha（ofxInteract.h:132）：interact 帧缓冲是否含
-/// alpha（Int×1，只读）。
+/// kOfxInteractPropHasAlpha (ofxInteract.h:132): whether the interact framebuffer has
+/// alpha (Int×1, read-only).
 pub(crate) const PROP_INTERACT_HAS_ALPHA: &str = "OfxInteractPropHasAlpha";
-/// kOfxInteractPropDrawContext（ofxDrawSuite.h:34）：Draw suite 上下文句柄
-/// （Pointer；draw inArgs 携带，插件取来传给 Draw suite 函数）。
+/// kOfxInteractPropDrawContext (ofxDrawSuite.h:34): the Draw suite context handle
+/// (Pointer; carried in the draw inArgs and fetched by the plugin to pass to Draw
+/// suite functions).
 pub(crate) const PROP_INTERACT_DRAW_CONTEXT: &str = "OfxInteractPropDrawContext";
-/// kOfxPropKeySym（ofxKeySyms.h:30）：键盘事件的关键码（Int×1）。
+/// kOfxPropKeySym (ofxKeySyms.h:30): the key code of a keyboard event (Int×1).
 pub(crate) const PROP_KEY_SYM: &str = "kOfxPropKeySym";
-/// kOfxPropKeyString（ofxKeySyms.h:49）：键盘事件的 UTF-8 字符（String×1）。
+/// kOfxPropKeyString (ofxKeySyms.h:49): the UTF-8 character of a keyboard event
+/// (String×1).
 pub(crate) const PROP_KEY_STRING: &str = "kOfxPropKeyString";
-/// kOfxImageEffectPluginPropOverlayInteractV2（ofxImageEffect.h:825）：
-/// 插件声明的 overlay interact 入口（Pointer→OfxPluginEntryPoint；V2
-/// 要求 Draw suite 绘制）。
+/// kOfxImageEffectPluginPropOverlayInteractV2 (ofxImageEffect.h:825): the overlay
+/// interact entry declared by the plugin (Pointer→OfxPluginEntryPoint; V2 requires
+/// drawing through the Draw suite).
 pub(crate) const PROP_OVERLAY_INTERACT_V2: &str = "OfxImageEffectPluginPropOverlayInteractV2";
 /// kOfxImageEffectPluginPropOverlayInteractV1（ofxImageEffect.h:812）。
 pub(crate) const PROP_OVERLAY_INTERACT_V1: &str = "OfxImageEffectPluginPropOverlayInteractV1";
-/// kOfxImageEffectPropSupportsOverlays（ofxImageEffect.h:801）：宿主是否
-/// 允许插件在输出图像上绘制 overlay（能力宣告）。
+/// kOfxImageEffectPropSupportsOverlays (ofxImageEffect.h:801): whether the host
+/// allows plugins to draw overlays on the output image (capability declaration).
 pub(crate) const PROP_SUPPORTS_OVERLAYS: &str = "OfxImageEffectPropSupportsOverlays";
 
 // ---- OFX 关键码（ofxKeySyms.h；X11 keysym 值，测试/宿主常用子集）----
@@ -439,8 +493,8 @@ pub const KEY_A: i32 = 0x061;
 /// kOfxKey_z（ofxKeySyms.h:423）。
 pub const KEY_Z: i32 = 0x07a;
 
-/// kOfxPropChangeReason（ofxCore.h:763）：instanceChanged 的 inArgs 里
-/// 说明变更来源（UserEdited / PluginEdited / Time）。
+/// kOfxPropChangeReason (ofxCore.h:763): states the change source in the
+/// instanceChanged inArgs (UserEdited / PluginEdited / Time).
 pub(crate) const PROP_CHANGE_REASON: &str = "OfxPropChangeReason";
 /// kOfxChangeUserEdited（ofxCore.h:792）。
 pub(crate) const CHANGE_USER_EDITED: &str = "OfxChangeUserEdited";
@@ -451,8 +505,8 @@ pub(crate) const CHANGE_TIME: &str = "OfxChangeTime";
 
 /// kOfxPropTime（ofxCore.h:613）。
 pub(crate) const PROP_TIME: &str = "OfxPropTime";
-/// kOfxPropEffectInstance（ofxCore.h:776）：interact/渲染 inArgs 里指向
-/// 效果实例句柄的指针属性。
+/// kOfxPropEffectInstance (ofxCore.h:776): the pointer property in the
+/// interact/render inArgs that points to the effect instance handle.
 pub(crate) const PROP_EFFECT_INSTANCE: &str = "OfxPropEffectInstance";
 /// kOfxImageEffectPropRenderScale。
 pub(crate) const PROP_RENDER_SCALE: &str = "OfxImageEffectPropRenderScale";
@@ -500,7 +554,7 @@ pub(crate) const PROP_PROJECT_SIZE: &str = "OfxImageEffectPropProjectSize";
 pub(crate) const PROP_PROJECT_OFFSET: &str = "OfxImageEffectPropProjectOffset";
 /// kOfxImageEffectPropProjectExtent。
 pub(crate) const PROP_PROJECT_EXTENT: &str = "OfxImageEffectPropProjectExtent";
-/// kOfxImageEffectPropProjectPixelAspectRatio（宏值即 PixelAspectRatio）。
+/// kOfxImageEffectPropProjectPixelAspectRatio (the macro value is PixelAspectRatio).
 pub(crate) const PROP_PROJECT_PAR: &str = "OfxImageEffectPropPixelAspectRatio";
 /// kOfxImageEffectInstancePropEffectDuration。
 pub(crate) const PROP_EFFECT_DURATION: &str = "OfxImageEffectInstancePropEffectDuration";
@@ -519,55 +573,56 @@ pub(crate) const PROP_LABEL: &str = "OfxPropLabel";
 
 // ---- GL 能力与协商属性（ofxGPURender.h，M11 第 2 期）----
 
-/// kOfxImageEffectPropOpenGLRenderSupported（ofxGPURender.h:62）：
-/// 宿主描述符（"true"）与插件描述符（"false"/"true"/"needed"）。
+/// kOfxImageEffectPropOpenGLRenderSupported (ofxGPURender.h:62): the host descriptor
+/// ("true") and the plugin descriptor ("false"/"true"/"needed").
 pub(crate) const PROP_GL_RENDER_SUPPORTED: &str = "OfxImageEffectPropOpenGLRenderSupported";
-/// kOfxImageEffectPropOpenGLEnabled（ofxGPURender.h:117）：Render/
-/// Begin/EndSequenceRender 的 in args。
+/// kOfxImageEffectPropOpenGLEnabled (ofxGPURender.h:117): in args of
+/// Render/Begin/EndSequenceRender.
 pub(crate) const PROP_GL_ENABLED: &str = "OfxImageEffectPropOpenGLEnabled";
-/// kOfxOpenGLPropPixelDepth（ofxGPURender.h:89）：插件描述符的 GL
-/// 渲染支持位深（可选；格式协商的宿主侧输入）。
+/// kOfxOpenGLPropPixelDepth (ofxGPURender.h:89): the GL render-supported bit depth
+/// in the plugin descriptor (optional; a host-side input to format negotiation).
 pub(crate) const PROP_GL_PIXEL_DEPTH: &str = "OfxOpenGLPropPixelDepth";
 
 // ---- ofxColour 属性（ofxColour.h，M11 第 2 期）----
 
 /// kOfxImageEffectPropColourManagementStyle（ofxColour.h:60）。
 pub(crate) const PROP_COLOUR_STYLE: &str = "OfxImageEffectPropColourManagementStyle";
-/// kOfxImageEffectColourManagementOCIO（ofxColour.h:73）：宿主声明的
-/// 色彩管理模式（任务要求）。
+/// kOfxImageEffectColourManagementOCIO (ofxColour.h:73): the colour management mode
+/// declared by the host (task requirement).
 pub(crate) const COLOUR_STYLE_OCIO: &str = "OfxImageEffectColourManagementOCIO";
 /// kOfxImageEffectPropColourManagementAvailableConfigs（ofxColour.h:85）。
 pub(crate) const PROP_COLOUR_AVAILABLE_CONFIGS: &str =
 	"OfxImageEffectPropColourManagementAvailableConfigs";
-/// kOfxImageEffectPropColourManagementConfig（ofxColour.h:98）：实例期
-/// 协商出的 native 配置。
+/// kOfxImageEffectPropColourManagementConfig (ofxColour.h:98): the native config
+/// negotiated at instance time.
 pub(crate) const PROP_COLOUR_CONFIG: &str = "OfxImageEffectPropColourManagementConfig";
-/// kOfxImageEffectPropOCIOConfig（ofxColour.h:110）：实例期 OCIO 配置
-/// 路径/URI。
+/// kOfxImageEffectPropOCIOConfig (ofxColour.h:110): the OCIO config path/URI for the
+/// instance.
 pub(crate) const PROP_OCIO_CONFIG: &str = "OfxImageEffectPropOCIOConfig";
-/// kOfxImageClipPropColourspace（ofxColour.h:142）：clip 实际色彩空间。
+/// kOfxImageClipPropColourspace (ofxColour.h:142): the clip's actual colour space.
 pub(crate) const PROP_CLIP_COLOURSPACE: &str = "OfxImageClipPropColourspace";
-/// kOfxImageClipPropPreferredColourspaces（ofxColour.h:201）：clip 偏好
-/// 色彩空间（GetClipPreferences 的 out args 可写）。
+/// kOfxImageClipPropPreferredColourspaces (ofxColour.h:201): the clip's preferred
+/// colour spaces (writable in the GetClipPreferences out args).
 pub(crate) const PROP_CLIP_PREFERRED_COLOURSPACES: &str = "OfxImageClipPropPreferredColourspaces";
-/// 宿主支持的 native 色彩配置标识（ofxColour.h:78 的唯一现行值）。
+/// The native colour config identifier supported by the host (the only current value
+/// in ofxColour.h:78).
 pub(crate) const NATIVE_CONFIG_ID: &str = "ofx-native-v1.5_aces-v1.3_ocio-v2.3";
-/// 宿主 OCIO 配置 URI（ofxColour.h:110 允许 ocio:// 内建配置；本宿主
-/// 无自有 config 文件，用 OCIO 内建默认配置并以 clip 色彩空间属性
-/// 传达 ACEScg 工作空间）。
+/// The host OCIO config URI (ofxColour.h:110 allows ocio:// built-in configs; this
+/// host has no config file of its own, so it uses the OCIO built-in default config
+/// and conveys the ACEScg working space through the clip colour-space property).
 pub(crate) const OCIO_CONFIG_URI: &str = "ocio://default";
 
-/// 协商期 per-clip 约定名（HS: "OfxImageClipPropComponents_<clip>"
-/// 等，ofxhImageEffect.cpp:1725-1727）。
+/// Per-clip convention names used during negotiation (HS:
+/// "OfxImageClipPropComponents_<clip>" etc., ofxhImageEffect.cpp:1725-1727).
 pub(crate) fn clip_pref_prop(prefix: &str, clip: &str) -> String {
 	format!("{prefix}_{clip}")
 }
 
-/// 组件名前缀。
+/// Components name prefix.
 pub(crate) const CLIP_PREF_COMPONENTS: &str = "OfxImageClipPropComponents";
-/// 位深名前缀。
+/// Bit-depth name prefix.
 pub(crate) const CLIP_PREF_DEPTH: &str = "OfxImageClipPropDepth";
-/// 像素比名前缀。
+/// Pixel-aspect-ratio name prefix.
 pub(crate) const CLIP_PREF_PAR: &str = "OfxImageClipPropPAR";
 
 fn cs(s: &str) -> CString {
@@ -576,35 +631,37 @@ fn cs(s: &str) -> CString {
 
 // ---- Plugin --------------------------------------------------------------
 
-/// 一个已加载插件（bundle 内的一个 effect 入口）。
+/// A loaded plugin (one effect entry inside a bundle).
 pub struct Plugin {
-	/// 插件标识（OfxPlugin::pluginIdentifier，如 "net.sf.cimg.CImgInvert"）。
+	/// Plugin identifier (OfxPlugin::pluginIdentifier, e.g. "net.sf.cimg.CImgInvert").
 	pub identifier: String,
-	/// 版本号（major/minor）。
+	/// Version number (major/minor).
 	pub version: (u32, u32),
-	/// bundle 路径。
+	/// Bundle path.
 	pub bundle_path: PathBuf,
-	/// describe 得到的支持上下文（filter/generator/transition）。
+	/// Supported contexts from describe (filter/generator/transition).
 	pub contexts: Vec<String>,
-	/// describe 产物（根描述符）。
+	/// The describe output (root descriptor).
 	pub descriptor: EffectDescriptor,
-	/// dlopen 句柄（公开字段供测试构造假插件）。
+	/// The dlopen handle (public so tests can build fake plugins).
 	pub lib: *mut c_void,
-	/// 插件入口函数 `OfxPluginEntryPoint`（公开字段供测试构造；
-	/// 签名与 SDK ofxCore.h:84 逐字一致——handle 是 `const void*`）。
+	/// The plugin entry function `OfxPluginEntryPoint` (public so tests can build fake
+	/// plugins; the signature matches SDK ofxCore.h:84 verbatim—handle is
+	/// `const void*`).
 	pub entry: unsafe extern "C" fn(
 		action: *const c_char,
 		handle: *const c_void,
 		in_args: *mut c_void,
 		out_args: *mut c_void,
 	) -> i32,
-	/// OfxPlugin 结构指针（kOfxImageEffectPropPluginHandle 属性用；
-	/// 公开：测试构造假插件需要）。
+	/// The OfxPlugin struct pointer (used for the kOfxImageEffectPropPluginHandle
+	/// property; public because tests need it to build fake plugins).
 	pub ofx_plugin: *mut c_void,
-	/// 二进制已卸载（host shutdown / unload_all）。置位后任何
-	/// call_action/call_entry 直接失败而不触碰入口——插件入口指向
-	/// 已 dlclose 的代码，调用即 SIGSEGV（测试串行 shutdown/重扫描
-	/// 会产生跨代实例，它们持有的正是旧代插件记录）。
+	/// The binary has been unloaded (host shutdown / unload_all). Once set, any
+	/// call_action/call_entry fails immediately without touching the entry—the plugin
+	/// entry points into dlclose'd code, so calling it would SIGSEGV (tests that shut
+	/// down/rescan serially produce cross-generation instances that hold exactly the
+	/// old-generation plugin records).
 	pub unloaded: std::sync::atomic::AtomicBool,
 }
 
@@ -614,7 +671,7 @@ pub struct Plugin {
 unsafe impl Send for Plugin {}
 unsafe impl Sync for Plugin {}
 
-/// 插件入口函数类型（`OfxPluginEntryPoint`，ofxCore.h:84）。
+/// Plugin entry-function type (`OfxPluginEntryPoint`, ofxCore.h:84).
 pub(crate) type EntryPoint = unsafe extern "C" fn(
 	action: *const c_char,
 	handle: *const c_void,
@@ -622,9 +679,10 @@ pub(crate) type EntryPoint = unsafe extern "C" fn(
 	out_args: *mut c_void,
 ) -> i32;
 
-/// 插件声明的 overlay interact 入口（ofxImageEffect.h:825/812）：
-/// V2 优先、V1 次之；两者都未声明返回 None。属性值是
-/// `Pointer→OfxPluginEntryPoint`（宿主预定义，插件 describe 期写入）。
+/// The overlay interact entry declared by the plugin (ofxImageEffect.h:825/812): V2
+/// takes precedence, then V1; returns None when neither is declared. The property
+/// value is `Pointer→OfxPluginEntryPoint` (predefined by the host and written by the
+/// plugin during describe).
 pub(crate) fn overlay_interact_entry(props: &PropertySet) -> Option<EntryPoint> {
 	for name in [PROP_OVERLAY_INTERACT_V2, PROP_OVERLAY_INTERACT_V1] {
 		if let Some(Value::Pointer(p)) = props.get(name, 0) {
@@ -639,15 +697,15 @@ pub(crate) fn overlay_interact_entry(props: &PropertySet) -> Option<EntryPoint> 
 }
 
 impl Plugin {
-	/// 调插件的 action。`handle` 视 action 而定（describe 时为
-	/// descriptor，render 时为 instance）。`in_args`/`out_args` 按
-	/// OFX 规范组装属性集。
+	/// Calls a plugin action. `handle` depends on the action (the descriptor for
+	/// describe, the instance for render). `in_args`/`out_args` are property sets
+	/// assembled per the OFX spec.
 	///
-	/// 返回 OFX 状态码（kOfxStatOK == 0）。任何插件侧异常/崩溃信号
-	/// 无法捕获——FFI 纪律只兜 Rust 侧 panic。
+	/// Returns the OFX status code (kOfxStatOK == 0). Any plugin-side exception or crash
+	/// signal cannot be caught—the FFI discipline only covers Rust-side panics.
 	///
 	/// # Safety
-	/// `handle`/参数集必须与 action 匹配（规范约定）。
+	/// `handle`/the argument sets must match the action (spec convention).
 	pub(crate) unsafe fn call_action(
 		&self,
 		action: &str,
@@ -665,13 +723,14 @@ impl Plugin {
 		unsafe { (self.entry)(action.as_ptr(), handle as *const c_void, in_ptr, out_ptr) }
 	}
 
-	/// 按指定入口函数调用（interact 的 overlay 入口与 main entry 可
-	/// 不同——插件经 kOfxImageEffectPluginPropOverlayInteractV2 声明）。
-	/// 语义同 [`Plugin::call_action`]。
+	/// Calls through a given entry function (an interact's overlay entry can differ from
+	/// the main entry—the plugin declares it via
+	/// kOfxImageEffectPluginPropOverlayInteractV2). Semantics match
+	/// [`Plugin::call_action`].
 	///
 	/// # Safety
-	/// `entry` 必须是插件导出的合法 OfxPluginEntryPoint；`handle`/参数
-	/// 集与 action 匹配。
+	/// `entry` must be a valid OfxPluginEntryPoint exported by the plugin;
+	/// `handle`/the argument sets must match the action.
 	pub(crate) unsafe fn call_entry(
 		&self,
 		entry: EntryPoint,
@@ -692,7 +751,7 @@ impl Plugin {
 
 // ---- PluginCache ---------------------------------------------------------
 
-/// 一个已加载二进制（dlopen 句柄；多个 Plugin 可共享一个二进制）。
+/// A loaded binary (dlopen handle; several Plugins may share one binary).
 struct LoadedBinary {
 	handle: *mut c_void,
 	bundle_path: PathBuf,
@@ -708,24 +767,30 @@ impl Drop for LoadedBinary {
 unsafe impl Send for LoadedBinary {}
 unsafe impl Sync for LoadedBinary {}
 
-/// 插件缓存（进程单例，见 [`Host::global`]）。
+/// Plugin cache (a process singleton; see [`Host::global`]).
 pub struct PluginCache {
-	/// 已加载插件（identifier 唯一）。
+	/// Loaded plugins (unique by identifier).
 	plugins: Mutex<Vec<Arc<Plugin>>>,
-	/// 已扫描的搜索路径（防重复扫描）。
+	/// Search paths already scanned (prevents rescanning).
 	scanned_paths: Mutex<Vec<PathBuf>>,
-	/// 已加载二进制（dlclose 责任；shutdown 时释放）。
+	/// Loaded binaries (owning dlclose; released on shutdown).
 	binaries: Mutex<Vec<LoadedBinary>>,
 }
 
-/// 进程级串行化 dlopen + `OfxGetNumberOfPlugins`：OFX 二进制在首次
-/// 查询时会跑自身的全局初始化，而这个初始化不是线程安全的（CImg 的
-/// 静态 map 被两个线程同时进入时会损坏内存，见测试并发加载时的
-/// SIGSEGV/SIGABRT）。加载是启动期操作，锁的开销可忽略，却让任何
-/// 调用方（多个 `PluginCache` 实例、后台扫描线程）并发扫描也安全。
+/// Process-wide serialization of dlopen + `OfxGetNumberOfPlugins`: an OFX binary runs
+/// its own global initialization on the first query, and that initialization is not
+/// thread-safe (two threads entering CImg's static map at once corrupts memory; see
+/// the SIGSEGV/SIGABRT during concurrent loading in tests). Loading is a startup
+/// operation, so the lock's cost is negligible while making concurrent scans safe
+/// for any caller (multiple `PluginCache` instances, background scan threads).
 static LOAD_LOCK: Mutex<()> = Mutex::new(());
 
-/// bundle 目录判定：目录名以 `.bundle` 或 `.plugin` 结尾。
+/// Whether a directory name ends in `.bundle` or `.plugin`.
+///
+/// macOS OFX bundles use `.bundle`, while Linux/Windows OFX directories use
+/// `.plugin`. Only the last path component is inspected—neither existence nor the
+/// directory-ness of the path is checked (the caller guarantees it); returns `false`
+/// when the file name is not valid UTF-8.
 fn is_bundle_dir(path: &Path) -> bool {
 	let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
 		return false;
@@ -733,8 +798,8 @@ fn is_bundle_dir(path: &Path) -> bool {
 	name.ends_with(".bundle") || name.ends_with(".plugin")
 }
 
-/// 在 bundle 目录内定位二进制（探测式；`// [P2]` 起读 Info.plist 的
-/// CFBundleExecutable）。
+/// Locates the binary inside a bundle directory (probing; reading Info.plist's
+/// CFBundleExecutable is deferred to `// [P2]`).
 fn find_binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
 	let contents = bundle.join("Contents");
 	for platform_dir in [
@@ -766,22 +831,23 @@ fn find_binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
 	None
 }
 
-/// 默认插件搜索路径（扫描顺序）：OFX 规范的用户/系统级位置（按平台
-/// cfg 组织）、Olive app-relative 位置（C++ 对齐，olivehost.cpp:104-107）。
+/// Default plugin search paths (scan order): the OFX-spec user/system locations
+/// (organized by platform cfg) and the Olive app-relative locations (C++ parity,
+/// olivehost.cpp:104-107).
 ///
-/// OFX 官方标准位置（见 OFX "plug-in discovery" 规范）：
+/// Official OFX standard locations (see the OFX "plug-in discovery" spec):
 ///
-/// * macOS：用户 `~/Library/OFX/Plugins`、系统 `/Library/OFX/Plugins`
-/// * Windows：`%ProgramFiles%\Common Files\OFX\Plugins`（`%ProgramFiles%`
-///   未设置时回退字面 `C:\Program Files\...`）
-/// * Linux：`/usr/OFX/Plugins`、`/usr/local/OFX/Plugins`
+/// * macOS: user `~/Library/OFX/Plugins`, system `/Library/OFX/Plugins`
+/// * Windows: `%ProgramFiles%\Common Files\OFX\Plugins` (falls back to the literal
+///   `C:\Program Files\...` when `%ProgramFiles%` is unset)
+/// * Linux: `/usr/OFX/Plugins`, `/usr/local/OFX/Plugins`
 ///
-/// 外加 Olive 的历史位置：`$HOME/.OFX/Plugins`、
-/// `$HOME/.local/share/OFX/Plugins`、`$HOME/.local/share/olive/ofx/Plugins`、
-/// `../OFX/Plugins`、`../share/olive/ofx/Plugins`、`../lib/olive/ofx/Plugins`。
-/// 环境变量（`OFX_PLUGIN_PATH`/`OLIVE_OFX_PLUGIN_PATH`/`OLIVE_PLUGIN_PATH`）
-/// 由 [`PluginCache::scan`] 追加。`home` 为 `$HOME`；`None` 时跳过所有
-/// home 基路径。
+/// Plus Olive's legacy locations: `$HOME/.OFX/Plugins`,
+/// `$HOME/.local/share/OFX/Plugins`, `$HOME/.local/share/olive/ofx/Plugins`,
+/// `../OFX/Plugins`, `../share/olive/ofx/Plugins`, `../lib/olive/ofx/Plugins`.
+/// Environment variables (`OFX_PLUGIN_PATH`/`OLIVE_OFX_PLUGIN_PATH`/
+/// `OLIVE_PLUGIN_PATH`) are appended by [`PluginCache::scan`]. `home` is `$HOME`;
+/// when `None`, all home-based paths are skipped.
 fn default_plugin_paths(home: Option<&Path>) -> Vec<PathBuf> {
 	let mut paths = Vec::new();
 	if let Some(home) = home {
@@ -819,9 +885,10 @@ fn default_plugin_paths(home: Option<&Path>) -> Vec<PathBuf> {
 	paths
 }
 
-/// 把 `canonical` 记入已扫描路径表，返回 `false` 时表示已存在（调用方
-/// 跳过再次扫描）。保持首见顺序；去重键是规范化后的路径（HS:
-/// addFileToPath 的 weakly_canonical 语义）。
+/// Records `canonical` in the scanned-path table; a `false` return means it was
+/// already present (the caller skips scanning it again). First-seen order is
+/// preserved; the dedupe key is the canonicalized path (HS: addFileToPath's
+/// weakly_canonical semantics).
 fn record_scanned_path(seen: &mut Vec<PathBuf>, canonical: PathBuf) -> bool {
 	if seen.iter().any(|p| p == &canonical) {
 		return false;
@@ -831,11 +898,12 @@ fn record_scanned_path(seen: &mut Vec<PathBuf>, canonical: PathBuf) -> bool {
 }
 
 impl PluginCache {
-	/// 扫描标准目录（OFX 规范 + C++ 对齐）：用户级 `$HOME` 路径、平台
-	/// 系统级路径（macOS/Linux/Windows）、Olive app-relative 路径，以及
-	/// `OFX_PLUGIN_PATH`/`OLIVE_OFX_PLUGIN_PATH`/`OLIVE_PLUGIN_PATH` 三个
-	/// 环境变量。重复调用是 no-op（按规范化路径去重）；不存在的目录
-	/// 直接跳过（见 [`Self::scan_path`]）。
+	/// Scans the standard directories (OFX spec + C++ parity): user-level `$HOME` paths,
+	/// platform system-level paths (macOS/Linux/Windows), Olive app-relative paths, and
+	/// the three environment variables
+	/// `OFX_PLUGIN_PATH`/`OLIVE_OFX_PLUGIN_PATH`/`OLIVE_PLUGIN_PATH`. Repeated calls are
+	/// a no-op (dedupe by canonicalized path); nonexistent directories are skipped (see
+	/// [`Self::scan_path`]).
 	pub fn scan(&self) -> crate::error::Result<()> {
 		let home = std::env::var("HOME").ok().filter(|h| !h.is_empty());
 		let mut paths = default_plugin_paths(home.as_deref().map(Path::new));
@@ -856,7 +924,18 @@ impl PluginCache {
 		Ok(())
 	}
 
-	/// 追加一个自定义搜索目录并扫描之（递归至深度 3；按路径去重）。
+	/// Appends a custom search directory and scans the plugin bundles inside it.
+	///
+	/// The path is `canonicalize`d first (used as-is on failure) and then deduped by
+	/// canonical path; a repeated call returns `Ok(())` immediately, and a non-directory
+	/// likewise returns silently. The scan depth is capped at 3 (`walk_dirs`), and each
+	/// matching bundle is handed to `PluginCache::load_bundle`.
+	///
+	/// # Errors
+	///
+	/// Failures for a single bundle are only logged and not propagated, so today this
+	/// always returns `Ok(())`; the `Result` is kept for a future scan implementation
+	/// that can genuinely fail.
 	pub fn scan_path(&self, path: &std::path::Path) -> crate::error::Result<()> {
 		// 规范化去重（HS: addFileToPath 的 weakly_canonical）。
 		let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -877,8 +956,16 @@ impl PluginCache {
 		Ok(())
 	}
 
-	/// 加载一个 bundle（幂等：按 bundle 路径去重）。每个早退分支都打
-	/// 诊断日志——静默失败会让效果库毫无线索地缺插件。
+	/// Loads the plugins in one bundle and registers them in the cache (idempotent:
+	/// deduped by bundle path).
+	///
+	/// Flow: locate the binary inside the bundle (`find_binary_in_bundle`) → `dl_open` →
+	/// run setHost/load/describe under [`LOAD_LOCK`] (`collect_plugins`) → dedupe by
+	/// identifier and insert; the handle is handed to `LoadedBinary` and only `dlclose`d
+	/// when the cache unloads. A missing binary, a dlopen failure, no usable plugins, or
+	/// a bundle already loaded all return early and release the handle; every
+	/// early-return branch logs a diagnostic—silent failures leave the effect library
+	/// missing plugins with no clue.
 	fn load_bundle(&self, bundle: &Path) {
 		// 串行化插件二进制的首次查询（见 [`LOAD_LOCK`]）。
 		let _load = LOAD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -920,10 +1007,10 @@ impl PluginCache {
 		});
 	}
 
-	/// 从已加载二进制收集插件（setHost → load → describe）。
+	/// Collects plugins from a loaded binary (setHost → load → describe).
 	///
 	/// # Safety
-	/// `handle` 必须是有效 dlopen 句柄。
+	/// `handle` must be a valid dlopen handle.
 	unsafe fn collect_plugins(&self, handle: *mut c_void, bundle: &Path) -> Vec<Arc<Plugin>> {
 		let get_no: unsafe extern "C" fn() -> c_int =
 			match unsafe { dlsym_fn(handle, "OfxGetNumberOfPlugins") } {
@@ -956,10 +1043,27 @@ impl PluginCache {
 		out
 	}
 
-	/// 读 OfxPlugin 头部并跑 setHost/load/describe。
+	/// Validates the `OfxPlugin` header and runs setHost → load → describe in order to
+	/// build a plugin record.
+	///
+	/// Only accepts plugins whose API is `OfxImageEffectPluginAPI` v1, whose identifier
+	/// is readable, and that have a main entry; the process-level host struct handed to
+	/// setHost comes from [`global_ofx_host`]. load and describe accept
+	/// `kOfxStatOK`/`kOfxStatReplyDefault`; any other status, a null pointer, or invalid
+	/// UTF-8 returns `None` with one diagnostic log line. After describe, the supported
+	/// contexts are read and only Filter/Generator/Transition/General are kept; if none
+	/// remains, `None` is returned as well.
+	///
+	/// `lib` is the dlopen handle, stored verbatim in the new plugin for later main entry
+	/// calls; `bundle` is used for diagnostics and the descriptor's
+	/// `OfxPropPluginFilePath`. The returned plugin is not yet in the cache—the caller
+	/// (`collect_plugins`) dedupes by identifier and registers it.
 	///
 	/// # Safety
-	/// `ofx` 指向插件导出的有效 OfxPlugin 结构。
+	///
+	/// `ofx` must point to a valid `OfxPlugin` struct exported by the plugin, and `lib`
+	/// must be the dlopen handle of the library containing that plugin, still unloaded;
+	/// `bundle` must stay alive until this call returns.
 	unsafe fn build_plugin(
 		&self,
 		ofx: *mut OfxPlugin,
@@ -1061,12 +1165,16 @@ impl PluginCache {
 		Some(Arc::new(plugin))
 	}
 
-	/// 已加载插件数量。
+	/// Number of loaded plugins.
 	pub fn count(&self) -> usize {
 		self.plugins.lock().unwrap_or_else(|e| e.into_inner()).len()
 	}
 
-	/// 第 `index` 个插件（扫描顺序稳定）。
+	/// The `index`-th loaded plugin, in discovery (load) order; returns `None` when out
+	/// of range.
+	///
+	/// Returns a shared handle; the plugin is not unloaded while the caller holds it. Use
+	/// together with [`PluginCache::count`] when iterating the whole table.
 	pub fn at(&self, index: usize) -> Option<Arc<Plugin>> {
 		self.plugins
 			.lock()
@@ -1075,7 +1183,12 @@ impl PluginCache {
 			.cloned()
 	}
 
-	/// 按标识查找。
+	/// Finds a loaded plugin by its plugin identifier and returns a shared handle;
+	/// returns `None` when it is not loaded.
+	///
+	/// The identifier comparison is case-sensitive and must exactly match the identifier
+	/// the plugin reports during describe; only the first loaded record is kept for a
+	/// given identifier (see `PluginCache::load_bundle`).
 	pub fn find(&self, identifier: &str) -> Option<Arc<Plugin>> {
 		self.plugins
 			.lock()
@@ -1085,11 +1198,13 @@ impl PluginCache {
 			.cloned()
 	}
 
-	/// 卸载全部（shutdown 路径）。`scanned_paths` 一并清空——
-	/// 否则再 init 后的扫描会被去重短路（缓存已空但路径仍在）。
-	/// 卸载前先给每个插件置 `unloaded`：实例可能跨代存活（测试的
-	/// 串行 shutdown/重扫描），它们持有的旧代入口已随 dlclose 失效，
-	/// 置位后 call_action 直接失败而非跳野指针。
+	/// Unloads everything (the shutdown path). `scanned_paths` is cleared as well—
+	/// otherwise a scan after re-init would be short-circuited by dedupe (the cache is
+	/// empty but the paths remain). Before unloading, every plugin is marked
+	/// `unloaded`: instances may survive across generations (serial shutdown/rescan in
+	/// tests) and the old-generation entry points they hold have been invalidated by
+	/// dlclose, so with the flag set call_action fails immediately instead of jumping to
+	/// a wild pointer.
 	pub(crate) fn unload_all(&self) {
 		{
 			let plugins = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
@@ -1110,7 +1225,13 @@ impl PluginCache {
 	}
 }
 
-/// 递归枚举目录下的 bundle 目录（深度受限，防符号链接环）。
+/// Recursively enumerates bundle directories under a directory.
+///
+/// Starts at `dir`, with `depth` the current depth (callers pass 0); returns
+/// immediately when `depth > max_depth`. Only directories whose name ends in
+/// `.bundle`/`.plugin` are collected into `out` (see [`is_bundle_dir`]), and bundle
+/// interiors are not entered. The depth cap also guards against symlink loops;
+/// directories that fail to read are skipped silently.
 fn walk_dirs(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
 	if depth > max_depth {
 		return;
@@ -1131,8 +1252,17 @@ fn walk_dirs(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>)
 	}
 }
 
-/// 根描述符属性表（HS: effectDescriptorStuff 的子集，
-/// ofxhImageEffect.cpp:133-155）。
+/// Writes the root descriptor (effect descriptor) property table; called before the
+/// describe action (HS: a subset of effectDescriptorStuff,
+/// ofxhImageEffect.cpp:133-155).
+///
+/// `props` is the plugin's descriptor property set, and `bundle` is used for
+/// `OfxPropPluginFilePath` so the plugin knows which bundle it lives in. What is
+/// preset here is the "property universe + defaults": type `OfxTypeImageEffect`,
+/// empty label/grouping/description, tile and multi-resolution support, overlay
+/// interact V1/V2 and GL capability slots as null pointers or `false`, and ofxColour
+/// style None; the plugin overrides them as needed through the property suite during
+/// describe. This only writes properties and never calls plugin code.
 fn init_descriptor_props(props: &PropertySet, bundle: &Path) {
 	props.set_one(PROP_TYPE, Value::String(cs("OfxTypeImageEffect")));
 	props.set_one(PROP_LABEL, Value::String(cs("")));
@@ -1192,7 +1322,13 @@ fn init_descriptor_props(props: &PropertySet, bundle: &Path) {
 	props.define(PROP_COLOUR_AVAILABLE_CONFIGS, vec![]);
 }
 
-/// describe 后读支持上下文。
+/// Reads the supported contexts the plugin writes during describe
+/// (`OfxImageEffectPropSupportedContexts`).
+///
+/// Reads the String value of each property dimension in turn, skipping non-string
+/// slots; returns an empty `Vec` when the property is absent. The order matches the
+/// plugin's write order and no filtering is done—standard-context selection is the
+/// caller's (`build_plugin`) responsibility.
 fn read_contexts(props: &PropertySet) -> Vec<String> {
 	let mut out = Vec::new();
 	let dim = props.dimension(PROP_SUPPORTED_CONTEXTS);
@@ -1206,20 +1342,23 @@ fn read_contexts(props: &PropertySet) -> Vec<String> {
 
 // ---- Host -----------------------------------------------------------------
 
-/// 宿主。持有宿主级属性集（kOfxPropName/Version 与能力宣告属性）
-/// 与插件缓存；是 suite 的注册与分发点。
+/// The host. Owns the host-level property set (kOfxPropName/Version and the
+/// capability declaration properties) and the plugin cache; it is the registration
+/// and dispatch point for suites.
 pub struct Host {
-	/// 宿主属性集（kOfxProp* 宿主级属性；能力宣告如
-	/// kOfxImageEffectPropSupportedPixelDepths——协商的宿主侧输入）。
+	/// The host property set (kOfxProp* host-level properties; capability declarations
+	/// such as kOfxImageEffectPropSupportedPixelDepths—the host-side input to
+	/// negotiation).
 	pub props: PropertySet,
-	/// 插件缓存。
+	/// Plugin cache.
 	pub cache: PluginCache,
-	/// 活跃实例注册表（泄漏断言与调试）。
+	/// Registry of live instances (leak assertions and debugging).
 	pub(crate) instances: Mutex<Vec<std::sync::Weak<RefBox<Instance>>>>,
 }
 
 impl Host {
-	/// 进程单例。首次调用构建宿主属性集（能力宣告在此写入）。
+	/// The process singleton. The first call builds the host property set (capability
+	/// declarations are written here).
 	pub fn global() -> &'static Host {
 		static HOST: OnceLock<Host> = OnceLock::new();
 		HOST.get_or_init(|| {
@@ -1237,13 +1376,13 @@ impl Host {
 		})
 	}
 
-	/// 上下文选择 + 实例化（filter 优先；实例化失败时按 general →
-	/// tracker → paint → 其余支持上下文的顺序回退——TrackerPM 这类
-	/// 插件 describe 支持 filter，但其 createInstance 在非
-	/// paint/tracker/general 上下文抓不到 Mask clip 会炸
-	/// BadHandle；Natron 上它天然以 tracker 上下文实例化）。
-	/// 返回实际使用的上下文与实例；所有上下文都失败时返回最后一个
-	/// 错误。
+	/// Context selection + instantiation (filter first; on failure, fall back in the
+	/// order general → tracker → paint → the remaining supported contexts—plugins such
+	/// as TrackerPM describe filter support, but their createInstance blows up with
+	/// BadHandle outside paint/tracker/general because it cannot grab the Mask clip; in
+	/// Natron it naturally instantiates in the tracker context). Returns the context
+	/// actually used together with the instance; when every context fails, returns the
+	/// last error.
 	pub fn create_instance_preferred(
 		&self,
 		identifier: &str,
@@ -1275,12 +1414,11 @@ impl Host {
 		Err(last_err)
 	}
 
-	/// 按标识创建实例（describeInContext → createInstance）。
-	/// 参照 HS: ofxhImageEffectAPI.cpp:200-238（describeInContext 的
-	/// in-args 只有 kOfxImageEffectPropContext）与
-	/// ofxhImageEffect.cpp:389-460（populate：clip/param 实例化）。
-	/// `context` 为空用插件首个支持上下文。失败返回
-	/// [`crate::error::Error::Failed`]/[`crate::error::Error::NotFound`]。
+	/// Creates an instance by identifier (describeInContext → createInstance). References
+	/// HS: ofxhImageEffectAPI.cpp:200-238 (describeInContext's in-args contain only
+	/// kOfxImageEffectPropContext) and ofxhImageEffect.cpp:389-460 (populate: clip/param
+	/// instantiation). An empty `context` uses the plugin's first supported context.
+	/// Failures return [`crate::error::Error::Failed`]/[`crate::error::Error::NotFound`].
 	pub fn create_instance(
 		&self,
 		identifier: &str,
@@ -1398,14 +1536,16 @@ impl Host {
 		Ok(arc)
 	}
 
-	/// 关闭宿主（`quercusplugin_host_shutdown` 的宿主侧）：
-	/// 1. 对全部活实例发 destroyInstance 通知（此刻插件仍加载）；
-	/// 2. 打取消标记——shutdown 后仍被 C 侧持有的句柄不得再调
-	///    已卸载的插件入口（render 入口即短路）；
-	/// 3. 卸载插件与二进制。
+	/// Shuts down the host (the host side of `quercusplugin_host_shutdown`):
+	/// 1. send the destroyInstance notification to all live instances (plugins are still
+	///    loaded at this point);
+	/// 2. set cancel flags—handles still held by the C side after shutdown must not call
+	///    unloaded plugin entry points again (the render entry short-circuits);
+	/// 3. unload plugins and binaries.
 	///
-	/// 说明：C 侧句柄持有 Arc，宿主无法（也不应）强制析构——实例
-	/// 内存随句柄释放；destroyed 标记保证 Drop 不再碰插件入口。
+	/// Note: C-side handles hold the Arc, so the host cannot (and should not) force
+	/// destruction—instance memory is released with the handle; the destroyed flag
+	/// ensures Drop no longer touches plugin entry points.
 	pub fn shutdown(&self) {
 		let list = self.instances.lock().unwrap_or_else(|e| e.into_inner());
 		for w in list.iter() {
@@ -1424,7 +1564,7 @@ impl Host {
 		self.cache.unload_all();
 	}
 
-	/// 当前活跃实例数（泄漏断言）。
+	/// Current number of live instances (leak assertion).
 	pub fn alive_count(&self) -> usize {
 		let mut list = self.instances.lock().unwrap_or_else(|e| e.into_inner());
 		let alive = list.iter().filter(|w| w.strong_count() > 0).count();
@@ -1433,8 +1573,21 @@ impl Host {
 	}
 }
 
-/// 宿主属性集（对照 C++ OliveHost::OliveHost，olivehost.cpp:193-207：
-/// Name/Label/Version；能力宣告为 phase 1 最小集，协商按需扩展）。
+/// Builds the host-level property set (called exactly once when the process singleton
+/// [`Host::global`] initializes; cf. C++ `OliveHost::OliveHost`,
+/// olivehost.cpp:193-207).
+///
+/// First writes the three identity entries Name/Label/Version, then all capability
+/// slots the ofxs support library reads with `throwOnFailure=true`: OfxType=OfxTypeHost,
+/// OfxPropAPIVersion 1.4, supported contexts/components/pixel depths (phase 1 only
+/// `OfxBitDepthFloat` and RGBA/RGB/Alpha), frame thread safety FullySafe, temporal
+/// clip access, tile/multi-resolution support, GL render and overlay support, and
+/// ofxColour's OCIO mode + native config.
+///
+/// A missing entry makes the first plugin's load fail outright (once
+/// gHostDescriptionHasInit is set, plugins only see a half-initialized description).
+/// `props` must be an empty property set and this must run before any plugin is
+/// loaded.
 fn init_host_props(props: &PropertySet) {
 	// ofxCore.h 宿主属性集的必备项：OfxType=OfxTypeHost 与
 	// OfxPropAPIVersion（int[2]，宿主实现的 API 版本）——ofxs 支持库的
@@ -1540,8 +1693,16 @@ fn init_host_props(props: &PropertySet) {
 	);
 }
 
-/// 实例属性表（HS: effectInstanceStuff 的 phase 1 子集，
-/// ofxhImageEffect.cpp:313-330）。
+/// Writes the instance-level property table (HS: the phase 1 subset of
+/// effectInstanceStuff, ofxhImageEffect.cpp:313-330); called before createInstance.
+///
+/// `props` is the new instance's property set; `instance` supplies the context name
+/// (OfxPropContext) and the plugin handle (OfxImageEffectPropPluginHandle). Project
+/// size/offset/extent are written as 1920×1080, PAR 1.0, frame rate 24, duration
+/// 1.0—currently fixed placeholder values; the code tree has no path that
+/// overwrites them from the actual project. Colour management is fixed to OCIO mode
+/// + the native config (ofxColour.h: style/config/OCIOConfig must be set on the
+/// instance by the host).
 fn init_instance_props(props: &PropertySet, instance: &Instance) {
 	props.set_one(PROP_TYPE, Value::String(cs("OfxTypeImageEffectInstance")));
 	props.set_one(PROP_CONTEXT, Value::String(cs(&instance.context)));
@@ -1685,7 +1846,7 @@ mod tests {
 		}
 	}
 
-	/// build.rs 编出的最小测试插件共享库。
+	/// The minimal test-plugin shared library built by build.rs.
 	fn fixture_lib() -> Option<PathBuf> {
 		let out = PathBuf::from(env!("OUT_DIR"));
 		let lib = out.join(if cfg!(target_os = "macos") {
@@ -1696,7 +1857,8 @@ mod tests {
 		lib.is_file().then_some(lib)
 	}
 
-	/// 现场装配一个含测试插件二进制的 `.ofx.bundle`（平台目录探测）。
+	/// Assembles a `.ofx.bundle` containing the test-plugin binary on the fly (platform
+	/// directory probing).
 	fn make_fixture_bundle(tag: &str) -> Option<(PathBuf, PathBuf)> {
 		let lib = fixture_lib()?;
 		let platform = if cfg!(target_os = "macos") {
@@ -1782,7 +1944,7 @@ mod tests {
 		})
 	}
 
-	/// 隔离的 Host（本地 cache/instances，避免触碰进程单例）。
+	/// An isolated Host (local cache/instances, avoiding the process singleton).
 	fn local_host(plugins: Vec<Arc<Plugin>>) -> Host {
 		Host {
 			props: PropertySet::new(),
@@ -2035,7 +2197,8 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&root2);
 	}
 
-	/// 可加载但无 OFX 导出符号的库 → collect_plugins 空（Linux libc）。
+	/// A loadable library with no OFX export symbols → collect_plugins is empty (Linux
+	/// libc).
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn collect_plugins_without_ofx_symbols_is_empty() {
@@ -2063,7 +2226,7 @@ mod tests {
 		assert!(plugins.is_empty());
 	}
 
-	/// 可加载但无插件的 bundle → 记录 no usable plugins 并 dlclose。
+	/// A loadable bundle with no plugins → logs no usable plugins and dlcloses.
 	#[cfg(target_os = "linux")]
 	#[test]
 	fn load_bundle_without_ofx_plugins_reports_and_unloads() {
@@ -2385,8 +2548,8 @@ mod tests {
 		assert_eq!(host.alive_count(), 0);
 	}
 
-	/// `register_plugin_nodes` 对无法实例化的缓存项记录原因并跳过，
-	/// 对可实例化的登记动态节点。
+	/// `register_plugin_nodes` logs the reason and skips cache entries that cannot be
+	/// instantiated, and registers instantiable ones as dynamic nodes.
 	#[test]
 	fn register_plugin_nodes_skips_uninstantiable_and_registers_ok_plugins() {
 		static LOCK: Mutex<()> = Mutex::new(());

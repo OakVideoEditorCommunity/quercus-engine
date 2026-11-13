@@ -8,6 +8,17 @@ use quercus_node::value::QuercusNodeValue;
 use super::prelude::*;
 use super::{push, push_command, project::lock};
 
+/// Looks up the declared value type of a node input.
+///
+/// `p` is the project to read (its graph is locked for the lookup), `node` the
+/// node owning the input and `input` the input key. Callers pass the result to
+/// `QuercusNodeValue::to_node_value` to convert a POD value into the declared
+/// representation, so a payload of the wrong type is rejected instead of
+/// stored.
+///
+/// # Errors
+///
+/// Returns a message when the node is unknown or does not declare `input`.
 fn input_type(p: &ProjectRef, node: NodeId, input: &str) -> Result<quercus_node::value::ValueType, String> {
 	let guard = lock(p);
 	guard

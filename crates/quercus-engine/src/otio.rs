@@ -162,8 +162,22 @@ pub const QUERCUS_OTIO_COMPOSABLE_OTHER: i32 = 3;
 // Document (OTIO JSON root)
 // ---------------------------------------------------------------------------
 
-/// Parses an OTIO JSON document. Null on invalid input or a parse
-/// error.
+/// Parses an OTIO JSON document into an opaque document handle.
+///
+/// `json` is a borrowed `(ptr, len)` byte slice holding a UTF-8 OTIO JSON
+/// string. It is only read during the call and never stored. The returned
+/// handle starts at ref count 1 and must be released with
+/// `quercus_otio_document_release`.
+///
+/// # Returns
+///
+/// A new [`QuercusOtioDocument`], or null when `json` is null, is not valid
+/// UTF-8, or the text fails to parse as OTIO JSON.
+///
+/// # Safety
+///
+/// `json` must be null or point to `json_len` readable bytes for the
+/// duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_from_json(
 	json: *const u8,
@@ -180,8 +194,21 @@ pub unsafe extern "C" fn quercus_otio_document_from_json(
 	}
 }
 
-/// Serializes the document to OTIO JSON, snprintf-style; -1 on a null
-/// handle or a serialization error.
+/// Serializes the whole document to OTIO JSON, snprintf-style.
+///
+/// Writes at most `buf_len - 1` bytes plus a trailing NUL into `buf`; pass
+/// `buf = null, buf_len = 0` to query the required size. The root is
+/// emitted as-is, so raw (unrecognized) documents round-trip unchanged.
+///
+/// # Returns
+///
+/// The byte length of the JSON (excluding the NUL), which may exceed the
+/// truncated write, or -1 when `doc` is null or serialization fails.
+///
+/// # Safety
+///
+/// `doc` must be a live document handle (or null); `buf` must be null or
+/// point to `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_to_json(
 	doc: *const QuercusOtioDocument,
@@ -201,8 +228,16 @@ pub unsafe extern "C" fn quercus_otio_document_to_json(
 	}
 }
 
-/// The root kind: [`QUERCUS_OTIO_DOC_TIMELINE`], [`QUERCUS_OTIO_DOC_COLLECTION`]
-/// or [`QUERCUS_OTIO_DOC_RAW`]; -1 on a null handle.
+/// Classifies the document's root node.
+///
+/// # Returns
+///
+/// [`QUERCUS_OTIO_DOC_TIMELINE`], [`QUERCUS_OTIO_DOC_COLLECTION`] or
+/// [`QUERCUS_OTIO_DOC_RAW`], or -1 when `doc` is null.
+///
+/// # Safety
+///
+/// `doc` must be a live document handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_kind(doc: *const QuercusOtioDocument) -> i32 {
 	if doc.is_null() {
@@ -215,8 +250,20 @@ pub unsafe extern "C" fn quercus_otio_document_kind(doc: *const QuercusOtioDocum
 	}
 }
 
-/// Clones the root timeline out of the document (null when the root
-/// is not a timeline).
+/// Clones the document's root timeline out of the document.
+///
+/// The clone is detached from the document: editing it does not write back.
+/// Use it for inspection, or pass it to
+/// `quercus_otio_document_from_timeline` to rebuild a document root.
+///
+/// # Returns
+///
+/// A new timeline handle at ref count 1, or null when `doc` is null or the
+/// root is not a timeline (collection or raw).
+///
+/// # Safety
+///
+/// `doc` must be a live document handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_timeline(
 	doc: *const QuercusOtioDocument,
@@ -236,8 +283,19 @@ pub unsafe extern "C" fn quercus_otio_document_timeline(
 	}
 }
 
-/// The number of timeline children of a collection root; 0 for other
-/// roots, -1 on a null handle.
+/// Counts the timeline children of a collection root.
+///
+/// Only children that are timelines are counted, which makes the result the
+/// index space of `quercus_otio_document_collection_timeline_at`.
+///
+/// # Returns
+///
+/// The number of timeline children, 0 for a non-collection root, or -1 when
+/// `doc` is null.
+///
+/// # Safety
+///
+/// `doc` must be a live document handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_collection_timeline_count(
 	doc: *const QuercusOtioDocument,
@@ -256,9 +314,20 @@ pub unsafe extern "C" fn quercus_otio_document_collection_timeline_count(
 	}
 }
 
-/// Clones the `index`-th timeline child of a collection root (index
-/// among timelines only); null on a null handle, a non-collection
-/// root, or an out-of-range index.
+/// Clones the `index`-th timeline child out of a collection root.
+///
+/// `index` is 0-based and counts timeline children only; other children of
+/// the collection are skipped. The returned handle is a detached copy.
+///
+/// # Returns
+///
+/// A new timeline handle at ref count 1, or null when `doc` is null, `index`
+/// is negative, the root is not a collection, or `index` is past the last
+/// timeline child.
+///
+/// # Safety
+///
+/// `doc` must be a live document handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_collection_timeline_at(
 	doc: *const QuercusOtioDocument,
@@ -288,7 +357,22 @@ pub unsafe extern "C" fn quercus_otio_document_collection_timeline_at(
 	}
 }
 
-/// Wraps a timeline as a document (for JSON serialization).
+/// Wraps a copy of a timeline as a document root.
+///
+/// This is the document-level counterpart of
+/// `quercus_otio_document_timeline` and the way to serialize a timeline
+/// built through the structured API: pass the result to
+/// `quercus_otio_document_to_json`. The timeline is deep-cloned, so later
+/// edits to `timeline` are not reflected in the document.
+///
+/// # Returns
+///
+/// A new document handle at ref count 1 whose kind is
+/// [`QUERCUS_OTIO_DOC_TIMELINE`], or null when `timeline` is null.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_document_from_timeline(
 	timeline: *const QuercusOtioTimeline,
@@ -314,8 +398,22 @@ pub extern "C" fn quercus_otio_timelines_new() -> *mut QuercusOtioTimelines {
 	}) as *mut QuercusOtioTimelines
 }
 
-/// Parses an FCPXML document (one timeline per `<sequence>`). Null on
-/// invalid input or a parse error.
+/// Parses an FCPXML document into a timeline list.
+///
+/// `xml` is a borrowed `(ptr, len)` UTF-8 byte slice; one timeline is
+/// produced per `<sequence>` element. The buffer is only read during the
+/// call.
+///
+/// # Returns
+///
+/// A new list handle at ref count 1, or null when `xml` is null, is not valid
+/// UTF-8, or fails to parse. The list may legitimately be empty when the
+/// document parses but contains no sequence.
+///
+/// # Safety
+///
+/// `xml` must be null or point to `xml_len` readable bytes for the duration
+/// of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_from_fcpxml(
 	xml: *const u8,
@@ -332,8 +430,21 @@ pub unsafe extern "C" fn quercus_otio_timelines_from_fcpxml(
 	}
 }
 
-/// Serializes the timeline list to FCPXML, snprintf-style; -1 on a
-/// null handle or a serialization error.
+/// Serializes the timeline list to an FCPXML document, snprintf-style.
+///
+/// Every timeline in the list becomes one `<sequence>`. At most
+/// `buf_len - 1` bytes plus a trailing NUL are written; pass
+/// `buf = null, buf_len = 0` to query the required size.
+///
+/// # Returns
+///
+/// The byte length of the XML (excluding the NUL), which may exceed the
+/// truncated write, or -1 when `timelines` is null or serialization fails.
+///
+/// # Safety
+///
+/// `timelines` must be a live list handle (or null); `buf` must be null or
+/// point to `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_to_fcpxml(
 	timelines: *const QuercusOtioTimelines,
@@ -353,7 +464,18 @@ pub unsafe extern "C" fn quercus_otio_timelines_to_fcpxml(
 	}
 }
 
-/// Number of timelines in the list; -1 on a null handle.
+/// Counts the timelines in a list.
+///
+/// The count is the index range accepted by `quercus_otio_timelines_at` and
+/// `quercus_otio_timelines_set`.
+///
+/// # Returns
+///
+/// The number of timelines, or -1 when `timelines` is null.
+///
+/// # Safety
+///
+/// `timelines` must be a live list handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_count(timelines: *const QuercusOtioTimelines) -> i32 {
 	if timelines.is_null() {
@@ -362,8 +484,19 @@ pub unsafe extern "C" fn quercus_otio_timelines_count(timelines: *const QuercusO
 	lock(&unsafe { &*timelines }.inner).len() as i32
 }
 
-/// Clones the timeline at `index` out of the list; null on a null
-/// handle or an out-of-range index.
+/// Clones the timeline at `index` out of the list.
+///
+/// `index` is 0-based. The result is detached; edit it and write it back
+/// with `quercus_otio_timelines_set` if the list should change.
+///
+/// # Returns
+///
+/// A new timeline handle at ref count 1, or null when `timelines` is null,
+/// `index` is negative, or `index` is not a valid position in the list.
+///
+/// # Safety
+///
+/// `timelines` must be a live list handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_at(
 	timelines: *const QuercusOtioTimelines,
@@ -382,9 +515,21 @@ pub unsafe extern "C" fn quercus_otio_timelines_at(
 	}) as *mut QuercusOtioTimeline
 }
 
-/// Replaces the timeline at `index` with a copy of `timeline`
-/// (write-back after editing). False on a null handle or an
-/// out-of-range index.
+/// Replaces the timeline at `index` with a deep copy of `timeline`.
+///
+/// This is the write-back half of the traverse-edit-write pattern: clone out
+/// with `quercus_otio_timelines_at`, edit the clone, then call this. The
+/// list keeps its length and `timeline` itself is unchanged.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `timelines` or `timeline` is null, `index`
+/// is negative, or `index` is past the end of the list.
+///
+/// # Safety
+///
+/// `timelines` and `timeline` must be live handles of their respective types
+/// (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_set(
 	timelines: *mut QuercusOtioTimelines,
@@ -403,7 +548,19 @@ pub unsafe extern "C" fn quercus_otio_timelines_set(
 	true
 }
 
-/// Appends a copy of `timeline` to the list. False on a null handle.
+/// Appends a deep copy of `timeline` to the end of the list.
+///
+/// Grows the list by one; the stored copy is independent of `timeline`,
+/// which the caller still owns. Pairs with `quercus_otio_timelines_new` when
+/// assembling an FCPXML export.
+///
+/// # Returns
+///
+/// `true` on success, `false` when either handle is null.
+///
+/// # Safety
+///
+/// Both pointers must be live handles of their respective types (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timelines_add(
 	timelines: *mut QuercusOtioTimelines,
@@ -421,8 +578,20 @@ pub unsafe extern "C" fn quercus_otio_timelines_add(
 // Timeline
 // ---------------------------------------------------------------------------
 
-/// A new named timeline with an empty tracks stack (ref count 1).
-/// Null on invalid input.
+/// Creates a named timeline with an empty tracks stack.
+///
+/// `name` is a borrowed `(ptr, len)` UTF-8 byte slice; it is copied, so the
+/// caller may free the buffer afterwards. It may be empty, but the pointer
+/// must be non-null.
+///
+/// # Returns
+///
+/// A new timeline handle at ref count 1, or null when `name` is null or not
+/// valid UTF-8.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_new(
 	name: *const u8,
@@ -436,7 +605,20 @@ pub unsafe extern "C" fn quercus_otio_timeline_new(
 	}) as *mut QuercusOtioTimeline
 }
 
-/// The timeline name, snprintf-style; -1 on a null handle.
+/// Copies the timeline's name into `buf`, snprintf-style.
+///
+/// At most `buf_len - 1` bytes plus a trailing NUL are written; pass
+/// `buf = null, buf_len = 0` to query the required size.
+///
+/// # Returns
+///
+/// The byte length of the name (excluding the NUL), which may exceed the
+/// truncated write, or -1 when `timeline` is null.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null); `buf` must be null
+/// or point to `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_name(
 	timeline: *const QuercusOtioTimeline,
@@ -450,7 +632,20 @@ pub unsafe extern "C" fn quercus_otio_timeline_name(
 	copy_str_out(&name, buf, buf_len)
 }
 
-/// Renames the timeline. False on a null handle or invalid input.
+/// Renames the timeline.
+///
+/// `name` is a borrowed `(ptr, len)` UTF-8 slice that is copied into the
+/// timeline; on `false` the existing name is left untouched.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `timeline` is null or `name` is null / not
+/// valid UTF-8.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null); `name` must be null
+/// or point to `name_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_set_name(
 	timeline: *mut QuercusOtioTimeline,
@@ -467,8 +662,20 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_name(
 	true
 }
 
-/// Reads the global start time into `out`. False when unset (or on a
-/// null handle/output).
+/// Reads the timeline's global start time into `out`.
+///
+/// The value is a [`QuercusOtioRationalTime`] (frame value + rate) mirroring
+/// the OTIO `global_start_time` field. `out` is only written on success.
+///
+/// # Returns
+///
+/// `true` when a start time was copied, `false` when `timeline` or `out` is
+/// null, or the timeline has no global start time set.
+///
+/// # Safety
+///
+/// `timeline` must be a live handle (or null); `out` must be null or point to
+/// a writable [`QuercusOtioRationalTime`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_global_start_time(
 	timeline: *const QuercusOtioTimeline,
@@ -485,7 +692,19 @@ pub unsafe extern "C" fn quercus_otio_timeline_global_start_time(
 	true
 }
 
-/// Sets the global start time. False on a null handle.
+/// Sets the timeline's global start time.
+///
+/// `start` is passed by value as a `RationalTime` (frame value + rate) and
+/// copied; read it back with `quercus_otio_timeline_global_start_time`. No
+/// range or rate validation is performed.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `timeline` is null.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_set_global_start_time(
 	timeline: *mut QuercusOtioTimeline,
@@ -498,8 +717,22 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_global_start_time(
 	true
 }
 
-/// Serializes the timeline alone to OTIO JSON, snprintf-style; -1 on
-/// a null handle or a serialization error.
+/// Serializes this timeline alone to OTIO JSON, snprintf-style.
+///
+/// Unlike `quercus_otio_document_to_json` no document wrapper is involved:
+/// the timeline is emitted as the root `Timeline` object. At most
+/// `buf_len - 1` bytes plus a trailing NUL are written; `buf = null,
+/// buf_len = 0` queries the required size.
+///
+/// # Returns
+///
+/// The byte length of the JSON (excluding the NUL), which may exceed the
+/// truncated write, or -1 when `timeline` is null or serialization fails.
+///
+/// # Safety
+///
+/// `timeline` must be a live handle (or null); `buf` must be null or point to
+/// `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_to_json(
 	timeline: *const QuercusOtioTimeline,
@@ -519,7 +752,18 @@ pub unsafe extern "C" fn quercus_otio_timeline_to_json(
 	}
 }
 
-/// Number of tracks; -1 on a null handle.
+/// Counts the tracks in the timeline's tracks stack.
+///
+/// The count is the index range accepted by
+/// `quercus_otio_timeline_track_at`, `_set_track` and `_remove_track`.
+///
+/// # Returns
+///
+/// The number of track children, or -1 when `timeline` is null.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_track_count(timeline: *const QuercusOtioTimeline) -> i32 {
 	if timeline.is_null() {
@@ -528,9 +772,20 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_count(timeline: *const Quer
 	lock(&unsafe { &*timeline }.inner).tracks().children().len() as i32
 }
 
-/// Clones the track at `index` (a timeline's tracks are
-/// `Composable::Track` children of its tracks stack); null on a null
-/// handle, an out-of-range index, or a non-track child.
+/// Clones the track at `index` out of the timeline's tracks stack.
+///
+/// `index` is 0-based over all stack children; a child that is not a track
+/// (for example a nested stack) yields null. Edit the clone and store it back
+/// with `quercus_otio_timeline_set_track`.
+///
+/// # Returns
+///
+/// A new track handle at ref count 1, or null when `timeline` is null,
+/// `index` is negative, is past the end, or the child is not a track.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_track_at(
 	timeline: *const QuercusOtioTimeline,
@@ -557,8 +812,21 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_at(
 	}
 }
 
-/// Replaces the track at `index` with a copy of `track` (write-back
-/// after editing). False on a null handle or an out-of-range index.
+/// Replaces the track at `index` with a deep copy of `track`.
+///
+/// Write-back half of the traverse-edit-write pattern for timeline stacks,
+/// paired with `quercus_otio_timeline_track_at` (use
+/// `quercus_otio_timeline_append_track` when only appending). `track` is
+/// unchanged.
+///
+/// # Returns
+///
+/// `true` on success, `false` when either handle is null, `index` is negative,
+/// or `index` is past the end of the tracks stack.
+///
+/// # Safety
+///
+/// Both pointers must be live handles of their respective types (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_set_track(
 	timeline: *mut QuercusOtioTimeline,
@@ -574,8 +842,19 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_track(
 		.set_child(index as usize, Composable::Track(track))
 }
 
-/// Appends a copy of `track` to the tracks stack. False on a null
-/// handle.
+/// Appends a deep copy of `track` to the timeline's tracks stack.
+///
+/// Used when building a timeline from scratch (imported interchange document
+/// or a generated rough cut). The stored copy is independent of `track`,
+/// which the caller still owns.
+///
+/// # Returns
+///
+/// `true` on success, `false` when either handle is null.
+///
+/// # Safety
+///
+/// Both pointers must be live handles of their respective types (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_append_track(
 	timeline: *mut QuercusOtioTimeline,
@@ -591,8 +870,18 @@ pub unsafe extern "C" fn quercus_otio_timeline_append_track(
 	true
 }
 
-/// Removes the track at `index`. False on a null handle or an
-/// out-of-range index.
+/// Removes the track at `index` from the timeline's tracks stack.
+///
+/// Later tracks shift down by one, so indices above `index` change.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `timeline` is null, `index` is negative, or
+/// `index` is past the end.
+///
+/// # Safety
+///
+/// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_timeline_remove_track(
 	timeline: *mut QuercusOtioTimeline,
@@ -610,8 +899,20 @@ pub unsafe extern "C" fn quercus_otio_timeline_remove_track(
 // Track
 // ---------------------------------------------------------------------------
 
-/// A new track of the given kind ("Video", "Audio", ...), ref count 1.
-/// Null on invalid input.
+/// Creates an empty track of the given kind.
+///
+/// `kind` is a borrowed `(ptr, len)` UTF-8 slice such as `"Video"` or
+/// `"Audio"`; it is copied into the OTIO `kind` field, so the caller may free
+/// the buffer afterwards. No validation of the kind string is performed.
+///
+/// # Returns
+///
+/// A new track handle at ref count 1, or null when `kind` is null or not valid
+/// UTF-8.
+///
+/// # Safety
+///
+/// `kind` must be null or point to `kind_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_new(kind: *const u8, kind_len: usize) -> *mut QuercusOtioTrack {
 	let Some(kind) = (unsafe { str_arg(kind, kind_len) }) else {
@@ -622,8 +923,21 @@ pub unsafe extern "C" fn quercus_otio_track_new(kind: *const u8, kind_len: usize
 	}) as *mut QuercusOtioTrack
 }
 
-/// The track kind ("Video", "Audio", ...), snprintf-style; -1 on a
-/// null handle.
+/// Copies the track's kind (`"Video"`, `"Audio"`, ...) into `buf`,
+/// snprintf-style.
+///
+/// At most `buf_len - 1` bytes plus a trailing NUL are written; pass
+/// `buf = null, buf_len = 0` to query the required size.
+///
+/// # Returns
+///
+/// The byte length of the kind (excluding the NUL), or -1 when `track` is
+/// null.
+///
+/// # Safety
+///
+/// `track` must be a live handle (or null); `buf` must be null or point to
+/// `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_kind(
 	track: *const QuercusOtioTrack,
@@ -637,7 +951,18 @@ pub unsafe extern "C" fn quercus_otio_track_kind(
 	copy_str_out(&kind, buf, buf_len)
 }
 
-/// Number of children (clips/gaps/transitions); -1 on a null handle.
+/// Counts the children (clips, gaps and transitions) of a track.
+///
+/// The count is the index range accepted by `quercus_otio_track_child_at`,
+/// `_set_child` and `_remove_child`.
+///
+/// # Returns
+///
+/// The number of children, or -1 when `track` is null.
+///
+/// # Safety
+///
+/// `track` must be a live track handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_child_count(track: *const QuercusOtioTrack) -> i32 {
 	if track.is_null() {
@@ -646,8 +971,20 @@ pub unsafe extern "C" fn quercus_otio_track_child_count(track: *const QuercusOti
 	lock(&unsafe { &*track }.inner).children().len() as i32
 }
 
-/// Clones the child at `index` out of the track; null on a null
-/// handle or an out-of-range index.
+/// Clones the child at `index` out of the track.
+///
+/// `index` is 0-based over clips, gaps and transitions in track order. The
+/// result is detached; edit it and store it back with
+/// `quercus_otio_track_set_child`.
+///
+/// # Returns
+///
+/// A new composable handle at ref count 1, or null when `track` is null,
+/// `index` is negative, or `index` is past the last child.
+///
+/// # Safety
+///
+/// `track` must be a live track handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_child_at(
 	track: *const QuercusOtioTrack,
@@ -666,8 +1003,20 @@ pub unsafe extern "C" fn quercus_otio_track_child_at(
 	}) as *mut QuercusOtioComposable
 }
 
-/// Replaces the child at `index` with a copy of `child` (write-back
-/// after editing). False on a null handle or an out-of-range index.
+/// Replaces the child at `index` with a deep copy of `child`.
+///
+/// Write-back half of the traverse-edit-write pattern for a track, paired
+/// with `quercus_otio_track_child_at` (use `quercus_otio_track_append_child`
+/// when only appending). `child` itself is unchanged.
+///
+/// # Returns
+///
+/// `true` on success, `false` when either handle is null, `index` is negative,
+/// or `index` is past the end of the track.
+///
+/// # Safety
+///
+/// Both pointers must be live handles of their respective types (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_set_child(
 	track: *mut QuercusOtioTrack,
@@ -681,7 +1030,19 @@ pub unsafe extern "C" fn quercus_otio_track_set_child(
 	lock(&unsafe { &*track }.inner).set_child(index as usize, child)
 }
 
-/// Appends a copy of `child` to the track. False on a null handle.
+/// Appends a deep copy of `child` to the end of the track.
+///
+/// This is how a track is built from clips, gaps and transitions. The stored
+/// copy is independent of `child`, which the caller still owns and must
+/// release.
+///
+/// # Returns
+///
+/// `true` on success, `false` when either handle is null.
+///
+/// # Safety
+///
+/// Both pointers must be live handles of their respective types (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_append_child(
 	track: *mut QuercusOtioTrack,
@@ -695,8 +1056,18 @@ pub unsafe extern "C" fn quercus_otio_track_append_child(
 	true
 }
 
-/// Removes the child at `index`. False on a null handle or an
-/// out-of-range index.
+/// Removes the child at `index` from the track.
+///
+/// Later children shift down by one, so indices above `index` change.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `track` is null, `index` is negative, or
+/// `index` is past the end.
+///
+/// # Safety
+///
+/// `track` must be a live track handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_track_remove_child(track: *mut QuercusOtioTrack, index: i32) -> bool {
 	if track.is_null() || index < 0 {
@@ -709,9 +1080,18 @@ pub unsafe extern "C" fn quercus_otio_track_remove_child(track: *mut QuercusOtio
 // Composable (clip / gap / transition)
 // ---------------------------------------------------------------------------
 
-/// The composable kind: [`QUERCUS_OTIO_COMPOSABLE_CLIP`],
-/// [`QUERCUS_OTIO_COMPOSABLE_GAP`], [`QUERCUS_OTIO_COMPOSABLE_TRANSITION`] or
-/// [`QUERCUS_OTIO_COMPOSABLE_OTHER`]; -1 on a null handle.
+/// Classifies a composable handle.
+///
+/// # Returns
+///
+/// [`QUERCUS_OTIO_COMPOSABLE_CLIP`], [`QUERCUS_OTIO_COMPOSABLE_GAP`],
+/// [`QUERCUS_OTIO_COMPOSABLE_TRANSITION`], or
+/// [`QUERCUS_OTIO_COMPOSABLE_OTHER`] for nested tracks/stacks and
+/// unrecognized schemas; -1 when `c` is null.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_composable_kind(c: *const QuercusOtioComposable) -> i32 {
 	if c.is_null() {
@@ -725,8 +1105,21 @@ pub unsafe extern "C" fn quercus_otio_composable_kind(c: *const QuercusOtioCompo
 	}
 }
 
-/// The composable name ("" for unknown blocks), snprintf-style; -1 on
-/// a null handle.
+/// Copies the composable's name into `buf`, snprintf-style.
+///
+/// Works for clips, gaps and transitions; blocks kept whole as unrecognized
+/// schemas report an empty string. At most `buf_len - 1` bytes plus a
+/// trailing NUL are written; `buf = null, buf_len = 0` queries the required
+/// size.
+///
+/// # Returns
+///
+/// The byte length of the name (excluding the NUL), or -1 when `c` is null.
+///
+/// # Safety
+///
+/// `c` must be a live handle (or null); `buf` must be null or point to
+/// `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_composable_name(
 	c: *const QuercusOtioComposable,
@@ -740,8 +1133,21 @@ pub unsafe extern "C" fn quercus_otio_composable_name(
 	copy_str_out(&name, buf, buf_len)
 }
 
-/// Reads the source range of clips and gaps into `out`. False for
-/// other kinds, an unset range, or a null handle/output.
+/// Reads the source range of a clip or gap into `out`.
+///
+/// `out` receives start time and duration as a [`QuercusOtioTimeRange`] and
+/// is only written on success. Transitions (which carry in/out offsets
+/// instead) and other kinds are rejected.
+///
+/// # Returns
+///
+/// `true` when a range was copied, `false` when `c` or `out` is null, the
+/// composable is not a clip/gap, or its source range is unset.
+///
+/// # Safety
+///
+/// `c` must be a live handle (or null); `out` must be null or point to a
+/// writable [`QuercusOtioTimeRange`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_composable_source_range(
 	c: *const QuercusOtioComposable,
@@ -758,9 +1164,26 @@ pub unsafe extern "C" fn quercus_otio_composable_source_range(
 	true
 }
 
-/// A clip (ref count 1). `url` attaches an external media reference
-/// (null/empty → a missing reference); `source_range` is optional
-/// (null → unset). Null on invalid input.
+/// Creates a clip, optionally with an external media reference and a source
+/// range.
+///
+/// `name` is a borrowed `(ptr, len)` UTF-8 slice and is required (non-null;
+/// copied). `url` is an optional borrowed `(ptr, len)` slice: null or empty
+/// leaves the clip with a missing media reference, otherwise the value
+/// becomes the target of an `ExternalReference`. `source_range` is an
+/// optional pointer: null leaves the range unset, otherwise the pointed-to
+/// range is copied.
+///
+/// # Returns
+///
+/// A new composable handle holding a `Clip` at ref count 1, or null when
+/// `name` is missing/invalid UTF-8, or `url` is non-null but not valid UTF-8.
+///
+/// # Safety
+///
+/// `name` and `url` must be null or point to their stated lengths of readable
+/// bytes; `source_range` must be null or point to a valid
+/// [`QuercusOtioTimeRange`]. All inputs are only read during the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_new(
 	name: *const u8,
@@ -786,8 +1209,21 @@ pub unsafe extern "C" fn quercus_otio_clip_new(
 	}) as *mut QuercusOtioComposable
 }
 
-/// A gap (ref count 1). `source_range` null → an empty range. Null on
-/// invalid input.
+/// Creates a gap: a named empty span of the given source range.
+///
+/// `name` is a borrowed `(ptr, len)` UTF-8 slice and is required (non-null;
+/// copied). `source_range` is optional: null yields the default zero-length
+/// range, which is valid but contributes no time to the track.
+///
+/// # Returns
+///
+/// A new composable handle holding a `Gap` at ref count 1, or null when `name`
+/// is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes; `source_range`
+/// must be null or point to a valid [`QuercusOtioTimeRange`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_gap_new(
 	name: *const u8,
@@ -807,7 +1243,22 @@ pub unsafe extern "C" fn quercus_otio_gap_new(
 	}) as *mut QuercusOtioComposable
 }
 
-/// A transition (ref count 1). Null on invalid input.
+/// Creates a transition with the given in/out offsets.
+///
+/// `name` is a borrowed `(ptr, len)` UTF-8 slice and is required (non-null;
+/// copied). `in_offset` and `out_offset` are passed by value as `RationalTime`
+/// values and describe how far the transition extends into the neighbouring
+/// clips on each side. The transition type is not settable here; read it back
+/// with `quercus_otio_transition_type`.
+///
+/// # Returns
+///
+/// A new composable handle holding a `Transition` at ref count 1, or null when
+/// `name` is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_transition_new(
 	name: *const u8,
@@ -826,8 +1277,20 @@ pub unsafe extern "C" fn quercus_otio_transition_new(
 	}) as *mut QuercusOtioComposable
 }
 
-/// Sets the source range of a clip. False on a null handle or a
-/// non-clip composable.
+/// Sets or replaces the clip's source range.
+///
+/// `range` is passed by value (start time + duration) and copied; it selects
+/// which part of the media the clip shows. No validation of the range against
+/// the media duration is performed.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `c` is null or the composable is not a
+/// clip.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_set_source_range(
 	c: *mut QuercusOtioComposable,
@@ -845,9 +1308,23 @@ pub unsafe extern "C" fn quercus_otio_clip_set_source_range(
 	}
 }
 
-/// The clip's media URL, snprintf-style; -1 on a null handle, a
-/// non-clip composable, or a non-external (e.g. missing) media
-/// reference.
+/// Copies the clip's external media URL into `buf`, snprintf-style.
+///
+/// At most `buf_len - 1` bytes plus a trailing NUL are written; pass
+/// `buf = null, buf_len = 0` to query the required size. A clip whose media
+/// reference is missing or not external produces -1 rather than an empty
+/// string.
+///
+/// # Returns
+///
+/// The byte length of the URL (excluding the NUL), or -1 when `c` is null,
+/// the composable is not a clip, or the media reference is not an
+/// `ExternalReference`.
+///
+/// # Safety
+///
+/// `c` must be a live handle (or null); `buf` must be null or point to
+/// `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_media_url(
 	c: *const QuercusOtioComposable,
@@ -874,8 +1351,22 @@ pub unsafe extern "C" fn quercus_otio_clip_media_url(
 	}
 }
 
-/// Points the clip's media reference at `url` (external reference).
-/// False on a null handle, invalid input, or a non-clip composable.
+/// Points the clip's media reference at an external URL.
+///
+/// `url` is a borrowed `(ptr, len)` UTF-8 slice; it is copied into a new
+/// `ExternalReference`, replacing whatever reference the clip had. An empty
+/// `url` is accepted and stored as an empty target - it does not clear the
+/// reference.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `c` is null, `url` is null or not valid
+/// UTF-8, or the composable is not a clip.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null); `url` must be null or
+/// point to `url_len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_set_media_url(
 	c: *mut QuercusOtioComposable,
@@ -899,8 +1390,17 @@ pub unsafe extern "C" fn quercus_otio_clip_set_media_url(
 	}
 }
 
-/// Whether the clip is enabled: 0/1, -1 on a null handle or a
-/// non-clip composable.
+/// Reports whether the clip is enabled, i.e. contributes to the track's
+/// output.
+///
+/// # Returns
+///
+/// 1 when enabled, 0 when disabled, or -1 when `c` is null or the composable
+/// is not a clip. Pairs with `quercus_otio_clip_set_enabled`.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_enabled(c: *const QuercusOtioComposable) -> i32 {
 	if c.is_null() {
@@ -912,8 +1412,19 @@ pub unsafe extern "C" fn quercus_otio_clip_enabled(c: *const QuercusOtioComposab
 	}
 }
 
-/// Sets the clip's enabled flag. False on a null handle or a
-/// non-clip composable.
+/// Sets the clip's enabled flag.
+///
+/// A disabled clip stays in the track but is imported/exported with
+/// `enabled: false`. Counterpart of `quercus_otio_clip_enabled`.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `c` is null or the composable is not a
+/// clip.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_clip_set_enabled(
 	c: *mut QuercusOtioComposable,
@@ -931,8 +1442,22 @@ pub unsafe extern "C" fn quercus_otio_clip_set_enabled(
 	}
 }
 
-/// The transition type ("SMPTE_Dissolve", ...), snprintf-style; -1 on
-/// a null handle or a non-transition composable.
+/// Copies the transition type (`"SMPTE_Dissolve"`, ...) into `buf`,
+/// snprintf-style.
+///
+/// At most `buf_len - 1` bytes plus a trailing NUL are written; pass
+/// `buf = null, buf_len = 0` to query the required size. The type is
+/// read-only through this ABI: there is no setter.
+///
+/// # Returns
+///
+/// The byte length of the type string (excluding the NUL), or -1 when `c` is
+/// null or the composable is not a transition.
+///
+/// # Safety
+///
+/// `c` must be a live handle (or null); `buf` must be null or point to
+/// `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_transition_type(
 	c: *const QuercusOtioComposable,
@@ -953,8 +1478,22 @@ pub unsafe extern "C" fn quercus_otio_transition_type(
 	}
 }
 
-/// Reads a transition offset (`is_in` selects in/out) into `out`.
-/// False on a null handle/output or a non-transition composable.
+/// Reads one of a transition's offsets into `out`.
+///
+/// `is_in` selects the side: `true` reads the in-offset, `false` the
+/// out-offset. `out` receives a [`QuercusOtioRationalTime`] and is only
+/// written on success. Counterpart of
+/// `quercus_otio_transition_set_offset`.
+///
+/// # Returns
+///
+/// `true` when an offset was copied, `false` when `c` or `out` is null or the
+/// composable is not a transition.
+///
+/// # Safety
+///
+/// `c` must be a live handle (or null); `out` must be null or point to a
+/// writable [`QuercusOtioRationalTime`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_transition_offset(
 	c: *const QuercusOtioComposable,
@@ -973,8 +1512,20 @@ pub unsafe extern "C" fn quercus_otio_transition_offset(
 	true
 }
 
-/// Sets a transition offset (`is_in` selects in/out). False on a null
-/// handle or a non-transition composable.
+/// Sets one of a transition's offsets.
+///
+/// `is_in` selects the side (`true` = in-offset, `false` = out-offset);
+/// `offset` is passed by value as a `RationalTime` and copied. Counterpart of
+/// `quercus_otio_transition_offset`.
+///
+/// # Returns
+///
+/// `true` on success, `false` when `c` is null or the composable is not a
+/// transition.
+///
+/// # Safety
+///
+/// `c` must be a live composable handle (or null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_otio_transition_set_offset(
 	c: *mut QuercusOtioComposable,

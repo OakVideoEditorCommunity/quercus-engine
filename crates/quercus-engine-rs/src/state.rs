@@ -1,16 +1,54 @@
 //! Safe wrapper over the engine's process-wide state C ABI: the config
 //! store (`quercus_core_config_*`), the color pipeline settings
-//! (`quercus_core_color_*`), and display ICC queries (`quercus_core_displayicc_*`).
+//! (`quercus_core_color_*`), display ICC queries (`quercus_core_displayicc_*`),
+//! and the log level/sink (`quercus_core_log_*`).
 //!
 //! These are singletons inside the engine, so — like the audio manager —
 //! the SDK exposes plain free functions.
+
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
 use crate::codec::string_out;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+/// Raw sink-callback signature (`repr(C)`-free: plain pointers and ints).
+type LogFn =
+	unsafe extern "C" fn(level: i32, message: *const u8, len: usize, userdata: *mut c_void);
+/// Raw sink-drop callback signature.
+type LogDropFn = unsafe extern "C" fn(userdata: *mut c_void);
+
+/// Raw config-source load callback signature: snprintf-style, returning
+/// the full TOML byte length excluding the NUL.
+pub type QuercusConfigLoadFn =
+	unsafe extern "C" fn(userdata: *mut c_void, buf: *mut u8, cap: usize) -> i32;
+/// Raw config-source save callback signature (borrowed UTF-8 TOML).
+pub type QuercusConfigSaveFn =
+	unsafe extern "C" fn(userdata: *mut c_void, data: *const u8, len: usize) -> bool;
+/// Raw config-source cleanup callback signature.
+pub type QuercusConfigDropFn = unsafe extern "C" fn(userdata: *mut c_void);
+
+/// `repr(C)` mirror of the engine's `QuercusConfigSourceVTable`. The field
+/// order is the ABI and must stay byte-identical with the engine struct.
+#[repr(C)]
+#[allow(dead_code)] // Fields are read by the engine through the raw pointer.
+struct QuercusConfigSourceVTable {
+	struct_size: u32,
+	abi_version: u32,
+	// ABI: order matters — byte-identical with the engine struct.
+	// The header generator parses these types textually, so keep each
+	// `fn(...)` on one line.
+	load: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize) -> i32>,
+	save: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize) -> bool>,
+}
+
+/// The only supported config-source vtable ABI version.
+const CONFIG_SOURCE_ABI_VERSION: u32 = 1;
+
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_core_config_set(
 		group: *const u8,
@@ -72,6 +110,22 @@ unsafe extern "C" {
 	) -> bool;
 	fn quercus_core_config_load() -> bool;
 	fn quercus_core_config_save() -> bool;
+	fn quercus_core_config_set_source(
+		vt: *const QuercusConfigSourceVTable,
+		userdata: *mut c_void,
+		drop_cb: Option<QuercusConfigDropFn>,
+	) -> bool;
+	fn quercus_core_config_clear_source() -> bool;
+	fn quercus_core_config_has_source() -> bool;
+
+	fn quercus_core_log_set_level(level: i32) -> bool;
+	fn quercus_core_log_get_level() -> i32;
+	fn quercus_core_log_set_sink(
+		sink: Option<LogFn>,
+		userdata: *mut c_void,
+		drop_cb: Option<LogDropFn>,
+	);
+	fn quercus_core_log_write(level: i32, msg: *const u8, len: usize);
 
 	fn quercus_core_cancelatom_new() -> *mut std::ffi::c_void;
 	fn quercus_core_cancelatom_cancel(this: *const std::ffi::c_void);
@@ -143,42 +197,74 @@ impl Config {
 		config_save()
 	}
 
-	/// Reads a string or formatted scalar (`None` when absent).
+	/// Read the global config value for `key`, or `None` when it is absent.
+	///
+	/// Typed entries are formatted into their text form by the native store, so
+	/// one getter covers strings, numbers and booleans. `key` is the full
+	/// native path (e.g. `"Storage/Backend"`).
 	pub fn get(self, key: &str) -> Option<String> {
 		config_get(None, key)
 	}
 
-	/// Writes a string or parses it into an existing typed entry.
+	/// Write `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`). A new key is
+	/// stored as a string; when the key already exists with another type,
+	/// `value` is parsed into that type (an unparseable value leaves the old
+	/// value untouched). Empty keys are ignored, and `Err(Error)` is returned
+	/// only when the engine rejects the call.
 	pub fn set(self, key: &str, value: &str) -> Result<(), Error> {
 		config_set(None, key, value)
 	}
 
-	/// The `get_bool` operation.
+	/// Read boolean config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely boolean entry is returned; an absent key, another
+	/// stored type, or a native rejection yields `fallback`.
 	pub fn get_bool(self, key: &str, fallback: bool) -> bool {
 		config_get_bool(None, key, fallback)
 	}
 
-	/// The `set_bool` operation.
+	/// Write boolean `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native bool. An empty key is ignored, and `Err(Error)` is
+	/// returned only when the engine rejects the call.
 	pub fn set_bool(self, key: &str, value: bool) -> Result<(), Error> {
 		config_set_bool(None, key, value)
 	}
 
-	/// The `get_i64` operation.
+	/// Read integer config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely integer entry is returned; an absent key, another
+	/// stored type, or a native rejection yields `fallback`.
 	pub fn get_i64(self, key: &str, fallback: i64) -> i64 {
 		config_get_i64(None, key, fallback)
 	}
 
-	/// The `set_i64` operation.
+	/// Write integer `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native 64-bit integer. An empty key is ignored, and
+	/// `Err(Error)` is returned only when the engine rejects the call.
 	pub fn set_i64(self, key: &str, value: i64) -> Result<(), Error> {
 		config_set_i64(None, key, value)
 	}
 
-	/// The `get_f64` operation.
+	/// Read floating-point config `key`, or `fallback` when it is unavailable.
+	///
+	/// Only a genuinely floating-point entry is returned; an absent key,
+	/// another stored type, or a native rejection yields `fallback`.
 	pub fn get_f64(self, key: &str, fallback: f64) -> f64 {
 		config_get_f64(None, key, fallback)
 	}
 
-	/// The `set_f64` operation.
+	/// Write floating-point `value` to the global config `key`.
+	///
+	/// `key` is the full native path (e.g. `"Storage/Backend"`); the value is
+	/// stored as a native double without a range check. An empty key is
+	/// ignored, and `Err(Error)` is returned only when the engine rejects the
+	/// call.
 	pub fn set_f64(self, key: &str, value: f64) -> Result<(), Error> {
 		config_set_f64(None, key, value)
 	}
@@ -226,7 +312,11 @@ pub fn config_get_bool(group: Option<&str>, key: &str, fallback: bool) -> bool {
 	unsafe { quercus_core_config_get_bool(g, gl, k, kl, fallback as i32) != 0 }
 }
 
-/// The `config_set_bool` operation.
+/// Write boolean `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native bool; an empty `key` is ignored. Returns `Err(Error)` only when the
+/// engine rejects the call.
 pub fn config_set_bool(group: Option<&str>, key: &str, value: bool) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -237,14 +327,23 @@ pub fn config_set_bool(group: Option<&str>, key: &str, value: bool) -> Result<()
 	}
 }
 
-/// Reads an i64 config value, `fallback` when unset.
+/// Read integer config `key` from `group`, or `fallback` when it is
+/// unavailable.
+///
+/// Only a genuinely integer entry is returned; an absent key, another stored
+/// type, or a native rejection yields `fallback`. `group == None` addresses
+/// the global key space.
 pub fn config_get_i64(group: Option<&str>, key: &str, fallback: i64) -> i64 {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
 	unsafe { quercus_core_config_get_int64(g, gl, k, kl, fallback) }
 }
 
-/// The `config_set_i64` operation.
+/// Write integer `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native 64-bit integer; an empty `key` is ignored. Returns `Err(Error)` only
+/// when the engine rejects the call.
 pub fn config_set_i64(group: Option<&str>, key: &str, value: i64) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -255,14 +354,23 @@ pub fn config_set_i64(group: Option<&str>, key: &str, value: i64) -> Result<(), 
 	}
 }
 
-/// Reads an f64 config value, `fallback` when unset.
+/// Read floating-point config `key` from `group`, or `fallback` when it is
+/// unavailable.
+///
+/// Only a genuinely floating-point entry is returned; an absent key, an entry
+/// of a different type, or a native rejection yields `fallback`. `group ==
+/// None` addresses the global key space.
 pub fn config_get_f64(group: Option<&str>, key: &str, fallback: f64) -> f64 {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
 	unsafe { quercus_core_config_get_double(g, gl, k, kl, fallback) }
 }
 
-/// The `config_set_f64` operation.
+/// Write floating-point `value` to config `key` in `group`.
+///
+/// `group == None` addresses the global key space. The value is stored as a
+/// native double with no range check (NaN/Inf are kept as-is); an empty `key`
+/// is ignored. Returns `Err(Error)` only when the engine rejects the call.
 pub fn config_set_f64(group: Option<&str>, key: &str, value: f64) -> Result<(), Error> {
 	let (g, gl) = opt_arg(group);
 	let (k, kl) = arg(key);
@@ -273,7 +381,8 @@ pub fn config_set_f64(group: Option<&str>, key: &str, value: f64) -> Result<(), 
 	}
 }
 
-/// Loads the config store from disk.
+/// Loads the config store from its persistence backend (the installed
+/// [`ConfigSource`] when there is one, else `config.toml`).
 pub fn config_load() -> Result<(), Error> {
 	if unsafe { quercus_core_config_load() } {
 		Ok(())
@@ -282,12 +391,330 @@ pub fn config_load() -> Result<(), Error> {
 	}
 }
 
-/// Saves the config store to disk.
+/// Saves the config store to its persistence backend (the installed
+/// [`ConfigSource`] when there is one, else `config.toml`).
 pub fn config_save() -> Result<(), Error> {
 	if unsafe { quercus_core_config_save() } {
 		Ok(())
 	} else {
 		Err(Error)
+	}
+}
+
+/// A host-supplied config persistence backend.
+///
+/// Install one with [`set_config_source`]; the engine then calls [`load`]
+/// whenever settings are loaded and [`save`] whenever they are persisted,
+/// instead of touching `<config_location>/config.toml` (and the legacy INI
+/// migration is skipped). With no source installed the file behavior is
+/// unchanged.
+///
+/// [`load`]: ConfigSource::load
+/// [`save`]: ConfigSource::save
+pub trait ConfigSource: Send + 'static {
+	/// The full TOML text to load, or `None` on read failure. An invalid
+	/// TOML document is reported by the engine as a load error.
+	fn load(&self) -> Option<String>;
+
+	/// Persist `toml`; false when the host rejects or fails the write.
+	fn save(&self, toml: &str) -> bool;
+}
+
+/// Heap-owned source userdata: the source behind a mutex (the trait only
+/// requires `Send`, so this also serializes concurrent engine calls), plus
+/// the liveness flag shared with the registration guard.
+struct SourceBox {
+	source: Mutex<Box<dyn ConfigSource>>,
+	/// False once the engine dropped this source (replaced or cleared).
+	active: Arc<AtomicBool>,
+}
+
+/// C trampoline for [`ConfigSource::load`].
+///
+/// Calls the host source (mutex-guarded, panic caught) and copies the TOML
+/// text into `buf` snprintf-style: at most `cap - 1` bytes plus a NUL
+/// terminator, returning the full byte length so `ret >= cap` means
+/// truncation. Returns `-1` when `userdata` is null, the source yields `None`,
+/// the text length does not fit `i32`, or the callback panics; `buf == null`
+/// or `cap == 0` is query mode.
+///
+/// # Safety
+///
+/// `userdata` must be the live `Box<SourceBox>` installed as the engine's
+/// config source, and `buf` must be writable for `cap` bytes when non-null.
+unsafe extern "C" fn config_source_load(userdata: *mut c_void, buf: *mut u8, cap: usize) -> i32 {
+	if userdata.is_null() {
+		return -1;
+	}
+	// SAFETY: `userdata` is the Box<SourceBox> handed to the engine and
+	// stays alive until the paired drop trampoline runs.
+	let state = unsafe { &*(userdata as *const SourceBox) };
+	// A panic inside the host source must not unwind across the C ABI.
+	let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		state
+			.source
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.load()
+	}));
+	let text = match loaded {
+		Ok(Some(text)) => text,
+		_ => return -1,
+	};
+	if !buf.is_null() && cap > 0 {
+		let n = text.len().min(cap - 1);
+		// SAFETY: `buf` is writable for `cap` bytes; `n < cap`.
+		unsafe {
+			std::ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
+			*buf.add(n) = 0;
+		}
+	}
+	i32::try_from(text.len()).unwrap_or(-1)
+}
+
+/// C trampoline for [`ConfigSource::save`].
+///
+/// Borrows `len` bytes as UTF-8 TOML and forwards them to the host source,
+/// catching panics. Returns `false` when `userdata` is null, `data` is null
+/// with `len > 0`, the bytes are not valid UTF-8, the source rejects the
+/// write, or the callback panics.
+///
+/// # Safety
+///
+/// `userdata` must be the live `Box<SourceBox>` installed as the engine's
+/// config source; `data` must be readable for `len` bytes (or `len == 0`).
+unsafe extern "C" fn config_source_save(
+	userdata: *mut c_void,
+	data: *const u8,
+	len: usize,
+) -> bool {
+	if userdata.is_null() {
+		return false;
+	}
+	if len > 0 && data.is_null() {
+		return false;
+	}
+	let bytes = if len == 0 {
+		&[][..]
+	} else {
+		// SAFETY: the engine passes `len` readable bytes for this call.
+		unsafe { std::slice::from_raw_parts(data, len) }
+	};
+	let Ok(toml) = std::str::from_utf8(bytes) else {
+		return false;
+	};
+	// SAFETY: see `config_source_load`.
+	let state = unsafe { &*(userdata as *const SourceBox) };
+	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		state
+			.source
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.save(toml)
+	}))
+	.unwrap_or(false)
+}
+
+/// C trampoline for dropping the installed [`ConfigSource`].
+///
+/// Marks the registration guard inactive, reclaims the `Box<SourceBox>` and
+/// drops the host source; a panic in the source's destructor is caught so it
+/// cannot unwind across the C ABI. Null is a no-op. Ownership of `userdata`
+/// transfers here, so this must run exactly once for a registered pointer.
+///
+/// # Safety
+///
+/// `userdata` must be the pointer handed to the engine by
+/// [`set_config_source`] and must not be freed by anyone else.
+unsafe extern "C" fn config_source_drop(userdata: *mut c_void) {
+	if userdata.is_null() {
+		return;
+	}
+	// The source's destructor may panic; keep any unwind inside the
+	// trampoline.
+	let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		// SAFETY: reclaims exactly the Box<SourceBox> handed to the engine.
+		let state = unsafe { Box::from_raw(userdata as *mut SourceBox) };
+		state.active.store(false, Ordering::Release);
+		drop(state);
+	}));
+}
+
+/// A live process-wide config source registration.
+///
+/// Dropping it clears the source (unless it was already replaced by a
+/// newer registration), at which point the engine calls the source's drop
+/// trampoline and the boxed [`ConfigSource`] is freed. Registration is
+/// process-wide: installing another source replaces this one, so guards
+/// should be dropped promptly.
+#[must_use = "dropping the registration immediately clears the source"]
+pub struct ConfigSourceRegistration {
+	active: Arc<AtomicBool>,
+}
+
+impl Drop for ConfigSourceRegistration {
+	fn drop(&mut self) {
+		if self.active.swap(false, Ordering::AcqRel) {
+			// SAFETY: the engine reclaims the userdata box through the drop
+			// trampoline before returning.
+			unsafe { quercus_core_config_clear_source() };
+		}
+	}
+}
+
+/// Installs `source` as the process-wide config persistence backend,
+/// replacing (and dropping) any previously installed source.
+///
+/// Once installed, [`config_load`]/[`config_save`] exchange TOML text with
+/// the source instead of using `config.toml`. The returned
+/// [`ConfigSourceRegistration`] clears the source when dropped. Returns
+/// `Err(-1)` when the engine rejects the registration (for example a
+/// vtable mismatch); the source is reclaimed in that case.
+pub fn set_config_source(source: Box<dyn ConfigSource>) -> Result<ConfigSourceRegistration, i32> {
+	const E_INVALID: i32 = -1;
+	let active = Arc::new(AtomicBool::new(true));
+	let userdata = Box::into_raw(Box::new(SourceBox {
+		source: Mutex::new(source),
+		active: active.clone(),
+	}));
+	let vt = QuercusConfigSourceVTable {
+		struct_size: std::mem::size_of::<QuercusConfigSourceVTable>() as u32,
+		abi_version: CONFIG_SOURCE_ABI_VERSION,
+		load: Some(config_source_load),
+		save: Some(config_source_save),
+	};
+	// SAFETY: the vtable and userdata are live for the call; on success the
+	// engine owns the userdata until the drop trampoline runs.
+	let ok = unsafe {
+		quercus_core_config_set_source(&vt, userdata as *mut c_void, Some(config_source_drop))
+	};
+	if !ok {
+		// The engine never took ownership of the userdata on failure.
+		active.store(false, Ordering::Release);
+		// SAFETY: `userdata` is the box created above and not registered.
+		unsafe { drop(Box::from_raw(userdata)) };
+		return Err(E_INVALID);
+	}
+	Ok(ConfigSourceRegistration { active })
+}
+
+/// Whether a process-wide config persistence source is installed.
+pub fn config_source_installed() -> bool {
+	unsafe { quercus_core_config_has_source() }
+}
+
+// ---------------------------------------------------------------------------
+// Logging (process-wide)
+// ---------------------------------------------------------------------------
+
+/// Sets the engine's minimum log level (0 = DEBUG, 1 = INFO, 2 = WARNING,
+/// 3 = ERROR, 4 = FATAL); `false` when the code is out of range.
+pub fn log_set_level(level: i32) -> bool {
+	unsafe { quercus_core_log_set_level(level) }
+}
+
+/// The engine's current minimum log level (0 = DEBUG … 4 = FATAL).
+pub fn log_get_level() -> i32 {
+	unsafe { quercus_core_log_get_level() }
+}
+
+/// Writes `message` through the engine's process-wide log at `level`
+/// (0 = DEBUG … 4 = FATAL). Out-of-range levels are printed with the
+/// engine's `UNKNOWN` tag.
+pub fn log_write(level: i32, message: &str) {
+	let (msg, len) = arg(message);
+	unsafe { quercus_core_log_write(level, msg, len) };
+}
+
+/// Installs (or with `None`, clears) the engine's process-wide log sink:
+/// `sink(level, message)` receives lines already formatted as
+/// `"[LEVEL] message"`. Replacing or clearing a sink drops the previous
+/// closure. Returns `false` if the engine rejected the registration
+/// (not expected).
+///
+/// The closure is called on whichever thread logs (and from more than one
+/// thread at a time is possible), so it must be `Send` and safe to call
+/// concurrently. A panic inside it is caught and does not cross the C ABI.
+pub fn set_log_sink<F>(sink: Option<F>) -> bool
+where
+	F: Fn(i32, &str) + Send + 'static,
+{
+	/// C trampoline that forwards one formatted log line to the user sink.
+	///
+	/// `message`/`len` is the engine-formatted UTF-8 line (invalid UTF-8 is
+	/// forwarded as `""`), `level` is the engine's 0 = DEBUG … 4 = FATAL code,
+	/// and `userdata` is the `Box<F>` created by [`set_log_sink`]. A panic in
+	/// the user closure is caught so it never unwinds across the C ABI.
+	///
+	/// # Safety
+	///
+	/// `userdata` must be the live `Box<F>` installed as the sink, and
+	/// `message` must be readable for `len` bytes when non-null.
+	unsafe extern "C" fn trampoline<F>(
+		level: i32,
+		message: *const u8,
+		len: usize,
+		userdata: *mut c_void,
+	) where
+		F: Fn(i32, &str) + Send + 'static,
+	{
+		if userdata.is_null() {
+			return;
+		}
+		let message = if message.is_null() {
+			""
+		} else {
+			std::str::from_utf8(unsafe { std::slice::from_raw_parts(message, len) }).unwrap_or("")
+		};
+		// SAFETY: `userdata` is the Box<F> handed to the engine below and
+		// stays alive until the paired drop trampoline runs.
+		let callback = unsafe { &*(userdata as *const F) };
+		// A panic must not unwind across the C ABI.
+		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			callback(level, message)
+		}));
+	}
+
+	/// C trampoline that reclaims the log-sink closure after the engine
+	/// uninstalls it.
+	///
+	/// `userdata` is the `Box<F>` leaked by [`set_log_sink`]; null is a no-op
+	/// and it must run exactly once for that pointer. Never called for the
+	/// `None` sink, which installs no userdata.
+	///
+	/// # Safety
+	///
+	/// `userdata` must come from [`set_log_sink`] and must not be freed
+	/// anywhere else.
+	unsafe extern "C" fn drop_trampoline<F>(userdata: *mut c_void)
+	where
+		F: Fn(i32, &str) + Send + 'static,
+	{
+		if userdata.is_null() {
+			return;
+		}
+		// SAFETY: reclaims exactly the Box<F> that set_log_sink leaked.
+		drop(unsafe { Box::from_raw(userdata as *mut F) });
+	}
+
+	match sink {
+		Some(sink) => {
+			let userdata = Box::into_raw(Box::new(sink)) as *mut c_void;
+			// SAFETY: the pointer and drop trampoline pair with F; the
+			// engine calls drop before replacing or clearing this sink.
+			unsafe {
+				quercus_core_log_set_sink(
+					Some(trampoline::<F>),
+					userdata,
+					Some(drop_trampoline::<F>),
+				)
+			};
+			true
+		}
+		None => {
+			unsafe { quercus_core_log_set_sink(None, std::ptr::null_mut(), None) };
+			true
+		}
 	}
 }
 
@@ -412,7 +839,11 @@ impl CancelAtom {
 		}
 	}
 
-	/// Sets the cancel flag.
+	/// Set the token's cancel flag so every clone observes cancellation.
+	///
+	/// Idempotent and callable from any thread. The flag is a refcounted atom
+	/// shared by all clones; `is_cancelled` afterwards returns `true` and
+	/// records that the cancellation was heard (see `heard_cancel`).
 	pub fn cancel(&self) {
 		unsafe { quercus_core_cancelatom_cancel(self.ptr) };
 	}
@@ -528,6 +959,28 @@ mod tests {
 		// Clones share the flag.
 		let clone = atom.clone();
 		assert!(clone.is_cancelled());
+	}
+
+	#[test]
+	fn log_sink_receives_messages() {
+		use std::sync::{Arc, Mutex};
+		let seen: Arc<Mutex<Vec<(i32, String)>>> = Arc::new(Mutex::new(Vec::new()));
+		let sink = seen.clone();
+		assert!(set_log_sink(Some(move |level: i32, message: &str| {
+			sink.lock()
+				.unwrap_or_else(|e| e.into_inner())
+				.push((level, message.to_string()));
+		})));
+		log_write(2, "sdk-log-sink-probe");
+		// The engine formats messages before the sink sees them.
+		let hit = seen
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.iter()
+			.any(|(level, message)| *level == 2 && message.contains("sdk-log-sink-probe"));
+		assert!(hit, "sink did not receive the warning");
+		// Clear: the typed None selects the erased callback type.
+		set_log_sink::<fn(i32, &str)>(None);
 	}
 
 	#[test]

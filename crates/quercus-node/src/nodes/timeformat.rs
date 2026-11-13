@@ -363,8 +363,17 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TimeFormatNode))
 }
 
-/// Register this node type (C++ factory listing for
-/// `org.olivevideoeditor.Olive.timeformat`).
+/// Register this node type with the built-in factory.
+///
+/// Appends one entry to `meta`: type id
+/// `org.olivevideoeditor.Olive.timeformat`, display name "Time Format" and
+/// `Category::Generator`, with `create` as the constructor. `nodes::register_all`
+/// collects every built-in this way and installs them in order, so the
+/// position in `meta` becomes the menu order.
+///
+/// # Arguments
+///
+/// * `meta` - the list being built; the type is appended, nothing is returned.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.timeformat",

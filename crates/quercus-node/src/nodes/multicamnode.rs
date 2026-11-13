@@ -70,6 +70,11 @@ impl MultiCamNode {
 	}
 
 	/// The connected sequence node (C++ `sequence_`).
+	///
+	/// `Some` while a sequence is wired to `sequence_in` (the state
+	/// [`Self::set_sequence`] maintains), `None` when no sequence is
+	/// connected or after the edge is removed. The node then takes its
+	/// sources from that sequence's track list instead of `sources_in`.
 	pub fn sequence(&self) -> Option<NodeId> {
 		self.sequence
 	}
@@ -344,6 +349,11 @@ impl NodeBehavior for MultiCamNode {
 /// `current_in`/`sources_in`/`sequence_in`/`sequence_type_in` with the
 /// defaults, flags and properties documented on the constants, and
 /// initializes `sequence_` to null.
+///
+/// Returns the fresh [`NodeCore`] together with the behavior; this is the
+/// factory registered by [`register`]. Wire a sequence through
+/// [`MultiCamNode::set_sequence`] to switch the source list from
+/// `sources_in` to that sequence's tracks.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
@@ -385,6 +395,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ `k_multicam_node` in
 /// `factory.cpp::create_from_factory_index`).
+///
+/// Appends one [`NodeMeta`] to `meta` with type id
+/// `org.olivevideoeditor.Olive.multicam`, display name `Multi-Cam`, the
+/// [`Category::Timeline`] category and the [`create`] factory; the registry
+/// calls this once at startup.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.multicam",
@@ -526,7 +541,7 @@ mod tests {
 		row.insert(SOURCES_INPUT.to_string(), NodeValue::Float(7.0));
 		let mut table = NodeValueTable::default();
 		behavior.value(&core, &row, Rational::new(0, 1), &mut table);
-		assert_eq!(table.get(ValueType::Float), Some(&NodeValue::Float(7.0)));
+		assert_eq!(table.get(crate::value::ValueType::Float), Some(&NodeValue::Float(7.0)));
 	}
 
 	#[test]
@@ -576,5 +591,148 @@ mod tests {
 			.downcast_ref::<MultiCamNode>()
 			.unwrap();
 		assert_eq!(down.sequence, Some(seq));
+	}
+}
+
+#[cfg(test)]
+mod branch_tests {
+	use super::*;
+	use crate::node::NodeBehavior;
+
+	#[test]
+	fn set_sequence_handles_missing_input_and_both_states() {
+		let (mut core, mut behavior) = create();
+		let node = behavior
+			.as_any_mut()
+			.unwrap()
+			.downcast_mut::<MultiCamNode>()
+			.unwrap();
+		node.set_sequence(&mut core, Some(fake_id(11)));
+		assert_eq!(node.sequence(), Some(fake_id(11)));
+		assert_eq!(
+			core.get_input(SEQUENCE_TYPE_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
+			0
+		);
+		node.set_sequence(&mut core, None);
+		assert_eq!(node.sequence(), None);
+		assert_ne!(
+			core.get_input(SEQUENCE_TYPE_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
+			0
+		);
+		// A core without the sequence-type input must not panic.
+		node.set_sequence(&mut NodeCore::new(), None);
+	}
+
+	fn fake_id(n: u32) -> NodeId {
+		NodeId::from_identity(n as u64).unwrap()
+	}
+
+	#[test]
+	fn active_elements_rejects_negative_and_too_large_sources() {
+		let (mut core, behavior) = create();
+		let node = behavior
+			.as_any()
+			.unwrap()
+			.downcast_ref::<MultiCamNode>()
+			.unwrap();
+		core.set_standard_value(CURRENT_INPUT, -1, NodeValue::Combo(-1));
+		assert!(node.active_elements(&core).is_empty());
+		core.set_standard_value(CURRENT_INPUT, -1, NodeValue::Combo(99));
+		assert!(node.active_elements(&core).is_empty());
+	}
+
+	#[test]
+	fn connected_render_output_covers_every_guard() {
+		let (core, _) = create();
+		let node = MultiCamNode { sequence: None };
+		assert_eq!(node.connected_render_output(&core, SOURCES_INPUT, 0), None);
+		assert_eq!(node.connected_render_output(&core, "other_in", 0), None);
+		let node = MultiCamNode {
+			sequence: Some(fake_id(1)),
+		};
+		assert_eq!(node.connected_render_output(&core, SOURCES_INPUT, 0), None);
+		assert_eq!(node.connected_render_output(&core, SOURCES_INPUT, -1), None);
+		assert_eq!(node.connected_render_output(&core, "other_in", 0), None);
+	}
+
+	#[test]
+	fn value_falls_back_to_unindexed_and_handles_negative_source() {
+		let (mut core, behavior) = create();
+		let mut row = NodeValueRow::default();
+		row.insert(SOURCES_INPUT.to_string(), NodeValue::Float(2.0));
+		let mut table = NodeValueTable::default();
+		core.set_standard_value(CURRENT_INPUT, -1, NodeValue::Combo(-1));
+		behavior.value(&core, &row, Rational::new(0, 1), &mut table);
+		assert_eq!(table.get(crate::value::ValueType::Float), Some(&NodeValue::Float(2.0)));
+
+		let (core, behavior) = create();
+		let mut row = NodeValueRow::default();
+		row.insert(format!("{SOURCES_INPUT}[0]"), NodeValue::Float(3.0));
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &row, Rational::new(0, 1), &mut table);
+		assert_eq!(table.get(crate::value::ValueType::Float), Some(&NodeValue::Float(3.0)));
+
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &NodeValueRow::default(), Rational::new(0, 1), &mut table);
+		assert!(table.is_empty());
+	}
+
+	#[test]
+	fn non_sequence_connection_events_are_ignored_and_duplicate_works() {
+		let (mut core, mut behavior) = create();
+		let seq = fake_id(7);
+		behavior.input_connected(&mut core, "other_in", -1, seq);
+		assert!(behavior
+			.as_any()
+			.unwrap()
+			.downcast_ref::<MultiCamNode>()
+			.unwrap()
+			.sequence()
+			.is_none());
+		behavior.input_connected(&mut core, SEQUENCE_INPUT, -1, seq);
+		assert_eq!(
+			behavior
+				.as_any()
+				.unwrap()
+				.downcast_ref::<MultiCamNode>()
+				.unwrap()
+				.sequence(),
+			Some(seq)
+		);
+		behavior.input_disconnected(&mut core, "other_in", -1, seq);
+		assert!(behavior
+			.as_any()
+			.unwrap()
+			.downcast_ref::<MultiCamNode>()
+			.unwrap()
+			.sequence()
+			.is_some());
+		behavior.input_disconnected(&mut core, SEQUENCE_INPUT, -1, seq);
+		assert!(behavior
+			.as_any()
+			.unwrap()
+			.downcast_ref::<MultiCamNode>()
+			.unwrap()
+			.sequence()
+			.is_none());
+
+		let mut copy = behavior
+			.as_any()
+			.unwrap()
+			.downcast_ref::<MultiCamNode>()
+			.unwrap()
+			.duplicate(&core)
+			.unwrap();
+		assert!(copy.as_any().is_some());
+		assert!(copy.as_any_mut().is_some());
+	}
+
+	#[test]
+	fn input_labels_and_ignored_inputs_cover_defaults() {
+		let node = MultiCamNode { sequence: None };
+		assert_eq!(node.input_name("unknown"), "unknown");
+		assert!(node.input_combo_strings(CURRENT_INPUT).is_empty());
+		assert_eq!(node.input_combo_strings(SEQUENCE_TYPE_INPUT), vec!["Video", "Audio"]);
+		assert!(!node.ignore_inputs_for_rendering().is_empty());
 	}
 }

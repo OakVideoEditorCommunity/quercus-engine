@@ -226,6 +226,12 @@ pub fn set_plugin_executor(executor: Option<Arc<PluginExecutor>>) {
 }
 
 /// The installed plugin executor, if any.
+///
+/// Returns a clone of the executor installed by [`set_plugin_executor`], or
+/// `None` when none is installed (the plugin render path then falls back to
+/// a purple failure frame). The returned `Arc` keeps the executor alive even
+/// if a later install clears or replaces the slot. Takes the slot lock and
+/// recovers from a poisoned mutex instead of panicking.
 pub fn plugin_executor() -> Option<Arc<PluginExecutor>> {
     executor_slot()
         .lock()
@@ -263,6 +269,62 @@ pub fn plugin_instance_factory() -> Option<Arc<PluginInstanceFactory>> {
         .clone()
 }
 
+/// Whether a plugin identifier can render on the GPU/GL path. Montage
+/// tickets use this to keep CPU-only OFX plugins on the CPU compositor while
+/// GPU-capable plugins stay in the GPU montage. Implemented by
+/// quercusplugin from its descriptor registry.
+pub type PluginGpuQuery = dyn Fn(&str) -> bool + Send + Sync;
+
+static PLUGIN_GPU_QUERY: std::sync::OnceLock<std::sync::Mutex<Option<Arc<PluginGpuQuery>>>> =
+    std::sync::OnceLock::new();
+
+fn plugin_gpu_query_slot() -> &'static std::sync::Mutex<Option<Arc<PluginGpuQuery>>> {
+    PLUGIN_GPU_QUERY.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Install/clear the plugin GPU-capability query.
+///
+/// The query maps an OFX plugin identifier to whether it can render on the
+/// GPU path; [`montage_has_cpu_effects`] consults it through
+/// [`plugin_is_gpu`] to keep CPU-only plugins on the CPU compositor (and to
+/// let GPU-capable plugins stay in the GPU montage). Passing `None` clears
+/// the process-wide slot, after which every non-builtin effect is
+/// conservatively treated as CPU. Safe to call repeatedly; the previous
+/// `Arc`, if any, is dropped.
+pub fn set_plugin_gpu_query(query: Option<Arc<PluginGpuQuery>>) {
+    *plugin_gpu_query_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = query;
+}
+
+fn plugin_is_gpu(id: &str) -> bool {
+    plugin_gpu_query_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|query| query(id))
+}
+
+/// A montage is CPU-bound when it contains a CPU-only OFX plugin. Built-in
+/// Opacity is GPU-rendered; a GPU-capable OFX plugin stays in the GPU
+/// montage. Without a capability query (plugin subsystem not installed), a
+/// non-builtin effect is conservatively treated as CPU.
+fn montage_has_cpu_effects(params: &crate::ticket::VideoTicketParams) -> bool {
+    let cpu_effect = |effect: &crate::ticket::MontageEffect| {
+        effect.enabled
+            && effect.type_id != OPACITY_EFFECT_TYPE_ID
+            && !plugin_is_gpu(&effect.type_id)
+    };
+    params
+        .montage
+        .iter()
+        .any(|clip| clip.effects.iter().any(cpu_effect))
+        || params
+            .adjustments
+            .iter()
+            .any(|span| span.effects.iter().any(cpu_effect))
+}
+
 /// Box a resolved texture into the table's texture channel (the render
 /// seam's output is the one place a texture legitimately travels as a
 /// refcounted handle — [`quercus_node::handle::get_checked`] probes against
@@ -274,6 +336,12 @@ fn texture_value(texture: Texture) -> NodeValue {
 /// The failure marker frame: solid magenta (1, 0, 1, 1) F32 RGBA —
 /// the C++ plugin renderer paints failed plugin output purple so a
 /// broken plugin is visible instead of silently black.
+///
+/// `size` is clamped to at least 1×1 (a zero/negative dimension becomes 1);
+/// `time` is used as the generated frame's timestamp. Every pixel is set to
+/// exactly `(1.0, 0.0, 1.0, 1.0)` F32 RGBA. Falls back to
+/// [`Texture::dummy`] when the frame cannot be allocated, so the caller
+/// never has to handle an error.
 fn purple_frame(time: Rational, size: (i32, i32)) -> Texture {
     let (w, h) = (size.0.max(1), size.1.max(1));
     let mut frame = match generate_frame(time, (w, h), PixelFormat::F32) {
@@ -413,6 +481,13 @@ impl RenderEvalHooks {
     /// inversion). A missing host/executor or a failed render yields a
     /// purple failure frame instead of aborting the graph, matching
     /// pluginjob.cpp's fallback.
+    ///
+    /// `src` is the texture the plugin renders against (the caller picks
+    /// the job's effect input, else the first clip texture, else a dummy
+    /// 1×1); `spec` must be a [`JobSpec::Plugin`] — any other variant
+    /// returns `Error::Invalid`. The job's `size` comes from `src`.
+    /// Only a non-plugin spec is an `Err`; plugin render failures are
+    /// logged and reported as [`purple_frame`] so the graph continues.
     fn process_plugin_job(&mut self, src: Texture, spec: &JobSpec) -> Result<Texture> {
         let JobSpec::Plugin {
             instance,
@@ -554,6 +629,13 @@ impl RenderEvalHooks {
     /// texture from the now-resolved param row (a pass-through — C++ leaves
     /// the failed shader's output as its input); a row without the effect
     /// input resolves to `NodeValue::None`.
+    ///
+    /// `payload` is the shader job whose `params` row is resolved in place;
+    /// `depth`/`in_flight` are the recursion state, and each param value is
+    /// resolved at the same `depth` (nested payload recursion happens inside
+    /// [`Self::resolve_value`]/[`Self::process_shader_job`]). Always returns
+    /// a value: the rendered texture, the effect-input value, or
+    /// `NodeValue::None`.
     fn process_shader_job_value(
         &mut self,
         payload: &ShaderJobPayload,
@@ -646,6 +728,11 @@ impl RenderEvalHooks {
     /// and replace the box with the result. A failure falls back to the
     /// job's resolved input texture (a pass-through — the C++ renderer
     /// leaves the failed transform's output as its input).
+    ///
+    /// `payload` is the color-transform job (input value plus processor);
+    /// `depth`/`in_flight` are forwarded to the recursion walk that
+    /// resolves the input first. Always returns a value: the transformed
+    /// texture, or the resolved input when the transform fails (logged).
     fn process_color_transform_job_value(
         &mut self,
         payload: &ColorTransformJobPayload,
@@ -668,6 +755,13 @@ impl RenderEvalHooks {
     /// wrote at the job's path. A missing or unreadable file substitutes
     /// the fallback — a real texture by then, not another job box — and is
     /// logged once per path (a cache miss repeats every frame).
+    ///
+    /// `payload` is the cache job (path plus fallback value); `depth` and
+    /// `in_flight` are the recursion state shared with
+    /// [`Self::resolve_value`], which resolves the fallback at the same
+    /// `depth` and uses `in_flight` to stop a job reachable from itself.
+    /// Always returns a value: the cached frame on success, else the
+    /// resolved fallback.
     fn process_cache_job_value(
         &mut self,
         payload: &CacheJobPayload,
@@ -711,6 +805,15 @@ impl RenderEvalHooks {
 
     /// [`Self::process_shader_job`] with a recursion guard for nested
     /// payloads (generator-over-base chains nest at most 2 deep).
+    ///
+    /// `payload` is the shader job to execute — its `params` row holds
+    /// texture boxes, scalar params and nested shader payloads; `depth` is
+    /// the current nesting level, 0 for the top-level job. A texture param
+    /// boxing another shader payload is resolved by a recursive call with
+    /// `depth + 1`; once `depth` reaches 8 (defensive ceiling; real chains
+    /// nest at most 2) the nested box is treated as unresolved and that
+    /// sampler is left unbound. Returns `None` when the job cannot run, for
+    /// the reasons listed on [`Self::process_shader_job`].
     fn process_shader_job_depth(&self, payload: &ShaderJobPayload, depth: u32) -> Option<Texture> {
         /// Nested-payload recursion ceiling (defensive; real graphs nest
         /// a generator job inside a merge job and stop there).
@@ -1043,6 +1146,16 @@ impl Default for RenderEvalHooks {
 
 /// Generate the pipeline's canonical frame: F32 RGBA, transparent black,
 /// with the given timestamp (the CPU-backend producer for video tickets).
+///
+/// `size` is `(width, height)` in pixels; `time` is stored as the frame
+/// timestamp; `format` is written into the frame's video params (F32 is
+/// the pipeline's canonical format). The frame is allocated and zeroed;
+/// callers fill the pixels.
+///
+/// # Errors
+///
+/// `Error::Invalid` for a non-positive dimension and `Error::NoMem` when
+/// the allocation fails.
 pub fn generate_frame(time: Rational, size: (i32, i32), format: PixelFormat) -> Result<Frame> {
     let (w, h) = size;
     if w <= 0 || h <= 0 {
@@ -1065,8 +1178,20 @@ pub fn generate_frame(time: Rational, size: (i32, i32), format: PixelFormat) -> 
 /// asks for (F32 pipeline frame). This is the CPU-backend render path.
 ///
 /// M12 P0 routing: a sequence montage (list of clips) is composited
-/// topmost-last; a single-footage ticket decodes one stream; otherwise
-/// the pipeline frame is generated.
+/// topmost-last through [`render_montage_frame`], which prefers the GPU
+/// compositor; a single-footage ticket decodes one stream through
+/// [`render_footage_frame`]; otherwise a transparent generated frame is
+/// produced — a GPU clear when the format is F32 and a context exists,
+/// falling back to [`generate_frame`].
+///
+/// `time` is the sequence time to render; `params` supplies the output
+/// size ([`VideoTicketParams::render_size`]), the optional forced pixel
+/// format (F32 when unset) and the clip/footage selection.
+///
+/// # Errors
+///
+/// Propagates decode and composite errors, and `Error::Invalid`/
+/// `Error::NoMem` from the generated-frame fallback.
 pub fn render_produced_frame(
     time: Rational,
     params: &crate::ticket::VideoTicketParams,
@@ -1076,10 +1201,11 @@ pub fn render_produced_frame(
 
     if !params.montage.is_empty() {
         let r = render_montage_frame(time, params, (w, h), format);
-        return r;
+        return r.map(|texture| texture.with_timestamp(time));
     }
     if let Some((filename, stream_index)) = &params.footage {
-        return render_footage_frame(filename, *stream_index, time, (w, h), format);
+        return render_footage_frame(filename, *stream_index, time, (w, h), format)
+            .map(|texture| texture.with_timestamp(time));
     }
 
     // Generated (transparent) frame: prefer a GPU clear so the pipeline
@@ -1088,7 +1214,7 @@ pub fn render_produced_frame(
         if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
             if let Ok(token) = ctx.create_texture(w, h) {
                 if ctx.clear_texture(token).is_ok() {
-                    return Ok(Texture::gpu(ctx, token, w, h, PixelFormat::F32));
+                    return Ok(Texture::gpu(ctx, token, w, h, PixelFormat::F32).with_timestamp(time));
                 }
                 ctx.destroy_texture(token);
             }
@@ -1170,7 +1296,7 @@ const MAX_CACHED_PLANAR_FRAMES: usize = 4;
 /// part of the key: the same media at a different target resolution is a
 /// different frame (an interleaved source-monitor/proxy request must not
 /// reuse a wrongly-sized pixel buffer).
-type DecodedFrameKey = (String, i32, (i64, i64), i32, i32);
+type DecodedFrameKey = (String, i32, (i64, i64), i32, i32, bool);
 
 /// Decoded-frame LRU map. Values are decoded textures (CPU frame, or the
 /// M5 imported planar texture when the hardware import took the frame)
@@ -1190,6 +1316,15 @@ fn decoded_frames() -> std::sync::MutexGuard<'static, DecodedFrameCache> {
 }
 
 /// Insert `texture` under `key` with the general and planar caps applied.
+///
+/// A key that is already present is left untouched (the first insertion
+/// wins). Otherwise general-LRU victims are dropped until the cache is
+/// below [`MAX_CACHED_FRAMES`]; entries with tick 0 are pinned and never
+/// chosen as victims, so a cache full of them simply grows past the cap.
+/// A planar texture additionally prunes planar entries to
+/// [`MAX_CACHED_PLANAR_FRAMES`] - 1 before inserting, keeping hardware
+/// surface residency bounded. `tick` is the caller's LRU timestamp (higher
+/// is more recent); `cache` is borrowed for the whole operation.
 fn insert_cached_frame(cache: &mut DecodedFrameCache, key: DecodedFrameKey, texture: Texture, tick: u64) {
     if cache.contains_key(&key) {
         return;
@@ -1228,7 +1363,13 @@ fn prune_planar_frames(cache: &mut DecodedFrameCache, keep: usize) {
     }
 }
 
-/// Time-key rational (the frame-LRU's deterministic key half).
+/// The deterministic frame-LRU key half for a time value.
+///
+/// Returns the rational as `(numerator, denominator)` — the exact pair, not
+/// a float — so two requests for the same frame time compare equal even
+/// when reached through different rational arithmetic. `t` is borrowed and
+/// not reduced or normalized. Used as the time component of
+/// [`DecodedFrameKey`].
 fn time_key(t: &Rational) -> (i64, i64) {
     (t.numerator(), t.denominator())
 }
@@ -1267,6 +1408,21 @@ fn eviction_victim(
 }
 
 /// Open (or reuse) the decoder session for `(filename, stream_index)`.
+///
+/// Sessions are cached process-wide in [`DECODERS`], mutex-serialized so a
+/// handle can be shared across worker threads, and a cache hit refreshes
+/// the session's LRU tick. A miss opens a new FFmpeg decoder and evicts
+/// under [`MAX_CACHED_DECODERS`], preferring a hardware session as the
+/// victim (hardware sessions pin scarce GPU memory). `filename` is the
+/// media path (`&str`, borrowed only for the duration of the call) and
+/// `stream_index` selects the stream inside that file.
+///
+/// Setting the `QUERCUS_PERF` environment variable adds `[open]` tracing
+/// to standard error.
+///
+/// # Errors
+///
+/// `Error::Failed` when the codec cannot open the stream.
 fn open_decoder(filename: &str, stream_index: i32) -> Result<Arc<dyn quercus_codec::decoder::Decoder>> {
     let key = (filename.to_string(), stream_index);
     let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1365,12 +1521,16 @@ pub fn render_footage_frame(
     let mut result = decode(true);
     // M5: an imported hardware frame is planar YUV; resolve it to
     // working-space RGBA on the GPU before it leaves the footage path.
+    // The resolve scales straight to the caller's target size on the GPU
+    // (no CPU swscale / no native-size RGBA intermediate), which is what
+    // keeps a 4K clip on the GPU for a preview-size montage frame.
     // A resolution failure is a per-frame fallback: re-decode through the
     // CPU scaler with the import disabled (the decoder session cache makes
     // this a transfer, not a second decode).
     if let Ok(texture) = &result {
         if texture.is_planar() {
-            result = match resolve_planar_footage(texture) {
+            let target = (size.0 > 0 && size.1 > 0).then_some(size);
+            result = match resolve_planar_footage(texture, target) {
                 Ok(resolved) => Ok(resolved),
                 Err(err) => {
                     eprintln!("planar footage resolve failed, staging fallback: {err:#}");
@@ -1405,15 +1565,16 @@ pub fn render_footage_frame(
 }
 
 /// The CPU-staging decode for consumers that composite on the CPU (the
-/// montage compositor): same service/FRU semantics as
+/// worker/no-adapter montage fallback): same service/FRU semantics as
 /// [`render_footage_frame`], but the M5 zero-copy import is disabled and
-/// the result is always a CPU frame.
+/// the result is always a CPU frame. The GPU montage compositor
+/// ([`render_montage_frame`]) uses [`render_footage_frame`] instead.
 ///
-/// This is not just an optimization: the montage compositor runs on the
-/// CPU, so an imported `Texture::Gpu` would have to be downloaded again —
-/// and before this entry point existed it was silently SKIPPED (the M5
-/// audit's all-black montage bug). A planar texture must never reach a
-/// CPU consumer here.
+/// This is not just an optimization: the CPU montage compositor runs on
+/// the CPU, so an imported `Texture::Gpu` would have to be downloaded
+/// again — and before this entry point existed it was silently SKIPPED
+/// (the M5 audit's all-black montage bug). A planar texture must never
+/// reach a CPU consumer here.
 pub(crate) fn render_footage_frame_staged(
     filename: &str,
     stream_index: i32,
@@ -1470,10 +1631,11 @@ pub(crate) fn render_footage_frame_staged(
 /// The synchronous decode behind [`render_footage_frame`] (frame-LRU →
 /// decoder session → codec → F32 frame). `pub(crate)` because the decode
 /// service runs exactly this on its own thread, with the request's own
-/// `allow_import` flag (the montage requests stage on purpose, §M5 audit).
+/// `allow_import` flag (the CPU montage fallback requests staging on
+/// purpose, §M5 audit).
 ///
 /// `allow_import` false forces the CPU staging path: the resolve step's
-/// fallback re-decodes with it off, and the montage compositor never
+/// fallback re-decodes with it off, and the CPU montage compositor never
 /// wants a GPU frame.
 pub(crate) fn render_footage_frame_inner_opts(
     filename: &str,
@@ -1490,7 +1652,7 @@ pub(crate) fn render_footage_frame_inner_opts(
     // type's doc).
     let (w, h) = size;
     let cache_size = if w > 0 && h > 0 { (w, h) } else { (-1, -1) };
-    let cache_key = (filename.to_string(), stream_index, time_key(&time), cache_size.0, cache_size.1);
+    let cache_key = (filename.to_string(), stream_index, time_key(&time), cache_size.0, cache_size.1, allow_import);
     {
         let mut cache = decoded_frames();
         let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1535,9 +1697,10 @@ pub(crate) fn render_footage_frame_inner_opts(
     // re-decodes).
     if allow_import {
         if let Ok(Some(imported)) = decoder.retrieve_video_frame_gpu(&params) {
-            let mut cache = decoded_frames();
-            let tick = DECODER_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            insert_cached_frame(&mut cache, cache_key, imported.clone(), tick);
+            // Imported planar frames are transient: the render layer resolves
+            // them immediately and returns the GPU result. Do not cache the
+            // planar texture here — its VMM slot must be released (after the
+            // GPU pass completes) so the slot can be reused next frame.
             return Ok(imported);
         }
     }
@@ -1594,13 +1757,21 @@ pub(crate) fn render_footage_frame_inner_opts(
     Ok(texture)
 }
 
-/// Resolve an imported planar hardware frame (M5) to working-space RGBA
-/// on the GPU: the YUV→RGB pass (matrix + range from the frame's own
-/// colorimetry) followed by the source→working transform. In the legacy
-/// sRGB working space the transform is a pass-through (matching the CPU
-/// path's `convert_decoded_to_working`); otherwise it is applied as a CPU
-/// reference-baked 3D LUT, exactly like the OCIO color transforms.
-fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
+/// Resolve an imported planar frame (M5) to working-space RGBA on the
+/// GPU: the descriptor-driven planar→RGB pass (matrix/range from the
+/// frame's own colorimetry; any color model, subsampling and storage —
+/// YUV 4:2:0/4:2:2/4:4:4 and RGB/RGBA, U8/U16/F16/F32) followed by the
+/// source→working transform. `target` is the output size the caller asked
+/// for (the ticket/preview size): when it differs from the frame's
+/// visible luma size the pass scales with normalized-UV bilinear on the
+/// GPU, so a native 4K frame never needs a CPU swscale or a 4K RGBA
+/// intermediate. `None`/non-positive keeps the native visible size.
+///
+/// In the legacy sRGB working space the source→working transform is a
+/// pass-through (matching the CPU path's `convert_decoded_to_working`);
+/// otherwise it is applied as a CPU reference-baked 3D LUT, exactly like
+/// the OCIO color transforms.
+fn resolve_planar_footage(texture: &Texture, target: Option<(i32, i32)>) -> Result<Texture> {
     let planar = texture
         .as_planar()
         .ok_or_else(|| Error::Failed("resolve_planar_footage: not planar".into()))?;
@@ -1613,13 +1784,35 @@ fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
             "planar texture belongs to a non-wgpu context".into(),
         ));
     };
-    let (w, h) = (planar.width.max(1), planar.height.max(1));
+    // The visible luma size, not the (possibly padded) plane allocation:
+    // the matrix pass samples only this region and scales it to the
+    // target. Any target size/aspect is valid — the mapping is fill/stretch
+    // (the same behavior the CPU path gets from swscale `target_size`).
+    let src_w = planar.width.max(1);
+    let src_h = planar.height.max(1);
+    let (w, h) = match target {
+        Some((w, h)) if w > 0 && h > 0 => (w, h),
+        _ => (src_w, src_h),
+    };
     let dst = gpu
         .create_texture(w, h)
         .map_err(|e| Error::Failed(format!("planar resolve target: {e:?}")))?;
-    if let Err(e) = gpu.run_planar_yuv_to_rgb(planar.y, planar.uv, dst, &planar.transform) {
+    if std::env::var_os("OAK_DEBUG_HW").is_some() {
+        eprintln!("[planar] resolve target created");
+    }
+    if let Err(e) = gpu.run_planar_matrix_to_rgb(
+        planar.plane_tokens(),
+        dst,
+        planar.descriptor,
+        &planar.transform,
+        (src_w as u32, src_h as u32),
+        (w as u32, h as u32),
+    ) {
         gpu.destroy_texture(dst);
-        return Err(Error::Failed(format!("planar YUV pass: {e:?}")));
+        return Err(Error::Failed(format!("planar matrix pass: {e:?}")));
+    }
+    if std::env::var_os("OAK_DEBUG_HW").is_some() {
+        eprintln!("[planar] matrix pass submitted");
     }
     let token = match footage_working_lut(planar.color_primaries, planar.color_trc) {
         Some((key, lut)) => match gpu.apply_color_lut(dst, &key, &lut) {
@@ -1628,12 +1821,21 @@ fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
                 transformed
             }
             Err(e) => {
-                eprintln!("footage working-space LUT failed, using source RGB: {e:?}");
-                dst
+                gpu.destroy_texture(dst);
+                return Err(Error::Failed(format!(
+                    "footage working-space LUT failed: {e:?}"
+                )));
             }
         },
         None => dst,
     };
+    // Hold the VMM/decode-surface guard on the resolved token until the
+    // token (including any async readback) is destroyed. Without this the
+    // source slot can be reused while the GPU still reads the resolved
+    // frame in the async pipeline.
+    if let Some(guard) = planar.keep_alive.clone() {
+        gpu.set_texture_keep_alive(token, guard);
+    }
     Ok(Texture::gpu(planar.ctx.clone(), token, w, h, PixelFormat::F32))
 }
 
@@ -1641,6 +1843,12 @@ fn resolve_planar_footage(texture: &Texture) -> Result<Texture> {
 /// path): baked from the same CPU reference (`colormath::decode_to_acescg`)
 /// the staging path uses, cached per colorimetry. `None` in the legacy
 /// sRGB working space (pass-through) or when the LUT cannot be built.
+///
+/// `color_primaries`/`color_trc` are the frame's `AVColorPrimaries` and
+/// `AVColorTransferCharacteristic` codes. The returned key
+/// (`"footage/{primaries}/{trc}"`) is passed to the GPU LUT pass as its
+/// cache identity; the per-process cache holds at most 16 entries and is
+/// cleared wholesale when full.
 fn footage_working_lut(
     color_primaries: i32,
     color_trc: i32,
@@ -1671,6 +1879,17 @@ fn footage_working_lut(
 
 /// Bake the source→ACEScg transform into a 3D LUT over the display
 /// domain (the same domain the color-transform LUTs use).
+///
+/// `color_primaries` and `color_trc` are the decoded frame's FFmpeg
+/// `AVColorPrimaries` / `AVColorTransferCharacteristic` integer codes,
+/// mapped through [`source_primaries_from_av`] / [`source_transfer_from_av`];
+/// every lattice point is transformed with the same CPU reference
+/// ([`decode_to_acescg`]) the staging path uses. The returned LUT is the
+/// GPU-side equivalent for imported planar frames.
+///
+/// Returns `None` when the transform cannot be produced; the current
+/// implementation always returns `Some`, so callers treat `None` as
+/// "working-space transform unavailable".
 fn build_footage_working_lut(
     color_primaries: i32,
     color_trc: i32,
@@ -1779,10 +1998,110 @@ fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Program cache key for the scaled alpha-over pass
+/// ([`SCALED_COMP_WGSL`]).
+const SCALED_COMP_KEY: &str = "quercus/builtin/alpha-over-scaled";
+
+/// WGSL fragment for the resolution-independent alpha-over: the source is
+/// sampled at the destination pixel's normalized UV with a manual 4-tap
+/// bilinear (edge-clamped `textureLoad`s — no sampler and no
+/// `FLOAT32_FILTERABLE` requirement), so any source size/aspect maps onto
+/// any target canvas in one GPU pass: pixel-exact when the sizes match,
+/// scaled when they differ, never skipped. This keeps the timeline's
+/// existing fill/stretch behavior (the CPU path pre-scales each clip with
+/// swscale; this pass introduces no letterbox/pillarbox). `gain` is the
+/// montage clip's playback gain (`1.0` for the graph compositor).
+///
+/// Bindings follow [`GpuContext::compile_shader_pass`]'s assignment:
+/// binding 0 is the uniform, then the destination (1) and source (3)
+/// texture pairs.
+const SCALED_COMP_WGSL: &str = r#"
+struct Gain {
+    gain: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> g: Gain;
+@group(0) @binding(1) var dst_tex: texture_2d<f32>;
+@group(0) @binding(3) var src_tex: texture_2d<f32>;
+
+// Bilinear tap at normalized `uv`, clamped to the texture's edge texels.
+// Equal source/destination sizes land exactly on texel centers (f == 0),
+// so the pass is a pixel-identity then.
+fn sample_bilinear(tex: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let dims = textureDimensions(tex);
+    let size = vec2<f32>(f32(dims.x), f32(dims.y));
+    let p = uv * size - vec2<f32>(0.5, 0.5);
+    let base = floor(p);
+    let f = p - base;
+    let last = vec2<i32>(i32(dims.x), i32(dims.y)) - vec2<i32>(1, 1);
+    let c = vec2<i32>(base);
+    let c00 = clamp(c, vec2<i32>(0, 0), last);
+    let c10 = clamp(c + vec2<i32>(1, 0), vec2<i32>(0, 0), last);
+    let c01 = clamp(c + vec2<i32>(0, 1), vec2<i32>(0, 0), last);
+    let c11 = clamp(c + vec2<i32>(1, 1), vec2<i32>(0, 0), last);
+    let top = mix(textureLoad(tex, c00, 0), textureLoad(tex, c10, 0), f.x);
+    let bottom = mix(textureLoad(tex, c01, 0), textureLoad(tex, c11, 0), f.x);
+    return mix(top, bottom, f.y);
+}
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>, @location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(dst_tex);
+    let coord = clamp(
+        vec2<u32>(u32(i32(frag.x)), u32(i32(frag.y))),
+        vec2<u32>(0u, 0u),
+        dims - vec2<u32>(1u, 1u),
+    );
+    let d = textureLoad(dst_tex, coord, 0);
+    let s = sample_bilinear(src_tex, uv) * g.gain.x;
+    let a = clamp(s.a, 0.0, 1.0);
+    // RGB keeps the working-space values unclamped (HDR/WCG can exceed
+    // 1.0); only the alpha of the result is clamped to its valid range.
+    return vec4<f32>(s.rgb * a + d.rgb * (1.0 - a), clamp(a + d.a * (1.0 - a), 0.0, 1.0));
+}
+"#;
+
+/// Program cache key for the GPU Opacity pass ([`OPACITY_GPU_WGSL`]).
+const OPACITY_GPU_KEY: &str = "quercus/builtin/opacity-gpu";
+
+/// WGSL for the GPU Opacity pass (C++ `:/shaders/opacity.frag` parity):
+/// every channel, alpha included, is multiplied by `opacity_in`. Running
+/// it on the GPU keeps the montage effect stack on the GPU end to end —
+/// the built-in Opacity never forces a readback.
+const OPACITY_GPU_WGSL: &str = r#"
+struct Params {
+    factor: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> p: Params;
+@group(0) @binding(1) var tex_in: texture_2d<f32>;
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(tex_in);
+    let coord = clamp(
+        vec2<u32>(u32(i32(frag.x)), u32(i32(frag.y))),
+        vec2<u32>(0u, 0u),
+        dims - vec2<u32>(1u, 1u),
+    );
+    return textureLoad(tex_in, coord, 0) * p.factor.x;
+}
+"#;
+
+/// Little-endian bytes of a one-lane `vec4<f32>` uniform (the opacity
+/// factor or a clip gain; the other lanes are std140 padding).
+fn scale_uniform_bytes(value: f32) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[..4].copy_from_slice(&value.to_le_bytes());
+    bytes
+}
+
 /// GPU composite of `frames` into one `(w, h)` texture: bottom (last) to
-/// top (first), alpha-over into a ping-pong accumulator pair. Frames that
-/// do not match `(w, h)` are skipped (the caller scales at decode time;
-/// mismatches are defensive).
+/// top (first), alpha-over into a ping-pong accumulator pair.
+///
+/// Frames at a resolution other than the composite target are scaled by
+/// the normalized-UV bilinear pass instead of being skipped (`(w, h)` here
+/// is the preview raster; a native 4K/portrait/any-aspect frame must still
+/// fill it). This preserves the existing fill/stretch semantics — no
+/// letterbox is introduced.
 ///
 /// GPU→GPU (M2): textures already on the context are used by token; CPU
 /// frames are uploaded into scratch textures (counted, and only when the
@@ -1798,30 +2117,51 @@ fn composite_tracks_gpu(
 		return Err(Error::Invalid);
 	}
 	let program = ctx.compile_shader_pass("quercus/builtin/alpha-over", COMP_WGSL, 2, false, false)?;
+	// Compiled lazily: only a stack that contains a size-mismatched frame
+	// needs the scaled variant (the common graph/timeline case decodes at
+	// the target size).
+	let mut scaled_program: Option<Arc<quercus_core::backend::ShaderProgram>> = None;
 	let acc = ctx.create_texture(w, h)?;
-	ctx.clear_texture(acc)?;
+	if let Err(err) = ctx.clear_texture(acc) {
+		ctx.destroy_texture(acc);
+		return Err(err);
+	}
 	let mut scratch: Vec<u64> = Vec::new();
 	let mut current = acc;
 	let mut owned_current = true;
 	let result = (|| -> Result<u64> {
-		for frame in frames.iter().rev().filter(|f| f.size() == (w, h)) {
+		for frame in frames.iter().rev() {
+			let (frame_w, frame_h) = frame.size();
+			// A dummy/zero-sized frame has nothing to composite (and no
+			// texture to create); a real frame at any resolution is scaled
+			// by the pass below instead of being skipped.
+			if frame.is_dummy() || frame_w <= 0 || frame_h <= 0 {
+				continue;
+			}
 			// Prefer the texture's own context when it is this one; a GPU
-			// texture from another context can only be read back.
+			// texture from another context can only be read back. Uploads
+			// use the frame's own size so the shader can do the sizing.
 			let src_token = match frame {
 				Texture::Gpu { token, .. } if ctx.has_texture(*token) => *token,
 				Texture::Gpu { .. } => {
 					let cpu = frame.to_frame()?;
-					let t = ctx.create_texture(w, h)?;
-					ctx.upload(t, &cpu)?;
+					let t = ctx.create_texture(cpu.width, cpu.height)?;
+					if let Err(err) = ctx.upload(t, &cpu) {
+						ctx.destroy_texture(t);
+						return Err(err);
+					}
 					scratch.push(t);
 					t
 				}
-				Texture::Cpu(f) => {
-					let t = ctx.create_texture(w, h)?;
-					ctx.upload(t, f)?;
-					scratch.push(t);
-					t
+			Texture::Cpu(f) => {
+				let t = ctx.create_texture(f.width, f.height)?;
+				if let Err(err) = ctx.upload(t, f) {
+					ctx.destroy_texture(t);
+					return Err(err);
 				}
+				scratch.push(t);
+				t
+			}
 				Texture::Planar(_) => {
 					return Err(Error::Failed(
 						"unresolved planar texture in composite".into(),
@@ -1829,7 +2169,32 @@ fn composite_tracks_gpu(
 				}
 			};
 			let out = ctx.create_texture(w, h)?;
-			ctx.run_shader_pass(&program, &[], &[current, src_token], out)?;
+			let pass = if (frame_w, frame_h) == (w, h) {
+				ctx.run_shader_pass(&program, &[], &[current, src_token], out)
+			} else {
+				if scaled_program.is_none() {
+					scaled_program = Some(ctx.compile_shader_pass(
+						SCALED_COMP_KEY,
+						SCALED_COMP_WGSL,
+						2,
+						true,
+						false,
+					)?);
+				}
+				let scaled = scaled_program.as_ref().expect("just compiled");
+				ctx.run_shader_pass(
+					scaled,
+					&scale_uniform_bytes(1.0),
+					&[current, src_token],
+					out,
+				)
+			};
+			if let Err(err) = pass {
+				ctx.destroy_texture(out);
+				return Err(Error::Failed(format!(
+					"alpha-over pass failed: {err:?}"
+				)));
+			}
 			if owned_current {
 				ctx.destroy_texture(current);
 			}
@@ -1867,6 +2232,14 @@ fn composite_tracks_gpu(
 static GPU_COMPOSITE_FAILED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// GPU montage setup failures (a device that cannot create the montage
+/// pass pipeline) are remembered like [`GPU_COMPOSITE_FAILED`]: otherwise
+/// every playback tick would recompile the shader, surface a validation
+/// error and stall. Once latched, `render_montage_frame` stays on the CPU
+/// compositor for the process.
+static GPU_MONTAGE_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Composite of `frames` into one `size` texture. The GPU path is
 /// preferred whenever a context is available (M2: the graph stays on the
 /// GPU end to end); the CPU path is the no-adapter fallback and the
@@ -1887,6 +2260,9 @@ fn composite_tracks(frames: Vec<Texture>, size: (i32, i32)) -> Texture {
 		if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
 			match composite_tracks_gpu(&ctx, &frames, (w, h)) {
 				Ok(texture) => return texture,
+				Err(Error::State) => {
+					// CPU layer: use the CPU compositor for this frame only.
+				}
 				Err(err) => {
 					eprintln!(
 						"GPU track composite failed, using CPU (and staying there): {err:#}"
@@ -2529,12 +2905,7 @@ pub fn render_graph_frame(
     }
 
     let composite_started = perf.then(std::time::Instant::now);
-    let mut frame = composite_tracks(frames, size);
-    if let Texture::Cpu(cpu) = &mut frame {
-        // The GPU path carries no timestamp (there is nowhere to put it);
-        // the 10-bit present path uses the ticket's time, not this field.
-        cpu.timestamp = time;
-    }
+    let frame = composite_tracks(frames, size).with_timestamp(time);
     if perf {
         let composite_ms = composite_started
             .map(|t| t.elapsed().as_secs_f64() * 1000.0)
@@ -2607,6 +2978,493 @@ pub fn audio_samples_byte_len(params: &crate::ticket::AudioTicketParams) -> Resu
         .saturating_mul(4))
 }
 
+/// Apply one clip's audio parameters to a decoded interleaved chunk.
+///
+/// Order (audio-post Phase 1): per-frame gain, stereo balance pan
+/// (-3 dB at centre), linear fade-in/fade-out anchored at the clip's
+/// timeline in/out, then the clip's audio effect chain in source-first
+/// order. `first_time` is the absolute sequence time (seconds) of frame 0;
+/// `channels` is the output channel count. Pan affects the first two
+/// channels only (mono output is unpanned; extra channels only get the
+/// gain/fade/effects).
+///
+/// `sidechain` is the already-mixed sequence accumulator over the same
+/// frame window (the previous clips in montage order, interleaved exactly
+/// like `buf`). Ducking effects read it; all other effects ignore it.
+/// Future clips never contribute because they have not been mixed yet.
+fn process_clip_audio(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    clip: &crate::ticket::MontageClip,
+    first_time: f64,
+    rate: i32,
+    sidechain: Option<&[f32]>,
+) {
+    let channels = channels.max(1);
+    let rate = rate.max(1) as f64;
+    let gain = if clip.gain.is_finite() {
+        clip.gain as f64
+    } else {
+        1.0
+    };
+    let pan = if clip.pan.is_finite() {
+        clip.pan.clamp(-1.0, 1.0) as f64
+    } else {
+        0.0
+    };
+    // Stereo balance law: centre (0) is unity on both channels (so the
+    // default clip is not quieter than the old gain-only path); panning
+    // attenuates the opposite channel with a cosine taper and isolates it
+    // completely at hard left/right. This is intentionally not the
+    // -3 dB-centre constant-power law, which would make every default
+    // stereo clip 3 dB quieter.
+    let (left_pan, right_pan) = if pan > 0.0 {
+        ((pan * std::f64::consts::FRAC_PI_2).cos(), 1.0)
+    } else if pan < 0.0 {
+        (1.0, (-pan * std::f64::consts::FRAC_PI_2).cos())
+    } else {
+        (1.0, 1.0)
+    };
+    let in_time = clip.in_time.to_f64();
+    let out_time = clip.out_time.to_f64();
+    let fade_in = clip.fade_in.to_f64();
+    let fade_out = clip.fade_out.to_f64();
+    let fade_in = if fade_in.is_finite() && fade_in > 0.0 {
+        fade_in
+    } else {
+        0.0
+    };
+    let fade_out = if fade_out.is_finite() && fade_out > 0.0 {
+        fade_out
+    } else {
+        0.0
+    };
+
+    for frame in 0..frames {
+        let t = first_time + frame as f64 / rate;
+        let mut factor = gain;
+        if fade_in > 0.0 {
+            factor *= ((t - in_time) / fade_in).clamp(0.0, 1.0);
+        }
+        if fade_out > 0.0 {
+            factor *= ((out_time - t) / fade_out).clamp(0.0, 1.0);
+        }
+        let base = frame * channels;
+        if channels >= 2 {
+            buf[base] *= (factor * left_pan) as f32;
+            buf[base + 1] *= (factor * right_pan) as f32;
+            for channel in 2..channels {
+                buf[base + channel] *= factor as f32;
+            }
+        } else {
+            buf[base] *= factor as f32;
+        }
+    }
+
+    for effect in &clip.audio_effects {
+        apply_audio_effect(buf, frames, channels, effect, rate, sidechain);
+    }
+}
+
+/// Read a scalar effect parameter with a finite fallback.
+///
+/// `input` is the parameter input id looked up on `effect`; the value is
+/// returned as an `f64` only when present and finite, otherwise `default`.
+/// Used by the audio effect kernels so a missing or NaN/inf parameter
+/// never poisons the mix.
+fn effect_param(effect: &crate::ticket::MontageAudioEffect, input: &str, default: f64) -> f64 {
+    effect
+        .param(input)
+        .map(|value| value.to_double())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
+}
+
+/// Three-band EQ: one-pole low/high split with per-band dB gains.
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1). The
+/// low band is a one-pole low-pass at 200 Hz, the high band is the residual
+/// above a 4 kHz low-pass, and the mid band is what remains. `effect`
+/// supplies the low/mid/high gains in dB, each clamped to `[-24, 24]` and
+/// defaulting to 0.
+fn apply_eq(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+) {
+    let rate = rate.max(1.0);
+    let gain = |input: &str| {
+        10f64.powf(effect_param(effect, input, 0.0).clamp(-24.0, 24.0) / 20.0) as f32
+    };
+    let low_gain = gain(quercus_node::block::AUDIO_EQ_LOW_GAIN_INPUT);
+    let mid_gain = gain(quercus_node::block::AUDIO_EQ_MID_GAIN_INPUT);
+    let high_gain = gain(quercus_node::block::AUDIO_EQ_HIGH_GAIN_INPUT);
+    let low_alpha = (1.0 - (-std::f64::consts::TAU * 200.0 / rate).exp()) as f32;
+    let high_alpha = (1.0 - (-std::f64::consts::TAU * 4_000.0 / rate).exp()) as f32;
+    let mut low = vec![0.0f32; channels];
+    let mut high_lp = vec![0.0f32; channels];
+    for frame in 0..frames {
+        for channel in 0..channels {
+            let x = buf[frame * channels + channel];
+            low[channel] += low_alpha * (x - low[channel]);
+            high_lp[channel] += high_alpha * (x - high_lp[channel]);
+            let low_band = low[channel];
+            let high_band = x - high_lp[channel];
+            let mid_band = x - low_band - high_band;
+            buf[frame * channels + channel] =
+                low_band * low_gain + mid_band * mid_gain + high_band * high_gain;
+        }
+    }
+}
+
+/// Feed-forward compressor with a sample-peak detector and exponential
+/// attack/release smoothing.
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1); the
+/// detector peak is linked across channels. `effect` supplies threshold
+/// (dB, clamped to `[-80, 0]`, default -24), ratio (clamped to `[1, 40]`,
+/// default 4), attack (ms, clamped to `[0.1, 1000]`, default 10), release
+/// (ms, clamped to `[1, 5000]`, default 100) and makeup gain (dB, clamped
+/// to `[-24, 24]`, default 0), applied after the envelope.
+fn apply_compressor(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+) {
+    let rate = rate.max(1.0);
+    let threshold = effect_param(effect, quercus_node::block::AUDIO_COMP_THRESHOLD_INPUT, -24.0)
+        .clamp(-80.0, 0.0);
+    let ratio = effect_param(effect, quercus_node::block::AUDIO_COMP_RATIO_INPUT, 4.0)
+        .clamp(1.0, 40.0);
+    let attack_ms = effect_param(effect, quercus_node::block::AUDIO_COMP_ATTACK_INPUT, 10.0)
+        .clamp(0.1, 1_000.0);
+    let release_ms = effect_param(effect, quercus_node::block::AUDIO_COMP_RELEASE_INPUT, 100.0)
+        .clamp(1.0, 5_000.0);
+    let makeup = 10f64.powf(
+        effect_param(effect, quercus_node::block::AUDIO_COMP_MAKEUP_INPUT, 0.0)
+            .clamp(-24.0, 24.0)
+            / 20.0,
+    ) as f32;
+    let attack = (-1.0f64 / (rate * attack_ms / 1_000.0)).exp() as f32;
+    let release = (-1.0f64 / (rate * release_ms / 1_000.0)).exp() as f32;
+    let mut envelope = 1.0f32;
+    for frame in 0..frames {
+        let mut peak = 0.0f32;
+        for channel in 0..channels {
+            peak = peak.max(buf[frame * channels + channel].abs());
+        }
+        let peak_db = 20.0 * (peak.max(1e-9) as f64).log10();
+        let target_db = if peak_db > threshold {
+            threshold + (peak_db - threshold) / ratio
+        } else {
+            peak_db
+        };
+        let target = 10f32.powf(((target_db - peak_db) / 20.0) as f32);
+        let coeff = if target < envelope { attack } else { release };
+        envelope = coeff * envelope + (1.0 - coeff) * target;
+        let gain = envelope * makeup;
+        for channel in 0..channels {
+            buf[frame * channels + channel] *= gain;
+        }
+    }
+}
+
+/// Brick-wall peak limiter with an instantaneous attack and an
+/// exponential release. The envelope gain is the minimum of the gain
+/// needed to put the current sample frame under the ceiling and the
+/// released previous gain, so the output never exceeds `ceiling_db`
+/// (a final sample clamp guarantees the bound even after f32 rounding).
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `rate` is the sample rate in Hz (clamped to at least 1). The
+/// detector is linked across channels. `effect` supplies `ceiling` (dB,
+/// clamped to `[-60, 0]`, default -1) and `release` (ms, clamped to
+/// `[1, 5000]`, default 50).
+fn apply_limiter(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+) {
+    let rate = rate.max(1.0);
+    let ceiling_db = effect_param(
+        effect,
+        quercus_node::block::AUDIO_LIMITER_CEILING_INPUT,
+        -1.0,
+    )
+    .clamp(-60.0, 0.0);
+    let release_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_LIMITER_RELEASE_INPUT,
+        50.0,
+    )
+    .clamp(1.0, 5_000.0);
+    let ceiling = 10f64.powf(ceiling_db / 20.0) as f32;
+    let release = (-1.0f64 / (rate * release_ms / 1_000.0)).exp() as f32;
+    let mut envelope = 1.0f32;
+    for frame in 0..frames {
+        let mut peak = 0.0f32;
+        for channel in 0..channels {
+            peak = peak.max(buf[frame * channels + channel].abs());
+        }
+        let required = if peak > ceiling { ceiling / peak } else { 1.0 };
+        if required < envelope {
+            // Instant attack: reduce the gain on this sample.
+            envelope = required;
+        } else {
+            envelope = release * envelope + (1.0 - release) * 1.0;
+        }
+        for channel in 0..channels {
+            let index = frame * channels + channel;
+            buf[index] = (buf[index] * envelope).clamp(-ceiling, ceiling);
+        }
+    }
+}
+
+/// Sample-peak noise gate with attack/release smoothing and a hold time.
+///
+/// The detector is linked across channels (the frame peak). A frame at or
+/// above `threshold_db` opens the gate and resets the hold counter; frames
+/// below threshold stay open until the hold expires, then the gain
+/// releases toward silence. The gate starts open so the first transient is
+/// not swallowed.
+fn apply_gate(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+) {
+    let rate = rate.max(1.0);
+    let threshold_db = effect_param(
+        effect,
+        quercus_node::block::AUDIO_GATE_THRESHOLD_INPUT,
+        -40.0,
+    )
+    .clamp(-100.0, 0.0);
+    let attack_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_GATE_ATTACK_INPUT,
+        5.0,
+    )
+    .clamp(0.1, 1_000.0);
+    let release_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_GATE_RELEASE_INPUT,
+        100.0,
+    )
+    .clamp(1.0, 5_000.0);
+    let hold_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_GATE_HOLD_INPUT,
+        20.0,
+    )
+    .clamp(0.0, 5_000.0);
+    let threshold = 10f64.powf(threshold_db / 20.0) as f32;
+    let attack = (-1.0f64 / (rate * attack_ms / 1_000.0)).exp() as f32;
+    let release = (-1.0f64 / (rate * release_ms / 1_000.0)).exp() as f32;
+    let hold_frames = (rate * hold_ms / 1_000.0).round() as usize;
+    let mut hold = 0usize;
+    let mut gain = 1.0f32;
+    for frame in 0..frames {
+        let mut peak = 0.0f32;
+        for channel in 0..channels {
+            peak = peak.max(buf[frame * channels + channel].abs());
+        }
+        let target = if peak >= threshold {
+            hold = hold_frames;
+            1.0
+        } else if hold > 0 {
+            hold -= 1;
+            1.0
+        } else {
+            0.0
+        };
+        let coeff = if target > gain { attack } else { release };
+        gain = coeff * gain + (1.0 - coeff) * target;
+        for channel in 0..channels {
+            buf[frame * channels + channel] *= gain;
+        }
+    }
+}
+
+/// Sidechain ducker: when the detector (the already-mixed sequence
+/// accumulator) is at or above `threshold_db`, the clip is attenuated by
+/// `amount_db` with attack/release smoothing.
+///
+/// The sidechain is the montage accumulator at the clip's position, not
+/// the clip's own signal and not a future clip. It is therefore only
+/// available during montage mixing; on the master bus (which has no
+/// sidechain) the effect is bypassed with a one-shot warning.
+fn apply_ducking(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+    sidechain: Option<&[f32]>,
+) {
+    let Some(sidechain) = sidechain else {
+        warn_unsupported_once(
+            &effect.type_id,
+            "needs a clip-position accumulator sidechain (not available on the master bus)",
+        );
+        return;
+    };
+    let rate = rate.max(1.0);
+    let threshold_db = effect_param(
+        effect,
+        quercus_node::block::AUDIO_DUCKING_THRESHOLD_INPUT,
+        -30.0,
+    )
+    .clamp(-100.0, 0.0);
+    let amount_db = effect_param(
+        effect,
+        quercus_node::block::AUDIO_DUCKING_AMOUNT_INPUT,
+        -12.0,
+    )
+    .clamp(-60.0, 0.0);
+    let attack_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_DUCKING_ATTACK_INPUT,
+        50.0,
+    )
+    .clamp(0.1, 5_000.0);
+    let release_ms = effect_param(
+        effect,
+        quercus_node::block::AUDIO_DUCKING_RELEASE_INPUT,
+        300.0,
+    )
+    .clamp(1.0, 10_000.0);
+    let threshold = 10f64.powf(threshold_db / 20.0) as f32;
+    let amount = 10f64.powf(amount_db / 20.0) as f32;
+    let attack = (-1.0f64 / (rate * attack_ms / 1_000.0)).exp() as f32;
+    let release = (-1.0f64 / (rate * release_ms / 1_000.0)).exp() as f32;
+    let mut envelope = 1.0f32;
+    for frame in 0..frames {
+        let mut detector = 0.0f32;
+        for channel in 0..channels {
+            if let Some(value) = sidechain.get(frame * channels + channel) {
+                detector = detector.max(value.abs());
+            }
+        }
+        let target = if detector >= threshold { amount } else { 1.0 };
+        let coeff = if target < envelope { attack } else { release };
+        envelope = coeff * envelope + (1.0 - coeff) * target;
+        for channel in 0..channels {
+            buf[frame * channels + channel] *= envelope;
+        }
+    }
+}
+
+/// Apply one built-in audio effect to an interleaved chunk in place.
+///
+/// Dispatch is by `effect.type_id`: `EQ`, `Compressor`, `Limiter`, `Gate`
+/// and `Ducking` have dedicated kernels; `Volume`/`Pan` drive the existing
+/// node behavior through the factory, so the mixer reuses the node graph's
+/// `process_samples` kernels instead of duplicating them. A disabled
+/// effect is bypassed, and an unknown type id passes the chunk through
+/// with a one-shot warning ([`warn_unsupported_once`]).
+///
+/// `buf` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `frames` is a frame count (not a sample count); `rate` is the
+/// sample rate in Hz (the kernels clamp it to at least 1); `sidechain` is
+/// the montage accumulator over the clip window and is required only by
+/// `Ducking` — the master bus passes `None`.
+fn apply_audio_effect(
+    buf: &mut [f32],
+    frames: usize,
+    channels: usize,
+    effect: &crate::ticket::MontageAudioEffect,
+    rate: f64,
+    sidechain: Option<&[f32]>,
+) {
+    if !effect.enabled {
+        return;
+    }
+    if effect.type_id == quercus_node::block::AUDIO_EFFECT_EQ_TYPE_ID {
+        apply_eq(buf, frames, channels, effect, rate);
+        return;
+    }
+    if effect.type_id == quercus_node::block::AUDIO_EFFECT_COMPRESSOR_TYPE_ID {
+        apply_compressor(buf, frames, channels, effect, rate);
+        return;
+    }
+    if effect.type_id == quercus_node::block::AUDIO_EFFECT_LIMITER_TYPE_ID {
+        apply_limiter(buf, frames, channels, effect, rate);
+        return;
+    }
+    if effect.type_id == quercus_node::block::AUDIO_EFFECT_GATE_TYPE_ID {
+        apply_gate(buf, frames, channels, effect, rate);
+        return;
+    }
+    if effect.type_id == quercus_node::block::AUDIO_EFFECT_DUCKING_TYPE_ID {
+        apply_ducking(buf, frames, channels, effect, rate, sidechain);
+        return;
+    }
+    let (param_input, default) = match effect.type_id.as_str() {
+        quercus_node::block::AUDIO_EFFECT_VOLUME_TYPE_ID => {
+            (quercus_node::block::AUDIO_VOLUME_INPUT, 1.0)
+        }
+        quercus_node::block::AUDIO_EFFECT_PAN_TYPE_ID => {
+            (quercus_node::block::AUDIO_PAN_INPUT, 0.0)
+        }
+        other => {
+            warn_unsupported_once(other, "not a built-in float-parameter audio effect");
+            return;
+        }
+    };
+    let Some((core, behavior)) =
+        quercus_node::factory::Factory::global().create_any(&effect.type_id)
+    else {
+        warn_unsupported_once(&effect.type_id, "no node factory entry");
+        return;
+    };
+    let value = effect
+        .param(param_input)
+        .map(|value| value.to_double())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default);
+
+    // Interleaved f32 -> planar F32 SampleBuffer for the node kernel.
+    let mut input = quercus_node::value::SampleBuffer {
+        format: quercus_core::SampleFormat::F32Planar,
+        channels,
+        sample_count: frames,
+        data: vec![0u8; channels * frames * 4],
+    };
+    for channel in 0..channels {
+        for frame in 0..frames {
+            input.set_sample_value(channel, frame, buf[frame * channels + channel] as f64);
+        }
+    }
+    let mut output = input.clone();
+    let mut inputs = NodeValueRow::new();
+    inputs.insert(
+        "samples_in".to_string(),
+        NodeValue::Samples(input),
+    );
+    inputs.insert(param_input.to_string(), NodeValue::Float(value));
+    let range = TimeRange::new(
+        Rational::new(0, 1),
+        quercus_core::Rational::from_double(frames as f64 / rate.max(1.0)),
+    );
+    behavior.process_samples(&core, &inputs, range, &mut output);
+    for channel in 0..channels {
+        for frame in 0..frames {
+            buf[frame * channels + channel] = output.sample_value(channel, frame) as f32;
+        }
+    }
+}
+
 /// Mix the audio montage into `acc` (`total_frames * channels` samples,
 /// zero-initialized by the caller). Shared by the heap
 /// [`render_audio_samples`] and the shm-slot [`render_audio_samples_into`]
@@ -2652,11 +3510,37 @@ fn mix_audio_montage(
             RetrieveAudioStatus::Success => frames,
             _ => 0,
         };
-        // Mix into the accumulator (per-channel gain).
-        for i in 0..written * channels as usize {
-            acc[start_frame * channels as usize + i] += buf[i] * clip.gain;
+        // Gain, constant-power pan, clip fades and the audio effect chain
+        // all run through the shared per-clip processor. The first decoded
+        // frame sits at the rounded absolute sequence time. Ducking reads
+        // the accumulator over this clip's window: it holds exactly the
+        // clips already mixed (montage order), never future clips.
+        let first_time = params.range.in_().to_f64() + start_frame as f64 / rate as f64;
+        let start_sample = start_frame * channels as usize;
+        let sample_count = written * channels as usize;
+        let sidechain = &acc[start_sample..start_sample + sample_count];
+        process_clip_audio(
+            &mut buf,
+            written,
+            channels as usize,
+            clip,
+            first_time,
+            rate,
+            Some(sidechain),
+        );
+        // Mix into the accumulator.
+        for i in 0..sample_count {
+            acc[start_sample + i] += buf[i];
         }
     }
+    // Master bus: the sequence-level chain runs on the fully mixed
+    // accumulator, then the playback/delivery full-scale clamp.
+    apply_bus_effects(
+        acc,
+        channels as usize,
+        &params.bus_effects,
+        rate as f64,
+    );
     // Clamp to [-1, 1]: overlapping clips sum linearly and can exceed
     // full scale, and the playback sink (cpal) forwards samples without
     // any clamping of its own.
@@ -2664,6 +3548,31 @@ fn mix_audio_montage(
         *sample = sample.clamp(-1.0, 1.0);
     }
     Ok(())
+}
+
+/// Apply a master-bus chain to the mixed interleaved accumulator.
+///
+/// The chain supports the built-in `Volume`, `Pan`, `EQ`, `Compressor`,
+/// `Limiter` and `Gate` kernels. `Ducking` is a clip-position sidechain
+/// effect and is bypassed on the bus (there is no detector signal after
+/// the final mix).
+///
+/// `acc` holds `frames * channels` interleaved F32 samples and is modified
+/// in place; `channels` is floored to 1 so the frame count cannot divide by
+/// zero; `effects` run in chain order with each stage feeding the next;
+/// `rate` is the sample rate in Hz. Called by [`mix_audio_montage`] after
+/// the per-clip mixing and before the full-scale clamp.
+fn apply_bus_effects(
+    acc: &mut [f32],
+    channels: usize,
+    effects: &[crate::ticket::MontageAudioEffect],
+    rate: f64,
+) {
+    let channels = channels.max(1);
+    let frames = acc.len() / channels;
+    for effect in effects {
+        apply_audio_effect(acc, frames, channels, effect, rate, None);
+    }
 }
 
 /// Render the audio montage over `params.range` directly into `dst` as
@@ -2692,6 +3601,21 @@ pub fn render_audio_samples_into(
 }
 
 /// Bilinear scale an F32-RGBA image (row-major with per-row strides).
+///
+/// `src` points at the first source row and `src_stride` is the source row
+/// stride in bytes; `src_w`/`src_h` are the source dimensions in pixels.
+/// `dst` receives the scaled image with `dst_stride` bytes per row and
+/// `dst_w`/`dst_h` pixels. Sample positions use half-pixel centers and
+/// clamp to the image border, so edge texels are replicated. RGB is
+/// written unclamped (linear-light values above 1.0 are preserved); only
+/// alpha is clamped to `[0.0, 1.0]`.
+///
+/// Any non-positive dimension returns without writing `dst`.
+///
+/// The caller must guarantee that `src` is readable for `src_h` rows of
+/// `src_stride` bytes (at least `src_w * 16` bytes used per row) and that
+/// `dst` holds at least `(dst_h - 1) * dst_stride + dst_w * 16` bytes; the
+/// function performs no bounds checks against the real allocations.
 fn scale_rgba_f32(
     src: *const u8,
     src_stride: i32,
@@ -2756,15 +3680,48 @@ fn scale_rgba_f32(
     }
 }
 
-/// Composite the montage at `time`: decode each covering clip and
-/// alpha-composite topmost-last (NLE track order: the highest-numbered
-/// track is topmost).
-fn render_montage_frame(
+/// Composite the montage at `time` for the ticket/eval path. The GPU
+/// compositor ([`render_montage_frame_gpu`]) is preferred whenever an
+/// adapter is available and the ticket asks for the canonical F32 frame —
+/// the normal playback path, where decode, effects and compositing stay
+/// on the GPU end to end. Every other case (no adapter, a non-F32 ticket,
+/// a per-frame GPU failure) falls back to the unchanged CPU compositor
+/// [`render_montage_frame_into`].
+///
+/// Public so the engine's preview/worker path can request the GPU-resident
+/// montage texture instead of re-running the CPU compositor. The worker's
+/// shared-memory wire format still reads the texture back at its boundary;
+/// that is the protocol boundary, not a decode/scale readback.
+pub fn render_montage_frame(
     time: Rational,
     params: &crate::ticket::VideoTicketParams,
     size: (i32, i32),
     format: PixelFormat,
 ) -> Result<Texture> {
+    if format == PixelFormat::F32
+        && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if montage_has_cpu_effects(params) {
+            if unsupported_warned().insert("montage-cpu-effects".to_string()) {
+                eprintln!(
+                    "montage has CPU-only effects; using the CPU compositor (readback boundary)"
+                );
+            }
+        } else if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
+            match render_montage_frame_gpu(&ctx, time, params, size) {
+                Ok(texture) => return Ok(texture),
+                Err(err) => {
+                    // Log once per process; a decode failure repeats on the
+                    // CPU path below, which reports its own error.
+                    if unsupported_warned().insert("montage-gpu".to_string()) {
+                        eprintln!(
+                            "GPU montage composite failed, using the CPU compositor: {err:#}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     let mut acc = generate_frame(time, size, format)?;
     let stride = acc.linesize_bytes();
     let acc_data = &mut acc.data;
@@ -2772,11 +3729,263 @@ fn render_montage_frame(
     Ok(Texture::wrap_frame(acc))
 }
 
+/// Whether `params` should be composited by the GPU montage path.
+///
+/// True only when the ticket asks for the canonical F32 frame, a shared
+/// [`GpuContext`] exists, no montage effect is CPU-only (see
+/// [`montage_has_cpu_effects`]) and no earlier frame latched
+/// `GPU_MONTAGE_FAILED`. Cheap and side-effect free; the pipeline uses it
+/// to decide whether speculative decode requests may import planar textures
+/// ([`DecodedFrameKey`]'s import flag). [`render_montage_frame`] is the
+/// consumer and re-checks the same conditions, falling back to the CPU
+/// compositor.
+pub(crate) fn montage_prefers_gpu(
+    params: &crate::ticket::VideoTicketParams,
+    format: PixelFormat,
+) -> bool {
+    format == PixelFormat::F32
+        && !GPU_MONTAGE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+        && !montage_has_cpu_effects(params)
+        && quercus_core::backend::GpuContext::shared().is_some()
+}
+
+/// 1×1 transparent F32 GPU base for the first montage layer.
+///
+/// The texture is borrowed from `ctx`'s placeholder pool
+/// ([`GpuContext::placeholder_texture`]) rather than allocated and
+/// cleared, so the first alpha-over pass can replace it with a full-size
+/// accumulator without a per-frame `clear_texture` submit.
+fn transparent_gpu_base(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+) -> Result<Texture> {
+    let token = ctx.placeholder_texture()?;
+    let lease = quercus_core::texture::GpuLease::borrowed(ctx.clone(), token);
+    Ok(Texture::Gpu {
+        token,
+        backend: ctx.kind(),
+        width: 1,
+        height: 1,
+        format: PixelFormat::F32,
+        ctx: ctx.clone(),
+        lease,
+        timestamp: Rational::default(),
+    })
+}
+
+/// GPU montage compositor (the playback path's replacement for the CPU
+/// loop in [`render_montage_frame_into`]).
+///
+/// Each covering clip is decoded through the M5 GPU-import decode
+/// ([`render_footage_frame`], import enabled — never
+/// [`render_footage_frame_staged`]); imported planar frames are resolved
+/// to the preview size on the GPU by [`resolve_planar_footage`]. The clip
+/// effect stack then runs (built-in Opacity on the GPU; CPU-only effects
+/// are the explicit boundary) and the result is alpha-overed into a GPU
+/// accumulator by [`composite_montage_gpu`]. Adjustment spans grade the
+/// accumulator between clips in the same order as the CPU compositor, so
+/// the layer semantics match.
+///
+/// The result is always a `Texture::Gpu` (F32). Nothing is downloaded on
+/// the normal path: the only transfers are uploads of CPU-decoded frames
+/// (software decode) and the explicit readback of a texture that belongs
+/// to a different context.
+///
+/// `ctx` is the shared GPU context the returned texture belongs to;
+/// `time` is the sequence time to composite; `params` carries the
+/// bottom-up `montage` clip list and the adjustment spans; `size` is the
+/// output size in pixels.
+///
+/// # Errors
+///
+/// `Error::Invalid` when `size` has a non-positive dimension, plus
+/// propagated shader-compile, allocation, decode and composite errors. A
+/// shader-compile failure also latches `GPU_MONTAGE_FAILED`, so
+/// [`render_montage_frame`] keeps using the CPU compositor for the rest of
+/// the process instead of retrying the pipeline every frame.
+fn render_montage_frame_gpu(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    time: Rational,
+    params: &crate::ticket::VideoTicketParams,
+    size: (i32, i32),
+) -> Result<Texture> {
+    let (w, h) = size;
+    if w <= 0 || h <= 0 {
+        return Err(Error::Invalid);
+    }
+    let program = match ctx.compile_shader_pass(SCALED_COMP_KEY, SCALED_COMP_WGSL, 2, true, false) {
+        Ok(program) => program,
+        Err(err) => {
+            // A pipeline this device cannot create fails every frame;
+            // latch it so playback stays on the CPU compositor for good
+            // instead of recompiling and stalling each tick.
+            GPU_MONTAGE_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(err);
+        }
+    };
+    let acc = ctx.create_texture(w, h)?;
+    let mut acc_owned = true;
+    let mut initialized = false;
+    let mut current = transparent_gpu_base(ctx)?;
+    let mut spans = params.adjustments.iter().peekable();
+    // Decode from the bottom clip first, composite topmost-last — the same
+    // order as the CPU compositor (the montage list is bottom-up).
+    for (index, clip) in params.montage.iter().enumerate() {
+        // Every layer whose boundary is reached by the clips composited so
+        // far grades the accumulated frame before this clip lands.
+        while spans.peek().is_some_and(|span| span.track_index <= index) {
+            let span = spans.next().expect("peeked");
+            if time >= span.in_time && time < span.out_time {
+                if !initialized {
+                    if let Err(err) = ctx.clear_texture(acc) {
+                        ctx.destroy_texture(acc);
+                        return Err(err);
+                    }
+                    current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+                    acc_owned = false;
+                    initialized = true;
+                }
+                current = apply_effect_list(current, &span.effects, time);
+            }
+        }
+        if time < clip.in_time || time >= clip.out_time {
+            continue;
+        }
+        let media_time = clip.media_in + (time - clip.in_time);
+        // GPU import enabled: a hardware-planar frame resolves through the
+        // scaled matrix pass straight to the preview size (no CPU swscale,
+        // no native-size RGBA intermediate).
+        let decoded = render_footage_frame(
+            &clip.filename,
+            clip.stream_index,
+            media_time,
+            (w, h),
+            PixelFormat::F32,
+        )?;
+        // The clip's effect stack runs between decode and compositing
+        // (C++ semantics: the clip texture passes through the chain
+        // bottom-up, the chain top feeds the track composite).
+        let effected = apply_clip_effects(decoded, clip, time);
+        current = composite_montage_gpu(ctx, &program, &current, &effected, clip.gain, size)?;
+        initialized = true;
+    }
+    // Layers above every clip (their boundary is the montage end): they
+    // grade the final composite.
+    for span in spans {
+        if time >= span.in_time && time < span.out_time {
+            if !initialized {
+                if let Err(err) = ctx.clear_texture(acc) {
+                    ctx.destroy_texture(acc);
+                    return Err(err);
+                }
+                current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+                acc_owned = false;
+                initialized = true;
+            }
+            current = apply_effect_list(current, &span.effects, time);
+        }
+    }
+    if !initialized {
+        if let Err(err) = ctx.clear_texture(acc) {
+            ctx.destroy_texture(acc);
+            return Err(err);
+        }
+        current = Texture::gpu(ctx.clone(), acc, w, h, PixelFormat::F32);
+        acc_owned = false;
+    }
+    if acc_owned {
+        ctx.destroy_texture(acc);
+    }
+    Ok(current)
+}
+
+/// Alpha-over `src` onto `dst` on the GPU with `gain`, each at its own
+/// resolution: the scaled pass samples `src` at the destination pixel's
+/// normalized UV, so any source size/aspect fills any preview canvas
+/// (existing fill/stretch semantics; no letterbox) and mismatched sizes
+/// are never skipped. `dst`/`src` are only borrowed; the returned texture
+/// owns the new accumulator.
+fn composite_montage_gpu(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    program: &quercus_core::backend::ShaderProgram,
+    dst: &Texture,
+    src: &Texture,
+    gain: f32,
+    size: (i32, i32),
+) -> Result<Texture> {
+    let (w, h) = size;
+    let mut scratch: Vec<u64> = Vec::new();
+    let result = (|| -> Result<Texture> {
+        let dst_token = gpu_composite_token(ctx, dst, &mut scratch)?;
+        let src_token = gpu_composite_token(ctx, src, &mut scratch)?;
+        let out = ctx.create_texture(w, h)?;
+        if let Err(err) = ctx.run_shader_pass(
+            program,
+            &scale_uniform_bytes(gain),
+            &[dst_token, src_token],
+            out,
+        ) {
+            ctx.destroy_texture(out);
+            return Err(Error::Failed(format!(
+                "montage alpha-over pass failed: {err:?}"
+            )));
+        }
+        Ok(Texture::gpu(ctx.clone(), out, w, h, PixelFormat::F32))
+    })();
+    for token in scratch {
+        ctx.destroy_texture(token);
+    }
+    result
+}
+
+/// The backend token of `texture` on `ctx`, for a GPU composite pass: a
+/// GPU texture owned by this context is bound directly; a CPU frame is
+/// uploaded at its own size (the scaled shader does the sizing); a GPU
+/// texture from another context is read back and re-uploaded (the
+/// explicit foreign-context boundary). Tokens created here are pushed to
+/// `scratch` for the caller to destroy after the pass.
+fn gpu_composite_token(
+    ctx: &std::sync::Arc<quercus_core::backend::GpuContext>,
+    texture: &Texture,
+    scratch: &mut Vec<u64>,
+) -> Result<u64> {
+    match texture {
+        Texture::Gpu { token, .. } if ctx.has_texture(*token) => Ok(*token),
+        Texture::Gpu { .. } => {
+            let frame = texture.to_frame()?;
+            let token = ctx.create_texture(frame.width, frame.height)?;
+            if let Err(err) = ctx.upload(token, &frame) {
+                ctx.destroy_texture(token);
+                return Err(err);
+            }
+            scratch.push(token);
+            Ok(token)
+        }
+        Texture::Cpu(frame) => {
+            let token = ctx.create_texture(frame.width, frame.height)?;
+            if let Err(err) = ctx.upload(token, frame) {
+                ctx.destroy_texture(token);
+                return Err(err);
+            }
+            scratch.push(token);
+            Ok(token)
+        }
+        Texture::Planar(_) => Err(Error::Failed(
+            "unresolved planar texture in the GPU montage composite".into(),
+        )),
+    }
+}
+
 /// Composite the montage at `time` directly into `dst` (F32 RGBA rows of
 /// `dst_stride` bytes) — the M15 worker seam: the render worker passes a
 /// shared-memory slot slice as `dst`, so the composited frame lands in
 /// the slot with no staging copy. `dst` is zeroed first (transparent
 /// black base).
+///
+/// This is the CPU compositor and stays the worker/no-adapter fallback;
+/// [`render_montage_frame`] prefers the GPU compositor
+/// ([`render_montage_frame_gpu`]) for F32 tickets and only calls this
+/// entry point when no adapter is available (or on a per-frame GPU
+/// failure). Its signature/behavior are unchanged.
 ///
 /// Adjustment layers (`params.adjustments`, M14 W3) sit between the
 /// clips: a span's effect stack runs over the frame accumulated so far
@@ -3085,7 +4294,13 @@ fn build_color_transform_lut(
     Some(std::sync::Arc::new(Lut3d { edge, lo, hi, data }))
 }
 
-/// Log an unsupported-effect passthrough once per type id.
+/// Log once per process that an effect passes through unchanged, keyed by
+/// `type_id`, and drop further reports for the same type.
+///
+/// `type_id` is the effect/node type id used as the de-duplication key (it
+/// need not be a currently registered type); `reason` is the human-readable
+/// explanation printed after the type id on the first occurrence. Writes a
+/// single line to standard error; never panics and returns no status.
 fn warn_unsupported_once(type_id: &str, reason: &str) {
     if unsupported_warned().insert(type_id.to_string()) {
         eprintln!("montage effect \"{type_id}\" passes through unchanged: {reason}");
@@ -3173,9 +4388,33 @@ fn scale_channels_in_place(
     }
 }
 
-/// Apply one effect to `src` (an F32 RGBA CPU frame of the montage
-/// pipeline). `time` is the sequence time the frame is rendered at (the
-/// C++ node evaluation time).
+/// Run the GPU Opacity pass on `token`, returning the output token (the
+/// caller wraps it in a [`Texture`] whose lease owns it). `None` when the
+/// pass cannot run; the caller then passes the input through.
+fn apply_opacity_gpu(
+    gpu: &quercus_core::backend::GpuContext,
+    token: u64,
+    width: i32,
+    height: i32,
+    factor: f32,
+) -> Option<u64> {
+    let program = gpu
+        .compile_shader_pass(OPACITY_GPU_KEY, OPACITY_GPU_WGSL, 1, true, false)
+        .ok()?;
+    let out = gpu.create_texture(width, height).ok()?;
+    match gpu.run_shader_pass(&program, &scale_uniform_bytes(factor), &[token], out) {
+        Ok(()) => Some(out),
+        Err(_) => {
+            gpu.destroy_texture(out);
+            None
+        }
+    }
+}
+
+/// Apply one effect to `src` (an F32 RGBA texture of the montage
+/// pipeline — GPU-resident on the normal path, a CPU frame on the
+/// worker/no-adapter path). `time` is the sequence time the frame is
+/// rendered at (the C++ node evaluation time).
 fn apply_montage_effect(
     src: Texture,
     effect: &crate::ticket::MontageEffect,
@@ -3189,6 +4428,35 @@ fn apply_montage_effect(
         let Some(factor) = opacity_factor(effect) else {
             return src;
         };
+        // GPU texture: run the same multiply on the GPU. This is a
+        // built-in effect, so the montage compositor must not read back
+        // for it.
+        if matches!(src, Texture::Gpu { .. }) {
+            let output = match &src {
+                Texture::Gpu {
+                    token,
+                    width,
+                    height,
+                    ctx,
+                    ..
+                } => ctx
+                    .as_any()
+                    .and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>())
+                    .and_then(|gpu| apply_opacity_gpu(gpu, *token, *width, *height, factor))
+                    .map(|out| Texture::gpu(ctx.clone(), out, *width, *height, PixelFormat::F32)),
+                _ => None,
+            };
+            return match output {
+                Some(out) => out,
+                None => {
+                    warn_unsupported_once(
+                        &effect.type_id,
+                        "opacity GPU pass failed; passing the texture through",
+                    );
+                    src
+                }
+            };
+        }
         // Texture implements Drop, so scale in place through a mutable
         // borrow instead of moving the frame out.
         let mut tex = src;
@@ -3197,12 +4465,13 @@ fn apply_montage_effect(
                 let stride = frame.linesize_bytes();
                 scale_channels_in_place(&mut frame.data, stride, frame.width, frame.height, factor);
             }
-            _ => {
+            Texture::Planar(_) => {
                 warn_unsupported_once(
                     &effect.type_id,
-                    "opacity on a non-CPU texture is not supported by the montage path",
+                    "opacity on an unresolved planar texture is not supported by the montage path",
                 );
             }
+            Texture::Gpu { .. } => unreachable!("handled above"),
         }
         return tex;
     }
@@ -3695,6 +4964,7 @@ mod tests {
             sample_rate: 48000,
             channel_layout: 0x3,
             montage: Vec::new(),
+            bus_effects: Vec::new(),
         }
     }
 
@@ -3778,7 +5048,11 @@ mod tests {
             out_time: Rational::new(1, 1),
             media_in: Rational::new(0, 1),
             gain: 1.0,
+            pan: 0.0,
+            fade_in: Rational::new(0, 1),
+            fade_out: Rational::new(0, 1),
             effects,
+            audio_effects: Vec::new(),
         }
     }
 
@@ -3802,6 +5076,190 @@ mod tests {
         let unity = clip_with_effects(vec![opacity_effect(true, 1.0)]);
         let out = apply_clip_effects(solid_texture(0.8, 0.4, 0.2, 1.0), &unity, Rational::new(0, 1));
         assert_eq!(first_pixel(&out), [0.8, 0.4, 0.2, 1.0]);
+    }
+
+    /// Upload an F32 RGBA texture of `size` (row-major `pixels`) on the
+    /// shared GPU context — the GPU side of the montage compositor tests.
+    fn gpu_test_texture(
+        ctx: &Arc<quercus_core::backend::GpuContext>,
+        size: (i32, i32),
+        pixels: &[[f32; 4]],
+    ) -> Texture {
+        let mut frame = generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
+        assert_eq!(pixels.len(), (size.0 * size.1) as usize, "pixel count");
+        for (chunk, rgba) in frame.data.chunks_exact_mut(16).zip(pixels) {
+            for (c, v) in chunk.chunks_exact_mut(4).zip(*rgba) {
+                c.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let token = ctx.create_texture(size.0, size.1).unwrap();
+        ctx.upload(token, &frame).unwrap();
+        Texture::gpu(ctx.clone(), token, size.0, size.1, PixelFormat::F32)
+    }
+
+    /// A transparent-black GPU accumulator of `size`.
+    fn gpu_accumulator(
+        ctx: &Arc<quercus_core::backend::GpuContext>,
+        size: (i32, i32),
+    ) -> Texture {
+        let token = ctx.create_texture(size.0, size.1).unwrap();
+        ctx.clear_texture(token).unwrap();
+        Texture::gpu(ctx.clone(), token, size.0, size.1, PixelFormat::F32)
+    }
+
+    /// Built-in Opacity on a GPU texture runs as a GPU pass (no readback,
+    /// full C++ `opacity.frag` parity: alpha included).
+    #[test]
+    fn montage_opacity_effect_scales_gpu_pixels_on_the_gpu() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let src = gpu_test_texture(&ctx, (2, 1), &[[0.8, 0.4, 0.2, 1.0]; 2]);
+        let clip = clip_with_effects(vec![opacity_effect(true, 0.5)]);
+        let out = apply_clip_effects(src, &clip, Rational::new(0, 1));
+        assert!(
+            matches!(out, Texture::Gpu { .. }),
+            "opacity stays on the GPU"
+        );
+        let px = first_pixel(&out);
+        for (got, want) in px.iter().zip([0.4f32, 0.2, 0.1, 0.5]) {
+            assert!((got - want).abs() < 1e-5, "opacity math: {px:?}");
+        }
+    }
+
+    /// The scaled alpha-over maps any source resolution/aspect onto the
+    /// full target canvas: existing fill/stretch semantics (the CPU path
+    /// pre-scales with swscale), so no letterbox/pillarbox bars appear and
+    /// the normalized-UV bilinear taps match the CPU sampler.
+    #[test]
+    fn gpu_montage_fills_a_mismatched_aspect_target_canvas() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let program = ctx
+            .compile_shader_pass(SCALED_COMP_KEY, SCALED_COMP_WGSL, 2, true, false)
+            .expect("scaled alpha-over program");
+        let target = (4, 2);
+
+        // A 3:2 solid source into a 2:1 canvas: every target pixel must be
+        // covered (letterboxing would leave black bars on the sides).
+        let solid = gpu_test_texture(&ctx, (3, 2), &[[1.0, 0.0, 0.0, 1.0]; 6]);
+        let acc = gpu_accumulator(&ctx, target);
+        let out = composite_montage_gpu(&ctx, &program, &acc, &solid, 1.0, target)
+            .expect("mismatched-size composite");
+        assert_eq!(out.size(), target, "the target canvas size is kept");
+        assert!(matches!(out, Texture::Gpu { .. }), "stays on the GPU");
+        for px in out.to_frame().unwrap().data.chunks_exact(16) {
+            let rgba: Vec<f32> = px
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert!(
+                rgba[0] > 0.99 && rgba[1].abs() < 1e-6 && rgba[3] > 0.99,
+                "full-canvas fill: {rgba:?}"
+            );
+        }
+
+        // A 3:1 horizontal ramp into a 4:1 canvas: the bilinear taps are
+        // the same `scale_rgba_f32` computes for the CPU path.
+        let ramp = gpu_test_texture(
+            &ctx,
+            (3, 1),
+            &[
+                [0.0, 0.0, 0.0, 1.0],
+                [0.5, 0.5, 0.5, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+        );
+        let wide = (4, 1);
+        let acc = gpu_accumulator(&ctx, wide);
+        let out =
+            composite_montage_gpu(&ctx, &program, &acc, &ramp, 1.0, wide).expect("ramp composite");
+        let got: Vec<f32> = out
+            .to_frame()
+            .unwrap()
+            .data
+            .chunks_exact(16)
+            .map(|px| f32::from_le_bytes(px[..4].try_into().unwrap()))
+            .collect();
+        let want = [0.0f32, 0.3125, 0.6875, 1.0];
+        for (got, want) in got.iter().zip(want) {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "normalized-UV bilinear mapping: {got} vs {want}"
+            );
+        }
+    }
+
+    /// The graph compositor no longer black-holes a frame whose resolution
+    /// differs from the target: a native-size frame is scaled by the
+    /// bilinear pass.
+    #[test]
+    fn gpu_track_composite_scales_a_mismatched_frame() {
+        let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let native = gpu_test_texture(&ctx, (2, 2), &[[0.0, 0.0, 1.0, 1.0]; 4]);
+        let out = composite_tracks_gpu(&ctx, &[native], (4, 4)).expect("scaled frame");
+        assert_eq!(out.size(), (4, 4));
+        let px = first_pixel(&out);
+        assert!(
+            (px[2] - 1.0).abs() < 5e-3 && (px[3] - 1.0).abs() < 5e-3,
+            "scaled, not skipped: {px:?}"
+        );
+    }
+
+    /// The F32 montage ticket prefers the GPU compositor (a cleared GPU
+    /// accumulator for a frame with no covering clip — no decode needed);
+    /// non-F32 tickets keep the CPU compositor.
+    #[test]
+    fn render_montage_frame_prefers_the_gpu_compositor() {
+        let Some(_ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let params = crate::ticket::VideoTicketParams {
+            viewer: 1,
+            project: String::new(),
+            time: Rational::new(0, 1),
+            force_size: Some((8, 8)),
+            force_format: Some(PixelFormat::F32),
+            cache: None,
+            cache_dir: None,
+            cache_id: None,
+            cache_timebase: None,
+            footage: None,
+            montage: vec![crate::ticket::MontageClip {
+                filename: String::new(),
+                stream_index: 0,
+                in_time: Rational::new(1, 1),
+                out_time: Rational::new(2, 1),
+                media_in: Rational::new(0, 1),
+                gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
+                effects: Vec::new(),
+                audio_effects: Vec::new(),
+            }],
+            adjustments: Vec::new(),
+        };
+        let out = render_montage_frame(Rational::new(0, 1), &params, (8, 8), PixelFormat::F32)
+            .expect("GPU montage");
+        assert!(
+            matches!(out, Texture::Gpu { .. }),
+            "the F32 montage render stays on the GPU"
+        );
+        assert!(
+            out.to_frame().unwrap().data.iter().all(|&b| b == 0),
+            "transparent accumulator"
+        );
+
+        let cpu = render_montage_frame(Rational::new(0, 1), &params, (8, 8), PixelFormat::U16)
+            .expect("CPU montage");
+        assert!(
+            matches!(cpu, Texture::Cpu(_)),
+            "non-F32 stays on the CPU path"
+        );
     }
 
     /// An OFX effect (any non-built-in type id) resolves its instance
@@ -4136,8 +5594,9 @@ mod tests {
             assert!((got - want).abs() < 1e-4, "CPU composite: expected {want}, got {got}");
         }
 
-        // Same math through the GPU pass when a device is available.
-        if let Some(ctx) = quercus_core::backend::GpuContext::shared() {
+        // Same math through the GPU pass when a device is available. Software
+        // decoded CPU frames are uploaded at the composite boundary.
+        if let Some(ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") {
             let gpu_out = composite_tracks_gpu(&ctx, &frames, (2, 1)).expect("GPU composite");
             let pixel = first_pixel(&gpu_out);
             for (got, want) in pixel.iter().zip(expected) {
@@ -5192,7 +6651,11 @@ mod tests {
             out_time: out,
             media_in: Rational::new(0, 1),
             gain: 1.0,
+            pan: 0.0,
+            fade_in: Rational::new(0, 1),
+            fade_out: Rational::new(0, 1),
             effects: Vec::new(),
+            audio_effects: Vec::new(),
         };
         params.montage = vec![
             // No overlap at all.
@@ -5205,6 +6668,442 @@ mod tests {
         let mut acc = vec![0.0f32; 1000 * 2];
         mix_audio_montage(&params, 48000, 2, 1000, &mut acc).expect("skips");
         assert!(acc.iter().all(|&v| v == 0.0), "uncovered range stays silent");
+    }
+
+    // ---- Per-clip audio processing (Phase 1 audio post) ------------------
+
+    fn audio_test_clip(
+        gain: f32,
+        pan: f32,
+        fade_in: Rational,
+        fade_out: Rational,
+        audio_effects: Vec<crate::ticket::MontageAudioEffect>,
+    ) -> crate::ticket::MontageClip {
+        crate::ticket::MontageClip {
+            filename: String::new(),
+            stream_index: 0,
+            in_time: Rational::new(0, 1),
+            out_time: Rational::new(1, 1),
+            media_in: Rational::new(0, 1),
+            gain,
+            pan,
+            fade_in,
+            fade_out,
+            effects: Vec::new(),
+            audio_effects,
+        }
+    }
+
+    fn volume_effect(value: f64) -> crate::ticket::MontageAudioEffect {
+        crate::ticket::MontageAudioEffect {
+            type_id: quercus_node::block::AUDIO_EFFECT_VOLUME_TYPE_ID.to_string(),
+            enabled: true,
+            params: vec![(
+                quercus_node::block::AUDIO_VOLUME_INPUT.to_string(),
+                NodeValue::Float(value),
+            )],
+        }
+    }
+
+    fn pan_effect(value: f64) -> crate::ticket::MontageAudioEffect {
+        crate::ticket::MontageAudioEffect {
+            type_id: quercus_node::block::AUDIO_EFFECT_PAN_TYPE_ID.to_string(),
+            enabled: true,
+            params: vec![(
+                quercus_node::block::AUDIO_PAN_INPUT.to_string(),
+                NodeValue::Float(value),
+            )],
+        }
+    }
+
+    fn run_clip_audio(
+        buf: &mut [f32],
+        channels: usize,
+        clip: &crate::ticket::MontageClip,
+        first_time: f64,
+        rate: i32,
+    ) {
+        let frames = buf.len() / channels;
+        process_clip_audio(buf, frames, channels, clip, first_time, rate, None);
+    }
+
+    /// Gain 1.0 at pan centre is unity on both stereo channels; the
+    /// balance law must not make the default clip quieter.
+    #[test]
+    fn clip_gain_at_pan_centre_is_unity() {
+        let clip = audio_test_clip(1.0, 0.0, Rational::new(0, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        for sample in buf {
+            assert!((sample - 1.0).abs() < 1e-6, "centre pan is unity, got {sample}");
+        }
+
+        // Gain is applied on top of the pan law.
+        let clip = audio_test_clip(0.5, 0.0, Rational::new(0, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        for sample in buf {
+            assert!((sample - 0.5).abs() < 1e-6, "gain multiplies centre, got {sample}");
+        }
+    }
+
+    /// Hard left/right isolate one channel.
+    #[test]
+    fn clip_pan_isolates_the_opposite_channel() {
+        let left = audio_test_clip(1.0, -1.0, Rational::new(0, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &left, 0.0, 48000);
+        assert!((buf[0] - 1.0).abs() < 1e-6, "left stays at unity");
+        assert!(buf[1].abs() < 1e-6, "hard-left silences the right channel");
+
+        let right = audio_test_clip(1.0, 1.0, Rational::new(0, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &right, 0.0, 48000);
+        assert!(buf[0].abs() < 1e-6, "hard-right silences the left channel");
+        assert!((buf[1] - 1.0).abs() < 1e-6, "right stays at unity");
+    }
+
+    /// Linear fades are anchored at the clip's timeline in/out (not at the
+    /// decoded chunk's own edges).
+    #[test]
+    fn clip_fades_follow_the_clip_bounds() {
+        // Fade-in over the whole 1 s clip, mono: t = 0, .25, .5, .75 s.
+        let clip = audio_test_clip(1.0, 0.0, Rational::new(1, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 4];
+        run_clip_audio(&mut buf, 1, &clip, 0.0, 4);
+        for (i, sample) in buf.iter().enumerate() {
+            assert!(
+                (*sample - i as f32 / 4.0).abs() < 1e-6,
+                "fade-in frame {i}: {sample}"
+            );
+        }
+
+        // Fade-out over the whole 1 s clip: t = 0, .25, .5, .75, 1.0 s.
+        let clip = audio_test_clip(1.0, 0.0, Rational::new(0, 1), Rational::new(1, 1), Vec::new());
+        let mut buf = vec![1.0f32; 5];
+        run_clip_audio(&mut buf, 1, &clip, 0.0, 4);
+        for (i, sample) in buf.iter().enumerate() {
+            assert!(
+                (*sample - (1.0 - i as f32 / 4.0)).abs() < 1e-6,
+                "fade-out frame {i}: {sample}"
+            );
+        }
+
+        // A fade that started before the rendered chunk is evaluated
+        // against absolute time: the chunk begins 0.5 s into a 1 s fade.
+        let clip = audio_test_clip(1.0, 0.0, Rational::new(1, 1), Rational::new(0, 1), Vec::new());
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 1, &clip, 0.5, 4);
+        assert!((buf[0] - 0.5).abs() < 1e-6);
+        assert!((buf[1] - 0.75).abs() < 1e-6);
+    }
+
+    fn audio_param_effect(
+        type_id: &str,
+        params: &[(&str, f64)],
+    ) -> crate::ticket::MontageAudioEffect {
+        crate::ticket::MontageAudioEffect {
+            type_id: type_id.to_string(),
+            enabled: true,
+            params: params
+                .iter()
+                .map(|(input, value)| (input.to_string(), NodeValue::Float(*value)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn eq_and_compressor_process_the_clip_buffer() {
+        // A DC/low-frequency signal is boosted by a +12 dB low band.
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![audio_param_effect(
+                quercus_node::block::AUDIO_EFFECT_EQ_TYPE_ID,
+                &[(quercus_node::block::AUDIO_EQ_LOW_GAIN_INPUT, 12.0)],
+            )],
+        );
+        let mut buf = vec![0.5f32; 4800];
+        run_clip_audio(&mut buf, 1, &clip, 0.0, 48000);
+        assert!(
+            buf.last().copied().unwrap() > 0.5,
+            "low-band boost must raise a low-frequency signal"
+        );
+
+        // A 0 dBFS signal is reduced by a -20 dB / 4:1 compressor.
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![audio_param_effect(
+                quercus_node::block::AUDIO_EFFECT_COMPRESSOR_TYPE_ID,
+                &[
+                    (quercus_node::block::AUDIO_COMP_THRESHOLD_INPUT, -20.0),
+                    (quercus_node::block::AUDIO_COMP_RATIO_INPUT, 4.0),
+                    (quercus_node::block::AUDIO_COMP_ATTACK_INPUT, 0.1),
+                    (quercus_node::block::AUDIO_COMP_RELEASE_INPUT, 10.0),
+                ],
+            )],
+        );
+        let mut buf = vec![1.0f32; 4800];
+        run_clip_audio(&mut buf, 1, &clip, 0.0, 48000);
+        assert!(
+            buf.last().copied().unwrap() < 0.9,
+            "compressor must reduce a 0 dBFS signal"
+        );
+    }
+
+    /// The chain applies Volume then Pan in the stored order. (Both are
+    /// channel-diagonal linear kernels, so they commute numerically; the
+    /// test pins the combined result and the chain order is covered by the
+    /// montage propagation tests.)
+    #[test]
+    fn clip_audio_effects_apply_volume_then_pan() {
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![volume_effect(0.5), pan_effect(0.5)],
+        );
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        // Centre base pan unity, Volume 0.5 (both), Pan +0.5 halves left.
+        assert!((buf[0] - 0.25).abs() < 1e-6);
+        assert!((buf[1] - 0.5).abs() < 1e-6);
+
+        // Swapping the entries still applies both (the kernels commute).
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![pan_effect(0.5), volume_effect(0.5)],
+        );
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        assert!((buf[0] - 0.25).abs() < 1e-6);
+        assert!((buf[1] - 0.5).abs() < 1e-6);
+    }
+
+    /// Disabled effects are bypassed and an unknown type id passes the
+    /// samples through (warning once, never a panic or a dropped clip).
+    #[test]
+    fn clip_audio_effects_bypass_disabled_and_unknown() {
+        let mut disabled = volume_effect(0.0);
+        disabled.enabled = false;
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![disabled],
+        );
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        for sample in &buf {
+            assert!((*sample - 1.0).abs() < 1e-6);
+        }
+
+        let unknown = crate::ticket::MontageAudioEffect {
+            type_id: "com.example.unknown-audio".into(),
+            enabled: true,
+            params: Vec::new(),
+        };
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![unknown, volume_effect(0.5)],
+        );
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        for sample in &buf {
+            assert!(
+                (*sample - 0.5).abs() < 1e-6,
+                "unknown effect passes through, later effects still run"
+            );
+        }
+        // Warms / reuses the one-shot warning path (must not panic).
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+    }
+
+    /// Missing effect parameters fall back to the node defaults (Volume
+    /// unity, Pan centre).
+    #[test]
+    fn clip_audio_effect_defaults_when_params_are_missing() {
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![
+                crate::ticket::MontageAudioEffect {
+                    type_id: quercus_node::block::AUDIO_EFFECT_VOLUME_TYPE_ID.into(),
+                    enabled: true,
+                    params: Vec::new(),
+                },
+                crate::ticket::MontageAudioEffect {
+                    type_id: quercus_node::block::AUDIO_EFFECT_PAN_TYPE_ID.into(),
+                    enabled: true,
+                    params: Vec::new(),
+                },
+            ],
+        );
+        let mut buf = vec![1.0f32; 2];
+        run_clip_audio(&mut buf, 2, &clip, 0.0, 48000);
+        // Volume 1.0 and Pan 0.0 leave the centre untouched.
+        for sample in &buf {
+            assert!((*sample - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn limiter_keeps_a_full_scale_sine_under_its_ceiling() {
+        let effect = audio_param_effect(
+            quercus_node::block::AUDIO_EFFECT_LIMITER_TYPE_ID,
+            &[
+                (quercus_node::block::AUDIO_LIMITER_CEILING_INPUT, -1.0),
+                (quercus_node::block::AUDIO_LIMITER_RELEASE_INPUT, 50.0),
+            ],
+        );
+        let frames = 24_000;
+        let mut buf: Vec<f32> = (0..frames)
+            .map(|frame| {
+                (std::f64::consts::TAU * 1_000.0 * frame as f64 / 48_000.0).sin() as f32
+            })
+            .collect();
+        assert!((buf.iter().fold(0.0f32, |peak, x| peak.max(x.abs())) - 1.0).abs() < 1e-3);
+        apply_audio_effect(&mut buf, frames, 1, &effect, 48_000.0, None);
+        let ceiling = 10f64.powf(-1.0 / 20.0) as f32;
+        let peak = buf.iter().fold(0.0f32, |peak, x| peak.max(x.abs()));
+        assert!(
+            peak <= ceiling + 1e-6,
+            "limiter output {peak} must not exceed the ceiling {ceiling}"
+        );
+        assert!(peak > 0.5, "the limiter must not mute the signal, peak {peak}");
+    }
+
+    #[test]
+    fn gate_suppresses_a_low_signal_and_passes_a_loud_one() {
+        let gate = || {
+            audio_param_effect(
+                quercus_node::block::AUDIO_EFFECT_GATE_TYPE_ID,
+                &[
+                    (quercus_node::block::AUDIO_GATE_THRESHOLD_INPUT, -40.0),
+                    (quercus_node::block::AUDIO_GATE_ATTACK_INPUT, 1.0),
+                    (quercus_node::block::AUDIO_GATE_RELEASE_INPUT, 10.0),
+                    (quercus_node::block::AUDIO_GATE_HOLD_INPUT, 5.0),
+                ],
+            )
+        };
+        let frames = 48_000;
+        let tone = |amplitude: f32| -> Vec<f32> {
+            (0..frames)
+                .map(|frame| {
+                    let t = frame as f64 / 48_000.0;
+                    (f64::from(amplitude) * (std::f64::consts::TAU * 440.0 * t).sin()) as f32
+                })
+                .collect()
+        };
+        let rms = |samples: &[f32]| -> f32 {
+            let tail = &samples[samples.len() / 2..];
+            (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
+        };
+
+        let mut quiet = tone(0.001); // -60 dBFS, below the -40 dBFS gate
+        apply_audio_effect(&mut quiet, frames, 1, &gate(), 48_000.0, None);
+        assert!(
+            rms(&quiet) < 1e-4,
+            "below-threshold signal is attenuated, rms {}",
+            rms(&quiet)
+        );
+
+        let mut loud = tone(0.5); // -6 dBFS, above the gate
+        apply_audio_effect(&mut loud, frames, 1, &gate(), 48_000.0, None);
+        assert!(
+            rms(&loud) > 0.2,
+            "above-threshold signal passes, rms {}",
+            rms(&loud)
+        );
+    }
+
+    #[test]
+    fn ducking_reduces_music_after_dialogue_in_the_accumulator() {
+        // The synthetic accumulator: dialogue is present for the first
+        // half, then silence. The music clip runs across the whole window
+        // and is the buffer the ducker processes.
+        let frames = 24_000;
+        let mut music = vec![0.5f32; frames];
+        let mut sidechain = vec![0.0f32; frames];
+        for sample in &mut sidechain[..frames / 2] {
+            *sample = 0.5;
+        }
+        let clip = audio_test_clip(
+            1.0,
+            0.0,
+            Rational::new(0, 1),
+            Rational::new(0, 1),
+            vec![audio_param_effect(
+                quercus_node::block::AUDIO_EFFECT_DUCKING_TYPE_ID,
+                &[
+                    (quercus_node::block::AUDIO_DUCKING_THRESHOLD_INPUT, -30.0),
+                    (quercus_node::block::AUDIO_DUCKING_AMOUNT_INPUT, -12.0),
+                    (quercus_node::block::AUDIO_DUCKING_ATTACK_INPUT, 1.0),
+                    (quercus_node::block::AUDIO_DUCKING_RELEASE_INPUT, 20.0),
+                ],
+            )],
+        );
+        process_clip_audio(
+            &mut music,
+            frames,
+            1,
+            &clip,
+            0.0,
+            48_000,
+            Some(&sidechain),
+        );
+        let during = music[frames / 4];
+        let after = music[frames - 1];
+        assert!(
+            during < 0.2,
+            "dialogue must duck the music by ~12 dB, got {during}"
+        );
+        assert!(
+            after > 0.45,
+            "music recovers after the dialogue stops, got {after}"
+        );
+    }
+
+    #[test]
+    fn bus_limiter_applies_to_the_mixed_accumulator() {
+        let frames = 4_800;
+        // Two overlapping clips mixed linearly: 1.6 would clip at the
+        // final full-scale clamp, but the bus limiter must catch it first.
+        let mut acc = vec![1.6f32; frames];
+        let bus = [audio_param_effect(
+            quercus_node::block::AUDIO_EFFECT_LIMITER_TYPE_ID,
+            &[
+                (quercus_node::block::AUDIO_LIMITER_CEILING_INPUT, -1.0),
+                (quercus_node::block::AUDIO_LIMITER_RELEASE_INPUT, 50.0),
+            ],
+        )];
+        apply_bus_effects(&mut acc, 1, &bus, 48_000.0);
+        let ceiling = 10f64.powf(-1.0 / 20.0) as f32;
+        let peak = acc.iter().fold(0.0f32, |peak, x| peak.max(x.abs()));
+        assert!(
+            peak <= ceiling + 1e-6,
+            "bus limiter must bound the mixed accumulator, peak {peak}"
+        );
+        // The final full-scale clamp still runs after the bus.
+        for sample in &mut acc {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+        assert_eq!(acc.iter().fold(0.0f32, |peak, x| peak.max(x.abs())), peak);
     }
 
     #[test]
@@ -5390,7 +7289,11 @@ mod tests {
                 out_time: Rational::new(2, 1),
                 media_in: Rational::new(0, 1),
                 gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
                 effects: Vec::new(),
+                audio_effects: Vec::new(),
             }],
             adjustments: Vec::new(),
         };
@@ -5426,14 +7329,14 @@ mod tests {
 
     #[test]
     fn resolve_planar_footage_rejects_non_wgpu_contexts() {
-        assert!(resolve_planar_footage(&Texture::dummy()).is_err());
-        assert!(resolve_planar_footage(&planar_texture((2, 2))).is_err());
+        assert!(resolve_planar_footage(&Texture::dummy(), None).is_err());
+        assert!(resolve_planar_footage(&planar_texture((2, 2)), None).is_err());
     }
 
     #[test]
     fn decoded_frame_cache_dedups_breaks_and_prunes_planar() {
         let key = |n: i32| -> DecodedFrameKey {
-            (format!("frame{n}.mp4"), 0, (n as i64, 1), 2, 2)
+            (format!("frame{n}.mp4"), 0, (n as i64, 1), 2, 2, false)
         };
 
         // A duplicate key is a no-op.
@@ -5441,9 +7344,13 @@ mod tests {
         insert_cached_frame(&mut cache, key(0), Texture::dummy(), 1);
         insert_cached_frame(&mut cache, key(0), Texture::dummy(), 2);
         assert_eq!(cache.len(), 1);
+        let mut import_key = key(0);
+        import_key.5 = true;
+        insert_cached_frame(&mut cache, import_key, Texture::dummy(), 2);
+        assert_eq!(cache.len(), 2, "CPU and import requests stay isolated");
         // Planar insertions take the planar-pruning path.
         insert_cached_frame(&mut cache, key(1), planar_texture((2, 2)), 3);
-        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.len(), 3);
 
         // A cache full of tick-0 entries has no victim: the loop breaks.
         let mut cache = std::collections::HashMap::new();
@@ -6387,7 +8294,11 @@ mod tests {
                 out_time: Rational::new(2, 1),
                 media_in: Rational::new(0, 1),
                 gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
                 effects: vec![unknown_effect(effect_type_id)],
+                audio_effects: Vec::new(),
             }],
             adjustments: Vec::new(),
         }
@@ -6837,7 +8748,7 @@ mod tests {
             (2, 2),
         ));
         assert!(
-            resolve_planar_footage(&planar).is_err(),
+            resolve_planar_footage(&planar, None).is_err(),
             "missing plane tokens fail the planar pass"
         );
     }
@@ -7091,6 +9002,75 @@ mod tests {
             .is_err(),
             "a missing clip file fails the montage frame"
         );
+    }
+
+    /// A single-clip montage ticket over `path` (no effects), used by the
+    /// decoded GPU-vs-CPU parity test.
+    fn montage_params_for_clip(path: &str) -> crate::ticket::VideoTicketParams {
+        crate::ticket::VideoTicketParams {
+            viewer: 1,
+            project: String::new(),
+            time: Rational::new(0, 1),
+            force_size: Some((16, 16)),
+            force_format: Some(PixelFormat::F32),
+            cache: None,
+            cache_dir: None,
+            cache_id: None,
+            cache_timebase: None,
+            footage: None,
+            montage: vec![crate::ticket::MontageClip {
+                filename: path.to_string(),
+                stream_index: 0,
+                in_time: Rational::new(0, 1),
+                out_time: Rational::new(2, 1),
+                media_in: Rational::new(0, 1),
+                gain: 1.0,
+                pan: 0.0,
+                fade_in: Rational::new(0, 1),
+                fade_out: Rational::new(0, 1),
+                effects: Vec::new(),
+                audio_effects: Vec::new(),
+            }],
+            adjustments: Vec::new(),
+        }
+    }
+
+    /// The decoded montage GPU path composites the same picture as the CPU
+    /// compositor for a real clip: path selection (GPU for F32) plus
+    /// fill/alpha-over parity.
+    #[test]
+    fn montage_gpu_path_composites_a_decoded_clip_like_the_cpu_path() {
+        let Some(_ctx) = quercus_core::backend::shared_gpu_or_skip("an eval GPU test") else {
+            return;
+        };
+        let path = std::env::temp_dir().join(format!(
+            "quercusrender_montage_gpu_path_{}.mp4",
+            std::process::id()
+        ));
+        quercus_codec::testmedia::write_test_clip(&path, 16, 16, 10, 10).expect("test clip");
+        let params = montage_params_for_clip(&path.to_string_lossy());
+
+        let mut cpu = vec![0u8; 16 * 16 * 16];
+        render_montage_frame_into(Rational::new(0, 1), &params, (16, 16), &mut cpu, 256)
+            .expect("CPU montage");
+        let gpu = render_montage_frame(Rational::new(0, 1), &params, (16, 16), PixelFormat::F32)
+            .expect("GPU montage");
+        assert!(
+            matches!(gpu, Texture::Gpu { .. }),
+            "the decoded montage frame stays on the GPU"
+        );
+        let frame = gpu.to_frame().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(frame.linesize_bytes(), 256);
+        assert_eq!(frame.data.len(), cpu.len(), "same target raster");
+        for (a, b) in cpu.chunks_exact(4).zip(frame.data.chunks_exact(4)) {
+            let a = f32::from_le_bytes(a.try_into().unwrap());
+            let b = f32::from_le_bytes(b.try_into().unwrap());
+            assert!(
+                (a - b).abs() < 5e-3,
+                "GPU/CPU montage parity: {a} vs {b}"
+            );
+        }
     }
 
     /// A clip effect that hands back a GPU texture on a context whose

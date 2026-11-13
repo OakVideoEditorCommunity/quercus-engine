@@ -62,8 +62,22 @@ fn read_cstr(field: &[u8]) -> String {
 	String::from_utf8_lossy(&field[..end]).into_owned()
 }
 
-/// Registers a plugin. Returns its slot index, -1 on null input, an
-/// empty/duplicate id, or a missing callback.
+/// Register a plugin and return its registry slot index.
+///
+/// Copies the descriptor's NUL-terminated `id`/`name`/`version`/`author`/
+/// `description` fields (lossy UTF-8) and stores the command callback plus
+/// the opaque `userdata` pointer. Returns `-1` when `descriptor` is null,
+/// `on_command` is `None`, the id is empty, or a plugin with the same id is
+/// already registered; otherwise returns the slot index (`>= 0`, valid until
+/// an earlier plugin is unregistered). The registry is process-global and
+/// mutex-guarded; the host neither owns nor frees `userdata`.
+///
+/// # Safety
+///
+/// `descriptor` must point to a valid [`QuercusPluginDescriptor`] whose
+/// fields are readable for the call. When non-null, `userdata` is stored
+/// as-is and later passed to `on_command`, so it must stay valid until the
+/// plugin is unregistered.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_plugin_register(
 	descriptor: *const QuercusPluginDescriptor,
@@ -116,8 +130,17 @@ pub extern "C" fn quercus_plugin_count() -> i32 {
 	PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).len() as i32
 }
 
-/// Copies the descriptor of the plugin at `index`. False when out of
-/// range.
+/// Copy the descriptor fields of the plugin at `index` into `out`.
+///
+/// Each fixed-size field is zero-filled, then filled with as much of the
+/// stored string as fits, so every field stays NUL-terminated; longer
+/// strings are truncated. Returns `false` when `out` is null or `index` is
+/// out of range, `true` after a complete copy.
+///
+/// # Safety
+///
+/// `out` must point to writable storage for one
+/// [`QuercusPluginDescriptor`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_plugin_descriptor(
 	index: i32,
@@ -145,9 +168,19 @@ pub unsafe extern "C" fn quercus_plugin_descriptor(
 	true
 }
 
-/// Contributes a command (menu item) to the plugin at `index`.
-/// `menu_path` uses `/` separators (e.g. "Tools/Export"). False on
-/// invalid input or out-of-range index.
+/// Contribute a command (menu item) to the plugin at `index`.
+///
+/// `command_id`, `title` and `menu_path` are `(pointer, length)` UTF-8
+/// pairs; `menu_path` uses `/` separators (e.g. `"Tools/Export"`) and may be
+/// empty. All three are copied into owned strings. Returns `false` when a
+/// pair is null or not UTF-8, `command_id` is empty, `index` is out of
+/// range, or the plugin already has a command with that id; `true` once the
+/// command is appended.
+///
+/// # Safety
+///
+/// Each pointer must be valid for its paired length and the bytes must stay
+/// readable for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_plugin_add_command(
 	index: i32,
@@ -184,7 +217,11 @@ pub unsafe extern "C" fn quercus_plugin_add_command(
 	true
 }
 
-/// Number of commands the plugin at `index` contributes.
+/// Number of commands contributed by the plugin at `index`.
+///
+/// Returns `0` both for a plugin with no commands and for an out-of-range
+/// `index` (negative or past the end); callers that must distinguish the two
+/// should validate the index with [`quercus_plugin_count`] first.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_plugin_command_count(index: i32) -> i32 {
 	let registry = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
@@ -225,9 +262,19 @@ plugin_command_getter! {
 	quercus_plugin_command_menu_path_at => menu_path,
 }
 
-/// Invokes a command by id: finds the contributing plugin and calls its
-/// command callback (with its userdata). False when no plugin
-/// contributes it.
+/// Invoke the command `command_id` by calling the plugin that contributes it.
+///
+/// Finds the first plugin whose command list contains the id, copies the
+/// callback and its `userdata` out, then drops the registry lock before the
+/// call — the callback may re-enter the registry (e.g. add another command).
+/// Returns `false` when the id is null/non-UTF-8 or no plugin contributes
+/// it; on success the callback's return value is ignored and `true` is
+/// returned.
+///
+/// # Safety
+///
+/// `command_id` must point to `command_id_len` initialized bytes that stay
+/// valid for the call and contain valid UTF-8.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_plugin_invoke_command(
 	command_id: *const u8,

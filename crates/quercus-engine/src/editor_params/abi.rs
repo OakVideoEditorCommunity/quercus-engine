@@ -173,6 +173,21 @@ impl NativeMirror for QuercusParamKeyframe {
 
 /// Captures a node's visible parameters. Returns null for a null session or
 /// stale node ID. The returned handle is released with `quercus_editor_params_release`.
+///
+/// `session` is the live session handle the app got from the C ABI, `node` is
+/// the node's raw identity (validated with `NodeId::from_identity`). On
+/// success the session's project is cloned and a snapshot handle is boxed for
+/// the FFI; the caller owns it and must release it exactly once with
+/// `quercus_editor_params_release`. Failure paths (null session, invalid
+/// identity, snapshot build error) return a null pointer rather than an error
+/// code.
+///
+/// # Safety
+///
+/// `session` must be either null or a live, non-null session handle created by
+/// this ABI, valid for the duration of the call; the handle is only read (its
+/// project is cloned), not consumed. The returned pointer must not be used
+/// after `quercus_editor_params_release`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_editor_params_snapshot(
 	session: *const EditorSessionHandle,

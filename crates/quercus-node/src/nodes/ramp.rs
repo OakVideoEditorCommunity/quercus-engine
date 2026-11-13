@@ -233,7 +233,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(RampNode))
 }
 
-/// Register this node type.
+/// Register the Ramp node type in the factory's static entry list.
+///
+/// `meta` is the factory entry vector to append to (type id
+/// `org.olivevideoeditor.Olive.ramp`, display name "Ramp", category
+/// [`Category::Generator`]). Called once at startup via `nodes::register_all`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.ramp",

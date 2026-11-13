@@ -54,10 +54,12 @@ pub mod frame;
 pub mod framemanager;
 pub mod gpuinterop;
 pub mod hwdecode;
+pub mod mediaio;
 pub mod oiio;
 pub mod oiioframebridge;
 pub mod planarfiledevice;
 pub mod proxymanager;
+pub mod subtitles;
 pub mod task;
 pub mod testmedia;
 pub mod timecodemetadata;
@@ -109,9 +111,3 @@ impl Drop for TestLock {
 pub(crate) fn lock_tests() -> TestLock {
 	TestLock::acquire()
 }
-
-// Keep the quercusffmpeg-link rlib referenced so its build script's native
-// link flags (the static FFmpeg's transitive dependencies) reach the
-// final link — rustc prunes the flags of an unreferenced rlib.
-#[used]
-static FORCE_FFMPEG_LINK: fn() = quercus_ffmpeg_link::force_link;

@@ -20,43 +20,49 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! # quercusplugin — Quercus 的插件模块（自研 OFX 宿主）
+//! # quercusplugin — Quercus's plugin module (in-house OFX host)
 //!
-//! 本 crate 是 quercusplugin 模块的全部实现（M11）：
+//! This crate is the full implementation of the quercusplugin module (M11):
 //!
-//! - **OFX 宿主**：扫描 bundle、加载插件、实现八张 suite
-//!   （property/memory/image_effect/param/message/progress/timeline/
-//!   multithread），驱动 describe/createInstance/render 等 action。
-//! - **桥**：把 OFX 实例的参数接到 quercusnode（[`node`]，节点值 POD +
-//!   身份注册表与 undoable 回写）、把 clip 的输入输出接到 quercusrender
-//!   纹理（[`render`]，纹理/帧/渲染器值类型）、把参数修改包成 undo
-//!   命令（直接经 `quercus_undo::undocommand::UndoCommand`，见
-//!   [`instance::Instance::submit_undo_command`]）。
+//! - **OFX host**: scans bundles, loads plugins, implements the eight suites
+//!   (property/memory/image_effect/param/message/progress/timeline/
+//!   multithread), and drives actions such as describe/createInstance/render.
+//! - **Bridges**: wires OFX instance parameters to quercusnode ([`node`]:
+//!   node-value PODs + the identity registry and undoable write-backs),
+//!   wires clip inputs/outputs to quercusrender textures ([`render`]: the
+//!   texture/frame/renderer value types), and wraps parameter changes as undo
+//!   commands (directly through `quercus_undo::undocommand::UndoCommand`,
+//!   see [`instance::Instance::submit_undo_command`]).
 //!
-//! ## 单库化（single-lib unification）
+//! ## Single-lib unification
 //!
-//! 本 crate 的 C ABI 出口（原 [`ffi`]）与模块桥（原 [`bridge`]）已
-//! 删除：quercusnode/quercusrender/quercusundo 均以 path 依赖直接链接。桥以
-//! 直接 Rust 类型重建（[`node`] 的身份注册表与
-//! `set_input_*_undoable`；[`render`] 的 `Texture`/`Frame`/`Renderer`
-//! 值类型）。GL 纹理名（旧 `quercusrender_texture_id` 的 GL 命名空间）
-//! 由 [`gl_bridge`]（方案 B：离屏 CGL 上下文 + 回读）提供；
-//! [`render::texture_id`] 对 quercusrender 纹理保持恒 0（wgpu/Metal 无
-//! GL 命名空间），use_opengl 决策与 GL suite 的 OpenGLTextureIndex
-//! 改从 [`gl_bridge`] 取真实名。
+//! The C ABI exports (formerly [`ffi`]) and the module bridges (formerly
+//! [`bridge`]) have been removed from this crate: quercusnode/quercusrender/
+//! quercusundo are linked directly as path dependencies. The bridges are
+//! rebuilt with direct Rust types ([`node`]'s identity registry and
+//! `set_input_*_undoable`; [`render`]'s `Texture`/`Frame`/`Renderer` value
+//! types). GL texture names (the GL namespace of the old
+//! `quercusrender_texture_id`) are provided by [`gl_bridge`] (plan B:
+//! offscreen CGL context + read-back); [`render::texture_id`] stays constant
+//! 0 for quercusrender textures (wgpu/Metal have no GL namespace), and the
+//! use_opengl decision plus the GL suite's OpenGLTextureIndex take real names
+//! from [`gl_bridge`] instead.
 //!
-//! ## 句柄纪律（全 crate 最高优先级约定）
+//! ## Handle discipline (the highest-priority convention crate-wide)
 //!
-//! 1. 插件可在任意自起线程回调 suite（multithread suite 存活期
-//!    内）；一切共享状态走 `Mutex`。
-//! 2. OFX 语义以 openfx HostSupport 为参照系；协商与时序实现点必须
-//!    注释对应 HostSupport 文件与行号（格式：`// HS: ofxhImageEffect.cpp:2776`）。
+//! 1. A plugin may call back into the suites from any thread it starts (for
+//!    the lifetime of the multithread suite); all shared state goes through
+//!    `Mutex`.
+//! 2. OFX semantics take openfx HostSupport as the reference; negotiation
+//!    and ordering implementation points must comment the corresponding
+//!    HostSupport file and line number (format:
+//!    `// HS: ofxhImageEffect.cpp:2776`).
 //!
-//! ## 第 1 期范围
+//! ## Phase 1 scope
 //!
-//! filter/generator/transition 上下文；CPU 渲染路径。GL 纹理 suite
-//! 与 ofxColour 为第 2 期（[`clip`]/[`image`] 内以 `// [P2]` 标记
-//! 预留点）。
+//! filter/generator/transition contexts; the CPU render path. The GL texture
+//! suite and ofxColour are phase 2 (reserved points are marked with
+//! `// [P2]` inside [`clip`]/[`image`]).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]

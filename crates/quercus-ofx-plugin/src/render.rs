@@ -14,69 +14,79 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! quercusrender 桥（single-lib unification）：纹理/帧值类型与渲染调用面。
+//! quercusrender bridge (single-lib unification): texture/frame value types and the render call surface.
 //!
-//! quercusrender 的 C ABI 已删除（单库化）：纹理是
-//! [`quercus_core::texture::Texture`]（value enum，无句柄），CPU 帧是
-//! [`quercus_core::texture::Frame`]。本 crate 的 render 驱动与 GL suite
-//! 直接持值类型：
+//! quercusrender's C ABI has been removed (single-lib unification): textures are
+//! [`quercus_core::texture::Texture`] (a value enum, no handle), CPU frames are
+//! [`quercus_core::texture::Frame`]. This crate's render driver and GL suite
+//! hold the value types directly:
 //!
-//! - [`Texture`] = [`quercus_core::texture::Texture`]（值别名；
-//!   clone 即引用语义，drop 自动释放后端 token——原 `texture_free`/
-//!   `frame_free` 调用面随值模型删除）；
-//! - [`Frame`] = [`quercus_core::texture::Frame`]（值别名）；
+//! - [`Texture`] = [`quercus_core::texture::Texture`] (value alias;
+//!   clone is reference semantics, drop frees the backend token automatically — the old `texture_free`/
+//!   `frame_free` call surface is gone with the value model);
+//! - [`Frame`] = [`quercus_core::texture::Frame`] (value alias);
 //! - [`Renderer`] = `Arc<dyn quercus_core::backend::GpuContextLike>`
-//!   （渲染器即 quercusrender 后端上下文，facade 经
-//!   [`quercus_core::backend::GpuContext::create`] 创建）；
-//! - [`VideoParams`] 直接别名 quercusrender 的
-//!   [`quercus_core::frame::VideoParamsPod`]（同布局 POD）；
-//! - 像素格式常量直接别名 [`quercus_core::PixelFormat`]。
+//!   (the renderer is the quercusrender backend context; the facade creates it via
+//!   [`quercus_core::backend::GpuContext::create`]);
+//! - [`VideoParams`] directly aliases quercusrender's
+//!   [`quercus_core::frame::VideoParamsPod`] (same-layout POD);
+//! - pixel-format constants directly alias [`quercus_core::PixelFormat`].
 //!
-//! 保留桩（GPU 相关、wgpu 模型无直接 Rust 等价物）：
-//! [`texture_id`]——quercusrender 纹理（wgpu/CPU）没有 OpenGL 纹理名，
-//! 恒 0。**GL 模式的真实 GL 纹理名来自 [`crate::gl_bridge`]**（方案 B
-//! 已落地）：render 驱动为输出帧建 GL 纹理 + FBO，GL suite 的
-//! `OpenGLTextureIndex` 属性据此返回真实名；use_opengl 决策改用
-//! [`crate::gl_bridge::gl_available`] 作"目标纹理有有效 GL 名"的门。
+//! Retained stubs (GPU-related, where the wgpu model has no direct Rust equivalent):
+//! [`texture_id`] — quercusrender textures (wgpu/CPU) have no OpenGL texture name and
+//! always return 0. **The real GL texture name in GL mode comes from [`crate::gl_bridge`]** (option B
+//! has landed): the render driver creates the GL texture + FBO for the output frame, and the GL suite's
+//! `OpenGLTextureIndex` property reports the real name from it; the use_opengl decision now uses
+//! [`crate::gl_bridge::gl_available`] as the gate for "the target texture has a valid GL name".
 
 /// `quercusrender_video_params` POD — single-lib unification: aliases the
 /// quercusrender crate's struct (identical layout;
 /// include/render/renderer.h:78).
 pub type VideoParams = quercus_core::frame::VideoParamsPod;
 
-/// olive::PixelFormat::Format 的 f32 值。
+/// The f32 value of olive::PixelFormat::Format.
 pub const PIXEL_FORMAT_F32: i32 = quercus_core::PixelFormat::F32 as i32;
-/// olive::PixelFormat::Format 的 u8 值。
+/// The u8 value of olive::PixelFormat::Format.
 pub const PIXEL_FORMAT_U8: i32 = quercus_core::PixelFormat::U8 as i32;
 
-/// quercusrender 渲染器（后端上下文；Arc 共享，GPU 纹理据此 upload/
-/// download/blit——无需独立渲染器句柄）。
+/// The quercusrender renderer (the backend context; shared via Arc, GPU textures use it to upload/
+/// download/blit — no separate renderer handle is needed).
 pub type Renderer = std::sync::Arc<dyn quercus_core::backend::GpuContextLike>;
 
-/// quercusrender 纹理（值型；GPU 或 CPU 包装）。
+/// A quercusrender texture (a value type; a GPU or CPU wrapper).
 pub type Texture = quercus_core::texture::Texture;
 
-/// quercusrender CPU 帧（值型）。
+/// A quercusrender CPU frame (a value type).
 pub type Frame = quercus_core::texture::Frame;
 
 // ---- 桥调用面（值型实现；原 CHandle 桩随单库化重写）----------------------
 
-/// 纹理是否占位（dummy：透明黑、从未上传）。
+/// Whether a texture is a placeholder (dummy: transparent black, never uploaded).
+///
+/// A placeholder texture has zero width/height and empty pixel data and represents the "no input / not yet rendered" slot;
+/// the predicate lives in [`quercus_core::texture::Texture::is_dummy`] (GPU and
+/// planar textures always return `false`).
 pub fn texture_is_dummy(texture: &Texture) -> bool {
 	texture.is_dummy()
 }
 
-/// 纹理的 CPU 帧：GPU 纹理经后端下载，CPU 纹理克隆
-/// （原 `texture_get_frame` 的 out 参数形态改为值返回；错误即旧
-/// "纹理无 CPU 帧" 失败路径）。
+/// The texture's CPU frame: a GPU texture is downloaded through the backend, a CPU texture is cloned
+/// (the old `texture_get_frame` out-parameter form became a value return; an error is the old
+/// "texture has no CPU frame" failure path).
 pub fn texture_get_frame(texture: &Texture) -> crate::error::Result<Frame> {
 	texture.to_frame().map_err(|e| {
 		crate::error::Error::Failed(format!("纹理 readback 失败：{e}"))
 	})
 }
 
-/// 纹理的视频参数（尺寸 + 像素格式；原 `texture_get_params` 的
-/// out 参数形态改为值返回）。
+/// The texture's video parameters (size + pixel format; the old `texture_get_params`
+/// out-parameter form became a value return).
+///
+/// The returned [`VideoParams`] is a POD value: width/height come from
+/// [`quercus_core::texture::Texture::size`], the pixel format from
+/// [`quercus_core::texture::Texture::format`] (stored as
+/// [`quercus_core::PixelFormat`]'s f32 enum value), the other fields stay at their defaults.
+/// A placeholder texture yields 0×0 and the default format.
 pub fn texture_get_params(texture: &Texture) -> VideoParams {
 	let (w, h) = texture.size();
 	let mut p = VideoParams::default();
@@ -86,10 +96,10 @@ pub fn texture_get_params(texture: &Texture) -> VideoParams {
 	p
 }
 
-/// 从视频参数与像素数据构造 CPU 纹理（原 `texture_create` 的
-/// renderer+参数+像素形态改为值形态）：按 `linesize` 行跨度做行优先
-/// 拷贝（0 = 紧凑行），F32/RGBA 4 通道为管线常规。GPU 上传由后端
-/// 延迟（wrapped frame 语义，`Texture::wrap_frame`）。
+/// Build a CPU texture from video parameters and pixel data (the old `texture_create`
+/// renderer+params+pixels form became a value form): rows are copied in row-major order using the `linesize` stride
+/// (0 = tightly packed rows); F32/RGBA 4 channels is the pipeline norm. GPU upload is deferred
+/// by the backend (wrapped-frame semantics, `Texture::wrap_frame`).
 pub fn texture_create(
 	params: &VideoParams,
 	pixels: &[u8],
@@ -125,21 +135,21 @@ pub fn texture_create(
 	Ok(Texture::wrap_frame(frame))
 }
 
-/// quercusrender 纹理在 GL 命名空间中的纹理名。quercusrender 纹理（wgpu
-/// Metal / CPU 帧）没有 OpenGL 纹理名，恒 0。
+/// A quercusrender texture's texture name in the GL namespace. quercusrender textures (wgpu
+/// Metal / CPU frames) have no OpenGL texture name and always return 0.
 ///
-/// **GL 模式的真实纹理名不由本函数提供**：宿主自建的离屏 GL 纹理
-/// （输出帧 + FBO 挂载、输入 clip 上传）由 [`crate::gl_bridge`] 产生，
-/// 经 GL suite 的 `OpenGLTextureIndex` 属性直接写出；use_opengl 决策
-/// 用 [`crate::gl_bridge::gl_available`] 当"目标纹理有有效 GL 名"的
-/// 门（桥能为目标帧建出真实 GL 纹理 ⟺ 可用）。评估历史见
-/// [`crate::gl_bridge`] 模块文档。
+/// **The real texture name in GL mode is not provided by this function**: the host's own offscreen GL textures
+/// (output frame + FBO attachment, input clip upload) are produced by [`crate::gl_bridge`] and
+/// written out directly through the GL suite's `OpenGLTextureIndex` property; the use_opengl decision
+/// uses [`crate::gl_bridge::gl_available`] as the gate for "the target texture has a valid GL name"
+/// (the bridge can build a real GL texture for the target frame ⟺ it is available). See
+/// [`crate::gl_bridge`] module docs for the evaluation history.
 pub fn texture_id(_texture: &Texture) -> i32 {
 	0
 }
 
-/// 渲染器是否为 OpenGL 后端（[`quercus_core::backend::BackendKind::Gl`]；
-/// 原 `renderer_is_open_gl` 的句柄形态改为后端上下文 kind 查询）。
+/// Whether the renderer is an OpenGL backend ([`quercus_core::backend::BackendKind::Gl`];
+/// the old `renderer_is_open_gl` handle form became a backend-context kind query).
 pub fn renderer_is_open_gl(renderer: &Renderer) -> bool {
 	renderer.kind() == quercus_core::backend::BackendKind::Gl
 }
@@ -179,7 +189,7 @@ impl quercus_core::backend::GpuContextLike for GlKindMarker {
 mod tests {
 	use super::*;
 
-	/// 测试渲染器：最小 GpuContextLike 假实现（无 GPU 适配器需求）。
+	/// Test renderer: a minimal GpuContextLike fake (needs no GPU adapter).
 	struct FakeGpu;
 	impl quercus_core::backend::GpuContextLike for FakeGpu {
 		fn kind(&self) -> quercus_core::backend::BackendKind {
@@ -202,7 +212,7 @@ mod tests {
 		}
 	}
 
-	/// 纹理创建：参数 + 行跨度感知拷贝往返（含 RGB 3 通道推导）。
+	/// Texture creation: params + linesize-aware copy round trip (including RGB 3-channel inference).
 	#[test]
 	fn texture_create_linesize_aware() {
 		let mut params = VideoParams::default();
@@ -240,7 +250,7 @@ mod tests {
 		assert!(texture_create(&bad, &pixels, 0).is_err());
 	}
 
-	/// 纹理参数查询与 dummy 语义。
+	/// Texture parameter query and dummy semantics.
 	#[test]
 	fn texture_params_and_dummy() {
 		let dummy = Texture::dummy();
@@ -258,8 +268,8 @@ mod tests {
 		assert_eq!(p.format, PIXEL_FORMAT_F32);
 	}
 
-	/// 渲染器 kind 查询与 GL 判断（wgpu 后端按设计无 GL 纹理名，
-	/// `texture_id` 恒 0 的桩不在这里断言）。
+	/// Renderer kind query and GL decision (the wgpu backend has no GL texture name by design;
+	/// the `texture_id` always-0 stub is not asserted here).
 	#[test]
 	fn renderer_kind_and_gl_id_stub() {
 		let r: Renderer = std::sync::Arc::new(FakeGpu);

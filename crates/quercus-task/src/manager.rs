@@ -173,7 +173,21 @@ impl TaskManager {
 		self.threads.push(Some(handle));
 	}
 
-	/// Cancel the task at `index`.
+	/// Request cancellation of the task at `index`; the worker is not
+	/// waited for.
+	///
+	/// `index` is a position in this manager's task list (see
+	/// [`TaskManager::find_index`]). On success the task's cancel atom is
+	/// tripped and its cancel callback fires, but the cancel is cooperative:
+	/// [`Task::start`] notices the flag inside its own loop, so the task may
+	/// keep running (and the worker thread keep living) after this returns.
+	/// Pair with [`TaskManager::cancel_task_and_wait`] when the caller must
+	/// observe the stop. The task stays in the list and in the task count;
+	/// removal is the finished-task cleanup's job.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error::NotFound`] when `index >= get_task_count()`.
 	#[allow(invalid_reference_casting)]
 	pub fn cancel_task(&mut self, index: usize) -> Result<()> {
 		let task = self.tasks.get(index).ok_or(Error::NotFound)?;
@@ -184,7 +198,18 @@ impl TaskManager {
 		Ok(())
 	}
 
-	/// Cancel the task at `index` and block until it finishes.
+	/// Cancel the task at `index` and block until its worker thread exits.
+	///
+	/// Calls [`TaskManager::cancel_task`] first (so [`Error::NotFound`] is
+	/// returned for a stale index), then takes the worker thread handle at
+	/// the same index and joins it. After this returns, the task's worker
+	/// thread has exited, but the task box is still in the list (still
+	/// counted by [`TaskManager::get_task_count`]) until
+	/// [`TaskManager::delete_finished`] or [`TaskManager::drain_finished`]
+	/// removes it. Calling it twice is harmless: the second call finds no
+	/// thread handle and only re-issues the cancel. Joining happens after the
+	/// cancel, so a task that ignores the flag can block this call
+	/// indefinitely.
 	pub fn cancel_task_and_wait(&mut self, index: usize) -> Result<()> {
 		self.cancel_task(index)?;
 		let handle = self.threads.get_mut(index).and_then(|h| h.take());
@@ -213,12 +238,32 @@ impl TaskManager {
 		Ok(task.task() as *const Task as *mut Task)
 	}
 
-	/// Index of the task with the given address.
+	/// Position of the task owning the address `ptr` in this manager's task
+	/// list.
+	///
+	/// Compares `ptr` against each tracked task's [`TaskBox::task`] pointer
+	/// by address ([`std::ptr::eq`]); it never dereferences `ptr`, so an
+	/// unrelated or dangling address is safe and simply yields [`None`]. The
+	/// returned index is valid for [`TaskManager::cancel_task`],
+	/// [`TaskManager::task_ptr_at`] and the parallel `self.threads` vector
+	/// until a task is added or removed. Used by
+	/// [`TaskManager::cancel_task_by_ptr`] and
+	/// [`TaskManager::take_thread_by_ptr`].
 	pub fn find_index(&self, ptr: *const Task) -> Option<usize> {
 		self.tasks.iter().position(|t| std::ptr::eq(t.task(), ptr))
 	}
 
-	/// Cancel the task with the given address (no-op when absent).
+	/// Cancel the task owning the address `ptr`, silently doing nothing when
+	/// no such task is tracked.
+	///
+	/// Looks the task up with [`TaskManager::find_index`] and forwards to
+	/// [`TaskManager::cancel_task`]; the requested cancel is asynchronous
+	/// (the worker keeps running until it observes the flag — use
+	/// [`TaskManager::cancel_task_and_wait`] to join). The `Result` of the
+	/// inner cancel is discarded, so an unknown `ptr` and a failed cancel
+	/// are both unobservable; callers that need the error use
+	/// `cancel_task` with an index. `ptr` may be null or dangling: only
+	/// address equality is tested, it is never dereferenced.
 	pub fn cancel_task_by_ptr(&mut self, ptr: *const Task) {
 		if let Some(index) = self.find_index(ptr) {
 			let _ = self.cancel_task(index);

@@ -30,9 +30,26 @@ pub extern "C" fn quercus_codec_proxy_params_from_config() -> ProxyParams {
 	ProxyManager::proxy_params_from_config()
 }
 
-/// The on-disk proxy state for `proxy_filename` as a `ProxyState`
-/// discriminant (Missing/Generating/Ready/Failed = 0/1/2/3). Null or
-/// non-UTF-8 input reads as `Missing` (0).
+/// Returns the on-disk state of a proxy file.
+///
+/// `Ready` when `proxy_filename` exists, `Generating` when its
+/// `.working.mp4` sibling exists, otherwise `Missing`. A null, empty or
+/// non-UTF-8 filename reads as `Missing`.
+///
+/// # Arguments
+///
+/// * `proxy_filename` - Final proxy path to test.
+///
+/// # Returns
+///
+/// A [`ProxyState`] discriminant (Missing/Generating/Ready = 0/1/2). This
+/// query never reports `Failed`; that state comes from the generation path.
+///
+/// # Safety
+///
+/// When non-null, `proxy_filename` must be valid for
+/// `proxy_filename_len` readable bytes; null is allowed and reads as
+/// `Missing`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_proxy_get_state(
 	proxy_filename: *const u8,
@@ -44,8 +61,20 @@ pub unsafe extern "C" fn quercus_codec_proxy_get_state(
 	ProxyManager::get_proxy_state(filename) as i32
 }
 
-/// Whether the proxy file carries an audio stream; false on null or
-/// non-UTF-8 input.
+/// Returns whether a proxy filename was generated with an audio track.
+///
+/// This is a filename test only: generation tags audio-including proxies
+/// with an `.a1.` component, so the file is not opened. Null or invalid-UTF-8
+/// input returns `false`.
+///
+/// # Arguments
+///
+/// * `proxy_filename` - Proxy path whose file name is inspected.
+///
+/// # Safety
+///
+/// When non-null, `proxy_filename` must be valid for
+/// `proxy_filename_len` readable bytes; null is allowed and returns `false`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_proxy_filename_has_audio(
 	proxy_filename: *const u8,
@@ -57,8 +86,35 @@ pub unsafe extern "C" fn quercus_codec_proxy_filename_has_audio(
 	ProxyManager::proxy_filename_has_audio(filename)
 }
 
-/// Derives the proxy filename for a source stream, snprintf-style (see
-/// `copy_str_out`); -1 on error. `params` crosses by value.
+/// Derives the deterministic proxy filename for a source stream.
+///
+/// The result is
+/// `<cache_path>/proxy/<file-id>-<stream>.<size-tag>.v<version>.a<audio>.<ext>`;
+/// `size-tag` is `div<divider>` when `params.divider > 1` and
+/// `<width>x<height>` otherwise, while `<ext>` falls back to "mp4" when the
+/// params extension is empty.
+///
+/// # Arguments
+///
+/// * `cache_path` - Project cache directory (the `proxy/` parent).
+/// * `source_filename` - Source media path used to derive the stable unique
+///   file id.
+/// * `stream_index` - Source stream index encoded in the name.
+/// * `params` - Proxy parameters (size/divider/version/audio/extension), by
+///   value because the struct is `#[repr(C)]`.
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// snprintf-style: the full filename length excluding the NUL (a null/0
+/// buffer queries it); a return value `>= buf_len` means truncation. Returns
+/// -1 on invalid input or when the manager rejects the derivation.
+///
+/// # Safety
+///
+/// Non-null input pointers must be valid for their lengths; `buf` must be
+/// writable for `buf_len` bytes when non-null and `buf_len > 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_proxy_get_filename(
 	cache_path: *const u8,
@@ -82,8 +138,28 @@ pub unsafe extern "C" fn quercus_codec_proxy_get_filename(
 	}
 }
 
-/// The working (in-progress) filename for a proxy, snprintf-style;
-/// -1 on error.
+/// Returns the in-progress filename for a proxy.
+///
+/// The working name is `proxy_filename` with `.working.mp4` appended;
+/// [`quercus_codec_proxy_get_state`] uses its existence to report
+/// `Generating`.
+///
+/// # Arguments
+///
+/// * `proxy_filename` - Final (non-working) proxy path.
+/// * `buf` - Output buffer, or null with `buf_len = 0` to query the length.
+/// * `buf_len` - Capacity of `buf` in bytes.
+///
+/// # Returns
+///
+/// snprintf-style: the full byte length excluding the NUL; a return value
+/// `>= buf_len` means the output was truncated. Returns -1 on invalid input
+/// (the working filename itself is always derivable).
+///
+/// # Safety
+///
+/// When non-null, `proxy_filename` must be valid for `proxy_filename_len`
+/// readable bytes and `buf` must be writable for `buf_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_proxy_get_working_filename(
 	proxy_filename: *const u8,
@@ -100,11 +176,38 @@ pub unsafe extern "C" fn quercus_codec_proxy_get_working_filename(
 	}
 }
 
-/// Returns the proxy for a source stream, starting generation through
-/// the registered task callback when it is missing. Without a registered
-/// callback the state reports `Missing`; on submission failure it
-/// reports `Failed`. `state` is -1 only for invalid input/engine errors
-/// (then `filename` is empty).
+/// Returns the proxy filename for a source stream and starts generation when
+/// the proxy is missing.
+///
+/// The lookup key is `cache_path` + `source_filename` + `stream_index` +
+/// `params`; the deterministic filename is derived by
+/// [`quercus_codec_proxy_get_filename`]. A missing proxy is submitted through
+/// the registered task callback instead of being generated here. Without a
+/// registered callback the reported state is `Missing`; a failed submission
+/// reports `Failed`. Invalid input or an engine error returns `state = -1`
+/// with an empty filename buffer.
+///
+/// # Arguments
+///
+/// * `cache_path` - Project cache directory; the proxy lives under its
+///   `proxy/` subdirectory.
+/// * `source_filename` - Source media path used for the unique file id.
+/// * `stream_index` - Source stream index encoded in the proxy filename.
+/// * `params` - Proxy generation parameters, passed by value because the
+///   struct is `#[repr(C)]`.
+///
+/// # Returns
+///
+/// `state` is a [`ProxyState`] discriminant (Missing/Generating/Ready/Failed
+/// = 0/1/2/3) or -1 on invalid input/engine error. `filename` is a
+/// NUL-terminated 1024-byte buffer, truncated to 1023 bytes when the path is
+/// longer, and empty on error.
+///
+/// # Safety
+///
+/// When non-null, `cache_path` and `source_filename` must be valid for
+/// reading `cache_path_len` / `source_filename_len` bytes of UTF-8; null or
+/// invalid UTF-8 is treated as invalid input (state -1).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_proxy_get_or_start(
 	cache_path: *const u8,

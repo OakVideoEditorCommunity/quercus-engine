@@ -28,10 +28,14 @@ use std::sync::Arc;
 
 /// All built-in backends in arbitration order (registered into
 /// [`crate::registry::Registry::global`] at crate init).
+///
+/// The database entry is the process-wide [`database::DatabaseBackend::shared`]
+/// instance so every resolution of a `quercusdb+…` URI lands on the same
+/// connection pools and operation lock.
 pub fn builtins() -> Vec<Arc<dyn crate::backend::StorageBackend>> {
 	vec![
 		Arc::new(ove_xml::OveXmlBackend::new()),
 		Arc::new(otio::OtioBackend::new()),
-		Arc::new(database::DatabaseBackend::new()),
+		database::DatabaseBackend::shared().clone(),
 	]
 }

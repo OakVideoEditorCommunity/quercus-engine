@@ -126,6 +126,15 @@ pub fn set_clips_linked(p: &ProjectRef, blocks: &[NodeId], linked: bool) -> Resu
 	// The shared mutation: clear the set's internal links, then restore the
 	// target topology (redo: all pairs when linking, none when unlinking;
 	// undo: the snapshot).
+	/// Rewrite the link topology among `blocks` to exactly `target`.
+	///
+	/// `p` is the project, `blocks` the node set whose internal links change, and
+	/// `target` the pairs that must be linked afterwards. Every pairwise link inside
+	/// the set is removed first, then each `(a, b)` in `target` is linked, so the
+	/// result depends only on `target` (not on the previous topology). Runs inside
+	/// the redo/undo closures: redo passes the full pair set when linking and none
+	/// when unlinking, undo the snapshot taken before the edit; links to nodes
+	/// outside `blocks` are never touched.
 	fn apply(p: &ProjectRef, blocks: &[NodeId], target: &[(NodeId, NodeId)]) {
 		let mut g = lock(p);
 		for (i, &a) in blocks.iter().enumerate() {
@@ -272,8 +281,11 @@ pub fn remove_node(p: &ProjectRef, node: NodeId) -> Result<(), String> {
 /// decode sessions hold this guard to prevent cross-test interference.
 #[cfg(test)]
 pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-	LOCK.lock().unwrap_or_else(|e| e.into_inner())
+	// Share the undo-stack lock with the node tests: both modules mutate
+	// the same process-global stack, so separate mutexes still race.
+	crate::node::UNDO_SERIAL
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
 }
 
 // ---------------------------------------------------------------------------

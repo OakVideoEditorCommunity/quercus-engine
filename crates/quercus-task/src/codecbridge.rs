@@ -35,7 +35,16 @@ use crate::error::{Error, Result};
 use crate::proxy::{ProxyParams, ProxyTask};
 use crate::task::Task;
 
-/// Convert quercuscodec proxy params into the Rust [`ProxyParams`].
+/// Copy codec-side proxy settings into the task module's [`ProxyParams`].
+///
+/// `params` is the codec's config struct ([`quercus_codec::proxymanager::ProxyParams`],
+/// the C-compatible one with `int`/fixed `[u8; 32]` fields). The scalar
+/// fields (`width`, `height`, `divider`, `version`, `crf`) are copied
+/// verbatim — 0 width/height means "derive from `divider`", as usual for
+/// the proxy settings — and all values are treated as already validated;
+/// no clamping is done here. `include_audio` (a C `int`) becomes `true`
+/// for any non-zero value. `extension` and `preset` are NUL-padded C
+/// strings and are decoded with [`cstr_buf_to_string`].
 fn proxy_params_from_codec(params: &quercus_codec::proxymanager::ProxyParams) -> ProxyParams {
 	ProxyParams {
 		width: params.width,
@@ -49,14 +58,43 @@ fn proxy_params_from_codec(params: &quercus_codec::proxymanager::ProxyParams) ->
 	}
 }
 
-/// Read a NUL-terminated byte array into a String (lossy).
+/// Decode one fixed-size C string buffer into a Rust [`String`].
+///
+/// `buf` is the raw byte array of a C `char[N]` field: reading stops at
+/// the first `0` byte, so both NUL-terminated and NUL-padded contents work;
+/// a buffer with no NUL byte is consumed in full. Bytes are interpreted as
+/// UTF-8 lossily, so invalid sequences become `U+FFFD` rather than an
+/// error — the result is always usable as a display/config value, never a
+/// faithful byte copy. Used here for the `extension` and `preset` fields of
+/// [`quercus_codec::proxymanager::ProxyParams`].
 fn cstr_buf_to_string(buf: &[u8]) -> String {
 	let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
 	String::from_utf8_lossy(&buf[..len]).into_owned()
 }
 
-/// The installed submit callback, mirroring `submit_codec_task` in
-/// codecbridge.cpp (interim contract: submission is synchronous).
+/// The installed submit callback: turn one codec-side request into a
+/// conform or proxy task and run it to completion before returning.
+///
+/// Mirrors `submit_codec_task` in codecbridge.cpp, but the interim
+/// contract is synchronous submission: the concrete task is wrapped in
+/// an outer [`Task`] that shares the inner task's cancellation atom, so
+/// cancelling the outer handle reaches the behavior, and
+/// [`Task::start`] drives it on the calling thread — the call returns
+/// only once the task has finished. `req.kind` selects the task:
+/// [`TaskKind::Conform`] builds a [`ConformTask`] from the request,
+/// [`TaskKind::Proxy`] reads the current proxy settings through
+/// [`ProxyManager::proxy_params_from_config`], converts them with
+/// [`proxy_params_from_codec`], and builds a [`ProxyTask`].
+///
+/// `_userdata` is accepted for the callback ABI but ignored (registration
+/// always passes null).
+///
+/// # Errors
+///
+/// Returns `CodecError::Failed("conform task failed")` or
+/// `CodecError::Failed("proxy task failed")` whenever the task's
+/// `start()` fails; the underlying task error is discarded, so callers
+/// only see the generic message.
 fn submit_codec_task(
 	req: &TaskRequest,
 	_userdata: *mut std::ffi::c_void,

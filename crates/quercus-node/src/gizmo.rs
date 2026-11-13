@@ -48,7 +48,13 @@ pub struct PointF {
 }
 
 impl PointF {
-	/// Construct a point (C++ `PointF(x, y)`).
+	/// Constructs a point from its coordinates (C++ `PointF(x, y)`).
+	///
+	/// `x` and `y` are stored as given; they are the gizmo coordinate space
+	/// of the caller (typically screen or normalized image space, but this
+	/// type attaches no unit). The constructor does not validate or clamp, so
+	/// infinities and `NaN` are preserved. Use [`Self::is_null`] to test for
+	/// the origin and [`Self::manhattan_length`] for its taxicab distance.
 	pub fn new(x: f64, y: f64) -> Self {
 		Self { x, y }
 	}
@@ -58,7 +64,13 @@ impl PointF {
 		self.x == 0.0 && self.y == 0.0
 	}
 
-	/// `|x| + |y|` (C++ `manhattan_length()`).
+	/// Manhattan (taxicab) length of the vector from the origin to this
+	/// point, i.e. `|x| + |y|` (C++ `manhattan_length()`).
+	///
+	/// Unlike the Euclidean length this is cheap and axis-separable, which is
+	/// what gizmo hit-testing/dragging wants when it compares against a
+	/// pixel-space threshold. Returns a non-negative `f64`; `NaN` propagates
+	/// if a coordinate is `NaN`.
 	pub fn manhattan_length(&self) -> f64 {
 		self.x.abs() + self.y.abs()
 	}

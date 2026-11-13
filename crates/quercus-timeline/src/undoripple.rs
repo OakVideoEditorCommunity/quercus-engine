@@ -63,13 +63,29 @@ fn rat_neg(r: Rational) -> Rational {
 // bodies use. Each wraps a `crate::util` quercusnode-domain query (see the
 // `// CPP-PARITY` marker on each).
 
-/// C++ `quercusnode_track_get_nearest_block_before_or_at`.
+/// The block on `track` containing `t` (`[in, out)`), else the latest block
+/// that ends at or before `t`; `None` when the track has no such block. Thin
+/// wrapper over [`track_nearest_block_before_or_at`] (C++
+/// `quercusnode_track_get_nearest_block_before_or_at`, timelineundoripple.cpp:64).
+///
+/// # Arguments
+///
+/// * `track` - the track to search.
+/// * `t` - time in project seconds, on the same timeline as the blocks.
 // CPP-PARITY timelineundoripple.cpp:64
 fn nearest_block_before_or_at(track: &NodeRef, t: Rational) -> Option<NodeRef> {
 	track_nearest_block_before_or_at(track, t)
 }
 
-/// C++ `quercusnode_track_get_nearest_block_after_or_at`.
+/// The block on `track` containing `t`, else the first block that starts at
+/// or after `t`; `None` when neither exists. Thin wrapper over
+/// [`track_nearest_block_after_or_at`] (C++
+/// `quercusnode_track_get_nearest_block_after_or_at`, timelineundoripple.cpp:551).
+///
+/// # Arguments
+///
+/// * `track` - the track to search.
+/// * `t` - time in project seconds; block ranges are half-open `[in, out)`.
 // CPP-PARITY timelineundoripple.cpp:551
 fn nearest_block_after_or_at(track: &NodeRef, t: Rational) -> Option<NodeRef> {
 	track_nearest_block_after_or_at(track, t)
@@ -87,7 +103,14 @@ fn track_list_count(list: &NodeRef) -> usize {
 	tracklist_track_count(list)
 }
 
-/// C++ `quercusnode_tracklist_get_track_at`.
+/// The track at `index` in `list`, or `None` when the index is out of range.
+/// Thin wrapper over [`tracklist_track_at`] (C++
+/// `quercusnode_tracklist_get_track_at`, timelineundoripple.cpp:215).
+///
+/// # Arguments
+///
+/// * `list` - the track-list node to query.
+/// * `index` - zero-based track index.
 // CPP-PARITY timelineundoripple.cpp:215
 fn track_list_at(list: &NodeRef, index: usize) -> Option<NodeRef> {
 	tracklist_track_at(list, index)
@@ -99,8 +122,10 @@ fn track_is_locked(track: &NodeRef) -> bool {
 	track_locked(track)
 }
 
-/// C++ `TimelineRippleRemoveAreaCommand` ctor loop over
-/// `quercusnode_sequence_get_track_list` (one list per track type).
+/// The sequence's track-list nodes, one per track type in the fixed order
+/// video, audio, subtitle; a type whose list is missing is omitted. Mirrors
+/// the C++ `TimelineRippleRemoveAreaCommand` constructor loop over
+/// `quercusnode_sequence_get_track_list` (timelineundoripple.cpp:254).
 // CPP-PARITY timelineundoripple.cpp:254
 fn sequence_track_lists(timeline: &NodeRef) -> Vec<NodeRef> {
 	let mut lists = Vec::new();
@@ -350,7 +375,16 @@ impl TrackRippleRemoveAreaCommand {
 		}
 	}
 
-	/// `redo`: apply the ripple removal.
+	/// `redo`: apply the prepared area removal to the track. On first use it
+	/// derives the operations with [`Self::prepare`], because the undo-command
+	/// path never calls `prepare` itself.
+	///
+	/// When the range cuts through a block, the splice split runs and its
+	/// second half is trimmed out-anchored and re-linked to the original's
+	/// partners; otherwise the first block's out edge is trimmed in place,
+	/// fully covered blocks are ripple-removed (each removable node also gets
+	/// its own undo command), and the trailing block's in edge is trimmed
+	/// keeping its out point fixed.
 	pub fn redo(&mut self) {
 		// The quercusundo command path never invokes `prepare()` (the quercusundo
 		// wrapper only dispatches redo/undo), so derive the operations
@@ -697,8 +731,21 @@ impl TrackListRippleToolCommand {
 		self.ripple(false);
 	}
 
-	/// Apply the movement in the given direction (`TrackListRippleToolCommand::ripple`,
-	/// timelineundoripple.cpp:292).
+	/// Applies the tracked ripple movement in one direction
+	/// (`TrackListRippleToolCommand::ripple`, timelineundoripple.cpp:292).
+	///
+	/// For each `(track, info)` pair this computes the block's new length from
+	/// `ripple_movement` (negated for [`MovementMode::TrimIn`] and for an undo
+	/// pass), then either creates/removes the gap the ripple inserts
+	/// (`info.append_gap`), removes/restores a gap the ripple consumes, or
+	/// resizes the block (in-anchored for an out trim, out-anchored for an in
+	/// trim). The per-track [`WorkingData`] persists the created/removed gap
+	/// handles so the reverse call can restore them; an empty `info` list is a
+	/// no-op.
+	///
+	/// # Arguments
+	///
+	/// * `redo` - `true` applies the forward movement, `false` reverses it.
 	fn ripple(&mut self, redo: bool) {
 		if self.info.is_empty() {
 			return;

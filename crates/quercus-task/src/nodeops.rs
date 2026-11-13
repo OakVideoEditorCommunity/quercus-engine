@@ -171,7 +171,11 @@ pub fn node_type_id(project: &ProjectRef, node: NodeId) -> String {
 	}
 }
 
-/// True when the node's behavior is the footage type.
+/// Whether `node`'s behavior is the footage type.
+///
+/// Pure graph query that takes no project lock and downcasts to
+/// [`FootageBehavior`]; stale ids return `false`. Used by
+/// [`find_input_footage`] to stop its upstream walk.
 pub fn node_is_footage(graph: &Graph, node: NodeId) -> bool {
 	graph
 		.get(node)
@@ -180,7 +184,11 @@ pub fn node_is_footage(graph: &Graph, node: NodeId) -> bool {
 		.is_some()
 }
 
-/// True when the node's behavior is the sequence type.
+/// Whether `node`'s behavior is the sequence type.
+///
+/// Pure graph query that takes no project lock and downcasts to
+/// [`SequenceBehavior`]; stale ids return `false`. Counterpart of
+/// [`node_is_footage`].
 pub fn node_is_sequence(graph: &Graph, node: NodeId) -> bool {
 	graph
 		.get(node)
@@ -250,6 +258,52 @@ pub fn node_length(project: &ProjectRef, node: NodeId) -> Rational {
 			return longest;
 		}
 		return seq.last_length;
+	}
+	Rational::new(0, 1)
+}
+
+/// Video length of a footage/sequence viewer.
+///
+/// For footage nodes this is the footage's own video length; for sequences it
+/// is the longest **video** track list (audio-only tails must not force video
+/// tickets past the picture). Returns `0/1` when `node` is missing or is
+/// neither footage nor sequence.
+pub fn video_length(project: &ProjectRef, node: NodeId) -> Rational {
+	let guard = lock_project(project);
+	let Some(entry) = guard.graph.get(node) else {
+		return Rational::new(0, 1);
+	};
+	let Some(any) = entry.behavior.as_any() else {
+		return Rational::new(0, 1);
+	};
+	if let Some(f) = any.downcast_ref::<FootageBehavior>() {
+		return f.video_length();
+	}
+	if let Some(seq) = any.downcast_ref::<SequenceBehavior>() {
+		let tracks = GraphTrackRange {
+			graph: &guard.graph,
+		};
+		let mut longest = Rational::new(0, 1);
+		for list_id in seq.track_lists.iter().filter(|i| i.valid()) {
+			let Some(le) = guard.graph.get(*list_id) else {
+				continue;
+			};
+			let Some(list) = le
+				.behavior
+				.as_any()
+				.and_then(|a| a.downcast_ref::<TrackListBehavior>())
+			else {
+				continue;
+			};
+			if list.kind != quercus_node::track::TrackType::Video {
+				continue;
+			}
+			let len = list.total_length(&tracks);
+			if len > longest {
+				longest = len;
+			}
+		}
+		return longest;
 	}
 	Rational::new(0, 1)
 }
@@ -495,8 +549,14 @@ pub fn footage_audio_sample_rate(project: &ProjectRef, footage: NodeId) -> Optio
 	f.audio_params(0).map(|a| a.sample_rate)
 }
 
-/// Overwrite (or create) the footage's `index`th video stream parameters
+/// Overwrites (or creates) the footage's `index`th video stream parameters
 /// (`quercusnode_footage_set_video_params`).
+///
+/// `index` counts video streams only (per-type ordinal) and `params` is
+/// converted from the quercus_core value type, dropping fields with no
+/// quercusnode counterpart (see [`node_video_from_common`]). When the index
+/// lies beyond the current video streams, placeholder video streams are
+/// appended up to it. Missing or non-footage nodes are ignored.
 pub fn footage_set_video_params(
 	project: &ProjectRef,
 	footage: NodeId,
@@ -560,6 +620,11 @@ pub fn sequence_create(project: &ProjectRef) -> Option<NodeId> {
 
 /// The sequence's track list for `kind`, creating it on first use (the C++
 /// `Sequence::get_track_list`).
+///
+/// Each media type owns a fixed slot (video 0, audio 1, subtitle 2); an
+/// existing valid list in that slot is returned as-is, otherwise a new
+/// [`TrackListBehavior`] node is created, registered on both sides of the link
+/// and returned. `None` when `sequence` is missing or is not a sequence.
 pub fn sequence_track_list(
 	project: &ProjectRef,
 	sequence: NodeId,
@@ -635,6 +700,9 @@ pub fn tracklist_track_at(project: &ProjectRef, list: NodeId, index: usize) -> O
 }
 
 /// The track's media type (`quercusnode_track_get_type`).
+///
+/// Returns `None` when `track` is missing or is not a track behavior;
+/// counterpart of [`tracklist_track_count`] on the owning list.
 pub fn track_type(project: &ProjectRef, track: NodeId) -> Option<TrackType> {
 	let guard = lock_project(project);
 	guard
@@ -669,7 +737,11 @@ pub fn track_block_at(project: &ProjectRef, track: NodeId, index: usize) -> Opti
 		.block_at(index)
 }
 
-/// The track's total length (end of its last block; `quercusnode_track_get_length`).
+/// The track's total length: the end of its last block
+/// (`quercusnode_track_get_length`).
+///
+/// Returns `0/1` when `track` is missing or is not a track behavior; the value
+/// comes from [`TrackBehavior::length`] evaluated over the project graph.
 pub fn track_length(project: &ProjectRef, track: NodeId) -> Rational {
 	let guard = lock_project(project);
 	let Some(entry) = guard.graph.get(track) else {
@@ -719,6 +791,11 @@ pub fn block_create(project: &ProjectRef, kind: BlockKind) -> Option<NodeId> {
 }
 
 /// The block's kind (`quercusnode_block_get_kind`).
+///
+/// Classifies the block's behavior as [`BlockKind::Clip`],
+/// [`BlockKind::Gap`], [`BlockKind::Transition`] or [`BlockKind::Other`]; a
+/// stale id reports `Other`. Adjustment-layer blocks are not covered by this
+/// enum — test them with [`block_is_adjustment`].
 pub fn block_kind(project: &ProjectRef, block: NodeId) -> BlockKind {
 	let guard = lock_project(project);
 	let Some(entry) = guard.graph.get(block) else {
@@ -750,7 +827,10 @@ pub fn block_is_adjustment(project: &ProjectRef, block: NodeId) -> bool {
 		.unwrap_or(false)
 }
 
-/// The block's timeline in point (`quercusnode_block_get_in`).
+/// The block's timeline in point, in rational seconds.
+///
+/// Returns `0/1` for a stale id; paired with [`block_length`] (the out point is
+/// `in + length`).
 pub fn block_in(project: &ProjectRef, block: NodeId) -> Rational {
 	let guard = lock_project(project);
 	block_core_of(&guard.graph, block)
@@ -766,7 +846,11 @@ pub fn block_length(project: &ProjectRef, block: NodeId) -> Rational {
 		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// The block's media in point (C++ `Block::media_in`).
+/// The block's media in point (C++ `Block::media_in`), in rational seconds.
+///
+/// This is the source-media offset matching the block's timeline in point; it
+/// returns `0/1` for a stale id. Clips update it through
+/// [`clip_set_media_in`].
 pub fn block_media_in(project: &ProjectRef, block: NodeId) -> Rational {
 	let guard = lock_project(project);
 	block_core_of(&guard.graph, block)
@@ -784,7 +868,10 @@ pub fn block_set_length_and_media_out(project: &ProjectRef, block: NodeId, n: i6
 	});
 }
 
-/// Set a clip's media in point (`quercusnode_clip_set_media_in`).
+/// Sets a clip's media in point (`quercusnode_clip_set_media_in`).
+///
+/// `n/d` is the new media in point as rational seconds; the timeline in point
+/// and length are left unchanged. Missing or non-clip blocks are ignored.
 pub fn clip_set_media_in(project: &ProjectRef, block: NodeId, n: i64, d: i64) {
 	let mut guard = lock_project(project);
 	if let Some(entry) = guard.graph.get_mut(block) {
@@ -813,7 +900,10 @@ pub fn clip_set_footage(project: &ProjectRef, block: NodeId, footage: NodeId) {
 	}
 }
 
-/// The clip footage recorded on a clip block, if any.
+/// The footage recorded on a clip block.
+///
+/// Returns `None` when `block` is missing, is not a clip, or no footage has
+/// been connected yet (set through [`clip_set_footage`]).
 pub fn clip_footage(project: &ProjectRef, block: NodeId) -> Option<NodeId> {
 	let guard = lock_project(project);
 	guard
@@ -825,7 +915,10 @@ pub fn clip_footage(project: &ProjectRef, block: NodeId) -> Option<NodeId> {
 		.footage
 }
 
-/// A transition's in offset (`quercusnode_transition_get_in_offset`).
+/// A transition's in offset, in rational seconds.
+///
+/// Returns `0/1` when `block` is missing or is not a transition; set together
+/// with the out offset through [`transition_set_offsets_and_length`].
 pub fn transition_in_offset(project: &ProjectRef, block: NodeId) -> Rational {
 	let guard = lock_project(project);
 	guard
@@ -837,7 +930,10 @@ pub fn transition_in_offset(project: &ProjectRef, block: NodeId) -> Rational {
 		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// A transition's out offset (`quercusnode_transition_get_out_offset`).
+/// A transition's out offset, in rational seconds.
+///
+/// Returns `0/1` when `block` is missing or is not a transition; counterpart
+/// of [`transition_in_offset`].
 pub fn transition_out_offset(project: &ProjectRef, block: NodeId) -> Rational {
 	let guard = lock_project(project);
 	guard
@@ -849,8 +945,12 @@ pub fn transition_out_offset(project: &ProjectRef, block: NodeId) -> Rational {
 		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
-/// Set a transition's offsets and derive its length from them
+/// Sets a transition's in/out offsets and derives its length from them
 /// (`quercusnode_transition_set_offsets_and_length`).
+///
+/// `in_n/in_d` and `out_n/out_d` are the in- and out-point offsets as rational
+/// seconds; the block length is set to their sum and the media out follows it.
+/// A stale or non-transition `block` is silently ignored.
 pub fn transition_set_offsets_and_length(
 	project: &ProjectRef,
 	block: NodeId,
@@ -919,6 +1019,9 @@ pub fn find_input_footage(graph: &Graph, node: NodeId) -> Option<NodeId> {
 
 /// Locking variant of [`find_input_footage`]
 /// (`quercusnode_node_find_input_footage`).
+///
+/// Takes `project`'s lock and walks `node`'s input chain to the footage
+/// source; returns `None` when no footage is reachable or the id is stale.
 pub fn node_find_input_footage(project: &ProjectRef, node: NodeId) -> Option<NodeId> {
 	let guard = lock_project(project);
 	find_input_footage(&guard.graph, node)
@@ -946,7 +1049,11 @@ pub fn pixel_format_from_code(code: i32) -> quercus_core::PixelFormat {
 /// trait; mirrors the quercustimeline `undocommon::Command` pattern).
 pub use quercus_undo::undocommand::Command as TaskCommand;
 
-/// Box a task command into an quercusundo command value.
+/// Boxes a task command into the type-erased [`UndoCommand`] the undo stack
+/// stores.
+///
+/// `cmd` is consumed; its `undo`/`redo` run through the boxed handle, which is
+/// how task-local commands enter the undo stack.
 fn box_command<T: TaskCommand + 'static>(cmd: T) -> UndoCommand {
 	UndoCommand::new(cmd)
 }

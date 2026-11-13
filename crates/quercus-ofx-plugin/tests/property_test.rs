@@ -14,10 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! property.rs 的契约测试：OFX 属性集语义。
+//! Contract tests for property.rs: OFX property-set semantics.
 //!
-//! 参照：HS: ofxhProperty.cpp。语义要点：多维数组、越界/缺失/
-/// 类型不符的行为、define 替换语义。
+//! Reference: HS: ofxhProperty.cpp. Semantic points: multi-dimensional
+//! arrays, behavior for out-of-bounds/missing/type-mismatched access, and
+/// define replace semantics.
 mod common;
 
 use std::ffi::{c_void, CString};
@@ -26,13 +27,15 @@ use std::sync::Arc;
 use quercus_ofx_plugin::error::Error;
 use quercus_ofx_plugin::property::{PropertySet, Value};
 
-/// `Value` 未实现 PartialEq（Pointer 无法比较），测试用 Debug 串
-/// 比较做值相等断言（同进程内指针的 Debug 输出确定）。
+/// `Value` does not implement PartialEq (Pointer cannot be compared), so the
+/// tests assert value equality by comparing Debug strings (the Debug output
+/// of in-process pointers is deterministic).
 fn val_eq(a: &Value, b: &Value) -> bool {
 	format!("{a:?}") == format!("{b:?}")
 }
 
-/// define 后 get 命中；同名 define 整体替换值数组（维度随之变化）。
+/// After define, get hits; defining the same name replaces the whole value
+/// array (the dimension changes with it).
 #[test]
 fn define_and_replace() {
 	let s = PropertySet::new();
@@ -47,7 +50,7 @@ fn define_and_replace() {
 	assert!(s.get("a", 1).is_none());
 }
 
-/// 未定义属性的 get 返回 None；dimension 为 0。
+/// get on an undefined property returns None; dimension is 0.
 #[test]
 fn missing_property() {
 	let s = PropertySet::new();
@@ -56,7 +59,7 @@ fn missing_property() {
 	assert_eq!(s.dimension("nope"), 0);
 }
 
-/// 越界读取（index >= dimension）返回 None。
+/// Out-of-bounds read (index >= dimension) returns None.
 #[test]
 fn out_of_bounds_read() {
 	let s = PropertySet::new();
@@ -65,7 +68,8 @@ fn out_of_bounds_read() {
 	assert!(s.get("a", 100).is_none());
 }
 
-/// set_at 覆盖指定下标且不改维度；对缺失属性返回 NotFound 错误。
+/// set_at overwrites the given index without changing the dimension; on a
+/// missing property it returns a NotFound error.
 #[test]
 fn set_at_semantics() {
 	let s = PropertySet::new();
@@ -90,8 +94,8 @@ fn set_at_semantics() {
 	));
 }
 
-/// 四种值类型（Int/Double/String/Pointer）各自的存取 round-trip；
-/// 字符串含空串与 UTF-8 非 ASCII。
+/// Round-trip for each of the four value types (Int/Double/String/Pointer);
+/// strings include the empty string and non-ASCII UTF-8.
 #[test]
 fn typed_roundtrip() {
 	let s = PropertySet::new();
@@ -119,7 +123,8 @@ fn typed_roundtrip() {
 	));
 }
 
-/// remove 后属性消失；remove 缺失属性 no-op。
+/// Properties disappear after remove; removing a missing property is a
+/// no-op.
 #[test]
 fn remove_semantics() {
 	let s = PropertySet::new();
@@ -133,7 +138,8 @@ fn remove_semantics() {
 	s.remove("never-existed");
 }
 
-/// snapshot 返回全量快照且与后续修改隔离（深拷贝）。
+/// snapshot returns a full snapshot isolated from later modifications (deep
+/// copy).
 #[test]
 fn snapshot_is_isolated() {
 	let s = PropertySet::new();
@@ -155,8 +161,9 @@ fn snapshot_is_isolated() {
 	assert!(val_eq(&s.get("a", 0).unwrap(), &Value::Int(2)));
 }
 
-/// 并发读写（32 线程 define/get/set_at 交错）不崩、数据自洽
-/// （属性集被所有 suite 共享，必须线程安全）。
+/// Concurrent reads and writes (32 threads interleaving define/get/set_at) do
+/// not crash and the data stays consistent (the property set is shared by all
+/// suites and must be thread-safe).
 #[test]
 fn concurrent_access() {
 	// 线程要求 'static：经 Arc 共享属性集（对应插件线程经句柄共享）。
@@ -197,7 +204,8 @@ fn concurrent_access() {
 	}
 }
 
-/// 泄露一个 `&'static str` 属性名（并发测试用；测试进程结束即回收）。
+/// Leak a `&'static str` property name (for the concurrency test; reclaimed
+/// when the test process exits).
 fn leak_name(i: usize) -> &'static str {
 	Box::leak(format!("p{i}").into_boxed_str())
 }

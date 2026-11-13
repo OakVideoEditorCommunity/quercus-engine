@@ -190,7 +190,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(EdgeDetectNode))
 }
 
-/// Register this node type.
+/// Register the Edge Detect node type in the factory's static entry list.
+///
+/// `meta` is the factory entry vector to append to; the pushed [`NodeMeta`]
+/// carries type id `org.olivevideoeditor.Olive.edgedetect`, display name
+/// "Edge Detect", [`Category::Filter`] and [`create`] as the constructor. Only
+/// the type is registered — instances are built on demand — and the push order
+/// is also the create-menu order. Called once at startup via
+/// [`crate::nodes::register_all`]; it does not deduplicate.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.edgedetect",

@@ -14,28 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OFX 属性集（Property Suite 的宿主侧存储）。
+//! OFX property sets (the host-side storage for the Property Suite).
 //!
-//! 每个 OFX 对象（host/plugin/descriptor/instance/clip/image/param）
-//! 都挂一个 [`PropertySet`]。属性是多维数组，按类型存取。
-//! 参照：HS: ofxhProperty.cpp（GetSuite 的读写语义：越界返回
-//! kOfxStatErrBadIndex，类型不符返回 kOfxStatErrBadHandle）。
+//! Every OFX object (host/plugin/descriptor/instance/clip/image/param)
+//! carries a [`PropertySet`]. Properties are multi-dimensional arrays
+//! accessed by type.
+//! Reference: HS: ofxhProperty.cpp (the GetSuite read/write semantics:
+//! out-of-range returns kOfxStatErrBadIndex, a type mismatch returns
+//! kOfxStatErrBadHandle).
 
 use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 
-/// 属性值（单元素）。字符串以 OFX 的 `char*` 语义持有（host 拥有，
-/// 插件借用）。
+/// A property value (single element). Strings are held with OFX's `char*`
+/// semantics (owned by the host, borrowed by the plugin).
 #[derive(Clone, Debug)]
 pub enum Value {
-	/// 32 位整型。
+	/// 32-bit integer.
 	Int(i32),
-	/// 双精度。
+	/// Double precision.
 	Double(f64),
-	/// UTF-8 字符串（OFX 侧为 NUL 结尾 char*）。
+	/// UTF-8 string (a NUL-terminated `char*` on the OFX side).
 	String(std::ffi::CString),
-	/// 不透明指针（如 OfxImageEffectHandle 互指）。
+	/// Opaque pointer (e.g. `OfxImageEffectHandle` cross-references).
 	Pointer(*mut std::ffi::c_void),
 }
 
@@ -47,25 +49,26 @@ pub enum Value {
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 
-/// 一个属性：名字 + 多维值数组。
+/// A property: a name plus a multi-dimensional array of values.
 #[derive(Clone, Debug)]
 pub struct Property {
-	/// OFX 属性名（kOfxProp*；拥有型——协商期的动态名
-	/// "OfxImageClipPropComponents_<clip>" 需要，`&'static str`
-	/// 无法表达）。
+	/// OFX property name (kOfxProp*; owned — required by dynamic
+	/// negotiation-time names such as
+	/// "OfxImageClipPropComponents_<clip>", which `&'static str` cannot
+	/// express).
 	pub name: String,
-	/// 元素数组；维度 = len。
+	/// Element array; dimension = len.
 	pub values: Vec<Value>,
 }
 
-/// 属性集。线程安全（内部 Mutex）；OFX 对象的 `*Handle` 即指向它的
-/// 包装。
+/// A property set. Thread-safe (internal Mutex); an OFX object's `*Handle`
+/// is the wrapper pointing at it.
 pub struct PropertySet {
 	props: Mutex<Vec<Property>>,
 }
 
-/// 深拷贝（持锁克隆内部数组；createInstance 时描述符属性 → 实例
-/// 属性需要）。
+/// Deep copy (clones the inner array while holding the lock; needed for
+/// descriptor properties → instance properties on createInstance).
 impl Clone for PropertySet {
 	fn clone(&self) -> Self {
 		let props = lock(&self.props);
@@ -76,18 +79,28 @@ impl Clone for PropertySet {
 }
 
 impl PropertySet {
-	/// 空集。
+	/// Empty set.
 	pub fn new() -> Self {
 		Self {
 			props: Mutex::new(Vec::new()),
 		}
 	}
 
-	/// 定义（或整体替换）一个属性。已存在同名属性时替换其值数组。
+	/// Defines (or wholly replaces) a property. When a property with the same
+	/// name exists, its value array is replaced.
 	///
-	/// 对应 C++ `Set::addProperty` 的替换语义（HS: ofxhPropertySuite.cpp:462）
-	/// 与 `PropertyTemplate::setValueN` 的整体写数组语义；属性不存在时
-	/// 新建（维度和值都取自 `values`）。
+	/// `name` is the property name (case-sensitive exact match) and `values`
+	/// becomes the property's element array as a whole, its length being the
+	/// dimension; an empty `values` yields a zero-dimensional property. The
+	/// property is created when absent (dimension and values both come from
+	/// `values`).
+	///
+	/// Mirrors the replace semantics of C++ `Set::addProperty`
+	/// (HS: ofxhPropertySuite.cpp:462) and the whole-array write semantics of
+	/// `PropertyTemplate::setValueN`.
+	///
+	/// The method takes the internal lock, so `&self` suffices to mutate;
+	/// concurrent calls are serialized.
 	pub fn define(&self, name: &str, values: Vec<Value>) {
 		let mut props = lock(&self.props);
 		if let Some(p) = props.iter_mut().find(|p| p.name == name) {
@@ -100,15 +113,22 @@ impl PropertySet {
 		}
 	}
 
-	/// 单元素便捷定义。
+	/// Convenience single-element definition.
+	///
+	/// Equivalent to [`Self::define`]`(name, vec![value])`: creates a
+	/// one-dimensional property when absent, and replaces the whole value
+	/// array with that single element when it exists (shrinking the dimension
+	/// to 1).
 	pub fn set_one(&self, name: &str, value: Value) {
 		self.define(name, vec![value]);
 	}
 
-	/// 读取第 `index` 个元素；属性不存在或越界返回 `None`。
+	/// Reads the `index`-th element; returns `None` when the property is
+	/// absent or the index is out of range.
 	///
-	/// 越界对应 C++ 的 kOfxStatErrBadIndex
-	/// （HS: ofxhPropertySuite.cpp:257 `getValueRaw`），此处以 Option 表达。
+	/// Out of range corresponds to C++'s kOfxStatErrBadIndex
+	/// (HS: ofxhPropertySuite.cpp:257 `getValueRaw`), expressed here as an
+	/// `Option`.
 	pub fn get(&self, name: &str, index: usize) -> Option<Value> {
 		let props = lock(&self.props);
 		props
@@ -117,12 +137,18 @@ impl PropertySet {
 			.and_then(|p| p.values.get(index).cloned())
 	}
 
-	/// 覆盖第 `index` 个元素的值（不改变维度）；失败返回
-	/// [`crate::error::Error::NotFound`]。
+	/// Overwrites the value of the `index`-th element (without changing the
+	/// dimension); on failure returns [`crate::error::Error::NotFound`].
 	///
-	/// 维度固定是刻意为之：与 C++ `setValue` 的自动扩容不同，这里
-	/// 扩容只能经 [`PropertySet::define`] 显式进行（维度语义由定义方
-	/// 掌控，避免插件意外撑大数组）。
+	/// `name` is the property name, `index` is a subscript within
+	/// `0..dimension(name)` and `value` overwrites that slot. Both an absent
+	/// property and an out-of-range index return `NotFound` (corresponding to
+	/// C++'s kOfxStatErrBadIndex).
+	///
+	/// The fixed dimension is deliberate: unlike C++ `setValue`'s automatic
+	/// growth, here growth can only happen explicitly through
+	/// [`PropertySet::define`] (the definer controls the dimension semantics,
+	/// preventing a plugin from accidentally enlarging the array).
 	pub fn set_at(&self, name: &str, index: usize, value: Value) -> Result<()> {
 		let mut props = lock(&self.props);
 		let p = props
@@ -134,7 +160,12 @@ impl PropertySet {
 		Ok(())
 	}
 
-	/// 维度（属性不存在为 0）。
+	/// Dimension (0 when the property is absent).
+	///
+	/// Returns the current length of the property's value array, i.e. the
+	/// valid subscript upper bound `0..len` for [`Self::set_at`]. A missing
+	/// name also returns 0, so "absent" and "zero-dimensional property"
+	/// cannot be distinguished — use [`Self::get`] when that matters.
 	pub fn dimension(&self, name: &str) -> usize {
 		lock(&self.props)
 			.iter()
@@ -142,31 +173,40 @@ impl PropertySet {
 			.map_or(0, |p| p.values.len())
 	}
 
-	/// 删除属性；不存在为 no-op。
+	/// Removes a property; a no-op when absent.
+	///
+	/// `name` is the property's full name (case-sensitive exact match). Only
+	/// the matching entry is removed and the other properties keep their
+	/// order; a missing name returns immediately without error. Afterwards
+	/// the name reads as dimension 0 through [`Self::dimension`].
 	pub fn remove(&self, name: &str) {
 		lock(&self.props).retain(|p| p.name != name);
 	}
 
-	/// 遍历快照（dump/快照测试用）。
+	/// Iteration snapshot (used by dumps/snapshot tests).
 	pub fn snapshot(&self) -> Vec<Property> {
 		lock(&self.props).clone()
 	}
 
-	/// suite 层专用：持锁访问原始存储。
+	/// Suite-layer only: accesses the raw storage while holding the lock.
 	///
-	/// 属性 suite 需要"先类型检查再按索引读写、返回内驻字符串指针"
-	/// 等跨多次读写的一致性语义（逐条对照 HS: ofxhProperty.cpp），
-	/// 公开 API 无法在不重复加锁的前提下表达；此入口把 `Vec<Property>`
-	/// 在单一临界区内交给 suite 实现。仅本 crate 可见。
+	/// The property suite needs consistency semantics spanning multiple reads
+	/// and writes (type check first, then indexed read/write, returning
+	/// pointers to resident strings) that are compared against
+	/// HS: ofxhProperty.cpp case by case; the public API cannot express them
+	/// without re-locking. This entry hands the `Vec<Property>` to the suite
+	/// implementation inside a single critical section. Visible only within
+	/// this crate.
 	pub(crate) fn with_locked<R>(&self, f: impl FnOnce(&mut Vec<Property>) -> R) -> R {
 		let mut props = lock(&self.props);
 		f(&mut props)
 	}
 }
 
-/// 取锁。毒锁（本 crate 代码在持锁时 panic）时接管其内部状态继续
-/// 使用——属性集的数据本身总是完好的，宁可继续也不让一次 panic
-/// 级联成后续所有 FFI 调用失败。
+/// Takes the lock. On a poisoned lock (crate code panicked while holding it)
+/// its inner state is taken over and used — the property set's data itself is
+/// always intact, so continuing is preferable to letting one panic cascade
+/// into failures of all later FFI calls.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
 }

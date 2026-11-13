@@ -212,6 +212,12 @@ pub(super) fn command(op: QuercusEditOp, p: &QuercusEditParams) -> Result<EditCo
 			range: p.range,
 			old_range: p.old_range,
 		},
+		QuercusEditOp::CreateNode => EditCommand::CreateNode {
+			context: p.a,
+			type_id: text(p.path, p.path_len),
+			x: p.x,
+			y: p.y,
+		},
 		QuercusEditOp::RemoveNode => EditCommand::RemoveNode { node: p.a },
 		QuercusEditOp::Connect => EditCommand::Connect {
 			from: p.a,

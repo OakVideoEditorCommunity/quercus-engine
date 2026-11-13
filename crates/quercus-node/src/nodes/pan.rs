@@ -198,6 +198,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ `k_audio_panning` in
 /// `factory.cpp::create_from_factory_index`).
+///
+/// Pushes the "Pan" [`NodeMeta`] (type id
+/// `org.olivevideoeditor.Olive.pan`, filter category, [`create`] as the
+/// constructor) onto `meta`; the factory collects all node types this way at
+/// startup. Appends to `meta`, never replaces it.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.pan",

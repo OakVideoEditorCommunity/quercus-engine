@@ -135,7 +135,13 @@ impl PlanarFileDevice {
 		0
 	}
 
-	/// Seek all channels to `pos`.
+	/// Seek every open channel to byte offset `pos`.
+	///
+	/// `pos` is used as an absolute start offset and cast to `u64`, so negative
+	/// values become large unsigned offsets. Returns `true` only when every channel
+	/// seeked successfully; a failure on one channel is not rolled back and leaves
+	/// the channels at their individual positions. A closed device has no files, so
+	/// the loop is empty and the result is `true`.
 	pub fn seek(&mut self, pos: i64) -> bool {
 		let mut ok = true;
 		for f in self.files.iter_mut() {
@@ -144,7 +150,11 @@ impl PlanarFileDevice {
 		ok
 	}
 
-	/// Close all channels.
+	/// Close the planar file device.
+	///
+	/// Drops every per-channel file handle, leaving the device with no channels:
+	/// `is_open()` becomes false and later reads/writes/seeks see a closed device.
+	/// The underlying files themselves are not deleted.
 	pub fn close(&mut self) {
 		self.files.clear();
 	}

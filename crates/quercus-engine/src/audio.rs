@@ -62,24 +62,68 @@ impl NativeMirror for QuercusAudioParams {
     }
 }
 
+/// Creates the process-wide audio manager instance.
+///
+/// Call this before any other `quercus_audio_manager_*` function; those return
+/// their failure value (`false` / `-1`) while no live instance exists. A no-op
+/// when the instance is already created, and re-arms an instance previously torn
+/// down by [`quercus_audio_manager_destroy_instance`]. Returns `true` on success
+/// — the Rust allocation cannot fail, so `false` is not produced in practice.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_create_instance() -> bool{
     ManagerInner::create_instance().is_ok()
 }
+/// Tears down the process-wide audio manager instance.
+///
+/// Clears the playback state (output params, queue and running flag) so a later
+/// create starts clean; the device stream itself is not closed here. Every
+/// `quercus_audio_manager_*` call then takes its failure path until
+/// [`quercus_audio_manager_create_instance`] resurrects the instance. Safe to
+/// call when no instance exists (no-op). Not reference-counted: all handles refer
+/// to the same process-wide singleton.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_destroy_instance(){
     ManagerInner::destroy_instance()
 }
 
+/// Returns the host's output device names in enumeration order.
+///
+/// The result is a ref-counted `QuercusVecString` handle (initial ref count 1):
+/// index `i` is the `device` index accepted by
+/// [`quercus_audio_manager_set_output_device`], and the caller owns the handle
+/// and must release it with `quercus_vec_string_release`. The default device is
+/// not marked — callers prepend their own "system default" entry (index `-1`).
+/// The vector is empty when the host reports no output devices.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_output_device_names() -> *mut QuercusVecString{
     output_device_names().into_ffi_vec()
 }
+/// Returns the host's input device names in enumeration order.
+///
+/// The result is a ref-counted `QuercusVecString` handle (initial ref count 1):
+/// index `i` is the `device` index accepted by
+/// [`quercus_audio_manager_set_input_device`], and the caller owns the handle
+/// and must release it with `quercus_vec_string_release`. The default device is
+/// not marked — callers prepend their own "system default" entry (index `-1`).
+/// The vector is empty when the host reports no input devices.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_input_device_names() -> *mut QuercusVecString{
     input_device_names().into_ffi_vec()
 }
 
+/// Looks up a device's enumeration index by its exact name.
+///
+/// `name` is a borrowed, non-NUL-terminated UTF-8 buffer of `len` bytes (the
+/// bytes are not copied and ownership stays with the caller); `is_output`
+/// selects the output list (`true`) or the input list (`false`), in the same
+/// order as [`quercus_audio_manager_output_device_names`] and
+/// [`quercus_audio_manager_input_device_names`]. Returns the index, or `-1`
+/// when `name` is null, is not valid UTF-8, or matches no device.
+///
+/// # Safety
+///
+/// `name` must be valid for `len` byte reads when non-null; it need not be
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_manager_device_index_by_name(name: *const u8, len: usize, is_output: bool) -> i32{
     if name.is_null() {
@@ -94,21 +138,47 @@ pub unsafe extern "C" fn quercus_audio_manager_device_index_by_name(name: *const
     device_index_by_name(name, is_output).unwrap_or(-1)
 }
 
+/// Switches the output device to enumeration index `device`.
+///
+/// `device` indexes [`quercus_audio_manager_output_device_names`]; `-1` selects
+/// the system default. The current stream is closed, queued audio is dropped and
+/// the cached params are cleared so the next
+/// [`quercus_audio_manager_push_to_output`] re-opens the stream on the new
+/// device. Returns `false` when no manager instance exists; the index itself is
+/// not validated here.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_set_output_device(device: i32) -> bool{
     let Some(mut inst) = instance() else { return false; };
     inst.set_output_device(device).is_ok()
 }
 
+/// Selects the input (capture) device used by the next recording.
+///
+/// `device` is an index into [`quercus_audio_manager_input_device_names`]; `-1`
+/// is PortAudio's `paNoDevice` sentinel (no device), which makes the next
+/// recording fail rather than selecting a default. The index is stored without
+/// validation and without calling the audio backend, so an out-of-range value
+/// only surfaces when the device is opened. Returns `false` when no manager
+/// instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_set_input_device(device: i32) -> bool{
     let Some(mut inst) = instance() else { return false; };
     inst.set_input_device(device).is_ok()
 }
 
-/// Writes per-channel linear peaks into the caller's buffer.
-/// Returns the channel count (>= 0), -1 on error. At most `capacity`
-/// entries are written; pass null + 0 to just query the count.
+/// Reads per-channel peak levels of the buffered, not-yet-consumed output.
+///
+/// `peaks` receives up to `capacity` linear peak values (`0.0..=1.0` and above)
+/// in channel order; pass null with `capacity == 0` to only query the channel
+/// count. Returns the channel count (independent of how many entries fit), `0`
+/// when no output is configured or the layout is unknown, or `-1` when no
+/// manager instance exists or `peaks` is null with a non-zero `capacity`. Only
+/// packed or planar F32 queues are analyzed (other formats report zeros); the
+/// window is the most recent 8192 frames.
+///
+/// # Safety
+///
+/// `peaks` must be valid for `capacity` f32 writes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_manager_output_levels(peaks: *mut f32, capacity: usize) -> i32{
     if peaks.is_null() && capacity > 0 {
@@ -124,6 +194,18 @@ pub unsafe extern "C" fn quercus_audio_manager_output_levels(peaks: *mut f32, ca
     inst.output_levels(peaks).unwrap_or(-1)
 }
 
+/// Reads the seconds of audio consumed by the output device since the last
+/// clock reset.
+///
+/// On success writes the value through `seconds` and returns `true`; the value
+/// is `consumed_frames / sample_rate` clamped to `>= 0`, or `-1.0` when no
+/// output stream is running or the sample rate is unknown. Returns `false`
+/// without writing when `seconds` is null, when no manager instance exists, or
+/// if reading the clock fails.
+///
+/// # Safety
+///
+/// `seconds` must be a valid `*mut f64`, or null (which is rejected).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_manager_seconds(seconds: *mut f64) -> bool{
     if seconds.is_null() {
@@ -138,42 +220,93 @@ pub unsafe extern "C" fn quercus_audio_manager_seconds(seconds: *mut f64) -> boo
     true
 }
 
+/// Discards all audio currently buffered for output without stopping playback.
+///
+/// Unlike [`quercus_audio_manager_stop_output`], the output clock keeps running
+/// and only the queued bytes are dropped. Returns `false` when no manager
+/// instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_clear_buffered_output() -> bool{
     let Some(inst) = instance() else { return false; };
     inst.clear_buffered_output().is_ok()
 }
 
+/// Restarts the output playback clock at zero.
+///
+/// Only the consumed-frame counter is reset; queued audio is untouched. Pairs
+/// with [`quercus_audio_manager_seconds`], which reads that clock. Returns
+/// `false` when no manager instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_reset_output_clock() -> bool{
     let Some(inst) = instance() else { return false; };
     inst.reset_output_clock().is_ok()
 }
 
+/// Stops playback and discards everything still queued for the output device.
+///
+/// Clears the running flag and the queues, so
+/// [`quercus_audio_manager_seconds`] reports `-1.0` until the next
+/// [`quercus_audio_manager_push_to_output`] restarts playback; the device stream
+/// is not explicitly closed. Returns `false` when no manager instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_stop_output() -> bool{
     let Some(mut inst) = instance() else { return false; };
     inst.stop_output().is_ok()
 }
 
+/// Reads and resets the output underrun counter.
+///
+/// The counter holds the frames the output callback had to zero-fill because the
+/// queue was empty; reading it resets it to `0`. The playback engine polls this
+/// every tick and resyncs afterwards, since the zero-fill advanced the output
+/// clock past the queued content. Returns `-1` when no manager instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_take_output_underrun_frames() -> i64{
     let Some(inst) = instance() else { return -1; };
     inst.take_output_underrun_frames()
 }
 
+/// Returns the number of frames currently queued for the output callback.
+///
+/// Diagnostic counter over the whole queue, not just the analysis window of
+/// [`quercus_audio_manager_output_levels`]. Returns `-1` when no manager
+/// instance exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_output_queued_frames() -> i64{
     let Some(inst) = instance() else { return -1; };
     inst.output_queued_frames()
 }
 
+/// Drops up to `frame` frames from the front of the output queue.
+///
+/// Used to resync the queue after an underrun without a full clear; the output
+/// clock is not adjusted. Returns the number of frames actually dropped (fewer
+/// than `frame` when the queue is shorter), or `-1` when no manager instance
+/// exists.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_manager_drop_output_frames(frame: i64) -> i64{
     let Some(inst) = instance() else { return -1; };
     inst.drop_output_frames(frame)
 }
 
+/// Buffers one block of raw sample bytes for the audio output device.
+///
+/// `params` describes the block (sample rate in Hz, channel layout, sample
+/// format) and is compared with the previous block — a change re-opens the
+/// output stream (device index `< 0` selects the system default). `sample_len`
+/// is the byte length of `sample` (bytes per frame times the frame count, not a
+/// frame count). `error_buf`/`error_buf_len` are a caller-owned UTF-8 buffer
+/// reserved for an error message; the Rust path does not currently write it.
+///
+/// Returns `true` once the bytes are queued, including when the device fails to
+/// open (the samples then stay buffered and playback is silent). Returns `false`
+/// when no manager instance exists or when a null pointer is paired with a
+/// non-zero length.
+///
+/// # Safety
+///
+/// `sample` must be valid for `sample_len` byte reads and `error_buf` valid for
+/// `error_buf_len` byte writes; either may be null only when its length is 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_manager_push_to_output(params: QuercusAudioParams,
                                                           sample: *const u8, sample_len: usize,
@@ -204,7 +337,13 @@ pub unsafe extern "C" fn quercus_audio_manager_push_to_output(params: QuercusAud
 // Audio params conversions (pure functions)
 // ---------------------------------------------------------------------------
 
-/// Channel count of an ffmpeg-style channel layout mask.
+/// Counts the channels encoded in an ffmpeg-style channel layout mask.
+///
+/// Returns the population count of `channel_layout` (`0x3`, i.e. stereo, gives
+/// `2`); a mask of `0` returns `0` rather than falling back to stereo — the
+/// stereo fallback lives in the audio processor, not here. The other
+/// `AudioParams` fields are filled with dummies by this wrapper; only the layout
+/// matters.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_params_channel_count(channel_layout: u64) -> i32 {
 	quercus_audio::params::AudioParams {
@@ -226,7 +365,14 @@ pub extern "C" fn quercus_audio_params_bytes_per_sample_per_channel(format: i32)
 	.bytes_per_sample_per_channel()
 }
 
-/// Byte count of `samples` frames in the given format/layout.
+/// Converts a frame count to a byte count for the given audio parameters.
+///
+/// `sample_rate` is in Hz and does not affect the arithmetic; `channel_layout`
+/// is an ffmpeg-style mask whose popcount is the channel count; `format` is the
+/// `SampleFormat` discriminant (`0..=11`; out of range maps to `Invalid`, i.e.
+/// 0 bytes per sample); `samples` is the frame count (may be negative). Returns
+/// `samples * bytes_per_sample_per_channel * channel_count`, so an unknown or
+/// empty layout, or an unknown format, yields `0`.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_params_samples_to_bytes(
 	sample_rate: i32,
@@ -242,7 +388,14 @@ pub extern "C" fn quercus_audio_params_samples_to_bytes(
 	.samples_to_bytes(samples)
 }
 
-/// Frame count as rational seconds at `sample_rate`.
+/// Converts a frame count to rational seconds at `sample_rate`.
+///
+/// `frames` is a per-channel frame count and `sample_rate` the rate in Hz; the
+/// result is the exact reduced fraction `frames / sample_rate` (a
+/// `QuercusRational`) with no rounding. `sample_rate == 0` produces the null
+/// sentinel (`0/0`, NaN), which
+/// [`quercus_audio_params_rational_to_samples`] maps back to `0` samples.
+/// Counterpart of [`quercus_audio_params_rational_to_samples`].
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_params_frames_to_rational(
 	frames: i64,
@@ -254,7 +407,13 @@ pub extern "C" fn quercus_audio_params_frames_to_rational(
 	))
 }
 
-/// Rational seconds as a frame count at `sample_rate`.
+/// Converts a rational time to a sample-frame index at `sample_rate`.
+///
+/// `time` is a duration in seconds (a `QuercusRational`, passed by value);
+/// `sample_rate` is in Hz. The result is `round(time_seconds * sample_rate)` —
+/// rounded to nearest, ties away from zero, not truncated. Returns `0` when
+/// `time` is the null/NaN sentinel (its `to_f64` is NaN) or when the product
+/// rounds to zero.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_params_rational_to_samples(
 	time: crate::coretypes::QuercusRational,
@@ -266,7 +425,13 @@ pub extern "C" fn quercus_audio_params_rational_to_samples(
 	)
 }
 
-/// `f64` seconds as a rational.
+/// Converts a double-precision second count to a rational time.
+///
+/// `value` is a duration in seconds (a finite `f64`). The conversion is the
+/// continued-fraction approximation of `Rational::from_double`: NaN or a
+/// magnitude above `i32::MAX + 3` yields the null sentinel (`0/0`), and values
+/// too small to represent are retried at maximum (`i64::MAX`) precision. Used
+/// wherever the C API needs a `double` second count as a `QuercusRational`.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_params_rational_from_double(
 	value: f64,
@@ -371,10 +536,27 @@ impl NativeMirror for QuercusLevelStats {
 	}
 }
 
-/// Analyzes a planar f32 sample buffer: `planar` points to `channels`
-/// channel pointers, each with `samples_per_channel` samples.
-/// `channel_stats` must hold `channels` entries (may be null to skip
-/// per-channel stats). False on null/invalid input.
+/// Analyzes a planar f32 sample buffer and writes per-channel plus whole-buffer
+/// level statistics.
+///
+/// `planar` points to `channels` channel pointers, each addressing
+/// `samples_per_channel` f32 samples; `channel_stats` receives one entry per
+/// channel, in channel order; `out` receives the aggregate summary (max peak,
+/// EBU R128 integrated loudness, silence flag). The analysis itself is
+/// `quercus_audio::levelmeter::analyze_sample_buffer`: VU equals RMS dB, and the
+/// silence gate is `|peak| < 1e-12`.
+///
+/// Returns `false` without writing anything when `out` is null, `planar` or
+/// `channel_stats` is null while `channels > 0`, or a channel pointer is null
+/// while `samples_per_channel > 0`. Passing `channels == 0` with a null `planar`
+/// is allowed and yields empty statistics.
+///
+/// # Safety
+///
+/// `planar` must be valid for `channels` pointer reads; every non-null channel
+/// pointer must be valid for `samples_per_channel` f32 reads; `channel_stats`
+/// must be valid for `channels` writes when non-null; `out` must be valid for one
+/// write when non-null. The output buffers must not overlap the input samples.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_audio_levelmeter_analyze(
 	planar: *const *const f32,

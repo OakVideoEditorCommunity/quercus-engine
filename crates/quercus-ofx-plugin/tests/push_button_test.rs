@@ -14,16 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! push button → `kOfxActionInstanceChanged` 路由（端到端）。
+//! push button → `kOfxActionInstanceChanged` routing (end to end).
 //!
-//! 链路：`scan_path`（最小测试插件，cbits/quercus_test_plugin.c，describe
-//! 里定义了 push button 参数 "button"，instanceChanged 时按
-//! `QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER` 指向的文件追加一行）→
-//! `create_instance` → `push_button_clicked`（置值 + 路由
-//! UserEdited instanceChanged）→ 插件记录回调次数。
+//! Chain: `scan_path` (a minimal test plugin, cbits/quercus_test_plugin.c,
+//! whose describe defines a push button parameter "button"; on
+//! instanceChanged it appends a line to the file named by
+//! `QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER`) → `create_instance` →
+//! `push_button_clicked` (set the value + route a UserEdited instanceChanged)
+//! → the plugin records the callback count.
 //!
-//! 测试插件未构建时 skip（common 约定）。宿主单例经 `common::with_host`
-//! 串行化。
+//! Skipped when the test plugin was not built (the common convention). The
+//! host singleton is serialized through `common::with_host`.
 
 mod common;
 

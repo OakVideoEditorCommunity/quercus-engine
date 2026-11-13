@@ -209,7 +209,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(SharpenNode))
 }
 
-/// Register this node type.
+/// Registers the Sharpen filter node type into the factory listing.
+///
+/// Pushes one [`NodeMeta`] with type id
+/// `org.olivevideoeditor.Olive.sharpen`, display name "Sharpen", the
+/// [`Category::Filter`] category and [`create`] as the constructor. The node
+/// applies the unsharp mask `x + amount * (x - blur(x))` to its `tex_in`
+/// texture, with `amount_in` defaulting to 1.0 (negative values soften).
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.sharpen",

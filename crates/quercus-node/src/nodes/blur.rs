@@ -491,13 +491,22 @@ fn set_hidden(core: &mut NodeCore, id: &str, hidden: bool) {
 	}
 }
 
-/// Constructor (C++ `BlurFilterNode::BlurFilterNode()`): adds `tex_in`,
-/// `method_in` (default gaussian), `radius_in`, `horiz_in`/`vert_in`,
-/// `directional_degrees_in`, `radial_center_in` with the defaults and
-/// properties documented on the constants, hides the method-specific
-/// inputs for the default method, adds `repeat_edge_pixels_in`, sets
-/// the video-effect flag and the effect input, and adds a draggable
-/// anchor-point gizmo bound to both tracks of `radial_center_in`.
+/// Builds the blur filter node's core and behavior with its default inputs.
+///
+/// The inputs are `tex_in` (texture, not keyframable, also the effect input),
+/// `method_in` (combo, default gaussian, neither keyframable nor connectable),
+/// `radius_in` (float, default `10.0`, minimum `0.0`), `horiz_in`/`vert_in`
+/// (booleans, both default `true`, used by the box and gaussian methods),
+/// `directional_degrees_in` (float, default `0.0`, directional method only),
+/// `radial_center_in` (vec2, default `[0.0, 0.0]`, radial method only) and
+/// `repeat_edge_pixels_in` (boolean, default `true`). Inputs not used by the
+/// default gaussian method start hidden; the core carries the video-effect flag
+/// and gets a two-axis anchor gizmo bound to `radial_center_in`.
+///
+/// Returns the finished [`NodeCore`] and a boxed [`BlurFilterNode`] behavior,
+/// ready for graph insertion or for the factory registration in [`register`].
+///
+/// C++ counterpart: `BlurFilterNode::BlurFilterNode()`.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
@@ -576,8 +585,16 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(BlurFilterNode))
 }
 
-/// Register this node type (C++ `k_blur_filter` in
-/// `factory.cpp::create_from_factory_index`).
+/// Registers the blur filter node type with the node factory.
+///
+/// Appends one [`NodeMeta`] to `meta` carrying the type id
+/// `"org.olivevideoeditor.Olive.blur"`, the display name `"Blur"`, the `Filter`
+/// category and [`create`] as the constructor. `meta` is the factory registry the
+/// engine's node list is built from; the function only appends and does not
+/// deduplicate, so it should run once during startup.
+///
+/// C++ counterpart: `k_blur_filter` in
+/// `factory.cpp::create_from_factory_index`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.blur",

@@ -7,8 +7,8 @@
 
 use std::cmp::Ordering;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_core_rational_new(num: i64, den: i64) -> Rational;
 	fn quercus_core_rational_null() -> Rational;
@@ -66,7 +66,11 @@ impl Rational {
 		unsafe { quercus_core_rational_new(num, den) }
 	}
 
-	/// The `is_null` operation.
+	/// Whether this is the null/invalid sentinel, detected by a zero numerator.
+	///
+	/// The canonical null value is `0/0`, but any reduced `0/n` (including the
+	/// default `0/1`) also counts as null. Distinct from [`Rational::is_nan`],
+	/// which tests the zero denominator produced by overflowed arithmetic.
 	pub fn is_null(self) -> bool {
 		unsafe { quercus_core_rational_is_null(self) }
 	}
@@ -76,7 +80,11 @@ impl Rational {
 		unsafe { quercus_core_rational_is_nan(self) }
 	}
 
-	/// The `to_f64` operation.
+	/// The rational as an `f64`, i.e. `num / den`.
+	///
+	/// The null/NaN sentinel (`den == 0`) yields `f64::NAN`; large numerators can
+	/// lose precision in the conversion. Counterpart of
+	/// [`Rational::from_f64`].
 	pub fn to_f64(self) -> f64 {
 		unsafe { quercus_core_rational_to_f64(self) }
 	}
@@ -177,17 +185,29 @@ impl TimeRange {
 		unsafe { quercus_core_timerange_length(*self) }
 	}
 
-	/// True when `t` lies in [in, out).
+	/// Whether instant `t` lies in the half-open range `[in, out)`.
+	///
+	/// The end is exclusive (`t == out` is not contained), and an empty range
+	/// (`in == out`) contains nothing.
 	pub fn contains(&self, t: Rational) -> bool {
 		unsafe { quercus_core_timerange_contains(*self, t) }
 	}
 
-	/// The overlap of two ranges (empty when disjoint).
+	/// The overlap of two ranges, empty when they are disjoint.
+	///
+	/// As in the engine's C++ `intersected`, the result is normalized: disjoint
+	/// inputs produce a swapped range (`in_ > out`) that
+	/// [`TimeRange::length`] reports as negative, rather than a separate empty
+	/// marker. Counterpart of [`TimeRange::combined`].
 	pub fn intersected(&self, other: &TimeRange) -> TimeRange {
 		unsafe { quercus_core_timerange_intersected(*self, *other) }
 	}
 
 	/// The smallest range covering both inputs.
+	///
+	/// `in_` is the earlier start and `out` the later end, so the result contains
+	/// both ranges; touching ranges merge. Counterpart of
+	/// [`TimeRange::intersected`].
 	pub fn combined(&self, other: &TimeRange) -> TimeRange {
 		unsafe { quercus_core_timerange_combined(*self, *other) }
 	}
@@ -222,12 +242,23 @@ impl PixelFormat {
 		}
 	}
 
-	/// The `bytes_per_channel` operation.
+	/// Bytes per channel for this format: 1 for `U8`, 2 for `U16`/`F16` and 4
+	/// for `F32`.
+	///
+	/// Returns 0 for [`PixelFormat::Invalid`] and for the packed 10-bit format
+	/// (`U10`), which has no whole bytes per channel — use
+	/// [`PixelFormat::bytes_per_pixel`] for those.
 	pub fn bytes_per_channel(self) -> i32 {
 		unsafe { quercus_core_pixelformat_bytes_per_channel(self as i32) }
 	}
 
-	/// The `bytes_per_pixel` operation.
+	/// Bytes occupied by one pixel of this format with `channels` channels.
+	///
+	/// For every format except packed 10-bit this is
+	/// [`PixelFormat::bytes_per_channel`] times `channels`; `U10` is stored as
+	/// packed RGBA10A2 and reports exactly 4 bytes when `channels == 4` and 0 for
+	/// any other channel count. Returns 0 for [`PixelFormat::Invalid`]; the
+	/// multiply wraps on overflow like the engine's C++ `int` version.
 	pub fn bytes_per_pixel(self, channels: i32) -> i32 {
 		unsafe { quercus_core_pixelformat_bytes_per_pixel(self as i32, channels) }
 	}
@@ -329,7 +360,12 @@ impl VideoParams {
 		unsafe { quercus_core_videoparams_effective_height(self) }
 	}
 
-	/// Bytes per pixel for this parameter set.
+	/// Bytes per pixel for this parameter set's format and channel count.
+	///
+	/// Thin wrapper over `bytes_per_pixel_for_format`: 0 for an unknown format,
+	/// and for the packed 10-bit format only 4 (RGBA) is meaningful. Combine with
+	/// [`VideoParams::effective_width`] and [`VideoParams::effective_height`] when
+	/// sizing a frame buffer.
 	pub fn bytes_per_pixel(&self) -> i32 {
 		unsafe { quercus_core_videoparams_bytes_per_pixel(self) }
 	}
@@ -349,7 +385,17 @@ impl VideoParams {
 		std::str::from_utf8(&self.colorspace[..end]).unwrap_or("")
 	}
 
-	/// Sets the colorspace name (validated: 63 bytes max, no NUL).
+	/// Write the colorspace name into the parameter set's fixed 64-byte field.
+	///
+	/// The field is a NUL-terminated C string, so the name must be at most 63
+	/// bytes; the rest of the field is zeroed before the copy, and
+	/// [`VideoParams::colorspace`] returns the name back as UTF-8.
+	///
+	/// # Errors
+	///
+	/// [`ColorspaceError::TooLong`] when `value` exceeds 63 bytes,
+	/// [`ColorspaceError::InteriorNul`] when it contains a NUL byte. The field is
+	/// left unchanged on error.
 	pub fn set_colorspace(&mut self, value: &str) -> Result<(), ColorspaceError> {
 		if value.len() > 63 {
 			return Err(ColorspaceError::TooLong(value.to_string()));

@@ -1,9 +1,3 @@
-//! **Internal implementation detail — do not depend on this crate directly.**
-//!
-//! It is published only for `quercus-engine`'s dependency graph. Its API is
-//! not stable and may change without notice. Use `quercus-engine-rs`, or the
-//! C ABI via `quercus-engine`, instead.
-
 // Quercus Video Editor - Non-Linear Video Editor
 // Copyright (C) 2026 Quercus Team
 //
@@ -20,11 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Empty crate whose build script emits the transitive link flags of a
-//! static FFmpeg (see build.rs). Depend on it from every crate that uses
-//! `ffmpeg-next` so the final binary/test links.
+//! Caller-supplied extension adapters: the single place in the engine where
+//! raw C vtables, `userdata` pointers and callback lifetimes are marshalled.
+//!
+//! Each submodule owns one extension point. The implementation crates
+//! (`quercus-storage`, `quercus-core`, `quercus-codec`, `quercus-render`)
+//! only expose safe Rust traits; the `unsafe` translation from the C ABI
+//! lives here, next to the C exports that use it. The safe SDK
+//! (`quercus-engine-rs`) is the mirror-image boundary on the caller's side.
 
-/// Referenced by dependents (`#[used] static … = force_link`) so this
-/// rlib is never pruned as unused — the build script's native link flags
-/// only reach the final link while the rlib is linked.
-pub fn force_link() {}
+pub(crate) mod config_source;
+pub(crate) mod gpu;
+pub(crate) mod log_sink;
+pub(crate) mod media_io;
+pub(crate) mod storage_transport;

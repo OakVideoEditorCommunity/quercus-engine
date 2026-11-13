@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 构建脚本：编译 C shim（cbits/）。动机见 README 的依赖登记
-//! （"C 变长参数"条目）：stable Rust 不能定义 C-variadic 函数，
-//! 入口留在 C。`cc` crate 只参与构建，不进产物。
+//! Build script: compiles the C shims under `cbits/`. For the rationale see
+//! the README's dependency register (the "C variadic" entry): stable Rust
+//! cannot define C-variadic functions, so the entry points stay in C. The
+//! `cc` crate takes part in the build only and does not enter the artifacts.
 
 fn main() {
 	println!("cargo:rerun-if-changed=cbits/ofx_message_shim.c");
@@ -36,16 +37,37 @@ fn main() {
 	build_test_plugin();
 }
 
-/// 编译最小测试插件为共享库（$OUT_DIR/quercus_test_plugin.{dylib,so}）。
+/// Compile the minimal test plugin into a shared library
+/// (`$OUT_DIR/quercus_test_plugin.{dylib,so}`).
 fn build_test_plugin() {
-	// The test plugin is only used by the Unix test suite; the MSVC
-	// command line differs and the Windows CI job only compiles the
-	// workspace, so skip it there.
-	if cfg!(target_os = "windows") {
-		return;
-	}
 	use std::process::Command;
 	let out = std::env::var("OUT_DIR").expect("OUT_DIR");
+	if cfg!(target_os = "windows") {
+		// MSVC DLL. `cl` is only on PATH inside a Visual Studio developer
+		// prompt; CI without it still builds the workspace, and the GPU
+		// tests skip because the bundle is absent.
+		let cl = std::env::var("CL").unwrap_or_else(|_| "cl".into());
+		let dll = format!("{out}/quercus_test_plugin.dll");
+		let out_arg = format!("/OUT:{dll}");
+		let status = Command::new(&cl)
+			.args([
+				"/nologo",
+				"/LD",
+				"/Iofx",
+				"cbits/quercus_test_plugin.c",
+				"/link",
+			])
+			.arg(out_arg)
+			.args(["opengl32.lib", "user32.lib", "gdi32.lib"])
+			.status();
+		match status {
+			Ok(s) if s.success() => {}
+			_ => println!(
+				"cargo:warning=test plugin DLL not built (run from a VS developer prompt to enable GPU tests)"
+			),
+		}
+		return;
+	}
 	let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
 	let (link_flag, ext) = if cfg!(target_os = "macos") {
 		("-dynamiclib", "dylib")
@@ -65,6 +87,10 @@ fn build_test_plugin() {
 	if cfg!(target_os = "macos") {
 		args.push("-framework".into());
 		args.push("OpenGL".into());
+	} else if cfg!(target_os = "linux") {
+		// The test plugin's GL variant calls glClear; link libGL so the
+		// shared object resolves those symbols when dlopen'd.
+		args.push("-lGL".into());
 	}
 	let status = Command::new(&cc)
 		.args(&args)

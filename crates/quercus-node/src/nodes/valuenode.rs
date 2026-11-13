@@ -171,8 +171,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ValueNode))
 }
 
-/// Register this node type (C++ `k_value_node` in
-/// `factory.cpp::create_from_factory_index`).
+/// Append the Value node descriptor to `meta`.
+///
+/// The entry carries the type id `org.olivevideoeditor.Olive.value`, the display
+/// name "Value", the [`Category::Generator`] category and [`create`] as the
+/// constructor. `meta` is the factory table assembled by
+/// `crate::nodes::register_all`. The node's combo type input selects which value
+/// type it emits; the C++ counterpart is `k_value_node` in
+/// `factory.cpp::create_from_factory_index`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.value",

@@ -85,6 +85,11 @@ pub struct FootageBehavior {
 
 impl FootageBehavior {
 	/// Create for `filename` (unprobed).
+	///
+	/// `filename` is stored verbatim (the path is not resolved, so it may
+	/// be relative). Every other field starts at its default: no streams,
+	/// `valid == false`, no proxy, and a fresh cancellation atom. Call
+	/// [`Self::probe`] to fill in the stream inventory.
 	pub fn new(filename: &str) -> Self {
 		FootageBehavior {
 			filename: filename.to_string(),
@@ -153,6 +158,12 @@ impl FootageBehavior {
 	}
 
 	/// Set the cancellation flag (C++ `set_cancel_pointer`).
+	///
+	/// `cancelled` is a relaxed store into the shared atom that
+	/// [`Self::is_cancelled`] and the probe/decode workers poll; because
+	/// the atom is an `Arc`, a clone held by a worker observes the change.
+	/// Setting the flag does not abort a running operation by itself -
+	/// the operation must poll it.
 	pub fn set_cancel(&mut self, cancelled: bool) {
 		self.cancel.store(cancelled, Ordering::Relaxed);
 	}
@@ -163,16 +174,25 @@ impl FootageBehavior {
 	}
 
 	/// Total stream count (C++ `get_total_stream_count`).
+	///
+	/// The number of probed stream entries (video + audio); `0` before a
+	/// successful [`Self::probe`].
 	pub fn total_stream_count(&self) -> usize {
 		self.streams.len()
 	}
 
-	/// Video stream count.
+	/// Number of video streams.
+	///
+	/// Counts the stream entries whose `is_video` flag is set; the count
+	/// indexes `video_params`.
 	pub fn video_stream_count(&self) -> usize {
 		self.streams.iter().filter(|s| s.is_video).count()
 	}
 
-	/// Audio stream count.
+	/// Number of audio streams.
+	///
+	/// Counts the stream entries whose `is_video` flag is false (the audio
+	/// entries); the count indexes `audio_params`.
 	pub fn audio_stream_count(&self) -> usize {
 		self.streams.iter().filter(|s| !s.is_video).count()
 	}
@@ -205,6 +225,10 @@ impl FootageBehavior {
 	}
 
 	/// Video params of the `index`th video stream.
+	///
+	/// `index` is zero-based over the video streams in container order
+	/// (the order `video_stream_count` counts). Returns `None` when
+	/// `index` is out of range or that stream carries no video params.
 	pub fn video_params(&self, index: usize) -> Option<VideoParams> {
 		self.streams
 			.iter()
@@ -214,6 +238,10 @@ impl FootageBehavior {
 	}
 
 	/// Audio params of the `index`th audio stream.
+	///
+	/// `index` is zero-based over the non-video streams in container order
+	/// (the order `audio_stream_count` counts). Returns `None` when
+	/// `index` is out of range or that stream carries no audio params.
 	pub fn audio_params(&self, index: usize) -> Option<AudioParams> {
 		self.streams
 			.iter()
@@ -228,6 +256,12 @@ impl FootageBehavior {
 	}
 
 	/// Set all proxy fields at once (C++ `set_proxy`).
+	///
+	/// `path` becomes the proxy file name (empty = none), `state` is a
+	/// `ProxyManager::ProxyState` discriminant, `video_stream_index` is
+	/// the chosen video stream inside the proxy file (-1 = none),
+	/// `preset_version` records which proxy preset produced the file and
+	/// `enabled` is the per-footage playback switch.
 	pub fn set_proxy(
 		&mut self,
 		path: &str,
@@ -244,6 +278,12 @@ impl FootageBehavior {
 	}
 
 	/// Clear all proxy fields (C++ `clear_proxy`).
+	///
+	/// Resets `proxy` to `""`, `proxy_state` to 0, the proxy video stream
+	/// index to -1, `proxy_preset_version` to 0 and `proxy_enabled` to
+	/// false. The per-footage custom generation params
+	/// (`custom_proxy_params`) are left untouched; use
+	/// `clear_custom_proxy_params` for those.
 	pub fn clear_proxy(&mut self) {
 		self.proxy.clear();
 		self.proxy_state = 0;

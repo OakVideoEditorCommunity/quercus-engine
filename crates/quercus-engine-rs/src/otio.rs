@@ -17,11 +17,11 @@ use std::ffi::c_void;
 
 use crate::codec::string_out;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_otio_document_add_ref(doc: *const c_void);
 	fn quercus_otio_document_release(doc: *const c_void);
@@ -116,12 +116,23 @@ pub struct RationalTime {
 }
 
 impl RationalTime {
-	/// `RationalTime(value, rate)` (C++ argument order).
+	/// Builds a `RationalTime` from a raw `value` and the frame `rate` it is counted
+	/// in.
+	///
+	/// `value` is measured in frames at `rate` frames per second, so the same instant
+	/// has many equivalent representations; nothing is normalized here. Arguments
+	/// follow the C++ `RationalTime(value, rate)` order that the engine expects. Use
+	/// `to_seconds` for a rate-independent view.
 	pub fn new(value: f64, rate: f64) -> Self {
 		Self { value, rate }
 	}
 
-	/// The value in seconds (`value / rate`).
+	/// Converts this time to seconds as `value / rate`.
+	///
+	/// `rate` is frames per second; the result is rate-independent wall-clock
+	/// seconds. A `rate` of `0` is not rejected explicitly and therefore yields an
+	/// infinity or `NaN`, so callers of untrusted documents should validate `rate`
+	/// first.
 	pub fn to_seconds(self) -> f64 {
 		self.value / self.rate
 	}
@@ -138,7 +149,12 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
-	/// `TimeRange(start_time, duration)` (C++ argument order).
+	/// Builds a `TimeRange` spanning `duration` from `start_time`.
+	///
+	/// Arguments follow the C++ `TimeRange(start_time, duration)` order, which is the
+	/// reverse of the OTIO JSON field order; both times are stored verbatim and are
+	/// expected to share the same `rate` — nothing is converted or validated. Used by
+	/// `Composable::clip`/`Composable::gap` to describe a used source portion.
 	pub fn new(start_time: RationalTime, duration: RationalTime) -> Self {
 		Self {
 			start_time,
@@ -219,7 +235,13 @@ handle!(
 );
 
 impl Document {
-	/// Parses an OTIO JSON document. None on a parse error.
+	/// Parses an OTIO JSON document from the full document text `json`.
+	///
+	/// `json` is borrowed only for the call; the returned `Document` owns a
+	/// refcounted engine handle, so it can outlive the input string and be cloned
+	/// cheaply. Returns `None` when the engine rejects the input — malformed JSON or
+	/// an unsupported root schema — which is the only error channel; the reason is
+	/// not reported. Counterpart of `Document::to_json`.
 	pub fn from_json(json: &str) -> Option<Document> {
 		let ptr = unsafe { quercus_otio_document_from_json(json.as_ptr(), json.len()) };
 		(!ptr.is_null()).then_some(Document { ptr })
@@ -231,7 +253,14 @@ impl Document {
 			.unwrap_or_default()
 	}
 
-	/// The root kind.
+	/// The root schema of the parsed document.
+	///
+	/// Returns `DocumentKind::Timeline` or `DocumentKind::Collection` for those two
+	/// OTIO roots, and `DocumentKind::Raw` for any other root schema, which is kept
+	/// whole so the document can round-trip. Returns `None` only for an unexpected
+	/// value from the engine (never for a successfully parsed document). Follow up
+	/// with `Document::timeline` or `Document::collection_timelines` to reach the
+	/// object graph.
 	pub fn kind(&self) -> Option<DocumentKind> {
 		match unsafe { quercus_otio_document_kind(self.ptr) } {
 			0 => Some(DocumentKind::Timeline),
@@ -258,7 +287,17 @@ impl Document {
 			.collect()
 	}
 
-	/// Wraps a timeline as a document (for JSON serialization).
+	/// Wraps a live `timeline` in a `Document` whose root is that timeline.
+	///
+	/// The timeline is shared, not copied: the document takes its own reference, so
+	/// `Document::timeline` returns a handle to the same object and later edits to
+	/// `timeline` are visible through the document. This is the usual route from a
+	/// timeline built with `Timeline` to `Document::to_json`.
+	///
+	/// # Panics
+	///
+	/// Panics if the engine returns a null handle, which the wrapper treats as
+	/// impossible for a live timeline.
 	pub fn from_timeline(timeline: &Timeline) -> Document {
 		let ptr = unsafe { quercus_otio_document_from_timeline(timeline.ptr) };
 		assert!(!ptr.is_null(), "the engine wraps any live timeline");
@@ -290,13 +329,23 @@ impl Timelines {
 		}
 	}
 
-	/// Parses an FCPXML document. None on a parse error.
+	/// Parses an FCPXML document from the full document text `xml`.
+	///
+	/// FCPXML may hold several `<sequence>` elements; the engine turns each into one
+	/// `Timeline`, so a successful parse can produce an empty or multi-entry list even
+	/// though FCPXML is usually one sequence. Returns `None` on a parse error or when
+	/// the input cannot be represented. Counterpart of `Timelines::to_fcpxml`.
 	pub fn from_fcpxml(xml: &str) -> Option<Timelines> {
 		let ptr = unsafe { quercus_otio_timelines_from_fcpxml(xml.as_ptr(), xml.len()) };
 		(!ptr.is_null()).then_some(Timelines { ptr })
 	}
 
-	/// Serializes to FCPXML.
+	/// Serializes every timeline in the list to one FCPXML document.
+	///
+	/// This is the export counterpart of `Timelines::from_fcpxml`: it emits one
+	/// `<sequence>` per timeline, in list order. Encoding failures are swallowed and
+	/// surface as an empty string, so callers that must not silently lose data should
+	/// treat `""` as an error.
 	pub fn to_fcpxml(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_otio_timelines_to_fcpxml(self.ptr, buf, len) })
 			.unwrap_or_default()
@@ -324,7 +373,12 @@ impl Timelines {
 		unsafe { quercus_otio_timelines_set(self.ptr, index as i32, timeline.ptr) }
 	}
 
-	/// Appends a timeline.
+	/// Appends `timeline` to the list, adding one more `<sequence>` on FCPXML
+	/// export.
+	///
+	/// The timeline is refcounted and shared, not copied; later edits to `timeline`
+	/// are reflected in the list. Returns `false` when the engine rejects the append,
+	/// leaving the list unchanged. Pairs with `Timelines::at`/`Timelines::set`.
 	pub fn push(&self, timeline: &Timeline) -> bool {
 		unsafe { quercus_otio_timelines_add(self.ptr, timeline.ptr) }
 	}
@@ -352,31 +406,53 @@ handle!(
 );
 
 impl Timeline {
-	/// A new named timeline with an empty tracks stack.
+	/// Creates a timeline named `name` with no tracks.
+	///
+	/// `name` is copied into the timeline and can be changed later with
+	/// `Timeline::set_name`. Build the track stack with `Timeline::append_track` (or
+	/// wrap an existing timeline with `Document::from_timeline`) and then serialize
+	/// with `Document::to_json`/`Timelines::to_fcpxml`.
 	pub fn new(name: &str) -> Timeline {
 		Timeline {
 			ptr: unsafe { quercus_otio_timeline_new(name.as_ptr(), name.len()) },
 		}
 	}
 
-	/// The timeline name.
+	/// The timeline's name as UTF-8 text.
+	///
+	/// Returns an empty string when the engine cannot produce the name (for example
+	/// a failed UTF-8 conversion); there is no separate error channel. Pairs with
+	/// `Timeline::set_name`.
 	pub fn name(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_otio_timeline_name(self.ptr, buf, len) })
 			.unwrap_or_default()
 	}
 
-	/// Renames the timeline.
+	/// Renames the timeline, replacing the previous name with `name`.
+	///
+	/// `name` is copied, so the caller keeps ownership. Returns `false` when the
+	/// engine rejects the new name, in which case the old name is kept. Getter:
+	/// `Timeline::name`.
 	pub fn set_name(&self, name: &str) -> bool {
 		unsafe { quercus_otio_timeline_set_name(self.ptr, name.as_ptr(), name.len()) }
 	}
 
-	/// The global start time, if set.
+	/// The timeline's global start time, if one is set.
+	///
+	/// Returns `None` for a timeline with no global start time (the common case for
+	/// a freshly created or imported timeline); otherwise the `RationalTime` in the
+	/// timeline's own rate. Pairs with `Timeline::set_global_start_time`.
 	pub fn global_start_time(&self) -> Option<RationalTime> {
 		let mut out = RationalTime::default();
 		unsafe { quercus_otio_timeline_global_start_time(self.ptr, &mut out) }.then_some(out)
 	}
 
-	/// Sets the global start time.
+	/// Sets the timeline's global start time (OTIO `global_start_time`), the time
+	/// value of the timeline's first frame.
+	///
+	/// `start` is copied and its `rate` should match the timeline's, since no
+	/// resampling happens here. Returns `false` when the engine rejects the value.
+	/// Getter: `Timeline::global_start_time`.
 	pub fn set_global_start_time(&self, start: RationalTime) -> bool {
 		unsafe { quercus_otio_timeline_set_global_start_time(self.ptr, start) }
 	}
@@ -399,24 +475,41 @@ impl Timeline {
 		(!ptr.is_null()).then_some(Track { ptr })
 	}
 
-	/// All tracks.
+	/// All tracks of the timeline in stack order, as shared handle clones.
+	///
+	/// Collects every index through `Timeline::track_at`, so the length matches
+	/// `Timeline::track_count`. Mutating a returned track only affects the clone
+	/// until it is published back with `Timeline::set_track`.
 	pub fn tracks(&self) -> Vec<Track> {
 		(0..self.track_count())
 			.filter_map(|i| self.track_at(i))
 			.collect()
 	}
 
-	/// Replaces the track at `index` (write-back after editing).
+	/// Replaces the track at `index` with `track`, publishing edits made to a clone.
+	///
+	/// Traversal returns clones (`Timeline::track_at`/`Timeline::tracks`), so this is
+	/// the call that writes an edited track back into the timeline. `index` is
+	/// zero-based and must be below `Timeline::track_count`; an out-of-range index
+	/// returns `false` and leaves the timeline unchanged.
 	pub fn set_track(&self, index: usize, track: &Track) -> bool {
 		unsafe { quercus_otio_timeline_set_track(self.ptr, index as i32, track.ptr) }
 	}
 
-	/// Appends a track.
+	/// Appends `track` after the last track of the stack.
+	///
+	/// The track is refcounted and shared, not copied. Returns `false` when the engine
+	/// rejects the append, leaving the stack unchanged. Use `Timeline::set_track` or
+	/// `Timeline::remove_track` to change existing entries.
 	pub fn append_track(&self, track: &Track) -> bool {
 		unsafe { quercus_otio_timeline_append_track(self.ptr, track.ptr) }
 	}
 
-	/// Removes the track at `index`.
+	/// Removes the track at `index`, shifting later tracks down by one.
+	///
+	/// `index` is zero-based and must be below `Timeline::track_count`; an
+	/// out-of-range index returns `false` and leaves the stack unchanged. The engine
+	/// drops its own reference to the removed track, so existing clones stay valid.
 	pub fn remove_track(&self, index: usize) -> bool {
 		unsafe { quercus_otio_timeline_remove_track(self.ptr, index as i32) }
 	}
@@ -460,24 +553,42 @@ impl Track {
 		(!ptr.is_null()).then_some(Composable { ptr })
 	}
 
-	/// All children.
+	/// All children (clips, gaps, transitions) in track order, as shared handle
+	/// clones.
+	///
+	/// Collects every index through `Track::child_at`, so the length matches
+	/// `Track::child_count`. Mutating a returned child only affects the clone until it
+	/// is published with `Track::set_child`.
 	pub fn children(&self) -> Vec<Composable> {
 		(0..self.child_count())
 			.filter_map(|i| self.child_at(i))
 			.collect()
 	}
 
-	/// Replaces the child at `index` (write-back after editing).
+	/// Replaces the child at `index` with `child`, publishing edits made to a clone.
+	///
+	/// Composable handles are clones, so this is the write-back step after mutating a
+	/// child obtained from `Track::child_at`/`Track::children`. `index` is zero-based
+	/// and must be below `Track::child_count`; an out-of-range index returns `false`
+	/// and leaves the track unchanged.
 	pub fn set_child(&self, index: usize, child: &Composable) -> bool {
 		unsafe { quercus_otio_track_set_child(self.ptr, index as i32, child.ptr) }
 	}
 
-	/// Appends a child.
+	/// Appends `child` (a clip, gap, or transition) after the last composable.
+	///
+	/// The composable is refcounted and shared, not copied. Returns `false` when the
+	/// engine rejects the append, leaving the track unchanged. Appending is how a
+	/// track is built from scratch; order is preserved for playback and export.
 	pub fn append_child(&self, child: &Composable) -> bool {
 		unsafe { quercus_otio_track_append_child(self.ptr, child.ptr) }
 	}
 
-	/// Removes the child at `index`.
+	/// Removes the child at `index`, shifting later children down by one.
+	///
+	/// `index` is zero-based and must be below `Track::child_count`; an out-of-range
+	/// index returns `false` and leaves the track unchanged. Removing a clip does not
+	/// retime its neighbours — insert a gap to preserve their positions.
 	pub fn remove_child(&self, index: usize) -> bool {
 		unsafe { quercus_otio_track_remove_child(self.ptr, index as i32) }
 	}
@@ -499,8 +610,18 @@ handle!(
 );
 
 impl Composable {
-	/// A clip. `url` attaches an external media reference (None → a
-	/// missing reference); `source_range` is optional.
+	/// Builds a clip composable that references external media.
+	///
+	/// `name` is the display name. `url` is the optional external media reference:
+	/// `Some(url)` stores a reference pointing at `url` (typically a `file://` URL),
+	/// while `None` stores a missing reference and `Composable::clip_media_url` then
+	/// returns `None`. `source_range` is the optional portion of the source media the
+	/// clip uses, in the media's own rate.
+	///
+	/// # Panics
+	///
+	/// Panics if the engine returns a null handle, which the wrapper treats as
+	/// impossible for valid input.
 	pub fn clip(name: &str, url: Option<&str>, source_range: Option<TimeRange>) -> Composable {
 		let (u, ul) = url.map_or((std::ptr::null(), 0), |u| (u.as_ptr(), u.len()));
 		let range = source_range
@@ -511,7 +632,16 @@ impl Composable {
 		Composable { ptr }
 	}
 
-	/// A gap (None range → an empty range).
+	/// Builds a gap composable that occupies time without any media.
+	///
+	/// `name` is the display name. `source_range` gives the gap's extent in its own
+	/// rate; `None` stores an empty (zero-duration) range, which is the engine's
+	/// default. Gaps keep later clips at their intended timeline positions.
+	///
+	/// # Panics
+	///
+	/// Panics if the engine returns a null handle, which the wrapper treats as
+	/// impossible for valid input.
 	pub fn gap(name: &str, source_range: Option<TimeRange>) -> Composable {
 		let range = source_range
 			.as_ref()
@@ -521,7 +651,17 @@ impl Composable {
 		Composable { ptr }
 	}
 
-	/// A transition with in/out offsets.
+	/// Builds a transition composable that blends two adjacent clips.
+	///
+	/// `name` is also the transition type (e.g. `"SMPTE_Dissolve"`), readable via
+	/// `Composable::transition_type`. `in_offset` and `out_offset` are the extents
+	/// the transition reaches into the incoming and outgoing clip, in the timeline
+	/// rate.
+	///
+	/// # Panics
+	///
+	/// Panics if the engine returns a null handle, which the wrapper treats as
+	/// impossible for valid input.
 	pub fn transition(name: &str, in_offset: RationalTime, out_offset: RationalTime) -> Composable {
 		let ptr =
 			unsafe { quercus_otio_transition_new(name.as_ptr(), name.len(), in_offset, out_offset) };
@@ -529,7 +669,14 @@ impl Composable {
 		Composable { ptr }
 	}
 
-	/// The composable kind.
+	/// The concrete composable schema behind this handle.
+	///
+	/// Returns `ComposableKind::Clip`, `ComposableKind::Gap` or
+	/// `ComposableKind::Transition` for those schemas, and `ComposableKind::Other` for
+	/// a nested track/stack child or any unrecognized schema (kept whole). Returns
+	/// `None` only for an unexpected value from the engine. Branch on this before
+	/// calling the clip- or transition-specific accessors, which answer `false`/`None`
+	/// for the wrong kind.
 	pub fn kind(&self) -> Option<ComposableKind> {
 		match unsafe { quercus_otio_composable_kind(self.ptr) } {
 			0 => Some(ComposableKind::Clip),
@@ -553,7 +700,11 @@ impl Composable {
 		unsafe { quercus_otio_composable_source_range(self.ptr, &mut out) }.then_some(out)
 	}
 
-	/// Sets the source range of a clip. False for a non-clip.
+	/// Sets the source range of a clip — the portion of its source media it uses.
+	///
+	/// `range` is in the media's own rate and replaces the previous value. Returns
+	/// `false` when the composable is not a clip; the range is then unchanged. Getter:
+	/// `Composable::source_range`, which also reports gaps.
 	pub fn set_clip_source_range(&self, range: TimeRange) -> bool {
 		unsafe { quercus_otio_clip_set_source_range(self.ptr, range) }
 	}
@@ -579,7 +730,12 @@ impl Composable {
 		}
 	}
 
-	/// Sets the clip's enabled flag. False for a non-clip.
+	/// Enables or disables a clip.
+	///
+	/// `enabled == false` marks the clip as not contributing media while it keeps its
+	/// place and timing in the track. Returns `false` when the composable is not a
+	/// clip, in which case the flag is unchanged. Getter:
+	/// `Composable::clip_enabled`.
 	pub fn set_clip_enabled(&self, enabled: bool) -> bool {
 		unsafe { quercus_otio_clip_set_enabled(self.ptr, enabled) }
 	}
@@ -590,13 +746,22 @@ impl Composable {
 		string_out(|buf, len| unsafe { quercus_otio_transition_type(self.ptr, buf, len) })
 	}
 
-	/// A transition's in/out offset (None for a non-transition).
+	/// One side's offset of a transition, in the timeline rate.
+	///
+	/// `is_in` selects the in-side (`true`) or out-side (`false`) offset. Returns
+	/// `None` when the composable is not a transition, and also when the requested
+	/// offset is unset. Setter: `Composable::set_transition_offset`.
 	pub fn transition_offset(&self, is_in: bool) -> Option<RationalTime> {
 		let mut out = RationalTime::default();
 		unsafe { quercus_otio_transition_offset(self.ptr, is_in, &mut out) }.then_some(out)
 	}
 
-	/// Sets a transition's in/out offset. False for a non-transition.
+	/// Sets one side's offset of a transition.
+	///
+	/// `is_in` selects the in-side (`true`) or out-side (`false`) offset; `offset` is
+	/// in the timeline rate and replaces the previous value. Returns `false` when the
+	/// composable is not a transition, in which case nothing changes. Getter:
+	/// `Composable::transition_offset`.
 	pub fn set_transition_offset(&self, is_in: bool, offset: RationalTime) -> bool {
 		unsafe { quercus_otio_transition_set_offset(self.ptr, is_in, offset) }
 	}

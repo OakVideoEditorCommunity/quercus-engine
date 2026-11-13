@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use crate::codec::string_out;
 use crate::node::{NodeId, Project};
 use crate::storage::StorageError;
-use crate::types::TimeRange;
+use crate::types::{Rational, TimeRange};
 
 /// Owned C-compatible storage project handle used only for same-instance
 /// migration. Layout matches `quercus_core::handle::CHandle` exactly.
@@ -22,17 +22,24 @@ pub struct StorageProjectHandle {
 	pub abi_version: u32,
 }
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_editor_add_ref(session: *const c_void);
 	fn quercus_editor_release(session: *const c_void);
 	fn quercus_editor_new() -> *mut c_void;
 	fn quercus_editor_open(uri: *const u8, uri_len: usize, version_info: *mut i32) -> *mut c_void;
 	fn quercus_editor_open_project_from_library(uuid: *const u8, uuid_len: usize, error: *mut i32) -> *mut c_void;
+	fn quercus_editor_open_project_from_library_uri(
+		library_uri: *const u8,
+		library_uri_len: usize,
+		uuid: *const u8,
+		uuid_len: usize,
+		error: *mut i32,
+	) -> *mut c_void;
 	fn quercus_editor_adopt_storage_project_handle(project: StorageProjectHandle) -> *mut c_void;
 	fn quercus_editor_from_project_handle(project: *mut c_void) -> *mut c_void;
 	fn quercus_editor_create_library(name: *const u8, name_len: usize, error: *mut i32) -> *mut c_void;
@@ -59,6 +66,49 @@ unsafe extern "C" {
 		buf_len: usize,
 	) -> i32;
 	fn quercus_editor_workarea(session: *const c_void, out: *mut TimeRange) -> bool;
+	fn quercus_editor_import_subtitles(
+		session: *const c_void,
+		path: *const u8,
+		path_len: usize,
+		track_index: i32,
+	) -> i32;
+	fn quercus_editor_export_subtitles(
+		session: *const c_void,
+		path: *const u8,
+		path_len: usize,
+	) -> i32;
+	fn quercus_editor_set_clip_gain(session: *const c_void, clip: u64, gain: f64) -> bool;
+	fn quercus_editor_set_clip_pan(session: *const c_void, clip: u64, pan: f64) -> bool;
+	fn quercus_editor_set_clip_fade(
+		session: *const c_void,
+		clip: u64,
+		fade_in_num: i64,
+		fade_in_den: i64,
+		fade_out_num: i64,
+		fade_out_den: i64,
+	) -> bool;
+	fn quercus_editor_add_clip_audio_effect(
+		session: *const c_void,
+		clip: u64,
+		type_id: *const u8,
+		type_id_len: usize,
+		index: i32,
+	) -> bool;
+	fn quercus_editor_remove_clip_audio_effect(session: *const c_void, clip: u64, index: i32) -> bool;
+	fn quercus_editor_set_clip_audio_effect_enabled(
+		session: *const c_void,
+		clip: u64,
+		index: i32,
+		enabled: bool,
+	) -> bool;
+	fn quercus_editor_set_clip_audio_effect_param(
+		session: *const c_void,
+		clip: u64,
+		index: i32,
+		input_id: *const u8,
+		input_id_len: usize,
+		value: f64,
+	) -> bool;
 }
 
 #[repr(C)]
@@ -115,6 +165,19 @@ impl EditorSession {
 	}
 
 	/// Opens any storage URI and binds the loaded project.
+	///
+	/// `uri` is resolved by the storage registry (a plain path opens the
+	/// default file backend). On success the session records the URI as the
+	/// project's file name, marks it unmodified, selects its first sequence
+	/// and restores markers/work area, then binds it for write-through
+	/// persistence (binding failure is ignored).
+	///
+	/// # Errors
+	///
+	/// `Err(StorageError(code))` with the engine's negative `QUERCUSSTORAGE_*`
+	/// code when the URI cannot be resolved, the file does not exist, the
+	/// backend fails to load it, or its version is unsupported (reported as
+	/// `QUERCUSSTORAGE_E_INVALID`).
 	pub fn open(uri: &str) -> Result<Self, StorageError> {
 		let mut info = 0;
 		let ptr = unsafe { quercus_editor_open(uri.as_ptr(), uri.len(), &mut info) };
@@ -127,6 +190,18 @@ impl EditorSession {
 	}
 
 	/// Opens the project identified by `uuid` in the configured default library.
+	///
+	/// The row is opened as `<default library>?project=<uuid>` through the
+	/// storage registry and then bound for write-through persistence with
+	/// [`Self::bind_project_to_library`] (its result is ignored, so a
+	/// non-persistent configuration still yields a usable session).
+	///
+	/// # Errors
+	///
+	/// `Err(StorageError(code))` carries the engine's negative
+	/// `QUERCUSSTORAGE_*` code: no default library configured, an empty
+	/// `uuid`, or a row that does not exist/cannot be loaded. A version-info
+	/// mismatch is reported as `QUERCUSSTORAGE_E_INVALID`.
 	pub fn open_project_from_library(uuid: &str) -> Result<Self, StorageError> {
 		let mut error = 0;
 		let ptr = unsafe {
@@ -137,6 +212,35 @@ impl EditorSession {
 		}
 		let session = Self { ptr };
 		let _ = session.bind_project_to_library();
+		Ok(session)
+	}
+
+	/// Opens the project `uuid` from an explicit library URI (any backend
+	/// the registry can resolve, not only the configured default library).
+	pub fn open_project_from_library_uri(
+		library_uri: &str,
+		uuid: &str,
+	) -> Result<Self, StorageError> {
+		let mut error = 0;
+		let ptr = unsafe {
+			quercus_editor_open_project_from_library_uri(
+				library_uri.as_ptr(),
+				library_uri.len(),
+				uuid.as_ptr(),
+				uuid.len(),
+				&mut error,
+			)
+		};
+		if ptr.is_null() {
+			return Err(StorageError(error));
+		}
+		let session = Self { ptr };
+		// Write-through binding targets the *configured* default library;
+		// an explicitly chosen non-default library stays unbound until the
+		// caller configures it (or binds explicitly).
+		if crate::storage::default_library_uri().as_deref() == Some(library_uri) {
+			let _ = session.bind_project_to_library();
+		}
 		Ok(session)
 	}
 
@@ -279,6 +383,157 @@ impl EditorSession {
 		let enabled = unsafe { quercus_editor_workarea(self.ptr, &mut range) };
 		(enabled, range)
 	}
+
+	/// Imports an SRT file as Text clips on the current sequence and track.
+	///
+	/// `path` is read and parsed as SubRip text; each cue becomes a Text clip
+	/// on `track_index` (a zero-based track position in the current sequence)
+	/// with the default style, timed at the cue's in/out seconds converted to
+	/// frames. The whole import is a single undo group, so the clips and their
+	/// style edits undo together. Returns the number of cues imported (`0` for
+	/// an SRT file with no cues).
+	///
+	/// # Errors
+	///
+	/// `Err(-1)` when `path` is not valid UTF-8 (checked first, before any
+	/// engine call), or `Err(code)` with the engine's negative code for a
+	/// missing current sequence, an invalid track index, an unreadable file or
+	/// malformed SRT.
+	pub fn import_subtitles(
+		&self,
+		path: &std::path::Path,
+		track_index: usize,
+	) -> Result<usize, i32> {
+		let path = path.to_str().ok_or(-1)?;
+		let count = unsafe {
+			quercus_editor_import_subtitles(
+				self.ptr,
+				path.as_ptr(),
+				path.len(),
+				track_index as i32,
+			)
+		};
+		(count >= 0).then_some(count as usize).ok_or(count)
+	}
+
+	/// Sets a clip's audio gain (0..=4, 1 = unity) as one undo entry.
+	pub fn set_clip_gain(&self, clip: NodeId, gain: f64) -> bool {
+		unsafe { quercus_editor_set_clip_gain(self.ptr, clip.raw(), gain) }
+	}
+
+	/// Sets a clip's constant-power stereo pan (-1..=1, 0 = centre) as one
+	/// undo entry.
+	pub fn set_clip_pan(&self, clip: NodeId, pan: f64) -> bool {
+		unsafe { quercus_editor_set_clip_pan(self.ptr, clip.raw(), pan) }
+	}
+
+	/// Sets a clip's linear fade-in/fade-out durations as one undo entry.
+	/// Both rationals are clamped/validated by the engine (negative or NaN
+	/// durations are rejected).
+	pub fn set_clip_fade(&self, clip: NodeId, fade_in: Rational, fade_out: Rational) -> bool {
+		unsafe {
+			quercus_editor_set_clip_fade(
+				self.ptr,
+				clip.raw(),
+				fade_in.num,
+				fade_in.den,
+				fade_out.num,
+				fade_out.den,
+			)
+		}
+	}
+
+	/// Attaches an audio effect to a clip's chain at `index` (clamped to
+	/// the chain length) as one undo entry. Returns false for an empty
+	/// type id.
+	pub fn add_clip_audio_effect(&self, clip: NodeId, type_id: &str, index: usize) -> bool {
+		let Ok(index) = i32::try_from(index) else {
+			return false;
+		};
+		unsafe {
+			quercus_editor_add_clip_audio_effect(
+				self.ptr,
+				clip.raw(),
+				type_id.as_ptr(),
+				type_id.len(),
+				index,
+			)
+		}
+	}
+
+	/// Removes one entry of a clip's audio effect chain.
+	///
+	/// `index` is the zero-based chain position. The removal is one undo entry,
+	/// and later entries keep their relative order. Returns `false` for an
+	/// unknown clip, an `index` at/after the chain length, or an `index` too
+	/// large for `i32`.
+	pub fn remove_clip_audio_effect(&self, clip: NodeId, index: usize) -> bool {
+		let Ok(index) = i32::try_from(index) else {
+			return false;
+		};
+		unsafe { quercus_editor_remove_clip_audio_effect(self.ptr, clip.raw(), index) }
+	}
+
+	/// Enables or disables one entry of a clip's audio effect chain.
+	///
+	/// `index` is the zero-based chain position and `enabled` the new state; a
+	/// disabled effect is bypassed by the mixer. Recorded as one undo entry,
+	/// and writing the stored value records nothing. Returns `false` for an
+	/// unknown clip, an out-of-range `index`, or an `index` that does not fit
+	/// `i32` (rejected before reaching the engine).
+	pub fn set_clip_audio_effect_enabled(&self, clip: NodeId, index: usize, enabled: bool) -> bool {
+		let Ok(index) = i32::try_from(index) else {
+			return false;
+		};
+		unsafe {
+			quercus_editor_set_clip_audio_effect_enabled(self.ptr, clip.raw(), index, enabled)
+		}
+	}
+
+	/// Sets one static float parameter of a clip's audio effect (Phase 1:
+	/// Volume `volume_in`, Pan `panning_in`).
+	pub fn set_clip_audio_effect_param(
+		&self,
+		clip: NodeId,
+		index: usize,
+		input_id: &str,
+		value: f64,
+	) -> bool {
+		let Ok(index) = i32::try_from(index) else {
+			return false;
+		};
+		unsafe {
+			quercus_editor_set_clip_audio_effect_param(
+				self.ptr,
+				clip.raw(),
+				index,
+				input_id.as_ptr(),
+				input_id.len(),
+				value,
+			)
+		}
+	}
+
+	/// Exports the current sequence's Text clips as an SRT file.
+	///
+	/// Walks the current sequence's video tracks, collects every clip whose
+	/// texture input resolves to text, and writes the cues sorted by in-point
+	/// (then out-point) to `path`, overwriting it. Returns the number of cues
+	/// written (`0` is a valid, empty result).
+	///
+	/// # Errors
+	///
+	/// `Err(-1)` when `path` is not valid UTF-8, or when the engine reports a
+	/// failure (null session, unreadable path, or an I/O error while writing).
+	/// The engine maps every failure onto `-1`, so the cases are not
+	/// distinguishable here.
+	pub fn export_subtitles(&self, path: &std::path::Path) -> Result<usize, i32> {
+		let path = path.to_str().ok_or(-1)?;
+		let count = unsafe {
+			quercus_editor_export_subtitles(self.ptr, path.as_ptr(), path.len())
+		};
+		(count >= 0).then_some(count as usize).ok_or(count)
+	}
 }
 
 impl Clone for EditorSession {
@@ -304,10 +559,14 @@ mod media;
 pub mod proxy;
 pub mod sync;
 pub mod multicam;
+mod audio;
+pub use audio::*;
+mod subtitles;
 pub use snapshot::*;
 pub use graph::*;
 pub use params::*;
 pub use notify::*;
+pub use subtitles::*;
 
 #[cfg(test)]
 mod tests {
@@ -435,5 +694,519 @@ mod tests {
 			project.root().is_valid(),
 			"the project handle owns its own reference"
 		);
+	}
+}
+
+#[cfg(test)]
+mod auxiliary_roundtrip_tests {
+	use super::*;
+	use crate::edit::EditCommand;
+	use crate::types::{Rational, TimeRange};
+
+	#[test]
+	fn markers_and_workarea_survive_save_open() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let _sequence = session.create_sequence("Markers").expect("sequence");
+		session
+			.execute(EditCommand::MarkerAdd {
+				time: Rational::new(1, 1),
+				name: "Marker One".into(),
+				color: 3,
+			})
+			.expect("marker");
+		session
+			.execute(EditCommand::WorkareaSet {
+				enabled: true,
+				range: TimeRange::new(Rational::new(1, 1), Rational::new(3, 1)),
+			})
+			.expect("workarea");
+
+		let path = std::env::temp_dir()
+			.join(format!("quercus_sdk_marker_roundtrip_{}.ove", std::process::id()))
+			.to_string_lossy()
+			.into_owned();
+		session.save(&path).expect("save");
+		let opened = EditorSession::open(&path).expect("open");
+		let markers = opened.markers();
+		assert_eq!(markers.len(), 1);
+		assert_eq!(markers[0].name, "Marker One");
+		assert_eq!(
+			markers[0].time,
+			TimeRange::new(Rational::new(1, 1), Rational::new(1, 1))
+		);
+		assert_eq!(markers[0].color, 3);
+		let (enabled, range) = opened.workarea_state();
+		assert!(enabled);
+		assert_eq!(range, TimeRange::new(Rational::new(1, 1), Rational::new(3, 1)));
+		let _ = std::fs::remove_file(path);
+	}
+}
+
+#[cfg(test)]
+mod length_snapshot_tests {
+	use super::*;
+	use crate::edit::EditCommand;
+	use crate::types::Rational;
+
+	#[test]
+	fn snapshot_length_is_computed_from_blocks() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Length").expect("sequence");
+		let media = crate::test_support::make_test_clip("length_snapshot");
+		let footage = session.project().import_footage(&media).expect("footage");
+		session
+			.execute(EditCommand::PlaceFootageClip {
+				footage,
+				kind: crate::editor::TrackKind::Video,
+				track_index: 0,
+				in_ts: 0,
+				out_ts: 25,
+				media_in_ts: 0,
+			})
+			.expect("place clip");
+		let snapshot = session.snapshot();
+		let sequence_snapshot = snapshot
+			.sequences
+			.iter()
+			.find(|s| s.id == sequence)
+			.expect("sequence snapshot");
+		assert_eq!(
+			sequence_snapshot.length,
+			Rational::new(1001, 1200),
+			"length must reflect the placed clip without app-side verify"
+		);
+		let _ = std::fs::remove_file(media);
+	}
+}
+
+#[cfg(test)]
+mod edit_result_primary_tests {
+	use super::*;
+	use crate::edit::EditCommand;
+	use crate::editor::TrackKind;
+
+	#[test]
+	fn add_track_and_split_return_primary_nodes() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Primary").expect("sequence");
+		let added = session
+			.execute(EditCommand::AddTrack {
+				kind: TrackKind::Video,
+			})
+			.expect("add track");
+		let track = added.primary.expect("add track primary");
+		let snapshot = session.snapshot();
+		let sequence_snapshot = snapshot
+			.sequences
+			.iter()
+			.find(|s| s.id == sequence)
+			.expect("sequence snapshot");
+		assert!(
+			sequence_snapshot.tracks.iter().any(|t| t.id == track),
+			"primary must be the new track"
+		);
+
+		let media = crate::test_support::make_test_clip("primary_split");
+		let footage = session.project().import_footage(&media).expect("footage");
+		let clip = session
+			.execute(EditCommand::PlaceFootageClip {
+				footage,
+				kind: TrackKind::Video,
+				track_index: 0,
+				in_ts: 0,
+				out_ts: 25,
+				media_in_ts: 0,
+			})
+			.expect("place")
+			.primary
+			.expect("clip");
+		let split = session
+			.execute(EditCommand::SplitClip {
+				clip,
+				time_ts: 10,
+			})
+			.expect("split");
+		let rear = split.primary.expect("split primary");
+		assert_ne!(rear, clip);
+		let snapshot = session.snapshot();
+		let clips = snapshot
+			.sequences
+			.iter()
+			.find(|s| s.id == sequence)
+			.expect("sequence")
+			.tracks
+			.iter()
+			.flat_map(|t| t.clips.iter())
+			.collect::<Vec<_>>();
+		assert!(clips.iter().any(|c| c.id == rear), "rear half must exist");
+		let _ = std::fs::remove_file(media);
+	}
+}
+
+#[cfg(test)]
+mod subtitle_roundtrip_tests {
+	use super::*;
+	use std::sync::atomic::{AtomicU64, Ordering};
+
+	static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+	fn temp_srt(tag: &str, contents: &str) -> std::path::PathBuf {
+		let n = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+		let path = std::env::temp_dir().join(format!(
+			"quercus_sdk_subtitle_{tag}_{}_{n}.srt",
+			std::process::id()
+		));
+		std::fs::write(&path, contents).unwrap();
+		path
+	}
+
+	fn text_source(session: &EditorSession, sequence: NodeId, clip: NodeId) -> NodeId {
+		let graph = session
+			.graph_snapshot(sequence, Some(clip))
+			.expect("clip graph");
+		graph
+			.edges
+			.iter()
+			.find(|edge| !edge.synthetic && edge.to == clip && edge.input_id == "tex_in")
+			.map(|edge| edge.from)
+			.expect("clip has a texture source")
+	}
+
+	#[test]
+	fn srt_import_export_through_sdk() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let _sequence = session.create_sequence("Subtitle SDK").expect("sequence");
+		let input = temp_srt(
+			"roundtrip",
+			"1\n00:00:00,500 --> 00:00:01,500\nFirst\n\n2\n00:00:02,000 --> 00:00:03,000\nSecond\n",
+		);
+		let count = session.import_subtitles(&input, 0).expect("import");
+		assert_eq!(count, 2);
+		let output = temp_srt("roundtrip_out", "");
+		let exported = session.export_subtitles(&output).expect("export");
+		assert_eq!(exported, 2);
+		let text = std::fs::read_to_string(&output).unwrap();
+		assert!(text.contains("First"));
+		assert!(text.contains("Second"));
+		let _ = std::fs::remove_file(input);
+		let _ = std::fs::remove_file(output);
+	}
+
+	#[test]
+	fn styled_import_and_set_style_are_undoable_through_sdk() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Styled SDK").expect("sequence");
+		let input = temp_srt(
+			"styled",
+			"1\n00:00:00,500 --> 00:00:01,500\nFirst\n\n2\n00:00:02,000 --> 00:00:03,000\nSecond\n",
+		);
+		let style = SubtitleStyle {
+			font_family: "DejaVu Sans".to_string(),
+			font_size: 48.0,
+			color: [1.0, 0.25, 0.0, 1.0],
+			outline_color: [0.0, 0.0, 1.0, 1.0],
+			outline_width: 3.0,
+			align: 2,
+			..SubtitleStyle::default()
+		};
+		let count = session
+			.import_subtitles_styled(&input, 0, &style)
+			.expect("styled import");
+		assert_eq!(count, 2);
+
+		let snapshot = session.snapshot();
+		let sequence_snapshot = snapshot
+			.sequences
+			.iter()
+			.find(|s| s.id == sequence)
+			.expect("sequence");
+		// The track also holds gap blocks before/between cues; only the
+		// text clips are subtitles.
+		let clips = sequence_snapshot
+			.tracks
+			.iter()
+			.flat_map(|track| track.clips.iter())
+			.filter(|clip| clip.kind == Some(crate::node::NodeKind::Clip))
+			.collect::<Vec<_>>();
+		assert_eq!(clips.len(), 2);
+		let mut sources = Vec::new();
+		for clip in &clips {
+			let source = text_source(&session, sequence, clip.id);
+			let graph = session
+				.graph_snapshot(sequence, Some(clip.id))
+				.expect("clip graph");
+			assert_eq!(
+				graph
+					.nodes
+					.iter()
+					.find(|node| node.id == source)
+					.expect("source node")
+					.type_id,
+				"org.olivevideoeditor.Olive.text3"
+			);
+			let params = session.parameters(source).expect("text parameters");
+			assert_eq!(
+				params
+					.get("font_family_in")
+					.expect("font family")
+					.scalar_value()
+					.expect("font value")
+					.text
+					.as_deref(),
+				Some("DejaVu Sans")
+			);
+			let size = params
+				.get("font_size_in")
+				.expect("font size")
+				.scalar_value()
+				.expect("size value")
+				.pod
+				.expect("size pod");
+			assert_eq!(size.f[0], 48.0);
+			let color = params
+				.get("color_in")
+				.expect("color")
+				.scalar_value()
+				.expect("color value")
+				.pod
+				.expect("color pod");
+			assert_eq!(color.f, [1.0, 0.25, 0.0, 1.0]);
+			let read = session.subtitle_style(clip.id).expect("read style");
+			assert_eq!(read.font_family, "DejaVu Sans");
+			assert_eq!(read.font_size, 48.0);
+			assert_eq!(read.color, [1.0, 0.25, 0.0, 1.0]);
+			assert_eq!(read.align, 2);
+			let outline = params
+				.get("outline_enabled_in")
+				.expect("outline enabled")
+				.scalar_value()
+				.expect("outline value")
+				.pod
+				.expect("outline pod");
+			assert_eq!(outline.num, 1);
+			let outline_width = params
+				.get("outline_width_in")
+				.expect("outline width")
+				.scalar_value()
+				.expect("outline width value")
+				.pod
+				.expect("outline width pod");
+			assert_eq!(outline_width.f[0], 3.0);
+			let align = session
+				.project()
+				.standard_value(source, "valign_in", -1)
+				.expect("vertical alignment");
+			assert_eq!(align.num, 2);
+			sources.push(source);
+		}
+
+		// Applying another style is one undo row; undo restores every field.
+		let clip = clips[0].id;
+		let replacement = SubtitleStyle {
+			font_family: "Serif".to_string(),
+			font_size: 30.0,
+			color: [0.0, 1.0, 0.0, 1.0],
+			outline_enabled: false,
+			outline_width: 0.0,
+			align: 0,
+			..SubtitleStyle::default()
+		};
+		assert!(
+			session.set_subtitle_style(clip, &replacement),
+			"style application succeeds"
+		);
+		let params = session.parameters(sources[0]).expect("styled parameters");
+		assert_eq!(
+			params
+				.get("font_family_in")
+				.unwrap()
+				.scalar_value()
+				.unwrap()
+				.text
+				.as_deref(),
+			Some("Serif")
+		);
+		assert_eq!(
+			params
+				.get("outline_enabled_in")
+				.unwrap()
+				.scalar_value()
+				.unwrap()
+				.pod
+				.unwrap()
+				.num,
+			0
+		);
+		assert!(crate::node::undo());
+		let restored = session.parameters(sources[0]).expect("restored parameters");
+		assert_eq!(
+			restored
+				.get("font_size_in")
+				.unwrap()
+				.scalar_value()
+				.unwrap()
+				.pod
+				.unwrap()
+				.f[0],
+			48.0
+		);
+		assert_eq!(
+			restored
+				.get("font_family_in")
+				.unwrap()
+				.scalar_value()
+				.unwrap()
+				.text
+				.as_deref(),
+			Some("DejaVu Sans")
+		);
+
+		// A non-text clip is rejected without panicking.
+		let plain = session.project().create_clip().expect("plain clip");
+		assert!(!session.set_subtitle_style(plain, &replacement));
+
+		assert_eq!(
+			EditorSession::default_subtitle_style(),
+			SubtitleStyle::default()
+		);
+		let _ = std::fs::remove_file(input);
+	}
+}
+
+#[cfg(test)]
+mod clip_audio_post_tests {
+	use super::*;
+	use crate::types::Rational;
+
+	/// The Phase-1 clip audio setters are reachable through the C ABI and
+	/// reject invalid values without panicking.
+	#[test]
+	fn clip_audio_post_setters_cross_the_abi() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Audio Post").expect("sequence");
+		let project = session.project();
+		let list = project.sequence_track_list_at(sequence, 0);
+		let track = project.tracklist_track_at(list, 0);
+		let clip = project.create_clip().expect("clip");
+		assert!(project.track_append_block(track, clip));
+
+		assert!(session.set_clip_gain(clip, 0.5));
+		assert!(session.set_clip_pan(clip, -0.5));
+		assert!(session.set_clip_fade(clip, Rational::new(1, 2), Rational::new(1, 4)));
+		assert!(session.add_clip_audio_effect(
+			clip,
+			"org.olivevideoeditor.Olive.volume",
+			0
+		));
+		assert!(session.set_clip_audio_effect_param(clip, 0, "volume_in", 0.25));
+		assert!(session.add_clip_audio_effect(
+			clip,
+			"org.olivevideoeditor.Olive.pan",
+			1
+		));
+		assert!(session.set_clip_audio_effect_param(clip, 1, "panning_in", 0.5));
+		assert!(session.set_clip_audio_effect_enabled(clip, 1, false));
+		let state = session.clip_audio(clip).expect("clip audio state");
+		assert!((state.gain - 0.5).abs() < 1e-9);
+		assert!((state.pan + 0.5).abs() < 1e-9);
+		assert_eq!(state.fade_in, Rational::new(1, 2));
+		assert_eq!(state.fade_out, Rational::new(1, 4));
+		assert_eq!(state.effects.len(), 2);
+		assert_eq!(state.effects[0].volume, Some(0.25));
+		assert!(!state.effects[1].enabled);
+		assert!(session.remove_clip_audio_effect(clip, 1));
+
+		// Invalid values come back as false.
+		assert!(!session.set_clip_pan(clip, 2.0));
+		assert!(!session.set_clip_fade(clip, Rational::new(-1, 1), Rational::new(0, 1)));
+		assert!(!session.add_clip_audio_effect(clip, "", 0));
+		assert!(!session.set_clip_audio_effect_param(clip, 99, "volume_in", 1.0));
+		assert!(!session.set_clip_audio_effect_enabled(clip, 99, true));
+		assert!(!session.remove_clip_audio_effect(clip, 99));
+	}
+
+	/// The master-bus chain setters and the loudness measurement cross
+	/// the C ABI; an empty sequence measures as silence.
+	#[test]
+	fn bus_effects_and_loudness_cross_the_abi() {
+		use crate::types::TimeRange;
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		let session = EditorSession::new().expect("session");
+		let _sequence = session.create_sequence("Master Bus").expect("sequence");
+
+		let range = TimeRange::new(Rational::new(0, 1), Rational::new(1, 1));
+		let measured = session.measure_loudness(range).expect("measurement");
+		assert_eq!(measured.integrated_lufs, f64::NEG_INFINITY);
+		assert_eq!(measured.peak_dbfs, f64::NEG_INFINITY);
+
+		assert!(session.audio_bus_effects().is_empty());
+		assert!(session.add_audio_bus_effect(
+			"org.olivevideoeditor.Olive.limiter",
+			0
+		));
+		assert!(session.set_audio_bus_effect_param(0, "ceiling_db", -1.0));
+		assert!(session.set_audio_bus_effect_param(0, "release_ms", 50.0));
+		let effects = session.audio_bus_effects();
+		assert_eq!(effects.len(), 1);
+		assert_eq!(effects[0].type_id, "org.olivevideoeditor.Olive.limiter");
+		assert!(effects[0].enabled);
+		assert!(effects[0]
+			.params
+			.iter()
+			.any(|(input, value)| input == "ceiling_db" && (*value + 1.0).abs() < 1e-9));
+
+		// The chain is stored in the project settings map and survives a
+		// save/open cycle.
+		let path = std::env::temp_dir()
+			.join(format!(
+				"quercus_sdk_audio_bus_roundtrip_{}.ove",
+				std::process::id()
+			))
+			.to_string_lossy()
+			.into_owned();
+		session.save(&path).expect("save");
+		let opened = EditorSession::open(&path).expect("open");
+		let persisted = opened.audio_bus_effects();
+		assert_eq!(persisted.len(), 1);
+		assert_eq!(
+			persisted[0].type_id,
+			"org.olivevideoeditor.Olive.limiter"
+		);
+		assert!(persisted[0]
+			.params
+			.iter()
+			.any(|(input, value)| input == "ceiling_db" && (*value + 1.0).abs() < 1e-9));
+		let _ = std::fs::remove_file(&path);
+
+		assert!(session.set_audio_bus_effect_enabled(0, false));
+		assert!(!session.audio_bus_effects()[0].enabled);
+		assert!(session.remove_audio_bus_effect(0));
+		assert!(session.audio_bus_effects().is_empty());
+
+		// Invalid operations come back as false, not a panic.
+		assert!(!session.add_audio_bus_effect("", 0));
+		assert!(!session.remove_audio_bus_effect(9));
+		assert!(!session.set_audio_bus_effect_param(9, "ceiling_db", -1.0));
+		assert!(!session.set_audio_bus_effect_param(0, "ceiling_db", f64::NAN));
 	}
 }

@@ -4,34 +4,33 @@ Safe Rust SDK for the Quercus video engine, extracted from
 [Oak Video Editor](https://github.com/OakVideoEditorCommunity/oak). Oak Video
 Editor is the reference consumer; other Rust applications can use the same SDK.
 
-The SDK is a thin, owned-value layer over the engine's stable C ABI: it links
-`quercus-engine` as a cdylib (`#[link(name = "quercus_engine")]`) and never uses the
-engine's Rust API. A program that depends on this crate (and indirectly on
-`quercus-engine`) can build a complete non-linear editor without touching any
-other Quercus crate.
+The SDK is a thin, owned-value layer over the engine's stable C ABI. It uses
+the engine rlib by default and never uses the engine's Rust API. A program
+that depends on this crate (and indirectly on `quercus-engine`) can build a
+complete non-linear editor without touching any other Quercus crate.
 
 ```toml
 [dependencies]
-quercus-engine-rs = "0.5"
+quercus-engine-rs = "0.7"
 ```
+
+To use the standalone C dynamic library instead, disable the default rlib
+feature and enable `engine-cdylib`. Only that mode requires shipping the
+engine dynamic library next to the executable.
 
 ## Before you build: FFmpeg is mandatory
 
-`quercus-engine` links the **project FFmpeg 8.1 build** statically. A system,
-Homebrew or distro FFmpeg is not supported: if one is picked up through
-`pkg-config`/`FFMPEG_DIR`, the link fails or the resulting binary loads the
-wrong libraries.
+**`FFMPEG_DIR` is required.** Crate packages do not download or build FFmpeg.
+Point it at a development prefix containing `include/`, `lib/` and
+`lib/pkgconfig/`. Dynamic linking is the default; use BtbN's `gpl-shared`
+packages or an equivalent shared FFmpeg development install. Shared libraries
+must be discoverable at run time through the platform loader path or an rpath.
 
-1. Clone <https://github.com/OakVideoEditorCommunity/quercus-engine> once.
-2. Run `tooling/install-deps.sh` and `tooling/ffmpeg/build-ffmpeg.sh`.
-3. Point `FFMPEG_DIR` at the generated prefix, e.g.
-   `export FFMPEG_DIR="$PWD/.cache/ffmpeg"` (the repository's
-   `.cargo/config.toml` does this automatically when building inside the
-   checkout).
+Static archives are optional. Enable the `ffmpeg-static` feature and point
+`FFMPEG_DIR` at a static development prefix.
 
-There is no prebuilt FFmpeg download and no system-package fallback. Without
-this step the engine's build script fails by design; silently linking a
-different FFmpeg would be worse.
+When developing this repository on Linux/macOS, run
+`tooling/install-deps.sh` before `tooling/ffmpeg/build-ffmpeg.sh --shared`.
 
 ## Quick start
 
@@ -149,11 +148,11 @@ Layouts of the common mirrors are asserted by `_Static_assert` in the header.
 
 ## Linking and packaging
 
-The SDK links the engine cdylib at **link time**; it does not download or
-build anything at run time. `quercus-engine` is built by Cargo as a
-dependency (the `engine` feature, enabled by default).
+By default Cargo links the engine rlib statically into the application; no
+engine dynamic library is needed at run time. The optional `engine-cdylib`
+feature instead links the standalone C dynamic library at link time.
 
-- The engine is built with a relocatable install name on macOS
+- In `engine-cdylib` mode, the engine has a relocatable install name on macOS
   (`@rpath/libquercus_engine.dylib`) and a soname on Linux
   (`libquercus_engine.so`).
 - An application must ship the dylib next to its executable (or in a `lib/`
@@ -163,8 +162,8 @@ dependency (the `engine` feature, enabled by default).
   - Windows: copy `quercus_engine.dll` next to the `.exe`
 - `cargo install` copies only the executable; applications that support
   `cargo install` must embed the engine or install the dylib separately.
-- Disable the default feature only for docs-only builds:
-  `quercus-engine-rs = { version = "0.5", default-features = false }`.
+- Disable default features only for docs-only builds:
+  `quercus-engine-rs = { version = "0.7", default-features = false }`.
 
 The SDK's own tests add `@loader_path`/`$ORIGIN` automatically.
 
@@ -181,7 +180,7 @@ Publish the whole workspace in dependency order (the internal crates are
 published but are implementation details):
 
 ```text
-quercus-core → quercus-ffmpeg-link → quercus-undo → quercus-codec
+quercus-core → quercus-undo → quercus-codec
 → quercus-node → quercus-otio → quercus-render → quercus-audio
 → quercus-timeline → quercus-storage → quercus-task
 → quercus-ofx-plugin → quercus-engine → quercus-engine-rs

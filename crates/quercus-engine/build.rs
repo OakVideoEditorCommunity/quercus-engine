@@ -23,6 +23,7 @@ fn main() {
 		}
 		Ok("linux") => {
 			println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libquercus_engine.so");
+			println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,$ORIGIN");
 		}
 		_ => {}
 	}

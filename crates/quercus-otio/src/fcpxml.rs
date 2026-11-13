@@ -262,7 +262,11 @@ struct Node {
 }
 
 impl Node {
-	/// The first attribute with the given name.
+	/// The first attribute named `key`, or `None` when the element has none.
+	///
+	/// Names are compared verbatim (no namespace or case folding) and the
+	/// returned value is already unescaped by quick-xml. A repeated attribute
+	/// therefore resolves to its first occurrence.
 	fn attr(&self, key: &str) -> Option<&str> {
 		self.attrs
 			.iter()
@@ -270,7 +274,11 @@ impl Node {
 			.map(|(_, v)| v.as_str())
 	}
 
-	/// The first child element with the given (local) name.
+	/// The first direct child element with the given local name.
+	///
+	/// Only direct children are examined and the first match in document order
+	/// wins; `None` when no such child exists. Used to pick out containers such
+	/// as `resources` and `library`.
 	fn child(&self, name: &str) -> Option<&Node> {
 		self.children.iter().find(|c| c.name == name)
 	}
@@ -391,8 +399,13 @@ struct AssetInfo {
 	duration: Rational,
 }
 
-/// Parse a `<format>` resource. Bad formats are logged and skipped so one
-/// broken resource cannot sink the whole document.
+/// Parse a `<format>` resource into `formats`, keyed by its `id`.
+///
+/// `frameDuration` is required and must parse as an FCPXML time value. A
+/// missing `id`, a missing `frameDuration` or an unreadable duration is logged
+/// and skipped, so one broken resource cannot sink the whole document; the
+/// resulting [`FormatInfo`] is only the frame duration (rates are derived from
+/// it on demand).
 fn parse_format(node: &Node, formats: &mut HashMap<String, FormatInfo>) {
 	let Some(id) = node.attr("id") else {
 		eprintln!("quercusotio fcpxml: skipping <format> without an id");
@@ -414,7 +427,12 @@ fn parse_format(node: &Node, formats: &mut HashMap<String, FormatInfo>) {
 	formats.insert(id.to_string(), FormatInfo { frame_duration });
 }
 
-/// Parse an `<asset>` resource. Unreadable durations fall back to 0s.
+/// Parse an `<asset>` resource into `assets`, keyed by its `id`.
+///
+/// The `id` attribute is required — an element without one is logged and
+/// skipped. `src` defaults to "" and `format` to `None` when the attributes are
+/// absent. A missing or unreadable `duration` falls back to 0s (logged) rather
+/// than failing the document; durations are stored as exact rational seconds.
 fn parse_asset(node: &Node, assets: &mut HashMap<String, AssetInfo>) {
 	let Some(id) = node.attr("id") else {
 		eprintln!("quercusotio fcpxml: skipping <asset> without an id");
@@ -441,8 +459,12 @@ fn parse_asset(node: &Node, assets: &mut HashMap<String, AssetInfo>) {
 // Reader: sequences and blocks
 // ---------------------------------------------------------------------------
 
-/// The rate of an `<asset-clip>`: its own `format` attribute, else the
-/// referenced asset's format, else the sequence rate.
+/// The frame rate of an `<asset-clip>`, as an exact rational.
+///
+/// Precedence: the clip's own `format` attribute, else the format of the asset
+/// named by its `ref`, else `fallback` (normally the sequence rate). Unknown
+/// ids and zero frame durations are logged and fall through to the next source,
+/// so this never fails — `fallback` is returned when nothing usable is found.
 fn clip_rate_of(
 	node: &Node,
 	formats: &HashMap<String, FormatInfo>,
@@ -695,7 +717,22 @@ fn set_fcpxml_metadata(
 		.insert("fcpxml".into(), serde_json::Value::Object(fcpx));
 }
 
-/// Parse a `<sequence>` element into a [`Timeline`].
+/// Build a [`Timeline`] from one `<sequence>` element and its ancestors.
+///
+/// `node` supplies the sequence rate (through its required `format` reference
+/// to an already parsed `<format>`), the name (its own `name`, else
+/// `project`'s, else `event`'s), `tcStart` (turned into
+/// [`Timeline::global_start_time`]) and the interchange metadata stored under
+/// the timeline's "fcpxml" key (document `version`, `tcFormat`, `audioLayout`,
+/// `audioRate`, event/project names). `event` and `project` are only consulted
+/// for those fallback names. Tracks come from the `spine`, `video` and `audio`
+/// children in document order and are appended to the timeline's tracks stack.
+///
+/// # Errors
+///
+/// Returns [`FcpxmlError::Malformed`] when the sequence has no `format`
+/// reference, references an unknown format resource, that format has a zero
+/// frame duration, or a `tcStart` (or block) time value cannot be parsed.
 fn parse_sequence(
 	node: &Node,
 	event: &Node,
@@ -800,6 +837,16 @@ pub fn from_fcpxml_string(text: &str) -> Result<Vec<Timeline>> {
 }
 
 /// Read and parse an FCPXML document from a file.
+///
+/// Reads `path` and delegates to [`from_fcpxml_string`], so the same lenient
+/// rules apply: one [`Timeline`] per `<sequence>` found under
+/// `<library>`/`<event>`/`<project>`, and unknown elements are skipped with a
+/// log line rather than failing the import.
+///
+/// # Errors
+///
+/// Returns [`FcpxmlError::Io`] when `path` cannot be read or is not valid
+/// UTF-8, plus everything documented on [`from_fcpxml_string`].
 pub fn from_fcpxml_file(path: impl AsRef<Path>) -> Result<Vec<Timeline>> {
 	from_fcpxml_string(&std::fs::read_to_string(path)?)
 }
@@ -866,8 +913,19 @@ impl ResourceSet {
 		id
 	}
 
-	/// The `<asset>` id for a media URL, creating the resource if it is
-	/// not present yet.
+	/// The `<asset>` id for a media URL, creating the resource if it is not
+	/// present yet.
+	///
+	/// Ids come from the set's shared `r{n}` counter and are stable for the
+	/// lifetime of the set. `src` is the deduplication key: a second call with
+	/// the same `src` returns the existing id and ignores the remaining
+	/// arguments, so callers must merge stream flags (video/audio union) before
+	/// registering a file used on both track kinds. `format_id` is the
+	/// `<format>` resource the asset declares, `duration` its length in seconds
+	/// (from `available_range`, falling back to the clip's source range when the
+	/// available range is unknown), and `has_video`/`has_audio` record which
+	/// streams the file carries. The asset name is the file name of `src`,
+	/// falling back to the whole string.
 	fn asset_id_for(
 		&mut self,
 		src: &str,
@@ -1071,12 +1129,26 @@ fn push_attr(start: &mut BytesStart, key: &str, value: &str) {
 	start.push_attribute((key, escaped.as_str()));
 }
 
+/// Write a single quick-xml event to `writer`.
+///
+/// Thin adapter that discards the byte count returned by quick-xml so the
+/// writer helpers in this module stay terse; it does not flush, so buffering
+/// and the final `into_inner` remain the caller's job.
 fn write_event(writer: &mut Writer<Vec<u8>>, event: Event<'_>) -> Result<()> {
 	writer.write_event(event)?;
 	Ok(())
 }
 
-/// Write the `<resources>` element.
+/// Write the `<resources>` element holding every format and asset collected
+/// so far.
+///
+/// Formats are emitted before assets (the FCP X ordering). Each `<format>`
+/// carries `id`, `name`, `frameDuration`, `width` and `height` — the
+/// dimensions are the fixed 1920x1080 default because the OTIO model does not
+/// carry video dimensions. Each `<asset>` carries `id`, `name` (the file name
+/// of `src`, or the whole `src` when it has none), `src`, `format`,
+/// `duration`, `hasVideo` and `hasAudio`. Writes nothing at all when both
+/// lists are empty.
 fn write_resources(writer: &mut Writer<Vec<u8>>, resources: &ResourceSet) -> Result<()> {
 	if resources.formats.is_empty() && resources.assets.is_empty() {
 		return Ok(());
@@ -1110,7 +1182,12 @@ fn write_resources(writer: &mut Writer<Vec<u8>>, resources: &ResourceSet) -> Res
 	Ok(())
 }
 
-/// Read a string out of the "fcpxml" metadata object.
+/// Read a string entry out of the timeline's "fcpxml" metadata object.
+///
+/// Returns `None` when the "fcpxml" object is absent, when `key` is missing, or
+/// when the value is not a JSON string. Recovers the interchange hints stored
+/// by the reader ("version", "tcFormat", "audioLayout", "audioRate", "event",
+/// "project") so a later export can reproduce them.
 fn metadata_string(timeline: &Timeline, key: &str) -> Option<String> {
 	timeline
 		.metadata()
@@ -1120,7 +1197,21 @@ fn metadata_string(timeline: &Timeline, key: &str) -> Option<String> {
 		.map(str::to_string)
 }
 
-/// Write the blocks of one track into its FCPXML container.
+/// Write `track`'s blocks into the currently open FCPXML container.
+///
+/// `pos` is the running cursor in seconds: every block is written at `*pos`
+/// (a transition starts `in_offset` earlier, matching FCP X's centered
+/// layout) and then advances it, so callers must pass `pos == 0` for a fresh
+/// container and may inspect it afterwards. `seq_rate` is the sequence rate,
+/// used for clips without a source range; a clip whose rate differs from
+/// `seq_rate` gets its own `format` attribute. Clips whose media reference is
+/// not an [`ExternalReference`], or whose `src` was never registered in
+/// `resources`, are written without a `ref` and logged. Non-clip/gap/
+/// transition blocks are skipped with a log line.
+///
+/// # Errors
+///
+/// Propagates XML writer errors from [`write_event`].
 fn write_blocks(
 	writer: &mut Writer<Vec<u8>>,
 	track: &Track,
@@ -1206,7 +1297,18 @@ fn write_blocks(
 	Ok(())
 }
 
-/// Write one `<sequence>` element (and its tracks) for a timeline.
+/// Write one `<sequence>` (with its `<spine>`, `<video>` and `<audio>`
+/// children) for `timeline`.
+///
+/// Tracks are split by kind: the first video track — or, when there is no
+/// video track, the first audio track — becomes FCP X's primary storyline
+/// `<spine>`; every remaining video/audio track becomes a `<video>`/`<audio>`
+/// lane of its own. Tracks of any other kind are skipped with a log line.
+/// `tcStart` comes from [`Timeline::global_start_time`] (0 when unset),
+/// `tcFormat` from the "fcpxml" metadata (default "NDF"), `duration` from the
+/// longest track, and `format`, `name` plus the optional `audioLayout` /
+/// `audioRate` attributes from the timeline. Any `<format>` resource the
+/// sequence or its blocks need is registered in `resources` on the way.
 fn write_sequence(
 	writer: &mut Writer<Vec<u8>>,
 	timeline: &Timeline,
@@ -1283,7 +1385,13 @@ fn write_sequence(
 	Ok(())
 }
 
-/// Write one `<event>`/`<project>`/`<sequence>` group for a timeline.
+/// Write the `<event>`/`<project>` wrapper for one timeline.
+///
+/// The project name comes from the timeline's "fcpxml" metadata "project"
+/// entry, falling back to [`Timeline::name`]; the event name comes from the
+/// "event" entry, defaulting to "Event". `resources` is the shared resource
+/// set that the nested `<sequence>` uses to assign ids. Emits the `<event>`
+/// and `<project>` start/end tags around one [`write_sequence`] call.
 fn write_project(
 	writer: &mut Writer<Vec<u8>>,
 	timeline: &Timeline,
@@ -1345,7 +1453,17 @@ pub fn to_fcpxml_string(timelines: &[Timeline]) -> Result<String> {
 		.map_err(|e| FcpxmlError::Xml(format!("writer produced non-UTF-8 output: {e}")))
 }
 
-/// Serialize timelines to an FCPXML 1.10 document file.
+/// Write `timelines` to `path` as one FCPXML 1.10 document.
+///
+/// Produces the same bytes as [`to_fcpxml_string`]: formats and assets are
+/// collected and deduplicated across all timelines first, then each timeline
+/// becomes one `<event>`/`<project>`/`<sequence>` group. An existing file at
+/// `path` is truncated and replaced.
+///
+/// # Errors
+///
+/// Returns [`FcpxmlError::Io`] when the file cannot be written, and
+/// [`FcpxmlError::Xml`] when the writer produces non-UTF-8 output.
 pub fn to_fcpxml_file(timelines: &[Timeline], path: impl AsRef<Path>) -> Result<()> {
 	std::fs::write(path, to_fcpxml_string(timelines)?)?;
 	Ok(())

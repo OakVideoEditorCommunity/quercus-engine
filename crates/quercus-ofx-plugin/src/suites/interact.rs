@@ -14,42 +14,46 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxInteractSuiteV1 + [`Interact`] 宿主对象。
+//! OfxInteractSuiteV1 + the [`Interact`] host object.
 //!
-//! Interact 是插件自定义 UI 的宿主侧对象（主进程 UI 事件宿主）：与
-//! worker 进程里的渲染实例并存（OFX 允许同一插件多实例），经
-//! [`crate::instance::Instance::new_interact`] 创建、绑定到效果实例。
+//! Interact is the host-side object for a plugin-defined UI (the main-process
+//! UI event host): it coexists with the render instances in the worker process
+//! (OFX allows several instances of the same plugin) and is created through
+//! [`crate::instance::Instance::new_interact`], bound to an effect instance.
 //!
-//! ## 生命周期
+//! ## Lifecycle
 //!
 //! ```text
-//! new_interact   → kOfxActionNewInteract（创建；插件拒绝 → None）
-//! describe       → kOfxActionDescribe（kOfxActionDescribeInteract）
-//! create_instance→ kOfxActionCreateInstance（kOfxActionCreateInstanceInteract）
-//! draw/pen/key/idle → kOfxInteractAction*（宿主→插件）
-//! destroy        → kOfxActionDestroyInstance（kOfxActionDestroyInstanceInteract；
-//!                  Instance 销毁时自动连带）
+//! new_interact   → kOfxActionNewInteract (create; plugin refusal → None)
+//! describe       → kOfxActionDescribe (kOfxActionDescribeInteract)
+//! create_instance→ kOfxActionCreateInstance (kOfxActionCreateInstanceInteract)
+//! draw/pen/key/idle → kOfxInteractAction* (host → plugin)
+//! destroy        → kOfxActionDestroyInstance (kOfxActionDestroyInstanceInteract;
+//!                  also triggered automatically when the Instance is destroyed)
 //! ```
 //!
-//! 所有 action 走 `Interact::call` → 插件入口（overlay interact V2/V1
-//! 入口，未声明则插件 main entry；任务契约：new_interact 向插件入口
-//! 发 kOfxActionNewInteract）。返回值（OfxStatus）如实透传。
+//! The plugin entry receives every action through `Interact::call` (the
+//! overlay interact V2/V1 entry, or the plugin's main entry when undeclared;
+//! task contract: new_interact sends kOfxActionNewInteract to the plugin
+//! entry). The return value (OfxStatus) is passed through faithfully.
 //!
-//! ## 语义（ofxInteract.h）
+//! ## Semantics (ofxInteract.h)
 //!
-//! - pen/key action 的返回：kOfxStatOK = 插件已处理该事件，宿主不应再
-//!   把事件传给视图中其他交互对象；kOfxStatReplyDefault = 插件未处理，
-//!   宿主可自行处置。
-//! - pen 坐标：调用方给 viewport 像素；inArgs 另带 canonical 坐标
-//!   （kOfxInteractPropPenPosition，= viewport 像素 / pixelScale）与
-//!   pixelScale、pressure（两态笔按 ofxInteract.h 映射 0/1）。
-//! - key：kOfxPropKeySym（ofxKeySyms.h 关键码）+ kOfxPropKeyString
-//!   （UTF-8；无 UTF8 编码的键为空串）。
-//! - draw：宿主在调用前经 [`crate::gl_bridge::acquire`] 保持 GL current
-//!   整个 action（插件发原生 GL 命令或经 Draw suite，ofxInteract.h
-//!   "the openGL context for this interact has been set"）；inArgs 带
-//!   viewport/pixelScale/time/backgroundImage/backgroundColour/
-//!   drawContext。
+//! - Return of the pen/key actions: kOfxStatOK = the plugin handled the
+//!   event, so the host must not pass it on to other interact objects in the
+//!   view; kOfxStatReplyDefault = the plugin did not handle it, so the host
+//!   may act on it itself.
+//! - Pen coordinates: the caller supplies viewport pixels; inArgs also
+//!   carries canonical coordinates (kOfxInteractPropPenPosition = viewport
+//!   pixels / pixelScale) as well as pixelScale and pressure (a two-state pen
+//!   maps to 0/1 per ofxInteract.h).
+//! - key: kOfxPropKeySym (a key code from ofxKeySyms.h) + kOfxPropKeyString
+//!   (UTF-8; keys without a UTF-8 encoding are the empty string).
+//! - draw: before calling, the host keeps GL current for the whole action via
+//!   [`crate::gl_bridge::acquire`] (the plugin issues raw GL commands or goes
+//!   through the Draw suite; ofxInteract.h "the openGL context for this interact
+//!   has been set"); inArgs carries
+//!   viewport/pixelScale/time/backgroundImage/backgroundColour/drawContext.
 
 use std::ffi::{c_int, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,28 +67,32 @@ fn cs(s: &str) -> CString {
 	CString::new(s).unwrap()
 }
 
-/// Interact 实例。`Arc<Interact>` 管理生命周期（app 侧持句柄 +
-/// [`crate::instance::Instance`] 的 interact 字段）。
+/// An Interact instance. `Arc<Interact>` manages the lifetime (the app side
+/// holds the handle plus [`crate::instance::Instance`]'s interact field).
 ///
-/// `#[repr(C)]` + props 在偏移 0（句柄约定：interact handle =
-/// `&props` | INTERACT 标签；property suite 剥标签后直读属性集）。
+/// `#[repr(C)]` with props at offset 0 (the handle convention: interact
+/// handle = `&props` | INTERACT tag; the property suite strips the tag and
+/// reads the property set directly).
 #[repr(C)]
 pub struct Interact {
-	/// interact 实例级属性集（偏移 0，句柄约定）。
+	/// The interact instance-level property set (offset 0, handle convention).
 	pub props: PropertySet,
-	/// 所属插件。
+	/// The owning plugin.
 	pub plugin: Arc<Plugin>,
-	/// interact 的入口（overlay interact V2/V1 入口，未声明则插件
-	/// main entry）。interact 的所有 action 都发到这里。
+	/// The interact entry (the overlay interact V2/V1 entry, or the plugin's
+	/// main entry when undeclared). All interact actions are dispatched here.
 	pub entry: EntryPoint,
-	/// 效果实例句柄（tagged INSTANCE；interact action inArgs 的
-	/// kOfxPropEffectInstance）。不透明令牌，不解引用。
+	/// The effect instance handle (tagged INSTANCE; the interact action's
+	/// inArgs kOfxPropEffectInstance). An opaque token, never dereferenced.
 	pub effect_handle: *mut c_void,
-	/// 插件经 interactSwapBuffers 请求的缓冲交换（app 侧轮询后清零）。
+	/// A buffer swap requested by the plugin through interactSwapBuffers
+	/// (cleared after the app side polls it).
 	pub swap_requested: AtomicBool,
-	/// 插件经 interactRedraw 请求的重绘（app 侧轮询后清零）。
+	/// A redraw requested by the plugin through interactRedraw (cleared after
+	/// the app side polls it).
 	pub redraw_requested: AtomicBool,
-	/// destroy 是否已通知（幂等门；Instance 销毁连带触发）。
+	/// Whether destroy has been signaled (idempotence gate; also triggered by
+	/// Instance destruction).
 	pub destroyed: AtomicBool,
 }
 
@@ -96,8 +104,9 @@ unsafe impl Send for Interact {}
 unsafe impl Sync for Interact {}
 
 impl Interact {
-	/// 构造（宿主内部；[`crate::instance::Instance::new_interact`] 调）。
-	/// `effect_handle` 为 tagged INSTANCE 句柄（不透明令牌）。
+	/// Constructs an interact (host-internal; called by
+	/// [`crate::instance::Instance::new_interact`]).
+	/// `effect_handle` is a tagged INSTANCE handle (an opaque token).
 	pub(crate) fn new(
 		plugin: Arc<Plugin>,
 		entry: EntryPoint,
@@ -116,59 +125,62 @@ impl Interact {
 		i
 	}
 
-	/// interact handle（tagged INTERACT）。
+	/// The interact handle (tagged INTERACT).
 	pub(crate) fn handle(&self) -> *mut c_void {
 		tag::make(&self.props as *const PropertySet, tag::INTERACT)
 	}
 
-	/// 向插件入口发一个 interact action。
+	/// Dispatches one interact action to the plugin entry.
 	///
 	/// # Safety
-	/// handle 与 action 匹配（Interact 生命周期由宿主控制；destroy 后
-	/// 不再调用）。
+	/// The handle matches the action (the Interact lifetime is controlled by the
+	/// host; it is not called again after destroy).
 	pub(crate) fn call(&self, action: &str, in_args: &PropertySet, out_args: &PropertySet) -> i32 {
 		unsafe {
 			self.plugin.call_entry(self.entry, action, self.handle(), in_args, out_args)
 		}
 	}
 
-	/// 取 effect 实例句柄（inArgs 的 kOfxPropEffectInstance）。
+	/// Returns the effect instance handle (the inArgs kOfxPropEffectInstance).
 	fn effect_instance_prop(&self) -> Value {
 		Value::Pointer(self.effect_handle)
 	}
 
-	/// 当前 pixelScale（interact props，默认 1,1）。
+	/// The current pixelScale (from the interact props, default 1,1).
 	fn pixel_scale(&self) -> (f64, f64) {
 		read_double2(&self.props, crate::host::PROP_INTERACT_PIXEL_SCALE)
 			.unwrap_or((1.0, 1.0))
 	}
 
-	/// describe（kOfxActionDescribe == kOfxActionDescribeInteract，
-	/// ofxInteract.h:171）。inArgs/outArgs 冗余为 NULL。
+	/// describe (kOfxActionDescribe == kOfxActionDescribeInteract,
+	/// ofxInteract.h:171). inArgs/outArgs are redundantly NULL.
 	pub fn describe(&self) -> i32 {
 		let empty = PropertySet::new();
 		self.call(crate::host::ACTION_DESCRIBE, &empty, &empty)
 	}
 
-	/// createInstance（kOfxActionCreateInstance ==
-	/// kOfxActionCreateInstanceInteract，ofxInteract.h:198）。
-	/// draw/pen/key 的前置（ofxInteract.h 各 action 的 \pre）。
+	/// createInstance (kOfxActionCreateInstance ==
+	/// kOfxActionCreateInstanceInteract, ofxInteract.h:198).
+	/// A prerequisite for draw/pen/key (the \pre of the actions in ofxInteract.h).
 	pub fn create_instance(&self) -> i32 {
 		let empty = PropertySet::new();
 		self.call(crate::host::ACTION_CREATE_INSTANCE, &empty, &empty)
 	}
 
-	/// draw action（ofxInteract.h:265）。宿主在调用前
-	/// [`crate::gl_bridge::acquire`] 保持 GL current 整个 action；inArgs
-	/// 带 kOfxInteractPropPixelScale/ViewportSize/BackgroundColour/
-	/// BackgroundImage/Time/RenderScale/DrawContext + kOfxPropEffectInstance。
+	/// The draw action (ofxInteract.h:265). Before calling, the host keeps the
+	/// GL context current for the whole action via
+	/// [`crate::gl_bridge::acquire`]; inArgs carries
+	/// kOfxInteractPropPixelScale/ViewportSize/BackgroundColour/
+	/// BackgroundImage/Time/RenderScale/DrawContext + kOfxPropEffectInstance.
 	///
-	/// `background_image`：宿主持有的背景图像句柄（本宿主 Phase 1 无
-	/// 合成背景，传 None 即空——任务契约"可空"）。
+	/// `background_image` is the background image handle held by the host (this
+	/// host has no composited background in Phase 1, so None means empty — the
+	/// task contract's "may be null").
 	///
-	/// 返回值：插件的 OfxStatus 如实透传；GL 上下文不可用（非 macOS /
-	/// 无上下文）时返回 kOfxStatErrMissingHostFeature（宿主侧失败，未
-	/// 触达插件）。
+	/// Return value: the plugin's OfxStatus is passed through faithfully; when the
+	/// GL context is unavailable (not macOS / no context) it returns
+	/// kOfxStatErrMissingHostFeature (a host-side failure that never reaches the
+	/// plugin).
 	pub fn draw(
 		&self,
 		viewport_size: (f64, f64),
@@ -232,8 +244,19 @@ impl Interact {
 		st
 	}
 
-	/// 装配 pen 类 action 的 inArgs（PenMotion/PenDown/PenUp 共用，
-	/// ofxInteract.h:274-321）。
+	/// Builds the inArgs for pen-family actions (shared by PenMotion/PenDown/
+	/// PenUp and gain/lose focus).
+	///
+	/// Contents: the effect instance handle, pixelScale, background colour (black),
+	/// time in seconds, renderScale=1, canonical pen coordinates (viewport pixels /
+	/// pixelScale, protected with 1e-9 when scale is 0), plus rounded integer
+	/// viewport coordinates and the pressure value.
+	///
+	/// # Arguments
+	///
+	/// * `pen_viewport` - viewport pixel coordinates `(x, y)` (top-left origin).
+	/// * `pressure` - pen pressure, 0.0..=1.0 (a two-state pen uses 1.0/0.0).
+	/// * `time` - current render time, in seconds.
 	fn pen_in_args(&self, pen_viewport: (f64, f64), pressure: f64, time: f64) -> PropertySet {
 		let (ps_x, ps_y) = self.pixel_scale();
 		// canonical = viewport 像素 / pixelScale（pixelScale 是
@@ -271,9 +294,9 @@ impl Interact {
 		in_args
 	}
 
-	/// pen_motion（ofxInteract.h:302）。`pen_viewport` 为视口像素坐标；
-	/// `pen_down` 表示笔是否按下（两态笔按 ofxInteract.h:114 映射压力
-	/// 1.0/0.0）。
+	/// pen_motion (ofxInteract.h:302). `pen_viewport` is in viewport pixels;
+	/// `pen_down` says whether the pen is down (a two-state pen maps to pressure
+	/// 1.0/0.0 per ofxInteract.h:114).
 	pub fn pen_motion(&self, pen_viewport: (f64, f64), pen_down: bool, time: f64) -> i32 {
 		let pressure = if pen_down { 1.0 } else { 0.0 };
 		let in_args = self.pen_in_args(pen_viewport, pressure, time);
@@ -281,22 +304,52 @@ impl Interact {
 		self.call(crate::host::ACTION_INTERACT_PEN_MOTION, &in_args, &out)
 	}
 
-	/// pen_down（ofxInteract.h:340）。压力 1.0。
+	/// Dispatches kOfxInteractActionPenDown (ofxInteract.h:340) with the
+	/// pressure fixed at 1.0.
+	///
+	/// # Arguments
+	///
+	/// * `pen_viewport` - viewport pixel coordinates `(x, y)`.
+	/// * `time` - current time, in seconds.
+	///
+	/// # Returns
+	///
+	/// The plugin's OfxStatus, passed through as-is.
 	pub fn pen_down(&self, pen_viewport: (f64, f64), time: f64) -> i32 {
 		let in_args = self.pen_in_args(pen_viewport, 1.0, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_PEN_DOWN, &in_args, &out)
 	}
 
-	/// pen_up（ofxInteract.h:376）。压力 0.0。
+	/// Dispatches kOfxInteractActionPenUp (ofxInteract.h:376) with the pressure
+	/// fixed at 0.0.
+	///
+	/// # Arguments
+	///
+	/// * `pen_viewport` - viewport pixel coordinates `(x, y)`.
+	/// * `time` - current time, in seconds.
+	///
+	/// # Returns
+	///
+	/// The plugin's OfxStatus, passed through as-is.
 	pub fn pen_up(&self, pen_viewport: (f64, f64), time: f64) -> i32 {
 		let in_args = self.pen_in_args(pen_viewport, 0.0, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_PEN_UP, &in_args, &out)
 	}
 
-	/// 装配 key 类 action 的 inArgs（KeyDown/KeyUp 共用，
-	/// ofxInteract.h:384-442）。
+	/// Builds the inArgs for key-family actions (shared by KeyDown/KeyUp,
+	/// ofxInteract.h:384-442).
+	///
+	/// Contents: the effect instance handle, `kOfxPropKeySym`, `kOfxPropKeyString`
+	/// (a UTF-8 `CString`), time in seconds and renderScale=1.
+	///
+	/// # Arguments
+	///
+	/// * `key_sym` - a key code from ofxKeySyms.h.
+	/// * `key_string` - the UTF-8 character for the key; keys without a printable
+	///   character are the empty string.
+	/// * `time` - current time, in seconds.
 	fn key_in_args(&self, key_sym: i32, key_string: &str, time: f64) -> PropertySet {
 		let in_args = PropertySet::new();
 		in_args.set_one(crate::host::PROP_EFFECT_INSTANCE, self.effect_instance_prop());
@@ -310,46 +363,76 @@ impl Interact {
 		in_args
 	}
 
-	/// key_down（ofxInteract.h:410）。`key_sym` 为 ofxKeySyms.h 关键码；
-	/// `key_string` 为 UTF-8 字符（无 UTF8 编码的键为空串）。
+	/// key_down (ofxInteract.h:410). `key_sym` is a key code from ofxKeySyms.h;
+	/// `key_string` is the UTF-8 character (keys without a UTF-8 encoding are the
+	/// empty string).
 	pub fn key_down(&self, key_sym: i32, key_string: &str, time: f64) -> i32 {
 		let in_args = self.key_in_args(key_sym, key_string, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_KEY_DOWN, &in_args, &out)
 	}
 
-	/// key_up（ofxInteract.h:443）。
+	/// Dispatches kOfxInteractActionKeyUp (ofxInteract.h:443).
+	///
+	/// The inArgs are assembled by the shared key inArgs builder and sent to the
+	/// plugin through `Interact::call`.
+	///
+	/// # Arguments
+	///
+	/// * `key_sym` - a key code from ofxKeySyms.h.
+	/// * `key_string` - the UTF-8 character for the key; keys with no UTF-8
+	///   representation pass the empty string.
+	/// * `time` - current time, in seconds.
+	///
+	/// # Returns
+	///
+	/// The plugin's OfxStatus (kOfxStatOK = handled, kOfxStatReplyDefault = not
+	/// handled).
 	pub fn key_up(&self, key_sym: i32, key_string: &str, time: f64) -> i32 {
 		let in_args = self.key_in_args(key_sym, key_string, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_KEY_UP, &in_args, &out)
 	}
 
-	/// idle（宿主空闲泵；任务契约的 kOfxInteractActionIdle，属本宿主
-	/// 扩展）。插件未实现时返回 kOfxStatReplyDefault。
+	/// idle (the host's idle pump; kOfxInteractActionIdle per the task contract,
+	/// an extension of this host). Returns kOfxStatReplyDefault when the plugin
+	/// does not implement it.
 	pub fn idle(&self) -> i32 {
 		let empty = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_IDLE, &empty, &empty)
 	}
 
-	/// gain_focus（ofxInteract.h:501）：pen/key 事件的前置
-	/// （ofxInteract.h 各 action 的 \pre 要求 interact 已获焦点）。
+	/// gain_focus (ofxInteract.h:501): a prerequisite for pen/key events (the
+	/// \pre of the actions in ofxInteract.h requires the interact to have gained
+	/// focus).
 	pub fn gain_focus(&self, time: f64) -> i32 {
 		let in_args = self.pen_in_args((0.0, 0.0), 0.0, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_GAIN_FOCUS, &in_args, &out)
 	}
 
-	/// lose_focus（ofxInteract.h:526）。
+	/// Dispatches kOfxInteractActionLoseFocus (ofxInteract.h:526).
+	///
+	/// Uses empty pen inArgs (coordinates 0,0, pressure 0) to tell the plugin that
+	/// the interact lost focus; pairs with [`Interact::gain_focus`].
+	///
+	/// # Arguments
+	///
+	/// * `time` - current time, in seconds.
+	///
+	/// # Returns
+	///
+	/// The plugin's OfxStatus, passed through as-is.
 	pub fn lose_focus(&self, time: f64) -> i32 {
 		let in_args = self.pen_in_args((0.0, 0.0), 0.0, time);
 		let out = PropertySet::new();
 		self.call(crate::host::ACTION_INTERACT_LOSE_FOCUS, &in_args, &out)
 	}
 
-	/// destroy（kOfxActionDestroyInstance == kOfxActionDestroyInstanceInteract，
-	/// ofxInteract.h:227）。幂等：只通知一次。返回状态忽略（析构不可
-	/// 回滚，ofxInteract.h "what is returned is moot"）。
+	/// destroy (kOfxActionDestroyInstance == kOfxActionDestroyInstanceInteract,
+	/// ofxInteract.h:227). Idempotent: the plugin is notified only once. The
+	/// returned status is ignored (destruction cannot be rolled back; ofxInteract.h
+	/// "what is returned is moot").
 	pub fn destroy(&self) {
 		if self
 			.destroyed
@@ -362,7 +445,16 @@ impl Interact {
 	}
 }
 
-/// interact 实例属性表（ofxInteract.h 的 PropertiesInteract 子集）。
+/// Initializes the default values of the interact instance property table.
+///
+/// Defines/sets pixelScale=(1,1), viewportSize=(0,0), an empty background image
+/// and slaveToParam, a white suggested colour, a black background colour,
+/// bitDepth=32 and hasAlpha=1. Called once by [`Interact::new`] when the
+/// instance is created.
+///
+/// # Arguments
+///
+/// * `props` - the property set to initialize (usually `Interact::props`).
 fn init_interact_props(props: &PropertySet) {
 	props.define(
 		crate::host::PROP_INTERACT_PIXEL_SCALE,
@@ -390,7 +482,20 @@ fn init_interact_props(props: &PropertySet) {
 	props.set_one(crate::host::PROP_INTERACT_HAS_ALPHA, Value::Int(1));
 }
 
-/// 从属性集读 Double×2（缺失/类型不符 → None）。
+/// Reads a Double×2 property from a property set.
+///
+/// Elements 0 and 1 must both be [`Value::Double`]; returns `None` when the
+/// property is missing, has too few elements or has a type mismatch. Used to
+/// read two-element properties such as pixelScale.
+///
+/// # Arguments
+///
+/// * `props` - the property set.
+/// * `name` - the property name (e.g. `kOfxInteractPropPixelScale`).
+///
+/// # Returns
+///
+/// `(x, y)`, or `None`.
 fn read_double2(props: &PropertySet, name: &str) -> Option<(f64, f64)> {
 	let x = match props.get(name, 0)? {
 		Value::Double(d) => d,
@@ -405,7 +510,27 @@ fn read_double2(props: &PropertySet, name: &str) -> Option<(f64, f64)> {
 
 // ---- OfxInteractSuiteV1（ofxInteract.h:534-544）------------------------
 
-/// interact 句柄解析（tag INTERACT）。
+/// Resolves a C handle into an `Interact` reference.
+///
+/// The handle must be non-null with the low 3 tag bits equal to `tag::INTERACT`;
+/// after validation the tag is stripped to yield `&Interact` (whose `props` sits
+/// at offset 0). Whether the object has been freed is not checked — the lifetime
+/// is guaranteed by the host and [`crate::instance::Instance`].
+///
+/// # Arguments
+///
+/// * `handle` - the interact handle the host handed to the plugin (tagged
+///   INTERACT).
+///
+/// # Returns
+///
+/// `Ok(&Interact)`; a null pointer or a wrong tag yields
+/// `Err(status::ERR_BAD_HANDLE)`.
+///
+/// # Safety
+///
+/// When non-null and correctly tagged, the Interact `handle` points to must stay
+/// alive for the duration of the call.
 fn resolve_interact(handle: *mut c_void) -> Result<&'static Interact, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -419,7 +544,20 @@ fn resolve_interact(handle: *mut c_void) -> Result<&'static Interact, c_int> {
 	}
 }
 
-/// 公共入口模板：panic 兜底。
+/// Runs a closure and normalizes its result into an OFX status code (the panic
+/// fallback for suite entries).
+///
+/// The closure returning `Ok(())` → kOfxStatOK; `Err(code)` → `code` passed
+/// through; a panic → kOfxStatFailed. All interact C entries go through it.
+///
+/// # Arguments
+///
+/// * `f` - the actual implementation, returning `Ok(())` or the OFX status code
+///   to propagate.
+///
+/// # Returns
+///
+/// kOfxStatOK(0), the error code given by the closure, or kOfxStatFailed(1).
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_or_else(
 		|_| status::FAILED,
@@ -427,9 +565,24 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	)
 }
 
-/// interactSwapBuffers：插件请求宿主交换 GL 缓冲（宿主 UI 视图中）。
-/// 本宿主无 UI 视图，把请求记入 `swap_requested`（app 侧轮询后清零）并
-/// 返回 OK——宿主服务真实生效（请求被记录、可被 UI 消费）。
+/// interactSwapBuffers: records the plugin's GL buffer swap request.
+///
+/// The host has no UI view and cannot actually swap GL buffers; this sets
+/// `swap_requested` (cleared after the app side polls it) and returns OK.
+///
+/// # Arguments
+///
+/// * `handle` - a tagged INTERACT handle.
+///
+/// # Returns
+///
+/// kOfxStatOK; kOfxStatErrBadHandle when the handle is null or wrongly tagged;
+/// kOfxStatFailed on panic.
+///
+/// # Safety
+///
+/// `handle` must be null or point to a still-live host Interact; when non-null,
+/// its memory must be readable for the duration of the call.
 unsafe extern "C" fn interact_swap_buffers(handle: *mut c_void) -> c_int {
 	caught(|| {
 		let i = resolve_interact(handle)?;
@@ -438,8 +591,25 @@ unsafe extern "C" fn interact_swap_buffers(handle: *mut c_void) -> c_int {
 	})
 }
 
-/// interactRedraw：插件请求宿主重绘 interact 视图。同上记入
-/// `redraw_requested`（app 侧轮询）。
+/// interactRedraw: records the plugin's redraw request.
+///
+/// This host has no separate interact UI view, so it sets `redraw_requested`
+/// (cleared after the app side polls it) and returns OK, letting the UI consume
+/// the request.
+///
+/// # Arguments
+///
+/// * `handle` - a tagged INTERACT handle.
+///
+/// # Returns
+///
+/// kOfxStatOK; kOfxStatErrBadHandle when the handle is null or wrongly tagged;
+/// kOfxStatFailed on panic.
+///
+/// # Safety
+///
+/// `handle` must be null or point to a still-live host Interact; when non-null,
+/// its memory must be readable for the duration of the call.
 unsafe extern "C" fn interact_redraw(handle: *mut c_void) -> c_int {
 	caught(|| {
 		let i = resolve_interact(handle)?;
@@ -448,7 +618,28 @@ unsafe extern "C" fn interact_redraw(handle: *mut c_void) -> c_int {
 	})
 }
 
-/// interactGetPropertySet：返回 interact 的属性集句柄（tagged INTERACT）。
+/// interactGetPropertySet: returns the interact's property set handle.
+///
+/// After validating that `property` is non-null and `handle` is valid, tags
+/// `&Interact.props` with `INTERACT` and writes it into `*property`. The written
+/// handle borrows the Interact's lifetime.
+///
+/// # Arguments
+///
+/// * `handle` - a tagged INTERACT handle.
+/// * `property` - the output location receiving the tagged INTERACT property set
+///   handle.
+///
+/// # Returns
+///
+/// kOfxStatOK; kOfxStatErrValue when `property` is null; kOfxStatErrBadHandle
+/// when `handle` is invalid; kOfxStatFailed on panic.
+///
+/// # Safety
+///
+/// `handle` must be null or point to a still-live host Interact object;
+/// `property` must be null or point to a writable `*mut c_void`. The written
+/// property set handle is valid only while the Interact is alive.
 unsafe extern "C" fn interact_get_property_set(
 	handle: *mut c_void,
 	property: *mut *mut c_void,
@@ -463,18 +654,19 @@ unsafe extern "C" fn interact_get_property_set(
 	})
 }
 
-/// 函数表布局（与 SDK `OfxInteractSuiteV1` 逐字段一致；ofxInteract.h:534）。
+/// Function table layout (field-for-field identical to the SDK
+/// `OfxInteractSuiteV1`; ofxInteract.h:534).
 #[repr(C)]
 pub struct InteractSuiteV1 {
-	/// interactSwapBuffers。
+	/// interactSwapBuffers.
 	pub interact_swap_buffers: unsafe extern "C" fn(*mut c_void) -> c_int,
-	/// interactRedraw。
+	/// interactRedraw.
 	pub interact_redraw: unsafe extern "C" fn(*mut c_void) -> c_int,
-	/// interactGetPropertySet。
+	/// interactGetPropertySet.
 	pub interact_get_property_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
 }
 
-/// 函数表实例。
+/// The function table instance.
 pub fn suite_v1() -> &'static InteractSuiteV1 {
 	static SUITE: std::sync::OnceLock<InteractSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| InteractSuiteV1 {
@@ -490,9 +682,9 @@ mod tests {
 	use std::ffi::{c_char, CStr};
 	use std::sync::Mutex;
 
-	/// interact 属性表：PixelScale/ViewportSize/SuggestedColour/
-	/// SlaveToParam/BitDepth/HasAlpha 等按头文件预置，经 property suite
-	/// 可读写。
+	/// The interact property table: PixelScale/ViewportSize/SuggestedColour/
+	/// SlaveToParam/BitDepth/HasAlpha etc. are preset per the header and
+	/// readable/writable through the property suite.
 	#[test]
 	fn interact_props_initialized() {
 		let props = PropertySet::new();
@@ -530,7 +722,7 @@ mod tests {
 		);
 	}
 
-	/// read_double2 帮助函数。
+	/// read_double2 helper function.
 	#[test]
 	fn read_double2_helper() {
 		let props = PropertySet::new();
@@ -539,7 +731,8 @@ mod tests {
 		assert_eq!(read_double2(&props, "Q"), None);
 	}
 
-	/// 空指针/错标签 → ErrBadHandle（interact suite 的句柄校验）。
+	/// Null pointer / wrong tag → ErrBadHandle (the interact suite's handle
+	/// validation).
 	#[test]
 	fn interact_suite_handle_validation() {
 		unsafe {
@@ -557,8 +750,9 @@ mod tests {
 		}
 	}
 
-	/// interact suite 服务端：swap/redraw 请求被记录（app 侧轮询面），
-	/// getPropertySet 返回 interact 属性集句柄。
+	/// interact suite server side: swap/redraw requests are recorded (the
+	/// app-side polling surface) and getPropertySet returns the interact property
+	/// set handle.
 	#[test]
 	fn interact_suite_requests_are_recorded() {
 		// 用假插件构造 Interact（不进插件入口——只测 suite 服务端）。
@@ -608,7 +802,8 @@ mod tests {
 		drop(interact);
 	}
 
-	/// 假入口：所有 action 返回 ReplyDefault（不触达真实插件）。
+	/// Fake entry: every action returns ReplyDefault (never reaches a real
+	/// plugin).
 	unsafe extern "C" fn dummy_entry(
 		_action: *const c_char,
 		_handle: *const c_void,
@@ -618,7 +813,8 @@ mod tests {
 		status::REPLY_DEFAULT
 	}
 
-	/// call 面透传：entry 收到 action 与 tagged handle（假插件记录）。
+	/// call-side pass-through: the entry receives the action and the tagged
+	/// handle (recorded by the fake plugin).
 	#[test]
 	fn interact_call_dispatches_to_entry() {
 		static CALLED_ACTION: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -674,8 +870,9 @@ mod tests {
 		assert_eq!(calls, want, "interact action 序列应按序透传到入口");
 	}
 
-	/// pen 事件的真实参数：inArgs 的 canonical 位置/视口位置/压力按
-	/// pixelScale 换算（假插件读取记录）。
+	/// Real pen event parameters: the inArgs canonical position / viewport
+	/// position / pressure are converted through pixelScale (read and recorded by
+	/// the fake plugin).
 	#[test]
 	fn pen_in_args_canonical_conversion() {
 		// 记录 pen_motion 的 inArgs 关键属性。
@@ -736,7 +933,7 @@ mod tests {
 		assert_eq!(pressure, 0.0);
 	}
 
-	/// key 事件真实参数：keySym/keyString 进 inArgs。
+	/// Real key event parameters: keySym/keyString enter inArgs.
 	#[test]
 	fn key_in_args_carry_sym_and_string() {
 		static CAPTURED: Mutex<Option<(i32, String)>> = Mutex::new(None);
@@ -780,7 +977,7 @@ mod tests {
 		assert_eq!(s, "a");
 	}
 
-	/// destroy 幂等：只发一次。
+	/// destroy is idempotent: it is sent only once.
 	#[test]
 	fn destroy_is_idempotent() {
 		static COUNT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);

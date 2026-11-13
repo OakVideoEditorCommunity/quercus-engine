@@ -162,27 +162,47 @@ impl NodeCore {
 		core
 	}
 
-	/// Append an input descriptor.
+	/// Append an input descriptor to the node's input list.
+	///
+	/// `input` is moved into the core and becomes the last input in declaration
+	/// order; its id is how values, keyframes and graph connections address it. The
+	/// constructor's `enabled_in` input is already present, so new inputs come
+	/// after it. Duplicate ids are not rejected; lookup returns the first match.
 	pub fn add_input(&mut self, input: Input) {
 		self.inputs.push(input);
 	}
 
-	/// Look up an input by id.
+	/// Look up an input descriptor by its stable id.
+	///
+	/// Returns the first input whose `id` matches, in declaration order, or `None`
+	/// when the node does not declare it. The reference borrows the node; use
+	/// [`NodeCore::get_input_mut`] for mutation.
 	pub fn get_input(&self, id: &str) -> Option<&Input> {
 		self.inputs.iter().find(|i| i.id == id)
 	}
 
-	/// Mutable input lookup by id.
+	/// Mutable lookup of an input descriptor by id.
+	///
+	/// Returns the first matching input in declaration order, or `None`. Pairs with
+	/// [`NodeCore::get_input`]; only the descriptor is exposed here, while values
+	/// are stored separately through `standard_value`/`set_standard_value`.
 	pub fn get_input_mut(&mut self, id: &str) -> Option<&mut Input> {
 		self.inputs.iter_mut().find(|i| i.id == id)
 	}
 
-	/// Index of the input in declaration order (C++ `inputs()`).
+	/// Position of an input in declaration order.
+	///
+	/// Returns the index into [`NodeCore::inputs`] for `id`, or `None` when the
+	/// node does not declare it. This is the order used by the parameter view and
+	/// by array-element bookkeeping; it is not a value slot.
 	pub fn input_index(&self, id: &str) -> Option<usize> {
 		self.inputs.iter().position(|i| i.id == id)
 	}
 
-	/// True when the node declares `id` (C++ `has_input_with_id`).
+	/// Whether the node declares an input with id `id`.
+	///
+	/// Equivalent to `input_index(id).is_some()`; returns `false` for unknown or
+	/// empty ids and never panics.
 	pub fn has_input(&self, id: &str) -> bool {
 		self.inputs.iter().any(|i| i.id == id)
 	}
@@ -194,17 +214,30 @@ impl NodeCore {
 		self.inputs.len() != before
 	}
 
-	/// Declared value type of `id` (C++ `get_input_data_type`).
+	/// Declared value type of an input.
+	///
+	/// Returns the `ValueType` recorded on the descriptor, or `None` when `id` is
+	/// unknown. This is the type the node expects at render time, not the type of
+	/// the currently stored value (see [`NodeCore::standard_value`]).
 	pub fn input_data_type(&self, id: &str) -> Option<crate::value::ValueType> {
 		self.get_input(id).map(|i| i.value_type)
 	}
 
-	/// Flag bits of `id` (C++ `get_input_flags`).
+	/// Flag bits of an input descriptor.
+	///
+	/// Returns the descriptor's `flags` field, or `0` when `id` is unknown, so an
+	/// unknown input looks like a plain input instead of failing. Bit meanings are
+	/// defined in [`crate::input::flags`].
 	pub fn input_flags(&self, id: &str) -> u32 {
 		self.get_input(id).map(|i| i.flags).unwrap_or(0)
 	}
 
-	/// Display name of `id` (C++ `get_input_name`, non-virtual part).
+	/// Display name of an input.
+	///
+	/// Returns the name stored on the descriptor (the non-virtual part of the C++
+	/// `get_input_name`), falling back to `id` itself when the input is unknown.
+	/// Unlike [`NodeBehavior::input_name`], this does not apply behavior-level
+	/// overrides such as the localized "Enabled" label.
 	pub fn input_display_name(&self, id: &str) -> String {
 		self.get_input(id)
 			.map(|i| i.display_name.clone())
@@ -235,7 +268,13 @@ impl NodeCore {
 		self.remove_element_keyframes(id, index);
 	}
 
-	/// See [`NodeCore::input_array_insert`].
+	/// Shrink an array input by one element, removing element `index`.
+	///
+	/// Out-of-range indexes (including every index of a non-array input) are a
+	/// no-op. The removed element's standard value and keyframe track are dropped,
+	/// later elements shift down by one, and the tail slot is cleared. Counterpart
+	/// of [`NodeCore::input_array_insert`]; per-element value hints are not shifted
+	/// by either operation. `index` must be below `input_array_size(id)`.
 	pub fn input_array_remove(&mut self, id: &str, index: usize) {
 		let size = self.input_array_size(id);
 		if index >= size {
@@ -258,6 +297,12 @@ impl NodeCore {
 		}
 	}
 
+	/// Move one standard value from element `from` to element `to`.
+	///
+	/// Used by [`NodeCore::input_array_insert`] and
+	/// [`NodeCore::input_array_remove`] when shifting array elements. Only an
+	/// existing value is moved; when `from` has no override, `to` is left alone,
+	/// and a value already stored at `to` is overwritten.
 	fn move_element_value(&mut self, id: &str, from: usize, to: usize) {
 		let key = |e: usize| (id.to_string(), e as i32);
 		if let Some(v) = self.standard_values.remove(&key(from)) {
@@ -265,6 +310,12 @@ impl NodeCore {
 		}
 	}
 
+	/// Move the keyframe track of `(id, from)` to element `to`.
+	///
+	/// Removes the source track and installs it at the target element, replacing a
+	/// track already stored there or appending a new entry. No-op when `from` has
+	/// no track. Used for the element shifting in [`NodeCore::input_array_insert`]
+	/// and [`NodeCore::input_array_remove`].
 	fn move_element_keyframes(&mut self, id: &str, from: usize, to: usize) {
 		let track = match self
 			.keyframes
@@ -286,12 +337,21 @@ impl NodeCore {
 		}
 	}
 
+	/// Drop the keyframe track of `(id, element)`, if present.
+	///
+	/// Used when an array element is deleted or a fresh slot is inserted by
+	/// [`NodeCore::input_array_insert`]. Silently does nothing when the pair has no
+	/// track.
 	fn remove_element_keyframes(&mut self, id: &str, element: usize) {
 		self.keyframes
 			.retain(|(i, e, _)| !(i == id && *e == element as i32));
 	}
 
-	/// The keyframe track for (input, element), if any.
+	/// The keyframe track of `(id, element)`, if any.
+	///
+	/// Returns `None` when that pair has never been keyframed. An existing track
+	/// may still be empty (all keys removed); [`NodeCore::is_input_keyframing`]
+	/// treats an empty track as not keyframing.
 	pub fn keyframe_track(&self, id: &str, element: i32) -> Option<&KeyframeTrack> {
 		self.keyframes
 			.iter()
@@ -299,7 +359,12 @@ impl NodeCore {
 			.map(|(_, _, t)| t)
 	}
 
-	/// Mutable keyframe track access, creating one on demand.
+	/// Mutable keyframe-track access, creating the track on first use.
+	///
+	/// Returns the track for `(id, element)`, pushing an empty default track when
+	/// the pair has none, so callers can insert keys without checking existence
+	/// first. Consecutive calls for the same pair return the same track; an empty
+	/// track is not removed automatically. `element` is `-1` for the primary value.
 	pub fn keyframe_track_mut(&mut self, id: &str, element: i32) -> &mut KeyframeTrack {
 		if let Some(i) = self
 			.keyframes
@@ -382,7 +447,12 @@ impl NodeCore {
 		}
 	}
 
-	/// The value hint for (input, element), if any.
+	/// The value hint registered for `(input, element)`, if any.
+	///
+	/// A hint lists the types a connected input accepts (see [`ValueHint`]) and is
+	/// installed with [`NodeCore::set_value_hint`]. Returns `None` when the pair
+	/// has no hint, in which case consumers fall back to the input's declared value
+	/// type.
 	pub fn value_hint(&self, id: &str, element: i32) -> Option<&ValueHint> {
 		self.hints
 			.iter()
@@ -475,22 +545,37 @@ pub trait NodeBehavior: Send {
 	/// Stable type id (C++ `id()`).
 	fn type_id(&self) -> &str;
 
-	/// Categories (C++ `category()`).
+	/// The categories this node type belongs to.
+	///
+	/// Returns the [`Category`] entries used to place the node in the node library
+	/// and create menu. The default is an empty slice, meaning the node opts out of
+	/// categorized menus; concrete nodes override it (C++ `category()`).
 	fn categories(&self) -> &[Category] {
 		&[]
 	}
 
-	/// Sub-category (C++ `sub_category()`).
+	/// Optional sub-category label within the node's primary category.
+	///
+	/// Used by the create menu to group entries under a category. The default is
+	/// `""`, meaning the node has no sub-category (C++ `sub_category()`).
 	fn sub_category(&self) -> &str {
 		""
 	}
 
-	/// Description (C++ `description()`).
+	/// User-facing description of what this node does.
+	///
+	/// Shown as help/tooltip text in the UI. The default is `""` (no description);
+	/// concrete nodes override it with a concise summary (C++ `description()`).
 	fn description(&self) -> &str {
 		""
 	}
 
-	/// Localized input name (C++ `get_input_name()` virtual).
+	/// Display name of an input, for the UI and menus.
+	///
+	/// `id` is an input id and the returned name borrows from it, so it lives as
+	/// long as `id`. The default returns `id` unchanged except for
+	/// [`ENABLED_INPUT`], which always displays as "Enabled"; nodes override this
+	/// to localize their own input names (C++ virtual `get_input_name()`).
 	fn input_name<'a>(&self, id: &'a str) -> &'a str {
 		// The standard enabled input displays as "Enabled" on every node
 		// (`// CPP-PARITY: node.cpp:155` retranslate).
@@ -509,25 +594,45 @@ pub trait NodeBehavior: Send {
 		Vec::new()
 	}
 
-	/// Inputs excluded from rendering (C++ `ignore_inputs_for_rendering()`).
+	/// Input ids the renderer must not traverse when evaluating this node.
+	///
+	/// Nodes list inputs that they consume but that are not value dependencies of
+	/// the render, so pulling them into the graph would be wrong or wasteful. The
+	/// default returns an empty slice, so every input is traversed (C++
+	/// `ignore_inputs_for_rendering()`).
 	fn ignore_inputs_for_rendering(&self) -> &[String] {
 		&[]
 	}
 
-	/// Array elements active at `time` (C++ `get_active_elements_at_time()`).
+	/// Array element indices that are active at `time`.
+	///
+	/// `input` is the array input id and `time` is in rational seconds. Returns the
+	/// elements whose values are currently meaningful for array inputs whose
+	/// activity varies with time; the default returns an empty vector, meaning no
+	/// element is active (C++ `get_active_elements_at_time()`).
 	fn active_elements_at_time(&self, input: &str, time: Rational) -> Vec<i32> {
 		let _ = (input, time);
 		Vec::new()
 	}
 
-	/// Cache ranges (C++ `get_video_cache_range()` /
-	/// `get_audio_cache_range()`).
+	/// Time range of the video frames currently held in this node's cache.
+	///
+	/// `core` is the node's data. Returns the cached span, or an empty
+	/// [`TimeRange`] (the default, `[0, 0]`) when nothing is cached; the render
+	/// cache uses it to decide which frames can be reused. Paired with
+	/// [`NodeBehavior::audio_cache_range`]; corresponds to C++
+	/// `get_video_cache_range()`.
 	fn video_cache_range(&self, core: &NodeCore) -> TimeRange {
 		let _ = core;
 		TimeRange::default()
 	}
 
-	/// Audio cache range.
+	/// Time range of the audio currently held in this node's cache.
+	///
+	/// `core` is the node's data. Returns the cached span, or an empty
+	/// [`TimeRange`] (the default, `[0, 0]`) when nothing is cached; the cache
+	/// layer uses it to serve already-processed samples. Audio producers override
+	/// it (C++ `get_audio_cache_range()`).
 	fn audio_cache_range(&self, core: &NodeCore) -> TimeRange {
 		let _ = core;
 		TimeRange::default()
@@ -539,8 +644,13 @@ pub trait NodeBehavior: Send {
 		None
 	}
 
-	/// Render-time connection resolution (C++
-	/// `get_connected_render_output()`; Group overrides).
+	/// Resolve which upstream node supplies a render-time connection.
+	///
+	/// `core` is the node's data, `input` the input id and `element` its array
+	/// element. Returns the node that actually renders the value, or `None` (the
+	/// default) to resolve the connection directly through the graph. Groups
+	/// override this to redirect to the node inside the group (C++
+	/// `get_connected_render_output()`).
 	fn connected_render_output(
 		&self,
 		core: &NodeCore,
@@ -568,7 +678,13 @@ pub trait NodeBehavior: Send {
 		time
 	}
 
-	/// Output-side time adjustment.
+	/// Apply this node's output-side time mapping to a range.
+	///
+	/// `time` is the range to map, `input`/`element` select the input whose mapping
+	/// applies, and `traverse` asks the implementation to follow time-adjusting
+	/// nodes upstream. Returns the mapped range; the default is identity.
+	/// Counterpart of [`NodeBehavior::input_time_adjustment`] (C++
+	/// `output_time_adjustment()`).
 	fn output_time_adjustment(
 		&self,
 		core: &NodeCore,
@@ -581,7 +697,12 @@ pub trait NodeBehavior: Send {
 		time
 	}
 
-	/// Evaluate outputs (C++ `value()`).
+	/// Evaluate the node for one frame and append its outputs to `table`.
+	///
+	/// `core` is the node's data, `inputs` the row of already-evaluated input
+	/// values for the current frame, `time` the frame time in rational seconds, and
+	/// `table` the value table that receives this node's outputs. The default does
+	/// nothing (no outputs); concrete nodes override it (C++ `value()`).
 	fn value(
 		&self,
 		core: &NodeCore,
@@ -592,7 +713,12 @@ pub trait NodeBehavior: Send {
 		let _ = (core, inputs, time, table);
 	}
 
-	/// Process a span of samples (C++ `process_samples()`).
+	/// Process a span of audio samples and append the result to `output`.
+	///
+	/// `core` is the node's data, `inputs` the row of already-evaluated input
+	/// values and `range` the sample span to process (rational seconds). `output`
+	/// is extended in place with this node's samples, which must stay aligned with
+	/// `range`. Default does nothing (C++ `process_samples()`).
 	fn process_samples(
 		&self,
 		core: &NodeCore,
@@ -614,29 +740,57 @@ pub trait NodeBehavior: Send {
 		let _ = (core, frame, time);
 	}
 
-	/// Shader code request (C++ `get_shader_code()`; GPU nodes).
+	/// Return GLSL source for a shader this node needs, keyed by `request`.
+	///
+	/// `request` is the shader identifier/type string chosen by the renderer; the
+	/// returned source is compiled once and cached by the caller. Returns `None`
+	/// when the node provides no shader for that request, which is also the
+	/// default. GPU-rendered nodes override it (C++ `get_shader_code()`).
 	fn shader_code(&self, request: &str) -> Option<String> {
 		let _ = request;
 		None
 	}
 
-	/// Gizmo transform/positions (C++ `gizmo_transformation()` /
-	/// `update_gizmo_positions()`).
+	/// Refresh this node's gizmo transforms and positions.
+	///
+	/// `row` holds the evaluated input values for the current frame and `core` the
+	/// node data (read-only here). Gizmo-owning nodes override this to pull the
+	/// gizmo's position values out of the row before the viewport draws it; the
+	/// default does nothing (C++
+	/// `gizmo_transformation()`/`update_gizmo_positions()`).
 	fn gizmo_update(&self, core: &NodeCore, row: &NodeValueRow) {
 		let _ = (core, row);
 	}
 
-	/// Gizmo drag callbacks (C++ `gizmo_drag_start/move`).
+	/// Handle a gizmo drag event coming from the viewport.
+	///
+	/// `start` is `true` for the drag-start event and `false` for subsequent moves;
+	/// `x`/`y` are the pointer position supplied by the caller (in its viewport
+	/// coordinate space) and `modifiers` is the keyboard-modifier bitmask. `core`
+	/// is mutable so the handler can write the dragged input values back. Default
+	/// does nothing (C++ `gizmo_drag_start`/`gizmo_drag_move`).
 	fn gizmo_drag(&mut self, core: &mut NodeCore, start: bool, x: f64, y: f64, modifiers: u32) {
 		let _ = (core, start, x, y, modifiers);
 	}
 
-	/// Input value changed (C++ `InputValueChangedEvent`).
+	/// Notify the node that one of its input values changed.
+	///
+	/// Called after `input[element]` is set (including while a fresh node is being
+	/// configured); `core` is mutable so the node can recompute dependent state,
+	/// such as a type input switching the output type or toggling other parameters.
+	/// `element` is `-1` for the primary value. Default does nothing (C++
+	/// `InputValueChangedEvent`).
 	fn input_value_changed(&mut self, core: &mut NodeCore, input: &str, element: i32) {
 		let _ = (core, input, element);
 	}
 
-	/// Edge connected to an input (C++ `InputConnectedEvent`).
+	/// React to a new edge arriving at one of this node's inputs.
+	///
+	/// `core` is the node's mutable data. `input` is the id of the input that
+	/// received the edge, `element` its array element (`-1` for the primary value),
+	/// and `source` the upstream node now supplying the value. Counterpart of
+	/// [`NodeBehavior::input_disconnected`]; the default does nothing (C++
+	/// `InputConnectedEvent`).
 	fn input_connected(&mut self, core: &mut NodeCore, input: &str, element: i32, source: NodeId) {
 		let _ = (core, input, element, source);
 	}
@@ -652,13 +806,24 @@ pub trait NodeBehavior: Send {
 		let _ = (core, input, element, source);
 	}
 
-	/// Someone connected to this node's output (C++
+	/// React to a new edge from this node's output to a downstream input.
+	///
+	/// `core` is the node's mutable data. `target` is the downstream node, `input`
+	/// the id of the input on `target` that received the edge, and `element` its
+	/// array element (`-1` for the primary connection). The input-side counterpart
+	/// is [`NodeBehavior::input_connected`]; the default does nothing (C++
 	/// `OutputConnectedEvent`).
 	fn output_connected(&mut self, core: &mut NodeCore, target: NodeId, input: &str, element: i32) {
 		let _ = (core, target, input, element);
 	}
 
-	/// Output disconnected (C++ `OutputDisconnectedEvent`).
+	/// React to an edge being removed from this node's output.
+	///
+	/// `core` is the node's mutable data. `target` is the downstream node, `input`
+	/// the id of the input on `target` that was wired, and `element` its array
+	/// element (`-1` for the primary connection). Counterpart of
+	/// [`NodeBehavior::output_connected`]; the default does nothing (C++
+	/// `OutputDisconnectedEvent`).
 	fn output_disconnected(
 		&mut self,
 		core: &mut NodeCore,
@@ -680,12 +845,21 @@ pub trait NodeBehavior: Send {
 		let _ = core;
 	}
 
-	/// See [`NodeBehavior::added_to_graph`].
+	/// React to the node being removed from a project graph.
+	///
+	/// The counterpart of [`NodeBehavior::added_to_graph`]; `core` is the node's
+	/// mutable data. The default does nothing; nodes override it to release
+	/// graph-dependent state such as caches or node references (C++
+	/// `RemovedFromGraphEvent`).
 	fn removed_from_graph(&mut self, core: &mut NodeCore) {
 		let _ = core;
 	}
 
-	/// Node links changed (C++ `LinkChangeEvent`).
+	/// React to a change in the node's internal link list.
+	///
+	/// Called after links are added to or removed from `core.links` (node-to-node
+	/// link references, not graph connections); `core` is the node's mutable data.
+	/// The default does nothing. Corresponds to the C++ `LinkChangeEvent`.
 	fn link_changed(&mut self, core: &mut NodeCore) {
 		let _ = core;
 	}
@@ -693,7 +867,18 @@ pub trait NodeBehavior: Send {
 	/// Deep copy (C++ `copy()`); None = not copiable.
 	fn duplicate(&self, core: &NodeCore) -> Option<Box<dyn NodeBehavior>>;
 
-	/// Custom load/save (C++ `load_custom()`/`save_custom()`).
+	/// Load the node's custom state from the `<custom>` segment.
+	///
+	/// `core` is the node being deserialized and `reader` is positioned on the
+	/// `<custom>` start element. The default consumes that element with
+	/// `skip_current_element` and returns `true`, keeping the node-body parser at
+	/// the correct depth; nodes with extra state override it to parse their own
+	/// children.
+	///
+	/// # Returns
+	///
+	/// `true` when the segment was consumed; `false` when an implementor could not
+	/// parse it (the default always returns `true`).
 	fn load_custom(
 		&mut self,
 		core: &mut NodeCore,
@@ -707,12 +892,24 @@ pub trait NodeBehavior: Send {
 		true
 	}
 
-	/// See [`NodeBehavior::load_custom`].
+	/// Write the node's custom state into the `<custom>` segment.
+	///
+	/// Counterpart of [`NodeBehavior::load_custom`]. `writer` is positioned inside
+	/// the `<custom>` element that the node serializer has already opened, and
+	/// `core` is the node's data. The default writes nothing; nodes with extra
+	/// serializable state emit child elements here and parse them back in
+	/// `load_custom`.
 	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
 		let _ = (core, writer);
 	}
 
-	/// Post-load fixups (C++ `PostLoadEvent` / `LoadFinishedEvent`).
+	/// Finish loading: run the fixups that need the fully parsed project.
+	///
+	/// Called once after the node's inputs, links and custom state have been read;
+	/// `core` is the node's own data and may be mutated. The default is a no-op, so
+	/// nodes override it only when they must recompute derived state or remap
+	/// legacy serialized values. Corresponds to the C++
+	/// `PostLoadEvent`/`LoadFinishedEvent`.
 	fn post_load(&mut self, core: &mut NodeCore) {
 		let _ = core;
 	}

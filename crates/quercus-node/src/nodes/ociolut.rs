@@ -258,7 +258,14 @@ impl OCIOLutNode {
 		self.state.lock().unwrap().dirty = true;
 	}
 
-	/// The standard value of [`FILE_INPUT`] as a path string.
+	/// Reads the LUT file path from the node's standard value for
+	/// [`FILE_INPUT`].
+	///
+	/// `core` supplies the value at element `-1` (this input is not
+	/// keyframable, so it has only that element). The text is returned
+	/// verbatim; when the value is missing or is not text (for example the
+	/// default before a file was chosen) the result is an empty string, so
+	/// callers must treat `""` as "no LUT file selected".
 	fn file_path(core: &NodeCore) -> String {
 		match &core.standard_value(FILE_INPUT, -1) {
 			crate::value::NodeValue::Text(s) => s.clone(),
@@ -437,8 +444,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.ociolut`).
+/// Registers the OCIO LUT node type with the node factory.
+///
+/// Appends one [`NodeMeta`] to `meta` describing the type: id
+/// `org.olivevideoeditor.Olive.ociolut`, display name "OCIO LUT", the
+/// [`Category::Color`] category, and the [`create`] constructor. `meta` is the
+/// vec assembled by `crate::nodes::register_all` (which calls this in menu
+/// order); pushing into it does not register anything globally on its own.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.ociolut",

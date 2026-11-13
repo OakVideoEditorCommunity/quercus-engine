@@ -295,8 +295,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(StrokeFilterNode))
 }
 
-/// Register this node type (C++ `k_stroke_filter` in
-/// `factory.cpp::create_from_factory_index`).
+/// Registers the Stroke filter (`org.olivevideoeditor.Olive.stroke`) in
+/// the node factory under the `Filter` category.
+///
+/// Counterpart of the C++ `k_stroke_filter` entry in
+/// `factory.cpp::create_from_factory_index`; `create` wires the texture,
+/// colour, radius, opacity and inner-stroke inputs and marks the node as
+/// a video effect. Call once during node registration; the function does
+/// not deduplicate.
+///
+/// # Arguments
+///
+/// * `meta` - factory metadata registry to append the entry to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.stroke",

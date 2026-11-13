@@ -98,7 +98,15 @@ impl UndoStack {
 		}
 	}
 
-	/// Push an already-executed command (redo skipped); `set_done(true)`.
+	/// Records `command` as already executed, without running its redo.
+	///
+	/// Use this when the caller has already applied the action and only needs
+	/// the history bookkeeping: unlike [`Self::push`], the redo body is not
+	/// invoked and the command is marked done via `set_done(true)`. `name` is
+	/// the user-visible label kept for the history UI. Any pending redo tail is
+	/// dropped, and once the history exceeds [`K_MAX_UNDO_COMMANDS`] the oldest
+	/// row is evicted. An empty multi command (one with no children) is ignored
+	/// entirely, so nothing is recorded for it.
 	pub fn push_pre_executed(&mut self, command: UndoCommand, name: &str) {
 		if command.is_multi() && command.multi_child_count() == 0 {
 			return;
@@ -117,7 +125,15 @@ impl UndoStack {
 		}
 	}
 
-	/// Undo/redo until the done-command count equals `index`.
+	/// Moves the history position to `index` done commands by undoing or
+	/// redoing as needed.
+	///
+	/// `index` is the target number of done commands, where `0` means the
+	/// bottom "New/Open Project" row. Negative values are clamped to `0`.
+	/// Undoing stops when [`Self::can_undo`] becomes false and redoing stops
+	/// when [`Self::can_redo`] becomes false, so an unreachable target simply
+	/// leaves the stack at the nearest end; errors from the individual
+	/// undo/redo steps are discarded.
 	pub fn jump(&mut self, index: i64) {
 		let index = index.max(0);
 		while (self.commands.len() as i64) > index && self.can_undo() {
@@ -192,7 +208,16 @@ impl UndoStack {
 		self.commands.len() as i64
 	}
 
-	/// Whether the row at `row` is currently done.
+	/// Reports whether the history row at `row` is currently applied.
+	///
+	/// `row` uses the same flat indexing as [`Self::command_name`]: rows below
+	/// [`Self::done_count`] are done, the rest are undone. The history UI uses
+	/// this to dim redoable rows.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::NotFound`] when `row` is negative or is
+	/// not less than [`Self::command_count`].
 	pub fn command_is_done(&self, row: i64) -> Result<bool> {
 		if row < 0 || row >= self.command_count() {
 			return Err(crate::error::Error::NotFound);
@@ -200,7 +225,18 @@ impl UndoStack {
 		Ok(row < self.commands.len() as i64)
 	}
 
-	/// Label of the history row at `row`.
+	/// Returns the user-visible label of the history row at `row`.
+	///
+	/// `row` is a flat index over the whole history: rows `0..done_count()` are
+	/// the done commands in oldest-first order, and the rows after that are the
+	/// undone commands, most-recently-undone first. The label is the `name`
+	/// passed to [`Self::push`] or [`Self::push_pre_executed`]; the bottom
+	/// "New/Open Project" row keeps that name.
+	///
+	/// # Errors
+	///
+	/// Returns [`crate::error::Error::NotFound`] when `row` is negative or is
+	/// not less than [`Self::command_count`].
 	pub fn command_name(&self, row: i64) -> Result<&str> {
 		if row < 0 || row >= self.command_count() {
 			return Err(crate::error::Error::NotFound);

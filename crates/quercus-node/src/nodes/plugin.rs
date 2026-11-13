@@ -165,8 +165,14 @@ impl PluginNode {
 		self.instance
 	}
 
-	/// Forward a push-button param activation to the plugin (C++
-	/// `push_button_clicked()`; currently a no-op upstream).
+	/// Forwards a push-button parameter activation to the wrapped plugin.
+	///
+	/// `core` is the node's data (a real implementation needs it to read the
+	/// parameter's current value and trigger re-evaluation) and `name` is the input id
+	/// of the push button that was pressed. The current implementation is a
+	/// deliberate no-op — the upstream `push_button_clicked()` is also a no-op — kept
+	/// so UI call sites can be wired now. It has no effect and does not invalidate the
+	/// node.
 	pub fn push_button_clicked(&mut self, core: &mut NodeCore, name: String) {
 		let _ = (core, name);
 	}

@@ -189,7 +189,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(MirrorNode))
 }
 
-/// Register this node type.
+/// Registers the Mirror node type with the factory table.
+///
+/// Appends a [`crate::factory::NodeMeta`] for `org.olivevideoeditor.Olive.mirror` (display name
+/// "Mirror", category Distort, constructor [`create`]) to `meta`.
+/// [`register_all`](crate::nodes::register_all) installs the collected table into
+/// the global factory; the position in `meta` is the create-menu order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.mirror",

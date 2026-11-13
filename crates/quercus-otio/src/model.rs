@@ -105,7 +105,13 @@ pub struct RationalTime {
 }
 
 impl RationalTime {
-	/// Construct `RationalTime(value, rate)` (C++ argument order).
+	/// Create a time value of `value` frames at `rate` frames per second.
+	///
+	/// Both fields are stored verbatim — no validation or rescaling — so
+	/// `rate <= 0` yields an invalid time (see
+	/// [`RationalTime::is_invalid_time`]). The argument order follows the C++
+	/// `RationalTime(value, rate)` constructor, while on disk `rate` is written
+	/// first. See [`RationalTime::from_rational`] to convert an exact rational.
 	pub fn new(value: f64, rate: f64) -> RationalTime {
 		RationalTime {
 			otio_schema: SCHEMA_RATIONAL_TIME.to_string(),
@@ -130,7 +136,11 @@ impl RationalTime {
 		self.value / self.rate
 	}
 
-	/// The invalid-time sentinel (`RationalTime(0, 0)`, C++ `invalid_time`).
+	/// The sentinel meaning "no time value": `RationalTime(0, 0)`.
+	///
+	/// Rate 0 makes it invalid: [`RationalTime::is_invalid_time`] returns `true`
+	/// and [`RationalTime::to_seconds`] is non-finite. Used for unset fields,
+	/// e.g. by `TimeRange::default`.
 	pub fn invalid_time() -> RationalTime {
 		RationalTime::new(0.0, 0.0)
 	}
@@ -157,8 +167,13 @@ impl RationalTime {
 		from_double(self.to_seconds())
 	}
 
-	/// C++ `Rational::toRationalTime(framerate)` — `RationalTime(num, den
-	/// or 1)` rescaled to `framerate`.
+	/// Convert an exact rational time to a [`RationalTime`] at `framerate`.
+	///
+	/// `r` is read as `num/den` seconds (the C++ `Rational` convention); a zero
+	/// denominator is treated as 1, matching the C++ `Rational::toRationalTime`.
+	/// The result is then rescaled to `framerate` frames per second (see
+	/// [`RationalTime::rescaled_to`]). `framerate <= 0` produces a non-finite
+	/// value rather than an error.
 	pub fn from_rational(r: Rational, framerate: f64) -> RationalTime {
 		let rate = if r.denominator() == 0 {
 			1.0
@@ -187,7 +202,13 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
-	/// Construct `TimeRange(start_time, duration)` (C++ argument order).
+	/// Create a range bounded by `start_time` and spanning `duration`.
+	///
+	/// Each argument carries its own rate and both are stored verbatim: no
+	/// rescaling, no validation, no clamping of the duration. `start_time` is
+	/// the first frame used and `duration` the number of frames covered. The
+	/// argument order follows the C++ `TimeRange(start_time, duration)`
+	/// constructor, while on disk `duration` is written first.
 	pub fn new(start_time: RationalTime, duration: RationalTime) -> TimeRange {
 		TimeRange {
 			otio_schema: SCHEMA_TIME_RANGE.to_string(),
@@ -196,12 +217,20 @@ impl TimeRange {
 		}
 	}
 
-	/// The start of the range.
+	/// The range's start time, in the rate carried by the returned value.
+	///
+	/// Cloned out on each call. A range built by [`TimeRange::default`] returns
+	/// [`RationalTime::invalid_time`], i.e. `RationalTime(0, 0)`; the `start`
+	/// attribute of an FCPXML block comes from here.
 	pub fn start_time(&self) -> RationalTime {
 		self.start_time.clone()
 	}
 
-	/// The duration of the range.
+	/// The range's duration, as a time in its own rate.
+	///
+	/// The value is cloned out (the range itself is not `Copy`). A range built
+	/// by [`TimeRange::default`] or read from a document without a duration
+	/// returns [`RationalTime::invalid_time`], i.e. `RationalTime(0, 0)`.
 	pub fn duration(&self) -> RationalTime {
 		self.duration.clone()
 	}
@@ -233,8 +262,14 @@ pub struct ExternalReference {
 }
 
 impl ExternalReference {
-	/// Construct `ExternalReference(target_url, available_range)` (C++
-	/// argument order; `None` serializes as `null`).
+	/// Create an external reference pointing at `target_url`.
+	///
+	/// `target_url` is stored verbatim — relative or absolute, not validated or
+	/// resolved. `available_range` is the media extent on disk, or `None` when
+	/// unknown (`None` serializes as `null`); it is kept as given, not clamped
+	/// against the target. Metadata and name start empty and
+	/// `available_image_bounds` is unset. The argument order follows the C++
+	/// `ExternalReference(target_url, available_range)` constructor.
 	pub fn new(
 		target_url: impl Into<String>,
 		available_range: Option<TimeRange>,
@@ -250,7 +285,11 @@ impl ExternalReference {
 		}
 	}
 
-	/// The media URL (C++ `target_url`).
+	/// The media URL or file path this reference points at.
+	///
+	/// Stored verbatim from the document's `src`/`target_url` (or from
+	/// [`ExternalReference::new`]): it is neither resolved nor percent-decoded,
+	/// and may be a `file://` URL or a plain path as written by the producer.
 	pub fn target_url(&self) -> &str {
 		&self.target_url
 	}
@@ -401,7 +440,11 @@ impl Clip {
 		}
 	}
 
-	/// The clip name (C++ `name`).
+	/// The clip's name as stored in the document ("" when unset).
+	///
+	/// Set by [`Clip::new`] and written verbatim to `"name"`; it is a label
+	/// only and does not affect timing. The FCPXML writer emits it as the
+	/// `asset-clip` element's `name` attribute (also used in its diagnostics).
 	pub fn name(&self) -> &str {
 		&self.name
 	}
@@ -422,12 +465,22 @@ impl Clip {
 		self.media_references.get(key)
 	}
 
-	/// All media references by key.
+	/// All media references attached to the clip, keyed by reference key.
+	///
+	/// The active one is chosen by `active_media_reference_key` and returned by
+	/// [`Clip::media_reference`]; `set_media_reference` stores under
+	/// "DEFAULT_MEDIA". Extra keys read from a document are preserved so they
+	/// survive a load/save round-trip.
 	pub fn media_references(&self) -> &BTreeMap<String, MediaReference> {
 		&self.media_references
 	}
 
-	/// Set the source range (C++ `set_source_range`).
+	/// Set the portion of the source media the clip uses.
+	///
+	/// `range` carries a start time and a duration in the media's own rate; it
+	/// is stored verbatim and replaces any previous range (and clears the
+	/// "unset" `None` state produced by parsing a clip without one). Read back
+	/// with [`Clip::source_range`] and [`Clip::media_reference`].
 	pub fn set_source_range(&mut self, range: TimeRange) {
 		self.source_range = Some(range);
 	}
@@ -446,7 +499,12 @@ impl Clip {
 		self.enabled
 	}
 
-	/// Set the enabled flag (C++ `set_enabled`).
+	/// Set whether the clip contributes to the edit.
+	///
+	/// The flag is stored and serialized as `"enabled"`; the FCPXML writer emits
+	/// `enabled="0"` for a disabled clip so FCP X treats it as disabled. Clips
+	/// start enabled (`true` from [`Clip::new`]); read back with
+	/// [`Clip::enabled`].
 	pub fn set_enabled(&mut self, enabled: bool) {
 		self.enabled = enabled;
 	}
@@ -475,7 +533,13 @@ pub struct Gap {
 }
 
 impl Gap {
-	/// Construct `Gap(source_range, name)` (C++ argument order).
+	/// Create a gap covering `source_range` with the given name.
+	///
+	/// `source_range` holds the empty span's start time and duration and is
+	/// stored as `Some` — unlike [`Gap::default`], whose range is `None`.
+	/// `name` is stored verbatim. The gap starts enabled with no effects,
+	/// markers or metadata; its duration advances the track during playback and
+	/// export.
 	pub fn new(source_range: TimeRange, name: impl Into<String>) -> Gap {
 		Gap {
 			otio_schema: SCHEMA_GAP.to_string(),
@@ -489,7 +553,10 @@ impl Gap {
 		}
 	}
 
-	/// The gap name.
+	/// The gap's name as stored in the document ("" when unset).
+	///
+	/// Set by [`Gap::new`]; gaps written by this crate serialize it and the
+	/// FCPXML writer emits it as the `gap` element's `name` attribute.
 	pub fn name(&self) -> &str {
 		&self.name
 	}
@@ -546,7 +613,10 @@ impl Transition {
 		}
 	}
 
-	/// The transition name.
+	/// The transition's name as stored in the document ("" when unset).
+	///
+	/// Set by [`Transition::new`] and written verbatim to the `"name"` field;
+	/// the FCPXML writer also uses it as the `transition` element name.
 	pub fn name(&self) -> &str {
 		&self.name
 	}
@@ -568,12 +638,22 @@ impl Transition {
 		&self.transition_type
 	}
 
-	/// Set the in offset (C++ `set_in_offset`).
+	/// Set how far the transition reaches into the block that precedes it.
+	///
+	/// `offset` is stored as-is (no clamping or validation); it should be a
+	/// non-negative duration that fits inside the previous block. Defaults to
+	/// `RationalTime(0, 1)` from [`Transition::new`]. Counterpart:
+	/// [`Transition::set_out_offset`].
 	pub fn set_in_offset(&mut self, offset: RationalTime) {
 		self.in_offset = offset;
 	}
 
-	/// Set the out offset (C++ `set_out_offset`).
+	/// Set how far the transition reaches into the block that follows it.
+	///
+	/// `offset` is stored as-is (no clamping or validation); it should be a
+	/// non-negative duration that fits inside the next block. Defaults to
+	/// `RationalTime(0, 1)` from [`Transition::new`]. Counterpart:
+	/// [`Transition::set_in_offset`].
 	pub fn set_out_offset(&mut self, offset: RationalTime) {
 		self.out_offset = offset;
 	}
@@ -619,7 +699,12 @@ impl Stack {
 		&self.children
 	}
 
-	/// Append a child (C++ `append_child`).
+	/// Append `child` to the end of the stack, taking ownership of it.
+	///
+	/// Order is preserved through serialization and defines the stack's layering;
+	/// for a timeline's "tracks" stack it is the order the tracks were written
+	/// in. Pairs with [`Stack::remove_child`]; [`Track`] exposes the same
+	/// mutators for its blocks.
 	pub fn append_child(&mut self, child: Composable) {
 		self.children.push(Box::new(child));
 	}
@@ -636,7 +721,11 @@ impl Stack {
 		}
 	}
 
-	/// Remove the child at `index`; false when out of range.
+	/// Remove the composable at `index`, shifting all later children down.
+	///
+	/// `index` is a 0-based position in [`Stack::children`]. Returns `true`
+	/// when a child was removed and `false` when `index` is out of range, in
+	/// which case the stack is left unchanged.
 	pub fn remove_child(&mut self, index: usize) -> bool {
 		if index < self.children.len() {
 			self.children.remove(index);
@@ -667,7 +756,13 @@ pub struct Track {
 }
 
 impl Track {
-	/// Construct a track of the given kind ("Video" or "Audio").
+	/// Create an empty track of the given kind.
+	///
+	/// `kind` is stored verbatim and read back with [`Track::kind`]; this crate
+	/// writes "Video" and "Audio" (`track_kind` constants in the engine binding)
+	/// and the FCPXML writer only maps those two to `<video>`/`<audio>` lanes,
+	/// logging and skipping other kinds. Everything else starts empty: no blocks,
+	/// no source range, name "", `enabled == true`.
 	pub fn new(kind: impl Into<String>) -> Track {
 		Track {
 			otio_schema: SCHEMA_TRACK.to_string(),
@@ -693,12 +788,22 @@ impl Track {
 		&self.children
 	}
 
-	/// Append a child (C++ `append_child`).
+	/// Append `child` at the end of the track, taking ownership of it.
+	///
+	/// The new block plays after every existing child, regardless of its
+	/// duration; the track kind ("Video"/"Audio") decides how it is interpreted
+	/// on playback and export. Pairs with [`Track::set_child`] and
+	/// [`Track::remove_child`].
 	pub fn append_child(&mut self, child: Composable) {
 		self.children.push(Box::new(child));
 	}
 
-	/// Replace the child at `index`; false when out of range.
+	/// Replace the block at `index` with `child`.
+	///
+	/// `index` is a 0-based position in [`Track::children`]; `child` takes
+	/// ownership. Returns `true` on success and `false` when `index` is out of
+	/// range, in which case the track is unchanged (the C++ `children[index] =`
+	/// behavior). See [`Track::append_child`] for adding instead of replacing.
 	pub fn set_child(&mut self, index: usize, child: Composable) -> bool {
 		match self.children.get_mut(index) {
 			Some(slot) => {
@@ -709,7 +814,12 @@ impl Track {
 		}
 	}
 
-	/// Remove the child at `index`; false when out of range.
+	/// Remove the block at `index`, shifting all later children down by one.
+	///
+	/// `index` is a 0-based position in [`Track::children`]. Returns `true`
+	/// when a child was removed and `false` when `index` is out of range, in
+	/// which case the track is left unchanged. Counterpart of
+	/// [`Track::append_child`].
 	pub fn remove_child(&mut self, index: usize) -> bool {
 		if index < self.children.len() {
 			self.children.remove(index);
@@ -888,17 +998,31 @@ impl Timeline {
 		}
 	}
 
-	/// The timeline name.
+	/// The timeline's name as stored in the document ("" when unset).
+	///
+	/// Set by [`Timeline::new`] or [`Timeline::set_name`]; the FCPXML writer
+	/// emits it as the sequence name.
 	pub fn name(&self) -> &str {
 		&self.name
 	}
 
-	/// Set the timeline name (C++ `set_name`).
+	/// Replace the timeline's name.
+	///
+	/// `name` accepts anything convertible into `String` (including `&str`) and
+	/// is stored verbatim; any previous name is dropped. The FCPXML writer uses
+	/// it as the sequence name and as the default project name (metadata
+	/// "project" overrides it). Read back with [`Timeline::name`].
 	pub fn set_name(&mut self, name: impl Into<String>) {
 		self.name = name.into();
 	}
 
-	/// The tracks stack (C++ `tracks`).
+	/// The timeline's top-level track container.
+	///
+	/// A [`Stack`] (named "tracks" when built by [`Timeline::new`]; a document
+	/// may carry a different or empty name) whose children are the timeline's
+	/// tracks in document order: [`Track`] values, interleaved video and audio as
+	/// written, or `Raw` for an unrecognized schema. Use
+	/// [`Timeline::tracks_mut`] to append tracks.
 	pub fn tracks(&self) -> &Stack {
 		&self.tracks
 	}
@@ -913,7 +1037,11 @@ impl Timeline {
 		self.global_start_time.clone()
 	}
 
-	/// Set the global start time (C++ `set_global_start_time`).
+	/// Set the timeline's global start time, replacing any previous value.
+	///
+	/// `start` is a time in its own rate and is stored verbatim; it becomes the
+	/// document's first frame. The FCPXML writer converts it to the sequence
+	/// `tcStart` (0 when unset). Read back with [`Timeline::global_start_time`].
 	pub fn set_global_start_time(&mut self, start: RationalTime) {
 		self.global_start_time = Some(start);
 	}
@@ -935,7 +1063,17 @@ impl Timeline {
 		Ok(to_json_string(self)?)
 	}
 
-	/// Write to a file in the opentimelineio JSON format.
+	/// Write this timeline to `path` as an opentimelineio JSON document.
+	///
+	/// Same serialization as [`Timeline::to_json_string`] (4-space
+	/// indentation, no trailing newline). The file is written with
+	/// `std::fs::write`, so an existing file at `path` is truncated and
+	/// replaced.
+	///
+	/// # Errors
+	///
+	/// Returns an [`OtioError`] when serialization fails or the file cannot
+	/// be written (missing parent directory, permission denied, ...).
 	pub fn to_json_file(&self, path: impl AsRef<Path>) -> Result<(), OtioError> {
 		to_json_file(self, path.as_ref())
 	}
@@ -955,8 +1093,12 @@ pub struct SerializableCollection {
 }
 
 impl SerializableCollection {
-	/// Construct `SerializableCollection(name, children)` (C++ argument
-	/// order).
+	/// Build a collection with the given name and root children.
+	///
+	/// `name` is stored verbatim (the document's collection label) and
+	/// `children` are boxed in order, so `children[0]` serializes first.
+	/// Metadata and unknown fields start empty. The argument order follows the
+	/// C++ `SerializableCollection(name, children)` constructor.
 	pub fn new(name: impl Into<String>, children: Vec<Serializable>) -> SerializableCollection {
 		SerializableCollection {
 			otio_schema: SCHEMA_SERIALIZABLE_COLLECTION.to_string(),
@@ -967,7 +1109,11 @@ impl SerializableCollection {
 		}
 	}
 
-	/// The collection name.
+	/// The collection's name as stored in the document.
+	///
+	/// Never `None`: a file that omits `"name"` reads back as `""`. Set by
+	/// [`SerializableCollection::new`]; the FCPXML writer uses the timeline
+	/// name for the project, not this one, so it is a label only.
 	pub fn name(&self) -> &str {
 		&self.name
 	}
@@ -1020,7 +1166,17 @@ impl Serializable {
 		Ok(to_json_string(self)?)
 	}
 
-	/// Write to a file in the opentimelineio JSON format.
+	/// Write this root object to `path` as an opentimelineio JSON document.
+	///
+	/// Uses the same serialization as [`Serializable::to_json_string`]
+	/// (4-space indentation, `": "` separators, no trailing newline). The
+	/// file is written with `std::fs::write`, so an existing file at `path`
+	/// is truncated and replaced.
+	///
+	/// # Errors
+	///
+	/// Returns an [`OtioError`] when serialization fails or the file cannot
+	/// be written (missing parent directory, permission denied, ...).
 	pub fn to_json_file(&self, path: impl AsRef<Path>) -> Result<(), OtioError> {
 		to_json_file(self, path.as_ref())
 	}

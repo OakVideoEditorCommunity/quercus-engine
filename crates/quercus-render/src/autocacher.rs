@@ -79,7 +79,13 @@ pub struct PreviewAutoCacher {
 }
 
 impl PreviewAutoCacher {
-	/// A cacher submitting through `arena`.
+	/// Create a cacher that submits its jobs through `arena`.
+	///
+	/// The arena is shared with the rest of the renderer, so cache, preview and
+	/// playback tickets compete there by priority. Every other setting starts at
+	/// its default (no project attached, no custom range, renders and thumbnails
+	/// running, no viewer identity and no event sink); call the `set_*` methods
+	/// before use.
 	pub fn new(arena: Arc<TicketArena>) -> Self {
 		Self {
 			copied_project: 0,
@@ -105,7 +111,15 @@ impl PreviewAutoCacher {
 		self.viewer_identity = identity;
 	}
 
-	/// Attach to a copied project (registers on its caches).
+	/// Attach the cacher to a copied project id.
+	///
+	/// `copied_project` is the project the jobs render from and must be non-zero.
+	/// Attaching clears the pending request list, so ranges queued for a previous
+	/// project are forgotten. Counterpart of [`PreviewAutoCacher::detach`].
+	///
+	/// # Errors
+	///
+	/// [`crate::error::Error::Invalid`] when `copied_project` is 0.
 	pub fn attach(&mut self, copied_project: u64) -> Result<()> {
 		if copied_project == 0 {
 			return Err(crate::error::Error::Invalid);
@@ -174,8 +188,14 @@ impl PreviewAutoCacher {
 		self.single_frame_with_completion(time, Box::new(|_| {}))
 	}
 
-	/// [`PreviewAutoCacher::single_frame`] with a custom completion (the
-	/// FFI frame-request path delivers its callback here).
+	/// [`PreviewAutoCacher::single_frame`] with a caller-supplied completion.
+	///
+	/// `done` runs when the render finishes; the FFI frame-request path hands its
+	/// callback in here. A queued-but-not-started previous single-frame render is
+	/// cancelled first, and this ticket replaces it as the cacher's last
+	/// single-frame render. `time` is the timeline position to render, and the
+	/// viewer comes from [`PreviewAutoCacher::set_viewer_identity`] (falling back
+	/// to the attached project id). Returns the submitted ticket id.
 	pub fn single_frame_with_completion(
 		&mut self,
 		time: Rational,
@@ -215,7 +235,14 @@ impl PreviewAutoCacher {
 		jobs.retain(|id| !self.arena.is_finished(*id));
 	}
 
-	/// Force-cache a range (C++ force_cache_range).
+	/// Force-cache `range`: remember it as the custom range and start a background
+	/// range job for the attached project (C++ `force_cache_range`).
+	///
+	/// The job runs at the ticket arena's background priority, so interactive
+	/// preview and playback renders still take precedence. A previously remembered
+	/// custom range is replaced;
+	/// [`PreviewAutoCacher::is_rendering_custom_range`] stays true while any job is
+	/// still running.
 	pub fn force_range(&mut self, range: TimeRange) {
 		self.custom_range = Some(range);
 		self.start_range_job(self.copied_project, range);
@@ -255,12 +282,19 @@ impl PreviewAutoCacher {
 		self.display_processor = processor;
 	}
 
-	/// Event sink registration (facade).
+	/// Install the facade's event sink, replacing any previous one.
+	///
+	/// The sink receives [`PreviewAutoCacher::report_progress`] values and proxy-stop
+	/// requests; tests pass [`NoopEvents`]. Only one sink is live at a time.
 	pub fn set_events(&mut self, events: Box<dyn AutoCacheEvents>) {
 		*lock(&self.events) = Some(events);
 	}
 
-	/// Report progress to the facade (0.0..=1.0).
+	/// Report render progress to the registered [`AutoCacheEvents`] sink.
+	///
+	/// `value` is expected as a fraction in `0.0..=1.0` and is forwarded verbatim
+	/// (not clamped), so the caller keeps it in range. With no sink installed the
+	/// call is a no-op. Pairs with [`PreviewAutoCacher::set_events`].
 	pub fn report_progress(&self, value: f64) {
 		if let Some(events) = lock(&self.events).as_mut() {
 			events.progress(value);

@@ -15,12 +15,30 @@ crate-type = ["staticlib", "rlib"]
 # 共享 ABI 类型（CHandle 等，单库化统一，见 docs/zh/plans/riir/single-lib.md）。
 # 模块桥改直接 Rust 调用（单库化，见 docs/zh/plans/riir/single-lib.md）；
 # 只允许零依赖起步。确需引入的 crate 必须在 README 登记理由。
-quercus-core = { version = "=0.5.2", path = "../quercus-core" }
-quercus-undo = { version = "=0.5.2", path = "../quercus-undo" }
-quercus-node = { version = "=0.5.2", path = "../quercus-node" }
-quercus-render = { version = "=0.5.2", path = "../quercus-render" }
+quercus-core = { version = "=0.7.1", path = "../quercus-core" }
+quercus-undo = { version = "=0.7.1", path = "../quercus-undo" }
+quercus-node = { version = "=0.7.1", path = "../quercus-node" }
+quercus-render = { version = "=0.7.1", path = "../quercus-render" }
 # Error derive（Display + std::error::Error，见 src/error.rs）；理由已登记 README。
 thiserror = "2"
+
+# Linux OpenFX GL zero-copy: EGL/GL are loaded dynamically so the crate
+# still builds on hosts without libEGL/libGL.
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+libc = "0.2"
+
+# Windows OpenFX GL zero-copy: WGL context + GL_EXT_memory_object_win32.
+# windows-sys provides the hidden-window/GDI/WGL bindings without pulling
+# in the full windows crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_OpenGL",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 # 历史 feature（原桥测试桩开关）：单库化后 quercusnode/quercusrender/quercusundo

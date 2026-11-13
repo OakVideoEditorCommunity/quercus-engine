@@ -70,7 +70,15 @@ impl SubtitleParams {
 		self.stream_index
 	}
 
-	/// Set the stream index.
+	/// Selects which subtitle stream in the source file these subtitles
+	/// come from.
+	///
+	/// Only stores the value — `0` is the first subtitle stream, and no
+	/// range check is performed. Read it back with [`stream_index`].
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based stream index in the source file.
 	pub fn set_stream_index(&mut self, index: i32) {
 		self.stream_index = index;
 	}
@@ -80,7 +88,15 @@ impl SubtitleParams {
 		self.enabled
 	}
 
-	/// Set whether the subtitle stream is enabled.
+	/// Enables or disables the whole subtitle stream; a disabled stream is
+	/// skipped when subtitles are rendered or burned in.
+	///
+	/// Only flips the flag — entries are kept. Read it back with
+	/// [`enabled`].
+	///
+	/// # Arguments
+	///
+	/// * `enabled` - `true` to use the stream, `false` to ignore it.
 	pub fn set_enabled(&mut self, enabled: bool) {
 		self.enabled = enabled;
 	}
@@ -134,13 +150,28 @@ impl SubtitleParams {
 		Ok(())
 	}
 
-	/// Get the time range of the subtitle at `index`.
+	/// The time range of the subtitle at `index`, as
+	/// `((in_num, in_den), (out_num, out_den))` reduced rationals.
+	///
+	/// Returns `Error::NotFound` when `index` is negative or past the
+	/// last entry. Pair with [`get_subtitle_text`] for its text.
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based position in insertion order.
 	pub fn get_subtitle(&self, index: i32) -> Result<((i32, i32), (i32, i32))> {
 		let s = self.subtitle(index)?;
 		Ok((s.in_time, s.out_time))
 	}
 
-	/// Get the text of the subtitle at `index`.
+	/// Clones the text of the subtitle at `index`.
+	///
+	/// Returns `Error::NotFound` when `index` is negative or past the
+	/// last entry. Pair with [`get_subtitle`] for its time range.
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based position in insertion order.
 	pub fn get_subtitle_text(&self, index: i32) -> Result<String> {
 		let s = self.subtitle(index)?;
 		Ok(s.text.clone())
@@ -285,16 +316,36 @@ impl SubtitleParams {
 		Ok(out)
 	}
 
-	/// Borrow the subtitle at `index` (or `E_NOT_FOUND`).
+	/// Borrows the subtitle entry at `index` without cloning it.
+	///
+	/// Returns `Error::NotFound` when `index` is negative or `>=
+	/// count()`; used by [`get_subtitle`] and [`get_subtitle_text`].
+	///
+	/// # Arguments
+	///
+	/// * `index` - zero-based position in insertion order.
 	fn subtitle(&self, index: i32) -> Result<&Subtitle> {
 		let i = usize::try_from(index).map_err(|_| Error::NotFound)?;
 		self.subtitles.get(i).ok_or(Error::NotFound)
 	}
 }
 
-/// Normalize a rational to its canonical reduced form, mirroring the C++
-/// `Rational(int, int)` constructor (`fix_signs()` then `reduce()`,
-/// `core/src/util/rational.cpp`).
+/// Normalises the rational `num/den` to the form stored by
+/// [`SubtitleParams::add_subtitle`], mirroring the C++ `Rational(int,
+/// int)` constructor (`fix_signs()` then `reduce()`).
+///
+/// A negative denominator flips both signs, `x/0` becomes `0/0`, `0/x`
+/// becomes `0/1`, and reducible fractions are divided by their GCD.
+///
+/// # Arguments
+///
+/// * `num` - numerator, any `i32`; its sign is kept unless `den` is
+///   negative.
+/// * `den` - denominator, any `i32`; `0` selects the `0/0` NaN form.
+///
+/// # Returns
+///
+/// The reduced `(numerator, denominator)` pair.
 fn rational_reduce(mut num: i32, mut den: i32) -> (i32, i32) {
 	// fix_signs()
 	if den < 0 {
@@ -321,7 +372,12 @@ fn rational_reduce(mut num: i32, mut den: i32) -> (i32, i32) {
 	(num, den)
 }
 
-/// `Rational::to_string()` — `"%d/%d"`.
+/// Formats a `(numerator, denominator)` pair as `"num/den"` (for
+/// example `"25/1"`), the textual rational form used by the subtitle XML
+/// serialisation.
+///
+/// No reduction or sign fixing is applied: the pair is printed as given,
+/// including `"0/0"` for the NaN sentinel.
 fn rational_to_string((num, den): (i32, i32)) -> String {
 	format!("{}/{}", num, den)
 }
@@ -339,12 +395,27 @@ fn rational_from_string(s: &str) -> (i32, i32) {
 	}
 }
 
-/// Lenient `to_int`: returns `0` for empty/unparseable text.
+/// Parses `s` as an `i32`, falling back to `0` for empty, unparseable or
+/// out-of-range text instead of failing.
+///
+/// Mirrors `StringUtils::to_int`, which never throws. The text is not
+/// trimmed, so surrounding whitespace also yields `0`. Used for the
+/// rational fields of the subtitle interchange formats.
 fn parse_lenient(s: &str) -> i32 {
 	s.parse::<i32>().unwrap_or(0)
 }
 
-/// Absolute-value GCD on i64 (`i64_gcd` in `core/src/util/fractionutils.cpp`).
+/// Greatest common divisor of the absolute values of `a` and `b`
+/// (Euclid's algorithm on `i64`).
+///
+/// Returns `0` when both inputs are zero and `|x|` when only one is
+/// zero, so a `0` result means "no common divisor"; the result is never
+/// negative. Used by [`rational_reduce`] to canonicalise fractions.
+///
+/// # Arguments
+///
+/// * `a` - first value; its sign is ignored.
+/// * `b` - second value; its sign is ignored.
 fn i64_gcd(mut a: i64, mut b: i64) -> i64 {
 	if a < 0 {
 		a = -a;
@@ -658,14 +729,27 @@ fn parse_events(data: &str) -> Result<Vec<XmlEvent>> {
 	Ok(events)
 }
 
-/// Advance `i` past ASCII whitespace.
+/// Advances `*i` past ASCII whitespace (space, tab, CR, LF), stopping at
+/// `n` or the first non-whitespace byte.
+///
+/// # Arguments
+///
+/// * `i` - in/out cursor into `b`; left where it is when `*i >= n` or
+///   the byte at `*i` is not whitespace.
+/// * `b` - buffer being parsed.
+/// * `n` - exclusive upper bound for the scan; must be `<= b.len()`.
 fn skip_ws(i: &mut usize, b: &[u8], n: usize) {
 	while *i < n && (b[*i] == b' ' || b[*i] == b'\t' || b[*i] == b'\r' || b[*i] == b'\n') {
 		*i += 1;
 	}
 }
 
-/// Delimiter bytes for element/attribute names.
+/// Whether `c` terminates an XML element or attribute name: ASCII
+/// space, tab, CR, LF, `>`, `/` or `=`.
+///
+/// Used by the subtitle XML parser to find the end of tag and attribute
+/// names; other bytes (including quotes) are not delimiters and must be
+/// consumed by the caller.
 fn is_tag_delim(c: u8) -> bool {
 	matches!(c, b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/' | b'=')
 }

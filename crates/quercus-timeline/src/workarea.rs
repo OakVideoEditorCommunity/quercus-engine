@@ -62,6 +62,11 @@ impl TimelineWorkArea {
 	}
 
 	/// Set enabled.
+	///
+	/// `e` is stored as-is: enabling does not validate or clamp the range, and
+	/// disabling keeps the current range so re-enabling restores it. Default is
+	/// `false` (see [`Self::new`]); `WorkareaSetEnabledCommand` wraps this for
+	/// undo/redo.
 	pub fn set_enabled(&mut self, e: bool) {
 		self.workarea_enabled_ = e;
 	}
@@ -72,21 +77,40 @@ impl TimelineWorkArea {
 	}
 
 	/// The out point.
+	///
+	/// Returns `k_reset_out` (2147483647/1) while the work area has never had a
+	/// range set, so consumers should check [`Self::enabled`] before treating the
+	/// value as a real edit point. Owned rational; see [`Self::in_`] for the
+	/// matching bound.
 	pub fn out(&self) -> Rational {
 		self.workarea_range_.out()
 	}
 
 	/// The range length.
+	///
+	/// Computed as `out - in`, so it is negative or zero if the bounds were set
+	/// out of order; with the untouched reset sentinels it spans the whole
+	/// `k_reset_in..k_reset_out` range. Returns an owned rational.
 	pub fn length(&self) -> Rational {
 		self.workarea_range_.length()
 	}
 
 	/// The full range.
+	///
+	/// Returns the complete in/out pair, including the `k_reset_in`/`k_reset_out`
+	/// sentinels when the range was never set. The borrow is shared; use
+	/// [`Self::in_`] / [`Self::out`] for a single bound or [`Self::set_range`] to
+	/// change it.
 	pub fn range(&self) -> &TimeRange {
 		&self.workarea_range_
 	}
 
 	/// Set the range.
+	///
+	/// `range` replaces the in/out pair as-is: no ordering, length or clamp is
+	/// enforced here, and the enabled flag is untouched. This is the raw setter
+	/// used by `WorkareaSetRangeCommand`; playback consumers read the work area
+	/// only when it is enabled.
 	pub fn set_range(&mut self, range: TimeRange) {
 		self.workarea_range_ = range;
 	}
@@ -105,6 +129,11 @@ pub struct WorkareaSetEnabledCommand {
 
 impl WorkareaSetEnabledCommand {
 	/// Construct from work area + new enabled value (captures old at ctor).
+	///
+	/// `points` is the facade's work-area handle (the shared work area is cloned
+	/// out of it; a null/empty handle yields a no-op command) and `enabled` is
+	/// the flag applied on redo. The current flag is captured as `old_enabled`
+	/// (defaulting to `false` for a null handle).
 	pub fn new(points: crate::handle::CHandle, enabled: bool) -> Self {
 		// SAFETY: work-area handles box an `Arc<Mutex<TimelineWorkArea>>`
 		// (created by `make_owned`); reading it clones the shared `Arc`.
@@ -125,6 +154,10 @@ impl WorkareaSetEnabledCommand {
 
 	/// Construct over an already-shared work area (the crate's Rust-typed
 	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `points` is the shared target and `enabled` the flag applied on redo; the
+	/// current flag is read under the lock and captured as `old_enabled` for
+	/// undo. A poisoned lock is recovered rather than propagated.
 	pub fn new_arc(points: Arc<Mutex<TimelineWorkArea>>, enabled: bool) -> Self {
 		let old_enabled = points.lock().unwrap_or_else(|e| e.into_inner()).enabled();
 		Self {
@@ -135,6 +168,10 @@ impl WorkareaSetEnabledCommand {
 	}
 
 	/// `redo`: set enabled.
+	///
+	/// Writes the captured `new_enabled` into the shared work area under its
+	/// lock; with a null/empty handle (`points` = `None`) this is a no-op, and
+	/// re-applying the same flag is idempotent.
 	pub fn redo(&mut self) {
 		if let Some(wa) = &self.points {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,6 +219,12 @@ pub struct WorkareaSetRangeCommand {
 
 impl WorkareaSetRangeCommand {
 	/// Construct from work area + new range (captures current as old).
+	///
+	/// `workarea` is the facade's work-area handle (the shared work area is
+	/// cloned out of it; a null/empty handle yields a no-op command) and `range`
+	/// is the range applied on redo. The current range is captured as
+	/// `old_range`; when the handle is null that capture falls back to `range`
+	/// itself, which is harmless because redo/undo then do nothing.
 	pub fn new(workarea: crate::handle::CHandle, range: TimeRange) -> Self {
 		// SAFETY: as `WorkareaSetEnabledCommand::new`.
 		let wa = unsafe { get::<Arc<Mutex<TimelineWorkArea>>>(&workarea) }.cloned();
@@ -197,6 +240,11 @@ impl WorkareaSetRangeCommand {
 
 	/// Construct over an already-shared work area (the crate's Rust-typed
 	/// entry; the facade-facing [`Self::new`] forwards here).
+	///
+	/// `workarea` is the shared target and `range` the range applied on redo;
+	/// the current range is read under the lock and captured as `old_range` for
+	/// undo. A poisoned lock is recovered (the inner value is used), so this
+	/// cannot panic.
 	pub fn new_arc(workarea: Arc<Mutex<TimelineWorkArea>>, range: TimeRange) -> Self {
 		let old_range = *workarea.lock().unwrap_or_else(|e| e.into_inner()).range();
 		Self::new_with_old_opt(Some(workarea), range, old_range)
@@ -228,6 +276,11 @@ impl WorkareaSetRangeCommand {
 
 	/// Shared constructor over an optional work area (`None` mirrors the
 	/// empty/null handle: the command is a no-op).
+	///
+	/// `workarea` is the shared target (optional), `range` the range applied by
+	/// [`Self::redo`] and `old_range` the range restored by [`Self::undo`].
+	/// This is where every `new*` constructor of this command ends up; it never
+	/// locks, so no state is observed or mutated here.
 	fn new_with_old_opt(
 		workarea: Option<Arc<Mutex<TimelineWorkArea>>>,
 		range: TimeRange,
@@ -241,6 +294,10 @@ impl WorkareaSetRangeCommand {
 	}
 
 	/// `redo`: set the range.
+	///
+	/// Writes the captured `new_range` into the shared work area under its lock;
+	/// with a null/empty handle (`workarea` = `None`) this is a no-op. Safe to
+	/// call repeatedly — re-applying the same range is idempotent.
 	pub fn redo(&mut self) {
 		if let Some(wa) = &self.workarea {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());

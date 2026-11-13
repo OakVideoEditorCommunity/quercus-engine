@@ -75,11 +75,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use quercus_core::debug::{log as debug_log, Level};
+
 use crate::error::{Error, Result};
 use crate::ipc::{
 	write_message, AudioTicketSpec, BatchAcceptedMsg, BatchTicketSpec, FrameFailedMsg, FrameReadyMsg,
 	FrameSlotMeta, FrameSlotPool, HandshakeMsg, HelloCapsMsg, PluginProgressMsg, RenderAudioBatchMsg,
-	RenderBatchMsg, SharedMemoryRegion, ShmMode, WireMontageClip, SLOT_FORMAT_BGRA8,
+	RenderBatchMsg, SharedMemoryRegion, ShmMode, SLOT_FORMAT_BGRA8,
 	TYPE_BATCH_ACCEPTED, TYPE_ERROR, TYPE_FRAME_FAILED, TYPE_FRAME_READY, TYPE_HANDSHAKE,
 	TYPE_HELLO_CAPS, TYPE_PLUGIN_PROGRESS, TYPE_RENDER_AUDIO_BATCH,
 	plugin_cancel_json,
@@ -148,6 +150,13 @@ pub fn set_plugin_progress_cb(cb: Option<PluginProgressCb>) {
 		.unwrap_or_else(|e| e.into_inner()) = cb;
 }
 
+/// The registered plugin-progress forwarding callback, if any.
+///
+/// Returns a cheap `Arc` clone of the callback installed by
+/// [`set_plugin_progress_cb`], or `None` when none is registered. The
+/// dispatcher calls it for every worker-forwarded `plugin_progress` line,
+/// which is how an OFX plugin's progress reaches the app dialog. A poisoned
+/// lock is recovered instead of propagated.
 pub(crate) fn plugin_progress_cb() -> Option<PluginProgressCb> {
 	PLUGIN_PROGRESS_CB
 		.get_or_init(|| Mutex::new(None))
@@ -213,6 +222,12 @@ pub struct ShmFrameMeta {
 }
 
 impl ShmFrameMeta {
+	/// Copy a slot's POD metadata into an owned [`ShmFrameMeta`].
+	///
+	/// `pod` is the worker-written `FrameSlotMeta` in shm; its `colorspace` byte
+	/// array is NUL-padded by the worker and decoded here as (lossy) UTF-8, every
+	/// other field is copied as-is. Called by [`ShmRegionView::meta_copy`], whose
+	/// safety argument covers the pointer's validity.
 	fn from_pod(pod: &FrameSlotMeta) -> ShmFrameMeta {
 		let colorspace = {
 			// SAFETY: the POD char array is NUL-padded by the worker.
@@ -269,16 +284,29 @@ impl ShmRegionView {
 	}
 
 	/// The segment key.
+	///
+	/// This is the shared-memory name the segment was created under; it embeds the
+	/// pid, the worker index and a spawn / grow generation, and is sent to the
+	/// worker in the handshake so the child can attach the same mapping. Borrowed
+	/// from the live view: valid while this `ShmRegionView` lives.
 	pub fn key(&self) -> &str {
 		self.region.key()
 	}
 
-	/// Slot count.
+	/// Number of slots in this worker's segment.
+	///
+	/// Every slot holds one in-flight frame and is one unit of dispatch credit, so
+	/// this is also the worker's claim credit ceiling. The count is fixed at
+	/// segment create and reseeded when the segment is rebuilt for a grow.
 	pub fn slot_count(&self) -> u32 {
 		self.pool.slot_count()
 	}
 
-	/// Per-slot data capacity.
+	/// Per-slot data capacity in bytes.
+	///
+	/// This is one slot's payload capacity (the segment's slot-byte geometry), not
+	/// the whole segment; compare a frame's wire size against it before writing.
+	/// Sent to the worker in the handshake so both sides agree on the stride.
 	pub fn slot_data_bytes(&self) -> usize {
 		self.pool.slot_data_bytes()
 	}
@@ -300,6 +328,11 @@ impl ShmRegionView {
 	}
 
 	/// The slot's metadata, copied out of shm.
+	///
+	/// `slot` is a slot index in this segment. Returns an owned [`ShmFrameMeta`]
+	/// (the POD copied out, with its NUL-padded colorspace decoded lossily), so the
+	/// value stays valid after the slot is released. The pixel bytes are not
+	/// copied — read those with [`Self::slot_bytes`] or [`Self::slot_to_vec`].
 	pub fn meta_copy(&self, slot: u32) -> ShmFrameMeta {
 		// SAFETY: `slot` is in range; the meta POD is fully initialized
 		// by the pool create/attach.
@@ -482,6 +515,12 @@ pub fn slot_bytes_for(width: i32, height: i32, format: i32) -> usize {
 /// The worker-count policy (design doc S1 item 3):
 /// `max(1, min(logical_cores - 2, memory_budget / per_worker_slots))`,
 /// with a memory budget of one quarter of physical RAM.
+///
+/// `slots_per_worker` × `slot_bytes` is one worker's shm footprint in bytes; the
+/// core bound deliberately leaves two logical cores to the UI / main process.
+/// Every division is floored at 1, and the RAM figure falls back to 8 GiB when
+/// [`physical_memory_bytes`] is unavailable. [`worker_count_for_size`] layers
+/// the GPU-vram cap on top of this count.
 pub fn default_worker_count(slots_per_worker: u32, slot_bytes: usize) -> usize {
 	let cores = std::thread::available_parallelism()
 		.map(|n| n.get())
@@ -518,8 +557,8 @@ fn per_worker_gpu_budget(frame_size: (i32, i32), fps: u32) -> u64 {
 	((peak as f64 * pixel_ratio * fps_factor + idle as f64) as u64).max(1)
 }
 
-/// The GPU-vram side of the worker-count policy, combined with the
-/// RAM/CPU policy by [`worker_count_for_size`].
+/// The GPU-vram side of the worker-count policy, combined with the RAM/CPU
+/// policy by [`worker_count_for_size`].
 ///
 /// Each worker process decodes with a hardware device when available
 /// (NVDEC/VAAPI/VideoToolbox — the codec crate's mandated default), and
@@ -532,9 +571,14 @@ fn per_worker_gpu_budget(frame_size: (i32, i32), fps: u32) -> u64 {
 /// device and every decoder open starts failing (`cuvidCreateDecoder`
 /// CUDA_ERROR_OUT_OF_MEMORY — the log flood).
 ///
+/// `frame_size` is the output frame's `(width, height)` in pixels and `fps` the
+/// playback rate (clamped to at least 1) that scale the per-worker surface
+/// budget; both feed `per_worker_gpu_budget`.
+///
 /// Returns `Some(max_workers)` when a GPU is present and its free video
 /// memory can be queried, `None` when there is no GPU / no usable query
-/// (the caller then relies on the CPU/RAM policy alone).
+/// (the caller then relies on the CPU/RAM policy alone). The result is at
+/// least 1.
 pub fn gpu_worker_capacity(frame_size: (i32, i32), fps: u32) -> Option<usize> {
 	let (free_bytes, _total_bytes) = gpu_vram_bytes()?;
 	// 10% emergency reserve: never plan to burn the last frame of the
@@ -545,10 +589,17 @@ pub fn gpu_worker_capacity(frame_size: (i32, i32), fps: u32) -> Option<usize> {
 	Some((usable / budget).max(1) as usize)
 }
 
-/// Worker count combining the existing core/RAM policy with the GPU-vram
-/// policy: the GPU bound applies only when hardware decoding is actually
-/// enabled (no GPU → pure CPU/RAM), and caps the result (never raises it
-/// beyond the RAM/core policy — the shm segments are system memory).
+/// Worker count combining the core/RAM policy with the GPU-vram policy.
+///
+/// `slots_per_worker` and `slot_bytes` describe one worker's shm footprint in
+/// system memory (fed to [`default_worker_count`]), while `frame_size` is the
+/// output frame's `(width, height)` in pixels and `fps` the playback rate that
+/// set the per-worker GPU budget (see [`gpu_worker_capacity`]).
+///
+/// The GPU bound applies only when hardware decoding is actually enabled (no
+/// GPU → pure CPU/RAM), and it only *caps* the CPU/RAM result: the shm segments
+/// are system memory, so a generous GPU can never raise the count. Used by
+/// [`ProcessDispatcher::new`] with a nominal 30 fps.
 pub fn worker_count_for_size(
 	slots_per_worker: u32,
 	slot_bytes: usize,
@@ -657,6 +708,15 @@ fn linux_drm_vram_bytes() -> Option<(u64, u64)> {
 /// The sysfs walk behind [`linux_drm_vram_bytes`], split out so tests
 /// can point it at a fixture directory.
 #[cfg(target_os = "linux")]
+/// The sysfs walk behind [`linux_drm_vram_bytes`], split out so tests can
+/// point it at a fixture directory.
+///
+/// `dir` is the DRM class directory to scan (normally `/sys/class/drm`). Cards
+/// are visited in numeric order; the first whose `device/mem_info_vram_total`
+/// parses to a non-zero value wins, and free = total − used (with used `0`
+/// when unreadable). A card without the attributes, or with an unreadable one,
+/// is skipped rather than aborting the walk. Returns `None` when no card
+/// reports vram or `dir` cannot be read.
 fn linux_drm_vram_bytes_from(dir: &std::path::Path) -> Option<(u64, u64)> {
 	// The attribute files are device-tree attachments under card-N:
 	//   /sys/class/drm/card<idx>/device/mem_info_vram_total
@@ -705,10 +765,13 @@ fn linux_drm_vram_bytes() -> Option<(u64, u64)> {
 	None
 }
 
-/// Slot-count policy when a segment grows (M15 S3 grow-on-demand): cap
-/// the per-worker segment memory at `GROWN_SEGMENT_BUDGET`, never drop
-/// below 2 slots (enough to keep a worker flowing), never exceed the
-/// current count.
+/// Slot-count policy when a segment grows (M15 S3 grow-on-demand).
+///
+/// `slot_bytes` is the new per-slot capacity in bytes and `current_slots` the
+/// count the segment has now. The result caps the per-worker segment memory at
+/// `GROWN_SEGMENT_BUDGET` (256 MiB), never drops below 2 slots (enough to keep a
+/// worker flowing) and never exceeds `current_slots`. Used by
+/// `rebuild_segment` when a pending request needs a bigger slot.
 pub fn default_slots_for_bytes(slot_bytes: usize, current_slots: u32) -> u32 {
 	/// Per-worker segment budget for a grown segment (256 MiB).
 	const GROWN_SEGMENT_BUDGET: usize = 256 * 1024 * 1024;
@@ -740,8 +803,15 @@ pub fn default_batch_size(workers: usize, slots: u32) -> usize {
 	design.min(slots.max(1) as usize)
 }
 
-/// Physical memory in bytes (macOS `hw.memsize`, Linux `sysconf`,
-/// Windows `GlobalMemoryStatusEx`).
+/// Physical memory in bytes, queried per platform.
+///
+/// macOS reads `hw.memsize`, Linux multiplies `sysconf(_SC_PHYS_PAGES)` by
+/// `sysconf(_SC_PAGESIZE)`, and Windows uses `GlobalMemoryStatusEx`. Returns
+/// `None` on other platforms or when the query fails or reports nothing.
+///
+/// This is total installed RAM, not available RAM; [`default_worker_count`]
+/// budgets a quarter of it (and falls back to 8 GiB when the query returns
+/// `None`).
 fn physical_memory_bytes() -> Option<u64> {
 	#[cfg(target_os = "macos")]
 	{
@@ -941,6 +1011,15 @@ struct WorkerHandle {
 }
 
 impl WorkerHandle {
+	/// Build the handle for a freshly spawned worker, before its child exists.
+	///
+	/// `generation` is the spawn generation carried by the reader events (so a
+	/// late event from a dead child is dropped), `shm` the worker's segment view,
+	/// `slots` the number of slots to seed all-free, and `slot_bytes` the initial
+	/// per-slot capacity. The handle starts in `WorkerState::Starting` with no
+	/// child, stdin or caps, empty outstanding / held sets and a zero restart
+	/// counter. [`Self::spawn_worker`] then fills in the child, stdin and restart
+	/// count.
 	fn shell(
 		generation: u64,
 		shm: Arc<ShmRegionView>,
@@ -1089,8 +1168,18 @@ impl ProcessDispatcher {
 		Ok(dispatcher)
 	}
 
-	/// Spawn all workers and wait for the handshakes (bounded by
-	/// `handshake_timeout_ms`).
+	/// Spawn all workers and wait for the handshakes, bounded by
+	/// `handshake_timeout_ms`.
+	///
+	/// Called once per dispatcher: a second call returns [`Error::State`] without
+	/// touching the pool. Spawns `scheduler.workers()` workers, then polls (with a
+	/// 2 ms sleep) until every worker reaches `WorkerState::Alive`.
+	///
+	/// # Errors
+	///
+	/// [`Error::State`] when the dispatcher was already started;
+	/// [`Error::Failed`] when a spawn fails, when any worker becomes
+	/// `PermanentlyDead`, or when the handshake deadline passes first.
 	pub fn start(&self) -> Result<()> {
 		let timeout = {
 			let mut inner = lock(&self.inner);
@@ -1165,7 +1254,11 @@ impl ProcessDispatcher {
 			.max(1)
 	}
 
-	/// The configured worker count.
+	/// The configured worker count (the pool's target count).
+	///
+	/// This is the scheduler's shard modulus, not the length of `inner.workers`:
+	/// while a shrink drains, the vector can still be longer than the returned
+	/// value, and it can be shorter during startup.
 	pub fn worker_count(&self) -> usize {
 		lock(&self.inner).scheduler.workers()
 	}
@@ -1239,7 +1332,10 @@ impl ProcessDispatcher {
 		if target > inner.workers.len() {
 			for i in inner.workers.len()..target {
 				if let Err(e) = self.spawn_worker(inner, i) {
-					eprintln!("procpool: pool grow spawn worker {i} failed: {e}");
+					let _ = debug_log(
+						Level::Error,
+						&format!("procpool: pool grow spawn worker {i} failed: {e}"),
+					);
 					break;
 				}
 			}
@@ -1262,7 +1358,12 @@ impl ProcessDispatcher {
 		inner.next_target = None;
 	}
 
-	/// True when worker `i` is alive (handshaken).
+	/// True when worker `worker` is alive (handshaken).
+	///
+	/// `WorkerState::Alive` is entered when the worker's `hello_caps` arrives, so a
+	/// `Starting` worker is not yet alive and a `Dead` / `PermanentlyDead` one is
+	/// not either. Returns `false` for an index past the pool. Used by the
+	/// preview-window sizing and by tests.
 	pub fn is_alive(&self, worker: usize) -> bool {
 		lock(&self.inner)
 			.workers
@@ -1271,7 +1372,12 @@ impl ProcessDispatcher {
 			.unwrap_or(false)
 	}
 
-	/// Restart count of worker `i` (crash-isolation metric).
+	/// Restart count of worker `worker` (crash-isolation metric).
+	///
+	/// Bumped on every respawn by [`Self::restart_worker`] and preserved across a
+	/// restart (the handle is replaced, the counter is not reset); this is the
+	/// value `MAX_RESTARTS` compares against. Returns `0` when `worker` is not in
+	/// the pool.
 	pub fn restarts_of(&self, worker: usize) -> u32 {
 		lock(&self.inner)
 			.workers
@@ -1280,7 +1386,11 @@ impl ProcessDispatcher {
 			.unwrap_or(0)
 	}
 
-	/// Batches accepted by worker `i` (claim-confirmation metric).
+	/// Batches accepted by worker `worker` (claim-confirmation metric).
+	///
+	/// Incremented once per `batch_accepted` line the worker sends, i.e. one per
+	/// dispatched batch it claims; tests use it to prove claims reached a given
+	/// worker instead of another. Returns `0` when `worker` is not in the pool.
 	pub fn accepted_batches_of(&self, worker: usize) -> u64 {
 		lock(&self.inner)
 			.workers
@@ -1414,6 +1524,20 @@ impl ProcessDispatcher {
 
 	// ---- internals ------------------------------------------------------
 
+	/// Advance the dispatcher control plane by one non-blocking step.
+	///
+	/// `inner` is the locked state; `fired` collects completions to run after the
+	/// lock drops. The steps run in order: (0) apply a resize target whose throttle
+	/// window has passed, (1) drain queued worker events, dropping those from a
+	/// previous spawn generation, (2) restart dead workers and handshake timeouts
+	/// (retiring workers are left to drain), (3) claim and dispatch batches for
+	/// alive, non-retiring, non-reconfiguring workers, and (4) send `shutdown` to
+	/// retiring workers that finished draining, reap the ones that exited and
+	/// re-queue whatever they never rendered.
+	///
+	/// Retiring workers are never killed mid-render: a worker still alive 30 s
+	/// after its shutdown signal is killed as the last resort. Called by
+	/// [`ProcessDispatcher::poll`] and by [`ProcessDispatcher::start`].
 	fn pump(&self, inner: &mut Inner, fired: &mut Vec<(Completion, TicketResult)>) {
 		// 0. Throttled resize: a target requested inside the throttle
 		//    window is applied once the window has passed (the pool does
@@ -1565,13 +1689,31 @@ impl ProcessDispatcher {
 				if deadline_reached && handle.state != WorkerState::Dead {
 					let _ = child.kill();
 					let _ = child.wait();
-					eprintln!("procpool: retiring worker {i} hung past its deadline; killed last-resort");
+					let _ = debug_log(
+						Level::Warning,
+						&format!(
+							"procpool: retiring worker {i} hung past its deadline; killed last-resort"
+						),
+					);
 				}
 			}
 			handle.stdin = None;
 		}
 	}
 
+	/// Route one JSON line from worker `worker` to its protocol handler.
+	///
+	/// Lines that are not a JSON object, and lines from an unknown worker index,
+	/// are dropped. `fired` collects completions to run after the lock drops.
+	/// Handled `type`s: `handshake` (reply with the shm geometry — a mid-session
+	/// handshake is the M15 S3 grow-on-demand re-attach), `hello_caps` (mark the
+	/// worker alive, clear `reconfiguring`, send `load_graph` once when a snapshot
+	/// is configured), `batch_accepted` (bump the claim metric), `frame_ready` /
+	/// `frame_failed` (delegate to [`Self::on_frame_ready`] /
+	/// [`Self::on_frame_failed`]), `error` (fails that ticket when it names one,
+	/// otherwise a session-level error recycles a starting worker) and
+	/// `plugin_progress` (forwarded to the registered [`PluginProgressCb`]).
+	/// Any other type is ignored.
 	fn on_line(
 		&self,
 		inner: &mut Inner,
@@ -1647,7 +1789,10 @@ impl ProcessDispatcher {
 					None => {
 						// A session-level error (e.g. load_graph or shm
 						// attach failed): recycle the worker.
-						eprintln!("procpool: worker {worker} error: {message}");
+						let _ = debug_log(
+							Level::Error,
+							&format!("procpool: worker {worker} error: {message}"),
+						);
 						if matches!(handle.state, WorkerState::Starting) {
 							handle.state = WorkerState::Dead;
 						}
@@ -1668,6 +1813,20 @@ impl ProcessDispatcher {
 		}
 	}
 
+	/// Deliver a worker's `frame_ready` to the ticket's completion as a zero-copy
+	/// shm payload.
+	///
+	/// `worker` is the reporting pool index, `ticket` the arena id, `slot` the slot
+	/// the worker published, and `fired` the completion list, run after the lock
+	/// drops. The ready ring is drained in lockstep with the message (a mismatch is
+	/// logged, the message stays authoritative); the slot metadata is copied and
+	/// the slot is marked held for the consumer. Audio tickets complete with
+	/// `TicketPayload::ShmAudio` (sample rate / layout from the ticket params),
+	/// video tickets with `TicketPayload::ShmFrame`.
+	///
+	/// A ticket cancelled while in flight, a duplicate / late / post-restart
+	/// `frame_ready`, and an unknown ticket do not complete anything: the slot is
+	/// recycled instead.
 	fn on_frame_ready(
 		&self,
 		inner: &mut Inner,
@@ -1693,8 +1852,11 @@ impl ProcessDispatcher {
 		// consumer.
 		let popped = unsafe { handle.shm.pool().consume(&mut ring_slot) };
 		if !popped || ring_slot != slot as u32 {
-			eprintln!(
-				"procpool: worker {worker} ready-ring out of sync (popped {popped}, ring {ring_slot}, msg {slot})"
+			let _ = debug_log(
+				Level::Error,
+				&format!(
+					"procpool: worker {worker} ready-ring out of sync (popped {popped}, ring {ring_slot}, msg {slot})"
+				),
 			);
 		}
 		let meta = handle.shm.meta_copy(slot as u32);
@@ -1746,6 +1908,15 @@ impl ProcessDispatcher {
 		}
 	}
 
+	/// Complete a ticket whose worker reported `frame_failed` (or a session
+	/// `error` line naming a ticket) with [`Error::Failed`].
+	///
+	/// `worker` is the reporting pool index, `ticket` the arena id, `error` the
+	/// worker's message (embedded in the completion error) and `fired` the
+	/// completion list, which runs after the lock drops. The slot the worker had
+	/// acquired is recycled first (the worker never published it), then the ticket
+	/// is removed and the scheduler told the frame failed. Unknown / already
+	/// completed tickets are ignored, so a late failure after a cancel is a no-op.
 	fn on_frame_failed(
 		&self,
 		inner: &mut Inner,
@@ -1776,7 +1947,15 @@ impl ProcessDispatcher {
 		}
 	}
 
-	/// Return a slot to the worker's free pool (queue + ring).
+	/// Return a slot to the worker's free credit (the `free_slots` FIFO plus the
+	/// shm free ring) without a consumer.
+	///
+	/// Used when the channel never delivered the frame: cancelled in flight, an
+	/// unknown / duplicate ticket, or a `frame_failed` that acquired a slot but
+	/// never published it. `inner` is the locked dispatcher state, `worker` the
+	/// owning pool index and `slot` the slot to hand back. Unknown workers are
+	/// ignored; the slot is pushed back unconditionally (no `held` check), so
+	/// callers must not pass a slot that is already free.
 	fn recycle_slot(&self, inner: &mut Inner, worker: usize, slot: u32) {
 		let Some(handle) = inner.workers.get_mut(worker) else {
 			return;
@@ -1787,6 +1966,23 @@ impl ProcessDispatcher {
 		unsafe { handle.shm.pool().release(slot) };
 	}
 
+	/// Send worker `worker` as many claimed batches as its free slots allow,
+	/// growing its segment first when a pending request needs a bigger slot.
+	///
+	/// `inner` is the locked dispatcher state and `worker` the pool index, which
+	/// the caller has already checked to be alive, non-retiring and not
+	/// reconfiguring. Each iteration claims one batch from the scheduler (at most
+	/// `credit` frames, on distinct keys), assigns one free slot per ticket and
+	/// sends the video tickets and the audio tickets as two messages under the
+	/// same batch id — video first, because the worker pops slots in that order.
+	/// Returns when the credit runs out, when the worker has nothing claimable
+	/// (with `QUERCUS_DEBUG_DISPATCH` set, the pending summary is printed), or
+	/// when a write fails (the worker is marked dead).
+	///
+	/// Grow-on-demand (M15 S3): if the worker has no in-flight frame and a pending
+	/// request needs more bytes than a slot provides, the segment is rebuilt via
+	/// `rebuild_segment` and dispatch stops until the worker's `hello_caps`
+	/// clears `reconfiguring`.
 	fn dispatch_to(&self, inner: &mut Inner, worker: usize) {
 		loop {
 			let credit = inner.workers[worker].free_slots.len();
@@ -1811,7 +2007,10 @@ impl ProcessDispatcher {
 			};
 			if let Some(need) = grow {
 				if let Err(e) = self.rebuild_segment(inner, worker, need) {
-					eprintln!("procpool: worker {worker} segment grow to {need} B failed: {e}");
+					let _ = debug_log(
+						Level::Error,
+						&format!("procpool: worker {worker} segment grow to {need} B failed: {e}"),
+					);
 				}
 				// Stop here: the worker is re-attaching to the new segment
 				// (hello_caps pending). Dispatch resumes on the next pump
@@ -1925,6 +2124,18 @@ impl ProcessDispatcher {
 		}
 	}
 
+	/// Write one JSON control message to a worker's stdin and flush it.
+	///
+	/// `handle` is the worker whose pipe is written; `msg` is a complete protocol
+	/// message including its `type` tag. Flushing per message keeps the worker's
+	/// line-oriented reader from holding a batch behind a pipe buffer.
+	///
+	/// # Errors
+	///
+	/// [`Error::State`] when the worker has no stdin left (dead or not yet
+	/// spawned), [`Error::Failed`] when the write or the flush fails. Callers
+	/// treat a failure as fatal for that worker: most set `WorkerState::Dead`
+	/// and let the pump restart it.
 	fn send_json(&self, handle: &mut WorkerHandle, msg: &Value) -> Result<()> {
 		let stdin = handle.stdin.as_mut().ok_or(Error::State)?;
 		write_message(stdin, msg).map_err(|e| Error::Failed(format!("worker stdin: {e}")))?;
@@ -1933,6 +2144,23 @@ impl ProcessDispatcher {
 			.map_err(|e| Error::Failed(format!("worker stdin flush: {e}")))
 	}
 
+	/// Create worker `index`'s shared-memory segment, spawn its process and
+	/// install the handle in `inner.workers`.
+	///
+	/// `index` is the pool slot: an existing index is replaced (restart path,
+	/// keeping its restart counter), otherwise the handle is appended. `inner`
+	/// supplies the geometry (slots / slot bytes) and the binary path. Each spawn
+	/// uses a fresh segment key (`...-g<generation>`) so dropping the old handle
+	/// cannot unlink the new mapping. The child runs with `--backend auto` (GPU
+	/// preferred, CPU fallback) and a dedicated stdout reader thread that
+	/// forwards lines and EOF as [`WorkerEvent`]s tagged with this spawn's
+	/// generation. The worker starts in `WorkerState::Starting`; the handshake
+	/// is answered later by the pump.
+	///
+	/// # Errors
+	///
+	/// Fails when the segment cannot be created, the process cannot be spawned,
+	/// its stdout is not piped, or the reader thread cannot be created.
 	fn spawn_worker(&self, inner: &mut Inner, index: usize) -> Result<()> {
 		// One segment generation per (re)spawn: the key carries the restart
 		// count so a restart never reuses the previous name — dropping the
@@ -2024,6 +2252,22 @@ impl ProcessDispatcher {
 		Ok(())
 	}
 
+	/// Restart worker `worker` after a crash or handshake timeout, re-queueing
+	/// everything it had claimed so healthy workers can pick it up.
+	///
+	/// `inner` is the locked dispatcher state, `worker` indexes `inner.workers`,
+	/// and `fired` collects completions to run after the lock drops. The dead
+	/// child is killed and reaped, its pipes are dropped and its slot bookkeeping
+	/// is cleared (held / outstanding), the restart counter is incremented, and
+	/// the scheduler re-queues every claimed frame with `any_worker = true`.
+	///
+	/// A **retiring** worker (pool shrink) is removed from the pool instead of
+	/// being respawned: it was being drained and its frames must land on the
+	/// survivors, so they are left pending. Once the counter exceeds
+	/// `MAX_RESTARTS` the worker is marked `PermanentlyDead` and its frames
+	/// complete with a "crashed repeatedly" error. Otherwise a fresh segment is
+	/// created through [`Self::spawn_worker`]; a failed spawn leaves the worker
+	/// `Dead` so the next pump retries.
 	fn restart_worker(
 		&self,
 		inner: &mut Inner,
@@ -2095,7 +2339,10 @@ impl ProcessDispatcher {
 
 		// Fresh segment + respawn (a Create unlinks any stale segment).
 		if let Err(e) = self.spawn_worker(inner, worker) {
-			eprintln!("procpool: worker {worker} respawn failed: {e}");
+			let _ = debug_log(
+				Level::Error,
+				&format!("procpool: worker {worker} respawn failed: {e}"),
+			);
 			inner.workers[worker].state = WorkerState::Dead;
 		}
 	}
@@ -2402,7 +2649,20 @@ impl JobDispatch for ProcessDispatcher {
 	}
 }
 
-/// Resolve the quercus-worker binary path.
+/// Resolve the quercus-worker binary path, first hit wins.
+///
+/// `config` is the dispatcher configuration being resolved (it is not
+/// modified). The order is: the explicit `config.worker_bin`, then the
+/// `QUERCUS_WORKER_BIN` environment variable, then `quercus-worker` (with the
+/// platform's `EXE_SUFFIX`) next to the current executable. Called once by
+/// [`ProcessDispatcher::new`], so the resolved path is cached in the
+/// dispatcher.
+///
+/// # Errors
+///
+/// [`Error::Failed`] when the current executable path cannot be resolved, or
+/// when the sibling binary does not exist; that message names the expected
+/// path and both overrides.
 fn resolve_worker_bin(config: &DispatcherConfig) -> Result<PathBuf> {
 	if let Some(p) = &config.worker_bin {
 		return Ok(p.clone());
@@ -2425,16 +2685,32 @@ fn resolve_worker_bin(config: &DispatcherConfig) -> Result<PathBuf> {
 	)))
 }
 
-/// The wire slot format a video ticket requests: the ticket's forced
-/// PixelFormat when set (F32 for exports / full-resolution / scopes, M15
-/// S3 — the worker then writes F32 straight into the slot and the export
-/// reads it back with no BGRA8 round trip), else the dispatcher's default
-/// slot format (BGRA8 for the viewer preview path).
+/// The wire slot format a video ticket requests.
+///
+/// `params.force_format` wins when set (F32 for exports / full-resolution /
+/// scopes, M15 S3 — the worker then writes F32 straight into the slot and the
+/// export reads it back with no BGRA8 round trip); otherwise the dispatcher's
+/// default `config_format` is returned (BGRA8 for the viewer preview path).
+/// Used by [`build_ticket_spec`] and by `post` when sizing the slot.
 fn ticket_wire_format(params: &VideoTicketParams, config_format: i32) -> i32 {
 	params.force_format.map(|f| f as i32).unwrap_or(config_format)
 }
 
-/// Map ticket params to the wire ticket spec (main assigns `slot`).
+/// Convert one pending video ticket into the `BatchTicketSpec` the worker
+/// parses: it fills in the assigned slot and the wire form of the ticket's
+/// time, size, format, montage clips and adjustments.
+///
+/// `ticket` is the arena id assigned by `post` and echoed back by the worker
+/// in `frame_ready` / `frame_failed`; `slot` is the shm slot reserved for this
+/// ticket (the worker checks it against its own acquisition order); `params`
+/// supplies the rational frame time, the render size, the optional footage
+/// (file, stream), montage and adjustments; `slot_format` is the dispatcher's
+/// default slot wire format, overridden per ticket by [`ticket_wire_format`]
+/// (a ticket `force_format` wins).
+///
+/// A ticket without footage sends an empty file name and stream `0`;
+/// `viewer` / `project` ride along for M16 S1 graph mode, which the worker
+/// honors only when the project key matches its loaded snapshot.
 fn build_ticket_spec(
 	ticket: i64,
 	slot: u32,
@@ -2449,18 +2725,7 @@ fn build_ticket_spec(
 	let montage = params
 		.montage
 		.iter()
-		.map(|c| WireMontageClip {
-			filename: c.filename.clone(),
-			stream_index: c.stream_index,
-			in_num: c.in_time.numerator(),
-			in_den: c.in_time.denominator(),
-			out_num: c.out_time.numerator(),
-			out_den: c.out_time.denominator(),
-			media_in_num: c.media_in.numerator(),
-			media_in_den: c.media_in.denominator(),
-			gain: c.gain,
-			effects: c.effects.iter().map(crate::ipc::wire_effect_from).collect(),
-		})
+		.map(crate::ipc::wire_montage_clip_from)
 		.collect();
 	BatchTicketSpec {
 		ticket,
@@ -2495,18 +2760,12 @@ fn build_audio_ticket_spec(ticket: i64, slot: u32, params: &AudioTicketParams) -
 	let montage = params
 		.montage
 		.iter()
-		.map(|c| WireMontageClip {
-			filename: c.filename.clone(),
-			stream_index: c.stream_index,
-			in_num: c.in_time.numerator(),
-			in_den: c.in_time.denominator(),
-			out_num: c.out_time.numerator(),
-			out_den: c.out_time.denominator(),
-			media_in_num: c.media_in.numerator(),
-			media_in_den: c.media_in.denominator(),
-			gain: c.gain,
-			effects: c.effects.iter().map(crate::ipc::wire_effect_from).collect(),
-		})
+		.map(crate::ipc::wire_montage_clip_from)
+		.collect();
+	let bus_effects = params
+		.bus_effects
+		.iter()
+		.map(crate::ipc::wire_audio_effect_from)
 		.collect();
 	AudioTicketSpec {
 		ticket,
@@ -2519,6 +2778,7 @@ fn build_audio_ticket_spec(ticket: i64, slot: u32, params: &AudioTicketParams) -
 		channel_layout: params.channel_layout,
 		channels: params.channel_layout.count_ones().max(1) as i32,
 		montage,
+		bus_effects,
 	}
 }
 
@@ -3525,6 +3785,7 @@ mod tests {
 						sample_rate: 48000,
 						channel_layout: 0x3,
 						montage: Vec::new(),
+						bus_effects: Vec::new(),
 					})),
 					done: Some(Box::new(move |result| {
 						sink.lock().unwrap_or_else(|e| e.into_inner()).push(result)
@@ -3869,6 +4130,7 @@ mod tests {
 						sample_rate: 48000,
 						channel_layout: 0x3,
 						montage: Vec::new(),
+						bus_effects: Vec::new(),
 					})),
 					done: None,
 				},
@@ -4019,6 +4281,7 @@ mod tests {
 			sample_rate: 48000,
 			channel_layout: 0x3,
 			montage: Vec::new(),
+			bus_effects: Vec::new(),
 		});
 		assert!(!dispatcher.post(test_job(6, 0, Some(big), &results)));
 		// An invalid (zero-length) audio range is refused too.
@@ -4031,6 +4294,7 @@ mod tests {
 			sample_rate: 48000,
 			channel_layout: 0x3,
 			montage: Vec::new(),
+			bus_effects: Vec::new(),
 		});
 		assert!(!dispatcher.post(test_job(6, 0, Some(zero), &results)));
 
@@ -4344,7 +4608,19 @@ mod tests {
 				out_time: quercus_core::Rational::new(3, 4),
 				media_in: quercus_core::Rational::new(0, 1),
 				gain: 0.5,
+				pan: 0.0,
+				fade_in: quercus_core::Rational::new(0, 1),
+				fade_out: quercus_core::Rational::new(0, 1),
 				effects: Vec::new(),
+				audio_effects: Vec::new(),
+			}],
+			bus_effects: vec![crate::ticket::MontageAudioEffect {
+				type_id: "org.olivevideoeditor.Olive.limiter".into(),
+				enabled: true,
+				params: vec![(
+					"ceiling_db".into(),
+					quercus_node::value::NodeValue::Float(-1.0),
+				)],
 			}],
 		};
 		let spec = build_audio_ticket_spec(5, 2, &params);
@@ -4363,6 +4639,12 @@ mod tests {
 		assert_eq!(spec.montage[0].out_den, 4);
 		assert_eq!(spec.montage[0].media_in_num, 0);
 		assert_eq!(spec.montage[0].gain, 0.5);
+		assert_eq!(spec.bus_effects.len(), 1);
+		assert_eq!(
+			spec.bus_effects[0].type_id,
+			"org.olivevideoeditor.Olive.limiter"
+		);
+		assert_eq!(spec.bus_effects[0].params[0].input, "ceiling_db");
 	}
 
 	#[test]
@@ -4432,6 +4714,7 @@ mod tests {
 			sample_rate: 48000,
 			channel_layout: 0x3,
 			montage: Vec::new(),
+			bus_effects: Vec::new(),
 		});
 		let audio_results: Arc<Mutex<Vec<TicketResult>>> = Arc::new(Mutex::new(Vec::new()));
 		assert!(dispatcher.post(test_job(2, 0, Some(audio), &audio_results)));
@@ -4684,6 +4967,7 @@ mod tests {
 						sample_rate: 48000,
 						channel_layout: 0x3,
 						montage: Vec::new(),
+						bus_effects: Vec::new(),
 					})),
 					done: None,
 				},

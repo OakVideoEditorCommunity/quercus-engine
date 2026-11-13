@@ -208,8 +208,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(MergeNode))
 }
 
-/// Register this node type (C++ `k_merge_node` in
-/// `factory.cpp::create_from_factory_index`).
+/// Appends this node type's factory entry (the C++ `factory.cpp` merge entry)
+/// to a metadata list.
+///
+/// The entry publishes type id `"org.olivevideoeditor.Olive.merge"`, menu name
+/// "Merge" and category [`Category::Math`], with [`create`] as its constructor.
+/// It is appended unconditionally, so call it exactly once (from
+/// `nodes::register_all`); the push order defines the create-menu order.
+///
+/// # Arguments
+///
+/// * `meta` - Factory metadata list to append to; `crate::nodes::register_all`
+///   later installs the collected list into the global registry.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.merge",

@@ -4,7 +4,13 @@
 
 use quercus_codec::exportcodec::Codec;
 
-/// Whether `codec` is a valid Codec discriminant.
+/// Reports whether `codec` is a real `Codec` discriminant.
+///
+/// `codec` is the `repr(i32)` value carried across the C ABI; the real codecs are
+/// `0..=18`. The `Count` sentinel (19) and every negative or larger value answer
+/// `false`, so a C caller can validate an untrusted value before using the other
+/// `quercus_codec_codec_*` entry points. Pairs with
+/// `quercus_codec_codec_count`, which returns the sentinel itself.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_codec_codec_is_valid(codec: i32) -> bool {
 	Codec::from_i32(codec).is_some()
@@ -33,7 +39,13 @@ pub extern "C" fn quercus_codec_codec_is_still_image(codec: i32) -> bool {
 	Codec::from_i32(codec).is_some_and(Codec::is_codec_a_still_image)
 }
 
-/// Whether `codec` is lossless; false for invalid values.
+/// Reports whether `codec` encodes without quality loss.
+///
+/// `codec` is a `repr(i32)` `Codec` discriminant, answered from the codec table's
+/// lossless flag (FLAC and PCM are lossless; H.264 is not). Invalid values answer
+/// `false` instead of reporting an error, so this is safe to call before
+/// `quercus_codec_codec_is_valid`. Sibling of
+/// `quercus_codec_codec_is_still_image`.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_codec_codec_is_lossless(codec: i32) -> bool {
 	Codec::from_i32(codec).is_some_and(Codec::is_codec_lossless)

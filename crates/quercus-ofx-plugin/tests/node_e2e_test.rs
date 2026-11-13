@@ -14,16 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 阶段 6a 端到端：OFX 插件 → 节点工厂 → 节点图 → 渲染出帧。
+//! Stage 6a end-to-end: OFX plugin → node factory → node graph → rendered
+//! frame.
 //!
-//! 链路：`scan_path`（最小测试插件，cbits/quercus_test_plugin.c）→
-//! `node_factory::register_plugin_nodes`（动态注册）→
-//! `Factory::create_any`（参数翻译的输入表）→ Graph 连接常量纹理
-//! 源 → `Traverser::evaluate` + `RenderEvalHooks`（解 PluginJobPayload
-//! 经 render_driver 出帧）→ 像素断言。
+//! Chain: `scan_path` (minimal test plugin, cbits/quercus_test_plugin.c) →
+//! `node_factory::register_plugin_nodes` (dynamic registration) →
+//! `Factory::create_any` (the input table of parameter translation) → Graph
+//! connected to a constant texture source → `Traverser::evaluate` +
+//! `RenderEvalHooks` (resolves PluginJobPayload and renders a frame through
+//! render_driver) → pixel assertions.
 //!
-//! 测试插件未构建时全部 skip（common 约定）。宿主单例经
-//! `common::with_host` 串行化。
+//! All tests skip when the test plugin is not built (the common convention).
+//! The host singleton is serialized through `common::with_host`.
 
 mod common;
 
@@ -39,7 +41,8 @@ use quercus_ofx_plugin::host::Host;
 const PLUGIN_ID: &str = "org.quercus.test-plugin";
 const IDENTITY_ID: &str = "org.quercus.test-plugin.identity";
 
-/// 常量纹理源节点：推一张填充实色的 F32 帧（测试专用行为）。
+/// Constant texture source node: pushes one F32 frame filled with a solid
+/// color (test-only behavior).
 struct ConstSource {
 	rgba: [f32; 4],
 	size: (i32, i32),
@@ -83,7 +86,8 @@ impl NodeBehavior for ConstSource {
 	}
 }
 
-/// 扫描 + 注册（幂等；宿主不可用返回 false = skip）。
+/// Scans and registers (idempotent; returns false = skip when the host is
+/// unavailable).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
 		common::skip("最小测试插件未构建");
@@ -97,7 +101,8 @@ fn scan_and_register() -> bool {
 	true
 }
 
-/// 取输出表的渲染纹理（resolve 后的真纹理盒）。
+/// Takes the render texture out of the output table (the real texture box
+/// after resolve).
 fn rendered_texture(table: &quercus_node::value::NodeValueTable) -> Texture {
 	let NodeValue::Texture(handle) = table.get(ValueType::Texture).expect("根输出应有纹理")
 	else {
@@ -119,8 +124,9 @@ fn first_pixel(texture: &Texture) -> [f32; 4] {
 	out
 }
 
-/// 注册 + 参数翻译：动态条目、输入类型/默认值/显示名/隐藏标记/
-/// combo 选项/effect_input（对齐 plugin.cpp 构造函数）。
+/// Registration + parameter translation: dynamic entries, input
+/// type/default/display name/hidden flag/combo options/effect_input (mirrors
+/// the plugin.cpp constructor).
 #[test]
 fn plugin_nodes_register_with_translated_inputs() {
 	common::with_host(|| {
@@ -199,8 +205,8 @@ fn plugin_nodes_register_with_translated_inputs() {
 	});
 }
 
-/// CPU 端到端：常量源 → 插件节点（render 填常量 0.5/alpha 1）→
-/// 输出帧像素断言。
+/// CPU end-to-end: constant source → plugin node (render fills constant
+/// 0.5/alpha 1) → pixel assertions on the output frame.
 #[test]
 fn plugin_renders_constant_frame_end_to_end() {
 	common::with_host(|| {
@@ -241,8 +247,9 @@ fn plugin_renders_constant_frame_end_to_end() {
 	});
 }
 
-/// isIdentity 透传：identity 变体声明恒透传 Source → 输出应等于
-/// 输入帧（render_driver 的 passthrough 短路）。
+/// isIdentity pass-through: the identity variant declares it always passes
+/// Source through → the output should equal the input frame (render_driver's
+/// passthrough short-circuit).
 #[test]
 fn identity_variant_passes_source_through() {
 	common::with_host(|| {
@@ -283,8 +290,9 @@ fn identity_variant_passes_source_through() {
 	});
 }
 
-/// 参数覆盖路径：Text/StrCombo 走 set_ofx，数值走 POD——经 set 后
-/// 实例参数值可读回（翻译注入的回归保护）。
+/// Parameter override path: Text/StrCombo go through set_ofx, numerics go
+/// through POD — after a set the instance parameter values can be read back
+/// (regression protection for the translation injection).
 #[test]
 fn param_overrides_reach_instance() {
 	common::with_host(|| {

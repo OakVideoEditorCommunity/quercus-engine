@@ -12,11 +12,11 @@ use std::ffi::c_void;
 use crate::codec::string_out;
 use crate::node::{NodeId, Project};
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_task_export(
 		project: *const c_void,
@@ -190,6 +190,10 @@ impl TaskCancellation {
 }
 
 impl Task {
+	/// Wraps a non-zero engine task id handed back by a spawn function.
+	///
+	/// Returns `None` for `0`, the ABI's invalid-handle sentinel, so a
+	/// "could not start" result maps to `None` in one step.
 	pub(crate) fn new(id: u64) -> Option<Task> {
 		(id != 0).then_some(Task { id })
 	}
@@ -204,17 +208,30 @@ impl Task {
 		TaskCancellation { id: self.id }
 	}
 
-	/// The task title.
+	/// Returns the task's display title assigned when it was spawned (for
+	/// example `Rendering Video ...`), suitable for a task/progress list.
+	///
+	/// Returns `""` when the id is unknown or the title is not valid UTF-8.
 	pub fn title(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_task_title(self.id, buf, len) }).unwrap_or_default()
 	}
 
-	/// Progress in 0.0..=1.0.
+	/// Returns the worker's most recent progress in `0.0..=1.0`
+	/// (`0.0` = nothing done yet, `1.0` = complete).
+	///
+	/// Progress is advisory and may stall while one long step runs. A stale
+	/// task id yields `0.0`, because the ABI's `-1` sentinel is clamped away.
 	pub fn progress(&self) -> f64 {
 		unsafe { quercus_task_progress(self.id) }.max(0.0)
 	}
 
-	/// The current state.
+	/// Returns the task's current [`TaskState`] as published by the worker.
+	///
+	/// This does not join the worker: a running task reports
+	/// [`TaskState::Running`] until the worker finishes. An unknown/stale id
+	/// also reports `Running`, because the ABI's `-1` sentinel maps to the
+	/// default arm; use [`Task::wait`] when success/failure must be
+	/// deterministic.
 	pub fn state(&self) -> TaskState {
 		match unsafe { quercus_task_state(self.id) } {
 			1 => TaskState::Succeeded,
@@ -283,11 +300,22 @@ pub fn proxy_max_concurrent() -> usize {
 	(unsafe { quercus_task_proxy_max_concurrent() }).max(1) as usize
 }
 
-/// Starts asynchronous min/max peak extraction for one audio-stream ordinal.
+/// Starts asynchronous min/max peak extraction from one audio stream of
+/// `filename`.
 ///
-/// Wait or poll the returned task, then call [`Task::take_waveform`] exactly
-/// once. Invalid arguments return `None`; decode failures are reported by the
-/// task state and error string.
+/// `filename` is the media path to decode; `stream_index` is the
+/// zero-based audio-stream ordinal inside that file (it indexes audio
+/// streams only, not all streams). `samples_per_point` must be positive
+/// and is how many source samples each returned peak point summarizes;
+/// larger values produce a coarser waveform.
+///
+/// # Returns
+///
+/// `None` when the filename is empty, `stream_index` is negative, or
+/// `samples_per_point` is not positive. Decode failures happen on the
+/// worker: wait with [`Task::wait`] or poll [`Task::state`] /
+/// [`Task::error`], then call [`Task::take_waveform`] exactly once after
+/// success.
 pub fn extract_waveform(filename: &str, stream_index: i32, samples_per_point: i32) -> Option<Task> {
 	Task::new(unsafe {
 		quercus_task_waveform_extract(
@@ -325,6 +353,19 @@ pub fn render_thumbnail(
 }
 
 /// Starts asynchronous audio mixing for a sequence or footage range.
+///
+/// `viewer` is the sequence or footage node to mix, and `range` the
+/// half-open `[in, out)` time range in rational seconds (`out` must be
+/// greater than `in`). `sample_rate` is the output rate in Hz (must be
+/// positive) and `channel_layout` a non-zero packed channel mask (for
+/// example `0x3` for stereo).
+///
+/// # Returns
+///
+/// The task handle, or `None` for an empty/inverted range, a
+/// non-positive sample rate, a zero channel layout, or an invalid
+/// project/viewer token. Take the buffer with [`Task::take_audio`] after
+/// success.
 pub fn render_audio(
 	project: &Project,
 	viewer: NodeId,
@@ -346,7 +387,20 @@ pub fn render_audio(
 	})
 }
 
-/// Starts asynchronous sequence/footage video rendering into an owned frame.
+/// Starts an asynchronous sequence or footage video render into an owned
+/// frame.
+///
+/// `viewer` is the sequence or footage node to render, `time` the frame
+/// position as a rational, `size` the requested pixel buffer size (both
+/// dimensions must be non-zero), and `pixel_format` the output layout
+/// (`F32Rgba` or `Bgra8`).
+///
+/// # Returns
+///
+/// The task handle, or `None` for a zero-sized request or an invalid
+/// project/viewer token. Take the frame with [`Task::take_video`] after
+/// success; a render failure is reported by [`Task::state`] and
+/// [`Task::error`].
 pub fn render_video(
 	project: &Project,
 	viewer: NodeId,
@@ -370,6 +424,23 @@ pub fn render_video(
 }
 
 /// Starts an asynchronous Playback-priority preview frame render.
+///
+/// The job is submitted to the foreground playback scheduler instead of
+/// the seek queue, so the UI keeps the current playhead responsive.
+/// `time` is the frame position and `size` the pixel buffer size (both
+/// dimensions must be non-zero).
+///
+/// `frame` is the target frame number, `distance` the signed distance
+/// from the current playhead (orders queued playback work, nearest
+/// first), and `generation` a version token: bumping it invalidates
+/// stale requests for the same sequence/frame, whose results the
+/// scheduler drops.
+///
+/// # Returns
+///
+/// The task handle, or `None` for a zero-sized request or an invalid
+/// project/viewer token. Take the frame with [`Task::take_video`] after
+/// success.
 pub fn render_playback_video(
 	project: &Project,
 	viewer: NodeId,
@@ -398,7 +469,19 @@ pub fn render_playback_video(
 	})
 }
 
-/// Starts an asynchronous multicam-angle render of one video track.
+/// Starts an asynchronous render of one multicam-angle video track.
+///
+/// `viewer` is the sequence/owner node; `track` is the video track whose
+/// output is rendered (one multicam angle). `time` is the frame position
+/// as a rational, `size` is the requested pixel buffer size (both
+/// dimensions must be non-zero), and `pixel_format` selects the output
+/// layout.
+///
+/// # Returns
+///
+/// The task handle, or `None` for a zero-sized request or an invalid
+/// project/viewer/track token. Take the frame with [`Task::take_video`]
+/// once the task succeeds.
 pub fn render_track_video(
 	project: &Project,
 	viewer: NodeId,
@@ -573,5 +656,124 @@ mod tests {
 		let _ = std::fs::remove_file(path);
 		let _ = std::fs::remove_file(cancelled_path);
 		let _ = std::fs::remove_file(media);
+	}
+}
+
+#[cfg(test)]
+mod export_regression_tests {
+	use super::*;
+	use crate::edit::EditCommand;
+	use crate::editor::{EditorSession, TrackKind};
+
+	fn init_render() {
+		if !crate::render::manager_init(crate::render::RenderBackend::Threads) {
+			assert!(crate::render::manager_is_initialized());
+		}
+	}
+
+	#[test]
+	fn pure_audio_wav_export_succeeds() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		init_render();
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Audio Only").expect("sequence");
+		let media = crate::test_support::make_test_clip_with_audio("audio_only_export");
+		let footage = session.project().import_footage(&media).expect("footage");
+		session
+			.execute(EditCommand::PlaceFootageClip {
+				footage,
+				kind: TrackKind::Audio,
+				track_index: 0,
+				in_ts: 0,
+				out_ts: 25,
+				media_in_ts: 0,
+			})
+			.expect("place audio");
+
+		let path = std::env::temp_dir()
+			.join(format!("quercus_sdk_audio_only_{}.wav", std::process::id()))
+			.to_string_lossy()
+			.into_owned();
+		// Exercise the same-process audio-then-export path that used to
+		// deadlock: render the audio mix first, then export the sequence.
+		let audio = render_audio(
+			&session.project(),
+			sequence,
+			crate::types::TimeRange::new(
+				crate::types::Rational::new(0, 1),
+				crate::types::Rational::new(1, 1),
+			),
+			48_000,
+			0x3,
+		)
+		.expect("audio render");
+		assert!(audio.wait(), "audio render failed: {}", audio.error());
+		assert!(audio.take_audio().is_some());
+
+		let params = EncodingParams {
+			format: crate::codec::Format::WAV as i32,
+			video_enabled: false,
+			audio_enabled: true,
+			audio_codec: crate::codec::Codec::PCM as i32,
+			audio_sample_rate: 48_000,
+			audio_channel_layout: 0x3,
+			export_length_num: 1,
+			export_length_den: 1,
+			..EncodingParams::default()
+		};
+		let task = export(&session.project(), sequence, &path, &params).expect("export task");
+		assert!(task.wait(), "audio export failed: {}", task.error());
+		assert_eq!(task.state(), TaskState::Succeeded);
+		assert!(std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false));
+		let _ = std::fs::remove_file(&path);
+		let _ = std::fs::remove_file(&media);
+	}
+
+	#[test]
+	fn video_shorter_than_export_range_pads_black() {
+		let _guard = crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		init_render();
+		let session = EditorSession::new().expect("session");
+		let sequence = session.create_sequence("Short Video").expect("sequence");
+		let media = crate::test_support::make_test_clip("short_video_export");
+		let footage = session.project().import_footage(&media).expect("footage");
+		session
+			.execute(EditCommand::PlaceFootageClip {
+				footage,
+				kind: TrackKind::Video,
+				track_index: 0,
+				in_ts: 0,
+				out_ts: 25,
+				media_in_ts: 0,
+			})
+			.expect("place video");
+
+		let path = std::env::temp_dir()
+			.join(format!("quercus_sdk_short_video_{}.mp4", std::process::id()))
+			.to_string_lossy()
+			.into_owned();
+		let params = EncodingParams {
+			format: crate::codec::Format::MPEG4Video as i32,
+			video_enabled: true,
+			video_codec: crate::codec::Codec::H264 as i32,
+			video_width: 64,
+			video_height: 64,
+			video_time_base_num: 1,
+			video_time_base_den: 25,
+			audio_enabled: false,
+			export_length_num: 3,
+			export_length_den: 1,
+			..EncodingParams::default()
+		};
+		let task = export(&session.project(), sequence, &path, &params).expect("export task");
+		assert!(task.wait(), "padded export failed: {}", task.error());
+		assert_eq!(task.state(), TaskState::Succeeded);
+		assert!(std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false));
+		let _ = std::fs::remove_file(&path);
+		let _ = std::fs::remove_file(&media);
 	}
 }

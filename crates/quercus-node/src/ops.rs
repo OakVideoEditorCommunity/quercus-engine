@@ -24,7 +24,11 @@ use crate::graph::Graph;
 use crate::id::NodeId;
 use crate::node::Category;
 
-/// Human-readable category name (C++ `Node::get_category_name`).
+/// Human-readable name of a node category.
+///
+/// `c` is the category stored in node metadata; the result is the exact
+/// display label (`"Output"`, `"Effect"`, `"OpenFX"`, ...) used by menus and
+/// the node library, not localized. Mirrors C++ `Node::get_category_name`.
 pub fn category_name(c: Category) -> &'static str {
 	match c {
 		Category::Output => "Output",
@@ -42,9 +46,20 @@ pub fn category_name(c: Category) -> &'static str {
 	}
 }
 
-/// Copy inputs (and optionally connections) between two nodes
-/// (C++ `Node::copy_inputs` / `copy_input` /
-/// `copy_values_of_element`).
+/// Copies inputs (and optionally their connections) between two nodes.
+///
+/// `src` and `dst` must both exist. Every declared input of `src` that `dst`
+/// also declares gets `src`'s standard value, re-quantized to `dst`'s declared
+/// input type when the two disagree so a mismatched payload is never stored
+/// (whole-value semantics; array elements are not copied yet). With
+/// `include_connections`, each scalar connection feeding `src` is recreated on
+/// `dst` best-effort — a failed connect is ignored. Mirrors C++
+/// `Node::copy_inputs` / `copy_input` / `copy_values_of_element`.
+///
+/// # Errors
+///
+/// Returns [`crate::error::Error::NotFound`] when `src` or `dst` is not in
+/// `graph`, or when an input's declared type cannot be resolved.
 pub fn copy_inputs(
 	graph: &mut Graph,
 	src: NodeId,
@@ -108,11 +123,17 @@ pub fn copy_inputs(
 	Ok(())
 }
 
-/// Copy a node with its upstream dependency subgraph
-/// (C++ `copy_dependency_graph` / `copy_node_in_graph` /
-/// `copy_node_and_dependency_graph_minus_items`). Returns the new
-/// node ids (source order). Undo packaging happens at the caller via
-/// quercusundo's `UndoCommand`.
+/// Copies a node together with its upstream dependency subgraph.
+///
+/// `_nodes` are the roots to copy and `_exclude_items` selects the
+/// copy-minus-items variant (C++ `copy_dependency_graph` /
+/// `copy_node_in_graph` / `copy_node_and_dependency_graph_minus_items`). The
+/// result is the new node ids in source order; undo packaging is the caller's
+/// job via `UndoCommand`.
+///
+/// # Panics
+///
+/// Unimplemented (`todo!()`): calling it panics.
 pub fn copy_subgraph(
 	_graph: &mut Graph,
 	_nodes: &[NodeId],
@@ -121,8 +142,16 @@ pub fn copy_subgraph(
 	todo!()
 }
 
-/// Transform a time range from one node's frame of reference to
-/// another's along the connection path (C++ `Node::transform_time_to`).
+/// Transforms a time range from one node's frame of reference to another's
+/// along the connection path.
+///
+/// `_time` is the range in `_from`'s time base and `_to` is the node whose time
+/// base the result should be expressed in. The C++ `Node::transform_time_to`
+/// walks the graph applying each node's time mapping; this Rust port is a stub.
+///
+/// # Panics
+///
+/// Unimplemented (`todo!()`): calling it panics.
 pub fn transform_time_to(
 	_graph: &Graph,
 	_time: TimeRange,
@@ -132,18 +161,40 @@ pub fn transform_time_to(
 	todo!()
 }
 
-/// Undo-command display strings (C++
-/// `get_connect_command_string`/`get_disconnect_command_string`).
+/// Display string for the undo row of a connect operation.
+///
+/// `_output` is the source node, `_input` the destination node and `_input_id`
+/// the input key being connected — the same arguments as `Graph::connect`. The
+/// text is shown in the undo history (C++ `get_connect_command_string`);
+/// counterpart of [`disconnect_command_string`].
+///
+/// # Panics
+///
+/// Unimplemented (`todo!()`): calling it panics.
 pub fn connect_command_string(_output: NodeId, _input: NodeId, _input_id: &str) -> String {
 	todo!()
 }
 
-/// See [`connect_command_string`].
+/// Display string for the undo row of a disconnect operation.
+///
+/// `_output` is the source node, `_input` the destination node and `_input_id`
+/// the destination input key — the same arguments as `Graph::disconnect`.
+/// Counterpart of [`connect_command_string`] (C++
+/// `get_disconnect_command_string`).
+///
+/// # Panics
+///
+/// Unimplemented (`todo!()`): calling it panics.
 pub fn disconnect_command_string(_output: NodeId, _input: NodeId, _input_id: &str) -> String {
 	todo!()
 }
 
-/// Lock a project mutex (poison-tolerant).
+/// Locks a project mutex, recovering the guard from a poisoned mutex.
+///
+/// A panicking redo/undo closure can poison the project lock; the editor keeps
+/// running and the graph is still consistent, so the poison is ignored instead
+/// of panicking a second time. Used by the closures built in
+/// [`set_value_at_time_command`].
 fn lock_any<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 	m.lock().unwrap_or_else(|e| e.into_inner())
 }

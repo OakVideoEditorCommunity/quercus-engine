@@ -143,12 +143,26 @@ impl PreviewAudioDevice {
 		self.lock.lock().unwrap().bytes_per_frame
 	}
 
-	/// Override the frame size directly.
+	/// Override the frame size directly, in bytes per output frame.
+	///
+	/// `bytes` is normally derived by `set_params` from the audio format
+	/// (samples per frame × channels × bytes per sample); this setter exists for
+	/// callers that already know it. It is stored without validation, and every
+	/// consumer treats 0 or a negative value as "unknown": `queued_frames` and
+	/// `drop_front_frames` then return 0 without touching the queue.
 	pub fn set_bytes_per_frame(&self, bytes: i32) {
 		self.lock.lock().unwrap().bytes_per_frame = bytes;
 	}
 
-	/// Set the notify interval in bytes.
+	/// Set how many queued bytes the device reads between notify callbacks.
+	///
+	/// `interval` is a byte count, not a duration: `read` divides the running
+	/// bytes-read counter by it and fires the installed callback whenever the
+	/// quotient changes, i.e. when this read crosses an interval boundary. 0 (or
+	/// any non-positive value) disables notifications; the default is 0 until
+	/// the consumer configures it — normally through
+	/// `AudioManager::set_output_notify_interval`, which rejects negative values
+	/// before calling here. This setter itself stores `interval` unvalidated.
 	pub fn set_notify_interval(&self, interval: i64) {
 		self.lock.lock().unwrap().notify_interval = interval;
 	}

@@ -243,7 +243,11 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(DissolveNode))
 }
 
-/// Register this node type.
+/// Registers this node type in the node factory table.
+///
+/// Pushes a [`NodeMeta`] with the stable type id
+/// `org.olivevideoeditor.Olive.dissolve`, the display name "Dissolve", the math
+/// category and this module's [`create`] constructor.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.dissolve",

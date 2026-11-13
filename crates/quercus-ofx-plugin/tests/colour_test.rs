@@ -14,12 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! ofxColour（M11 §4）：宿主 OCIO 能力宣告、实例协商属性、输入 clip
-//! 工作空间（ACEScg）、GetOutputColourspace 往返（偏好采纳 +
-//! 交叉引用解析 + 输出写回）。
+//! ofxColour (M11 §4): host OCIO capability declaration, instance negotiation
+//! properties, input clip colorspace (ACEScg), and the GetOutputColourspace
+//! round trip (preference adoption + cross-reference resolution + output
+//! write-back).
 //!
-//! 单库化后经 Rust API 直连（`Host::global().create_instance`），不再
-//! 经已删除的 `quercusplugin_host_scan`/`quercusplugin_instance_create` C ABI。
+//! After the single-library consolidation this connects directly through the
+//! Rust API (`Host::global().create_instance`) instead of the removed
+//! `quercusplugin_host_scan`/`quercusplugin_instance_create` C ABI.
 
 mod common;
 
@@ -32,7 +34,7 @@ use quercus_ofx_plugin::property::Value;
 
 const TEST_PLUGIN_ID: &str = "org.quercus.test-plugin";
 
-/// 扫描并创建实例；不可用返回 None（skip）。
+/// Scans and creates an instance; returns None when unavailable (skip).
 fn scan_and_create(id: &str) -> Option<Arc<RefBox<Instance>>> {
 	if common::test_plugin_scan_dir().is_none() {
 		common::skip("最小测试插件未构建");
@@ -51,7 +53,7 @@ fn prop_str(props: &quercus_ofx_plugin::property::PropertySet, name: &str) -> Op
 	}
 }
 
-/// 宿主能力宣告：OCIO 模式 + native 配置列表 + GL 支持。
+/// Host capability declaration: OCIO mode + native config list + GL support.
 #[test]
 fn host_declares_ocio_capability() {
 	let host = Host::global();
@@ -71,8 +73,9 @@ fn host_declares_ocio_capability() {
 	);
 }
 
-/// 实例期协商属性：style/config/OCIOConfig 已写；输入 clip 色彩空间
-/// = 工作空间 ACEScg；输出 clip 未设（待 GetOutputColourspace）。
+/// Instance-time negotiation properties: style/config/OCIOConfig are written;
+/// the input clip colorspace = the working space ACEScg; the output clip is not
+/// yet set (pending GetOutputColourspace).
 #[test]
 fn instance_and_clip_colourspace_props() {
 	common::with_host(|| {
@@ -121,8 +124,9 @@ fn instance_and_clip_colourspace_props() {
 	});
 }
 
-/// GetOutputColourspace 往返：无偏好 → 插件回 "OfxColourspace_Source"
-/// 交叉引用 → 宿主解析为 Source 的实际色彩空间（ACEScg）并写回输出。
+/// GetOutputColourspace round trip: without a preference → the plugin returns
+/// "OfxColourspace_Source" cross-reference → the host resolves it to the
+/// Source's actual colorspace (ACEScg) and writes it back to the output.
 #[test]
 fn get_output_colourspace_cross_reference() {
 	common::with_host(|| {
@@ -149,8 +153,8 @@ fn get_output_colourspace_cross_reference() {
 	});
 }
 
-/// GetOutputColourspace 偏好采纳：插件优先取宿主偏好的第一个色彩
-/// 空间。
+/// GetOutputColourspace preference adoption: the plugin prefers the host's
+/// first preferred colorspace.
 #[test]
 fn get_output_colourspace_preferred() {
 	common::with_host(|| {
@@ -165,7 +169,7 @@ fn get_output_colourspace_preferred() {
 	});
 }
 
-/// 交叉引用解析的边界：未知 clip 引用原样返回；非交叉引用原样返回。
+/// Cross-reference resolution edge cases: an unknown clip reference is returned unchanged; a non-cross-reference is returned unchanged.
 #[test]
 fn resolve_colourspace_edge_cases() {
 	common::with_host(|| {

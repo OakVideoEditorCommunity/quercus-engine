@@ -45,7 +45,7 @@ use quercus_core::backend::{GpuContext, YuvTransform};
 #[cfg(target_os = "linux")]
 use quercus_core::backend::ImportGuard;
 use quercus_core::colormath::YuvMatrix;
-use quercus_core::texture::PlanarFormat;
+use quercus_core::texture::{PlanarDescriptor, PlanarFormat};
 
 /// Frames that were imported to the GPU instead of downloaded (M5
 /// acceptance: the hardware path keeps `hwdecode::HW_TRANSFERS` at 0).
@@ -106,6 +106,11 @@ fn platform_import_enabled(env: &str, config: &str) -> bool {
 fn switch_from_config(key: &str) -> bool {
 	match quercus_core::configstore::ConfigStore::instance().get(None, key) {
 		Ok(value) => value != "false",
+		// VAAPI import can block inside vkCreateImage/vkAllocateMemory on
+		// some drivers while the render thread (and the UI waiting on its
+		// ticket) is frozen. Keep it opt-in until that path has a
+		// driver-level watchdog; staging is the safe default.
+		Err(_) if key == CONFIG_KEY_VAAPI_IMPORT => false,
 		Err(_) => true,
 	}
 }
@@ -144,12 +149,10 @@ pub struct HwImportRequest<'a> {
 /// colorimetry the render side needs to resolve them to working-space
 /// RGBA.
 pub struct ImportedHwFrame {
-	/// Luma plane token.
-	pub y: u64,
-	/// Interleaved chroma plane token.
-	pub uv: u64,
-	/// Plane layout (bit depth / interleave).
-	pub format: PlanarFormat,
+	/// Plane tokens in descriptor order.
+	pub planes: Vec<u64>,
+	/// Generic plane layout (color model, subsampling, storage depth).
+	pub descriptor: PlanarDescriptor,
 	/// Luma dimensions.
 	pub width: u32,
 	/// Frame height.
@@ -157,15 +160,24 @@ pub struct ImportedHwFrame {
 	/// The GPU device that owns the planes.
 	pub ctx: Arc<GpuContext>,
 	/// Extra lifetime guard for platforms whose GPU texture types cannot
-	/// carry a drop callback (macOS): the decoder's pixel buffer.
+	/// carry a drop callback (macOS) or for a reusable VMM slot.
 	pub keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
+	/// True when the plane tokens are owned by `keep_alive` (a reusable
+	/// CUDA VMM slot), so the PlanarTexture must use only borrowed leases.
+	pub borrowed_planes: bool,
 }
 
 impl ImportedHwFrame {
 	/// The YUV→RGB transform for the planes (the bit depth picks the
 	/// exact limited-range expansion: 8 for NV12, 16 for P010).
+	///
+	/// `matrix` is the conversion matrix resolved from the frame's metadata and
+	/// `full_range` whether the source is full (JPEG) rather than limited (MPEG)
+	/// range. The bit depth is taken from this frame's descriptor, so callers
+	/// never restate it. Returns a plain value that cannot fail; the planes it
+	/// describes are the ones in `self.planes`.
 	pub fn transform(&self, matrix: YuvMatrix, full_range: bool) -> YuvTransform {
-		YuvTransform::from_matrix_depth(matrix, full_range, self.format.bit_depth())
+		YuvTransform::from_matrix_depth(matrix, full_range, self.descriptor.storage.bit_depth())
 	}
 }
 
@@ -181,13 +193,12 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 		return None;
 	}
 	let device_type = req.device_type?;
-	// Only a host-installed device (the app's UI/render context) may take
-	// the frame: a lazily created worker/CLI context must keep decoding on
-	// the CPU path. Checked before touching the frame so the common
-	// "no import here" case costs nothing.
-	if !GpuContext::host_gpu_installed() {
-		return None;
-	}
+	// A host-adopted context and the engine's own isolated context are
+	// both valid import targets. The old host-only gate assumed the engine
+	// always shared the UI device; with queue isolation the engine's local
+	// Vulkan context is the one that renders, so requiring a host install
+	// forced every hardware frame through CPU staging (the 4K render
+	// hotspot).
 	if !crate::hwdecode::is_hw_format(frame_format(req.frame)) {
 		return None;
 	}
@@ -199,21 +210,21 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 	};
 	match platform_import(req, &ctx, device_type) {
 		ImportOutcome::Imported {
-			y,
-			uv,
-			format,
+			planes,
+			descriptor,
 			keep_alive,
+			borrowed_planes,
 		} => {
 			CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
 			HW_IMPORTS.fetch_add(1, Ordering::Relaxed);
 			Some(ImportedHwFrame {
-				y,
-				uv,
-				format,
+				planes,
+				descriptor,
 				width: req.luma_size.0,
 				height: req.luma_size.1,
 				ctx,
 				keep_alive,
+				borrowed_planes,
 			})
 		}
 		ImportOutcome::Unsupported => {
@@ -231,10 +242,10 @@ pub fn try_import_hw_frame(req: &HwImportRequest<'_>) -> Option<ImportedHwFrame>
 enum ImportOutcome {
 	/// The planes were imported; the tokens and keep-alive guard.
 	Imported {
-		y: u64,
-		uv: u64,
-		format: PlanarFormat,
+		planes: Vec<u64>,
+		descriptor: PlanarDescriptor,
 		keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
+		borrowed_planes: bool,
 	},
 	/// No import path exists for this device/machine/configuration (the
 	/// frame takes the staging path without being a failure).
@@ -250,11 +261,25 @@ fn bump_fallback() {
 }
 
 /// The frame's raw pixel format (hardware variants included).
+///
+/// `frame` must point at a valid `AVFrame` for the whole call; only its
+/// `format` field is read, and the value is transmuted from the raw int to
+/// `AVPixelFormat`, so hardware formats such as `AV_PIX_FMT_CUDA` come back
+/// unchanged and are not validated.
 fn frame_format(frame: *const sys::AVFrame) -> sys::AVPixelFormat {
 	// SAFETY: plain read of the frame's format field.
 	unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>((*frame).format) }
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This Linux variant dispatches CUDA frames to [`cuda_import`] and
+/// VAAPI frames to `vaapi_import`; any other device type — or a disabled
+/// per-path config switch (`QUERCUS_GPU_IMPORT_CUDA`/`..._VAAPI` or the
+/// corresponding store key) — reports [`ImportOutcome::Unsupported`] so the
+/// caller silently stages the frame without counting a failure.
 #[cfg(target_os = "linux")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -262,10 +287,18 @@ fn platform_import(
 	device_type: sys::AVHWDeviceType,
 ) -> ImportOutcome {
 	use sys::AVHWDeviceType;
+	if device_type == AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA {
+		// NVDEC's FFmpeg CUDA frames are linear `cuMemAlloc` buffers, not
+		// private CUarrays: export the page-aligned allocation as a
+		// DMA-BUF fd and import each plane through the same Vulkan path
+		// VAAPI uses. The export API is driver-gated; any refusal falls
+		// back to staging (never a permanent failure).
+		if !platform_import_enabled("QUERCUS_GPU_IMPORT_CUDA", "GpuDecodeImportCuda") {
+			return ImportOutcome::Unsupported;
+		}
+		return cuda_import(req, ctx);
+	}
 	if device_type != AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI {
-		// CUDA/NVDEC surfaces have no public fd/handle export; the
-		// staging path is the honest fallback (design §3.6) — NOT a
-		// failure.
 		return ImportOutcome::Unsupported;
 	}
 	if !platform_import_enabled("QUERCUS_GPU_IMPORT_VAAPI", CONFIG_KEY_VAAPI_IMPORT) {
@@ -274,6 +307,14 @@ fn platform_import(
 	vaapi_import(req, ctx)
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This Windows variant supports only D3D11VA; any other device type
+/// — or a disabled `QUERCUS_GPU_IMPORT_D3D11` / `ConfigKeyD3d11Import` switch —
+/// reports [`ImportOutcome::Unsupported`] so the caller silently stages the
+/// frame.
 #[cfg(target_os = "windows")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -289,6 +330,14 @@ fn platform_import(
 	d3d11_import(req, ctx)
 }
 
+/// Imports a hardware frame through the platform's GPU path, when enabled.
+///
+/// `req` describes the decoded frame, `ctx` the GPU context whose device
+/// receives the planes, and `device_type` the FFmpeg hardware device the frame
+/// belongs to. This macOS variant supports only VideoToolbox; any other device
+/// type — or a disabled `QUERCUS_GPU_IMPORT_VIDEOTOOLBOX` /
+/// `ConfigKeyVideotoolboxImport` switch — reports
+/// [`ImportOutcome::Unsupported`] so the caller silently stages the frame.
 #[cfg(target_os = "macos")]
 fn platform_import(
 	req: &HwImportRequest<'_>,
@@ -304,6 +353,9 @@ fn platform_import(
 	videotoolbox_import(req, ctx)
 }
 
+/// Non-desktop targets have no GPU import path: always reports
+/// [`ImportOutcome::Unsupported`] and ignores its arguments, so every frame
+/// takes the staging path on such platforms.
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn platform_import(
 	_req: &HwImportRequest<'_>,
@@ -328,6 +380,46 @@ mod drm_fourcc {
 }
 
 
+/// The frame's software layout from its `AVHWFramesContext.sw_format`.
+#[cfg(target_os = "linux")]
+fn frame_sw_format(frame: *const sys::AVFrame) -> Option<sys::AVPixelFormat> {
+	let frames_ref = unsafe { (*frame).hw_frames_ctx };
+	if frames_ref.is_null() {
+		return None;
+	}
+	let frames = unsafe { &*((*frames_ref).data as *const HwFramesContextHead) };
+	Some(unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>(frames.sw_format) })
+}
+
+/// Map an FFmpeg software pixel format to the generic planar descriptor.
+///
+/// `sw_format` is the hwframe's software layout. NV12/P010/NV16/P210 map to
+/// semi-planar descriptors and the 420/422/444 8- and 10-bit planar formats to
+/// equivalent planar ones; any other format returns `None`, in which case every
+/// platform import path reports `Unsupported` and the frame is staged through
+/// the CPU. This is the shared (non-CUDA) mapping; the CUDA path has its own
+/// copy in [`cuda_descriptor`].
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn av_format_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
+	use quercus_core::texture::{PlaneStorage, Subsampling};
+	use sys::AVPixelFormat as F;
+	let semi = |ss, st| PlanarDescriptor::yuv_semi_planar(ss, st);
+	let planar = |ss, st| PlanarDescriptor::yuv_planar(ss, st);
+	Some(match sw_format {
+		F::AV_PIX_FMT_NV12 => semi(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_P010LE => semi(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_NV16 => semi(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_P210LE => semi(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV420P => planar(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV420P10LE => planar(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV422P => planar(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV422P10LE => planar(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV444P => planar(Subsampling::Cs444, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV444P10LE => planar(Subsampling::Cs444, PlaneStorage::U16),
+		_ => return None,
+	})
+}
+
 /// Map a VAAPI frame to its DRM PRIME descriptor (FFmpeg calls
 /// `vaExportSurfaceHandle` internally; no CPU download happens).
 #[cfg(target_os = "linux")]
@@ -341,37 +433,50 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 		sys::av_hwframe_map(raw, req.frame, sys::AV_HWFRAME_MAP_READ as i32)
 	};
 	if rc < 0 {
-		// The VAAPI session exists but the surface could not be exported
-		// as DRM PRIME: a real failure (the breaker bounds the retries).
 		return ImportOutcome::Failed;
 	}
 	// SAFETY: on success `data[0]` is the descriptor FFmpeg allocated for
 	// this mapping; it stays valid until `drm_frame` is unref'd.
 	let desc = unsafe { &*((*drm_frame.as_ptr()).data[0] as *const sys::AVDRMFrameDescriptor) };
-	if desc.nb_layers != 2 {
+	let (lw, lh) = req.luma_size;
+	if lw == 0 || lh == 0 {
 		return ImportOutcome::Unsupported;
 	}
-	let layer_format = |i: usize| desc.layers[i].format;
-	let (format, y_fourcc, uv_fourcc) = match (layer_format(0), layer_format(1)) {
-		(a, b) if a == drm_fourcc::R8 && (b == drm_fourcc::GR88 || b == drm_fourcc::RG88) => {
-			(PlanarFormat::Nv12, a, b)
-		}
-		(a, b) if a == drm_fourcc::R16 && b == drm_fourcc::RG1616 => {
-			(PlanarFormat::P010, a, b)
-		}
-		_ => return ImportOutcome::Unsupported,
+	// Prefer the real software layout; fall back to the two-layer legacy
+	// formats only when the hwframe metadata is unavailable.
+	let descriptor = frame_sw_format(req.frame)
+		.and_then(av_format_descriptor)
+		.or_else(|| match desc.nb_layers {
+			2 => {
+				let a = desc.layers[0].format;
+				let b = desc.layers[1].format;
+				if a == drm_fourcc::R8 && (b == drm_fourcc::GR88 || b == drm_fourcc::RG88) {
+					Some(PlanarFormat::Nv12.descriptor())
+				} else if a == drm_fourcc::R16 && b == drm_fourcc::RG1616 {
+					Some(PlanarFormat::P010.descriptor())
+				} else {
+					None
+				}
+			}
+			_ => None,
+		});
+	let Some(descriptor) = descriptor else {
+		return ImportOutcome::Unsupported;
 	};
-	let _ = (y_fourcc, uv_fourcc);
+	if desc.nb_layers as usize != descriptor.plane_count() {
+		return ImportOutcome::Unsupported;
+	}
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!(
+			"[vaapi-import] descriptor={descriptor:?} luma={lw}x{lh} layers={}",
+			desc.nb_layers
+		);
+	}
 	for layer in &desc.layers[..desc.nb_layers as usize] {
 		if layer.nb_planes != 1 {
 			return ImportOutcome::Unsupported;
 		}
 	}
-	let (lw, lh) = req.luma_size;
-	if lw == 0 || lh == 0 {
-		return ImportOutcome::Unsupported;
-	}
-	let (cw, ch) = (lw.div_ceil(2), lh.div_ceil(2));
 	let plane = |layer: usize| {
 		let l = &desc.layers[layer];
 		let p = &l.planes[0];
@@ -384,32 +489,54 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 		}
 	};
 	// Shared keep-alive: the source frame pins the VAAPI surface until
-	// the last plane texture is destroyed (the dmabuf fds Vulkan imported
-	// keep the buffer itself alive even after the mapping drops).
+	// the last plane texture is destroyed.
 	let Some(keep) = crate::ffmpeg::RefFrame::clone_raw(req.frame) else {
 		return ImportOutcome::Failed;
 	};
 	let keep = Arc::new(keep);
-	let y_guard = keep.clone();
-	let y = match ctx.import_dmabuf_plane(lw, lh, format.y_format(), plane(0), guard(y_guard)) {
-		Ok(y) => y,
-		Err(quercus_core::error::Error::State) | Err(quercus_core::error::Error::Invalid) => {
-			return ImportOutcome::Unsupported
-		}
-		Err(_) => return ImportOutcome::Failed,
-	};
-	let uv_guard = keep.clone();
-	match ctx.import_dmabuf_plane(cw, ch, format.uv_format(), plane(1), guard(uv_guard)) {
-		Ok(uv) => ImportOutcome::Imported {
-			y,
-			uv,
+	let mut planes = Vec::with_capacity(descriptor.plane_count());
+	for index in 0..descriptor.plane_count() {
+		let Some((pw, ph)) = descriptor.plane_size(index, lw as i32, lh as i32) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		let Some(format) = descriptor.plane_texture_format(index) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		match ctx.import_dmabuf_plane(
+			pw as u32,
+			ph as u32,
 			format,
-			keep_alive: None,
-		},
-		Err(_) => {
-			ctx.destroy_texture(y);
-			ImportOutcome::Failed
+			plane(index),
+			guard(keep.clone()),
+		) {
+			Ok(token) => planes.push(token),
+			Err(err) => {
+				let unsupported = matches!(
+					err,
+					quercus_core::error::Error::State | quercus_core::error::Error::Invalid
+				);
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return if unsupported {
+					ImportOutcome::Unsupported
+				} else {
+					ImportOutcome::Failed
+				};
+			}
 		}
+	}
+	ImportOutcome::Imported {
+		planes,
+		descriptor,
+		keep_alive: None,
+		borrowed_planes: false,
 	}
 }
 
@@ -419,6 +546,563 @@ fn vaapi_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 #[cfg(target_os = "linux")]
 fn guard(value: Arc<crate::ffmpeg::RefFrame>) -> Option<ImportGuard> {
 	Some(Box::new(move || drop(value)))
+}
+
+// ---------------------------------------------------------------------------
+// Linux: CUDA/NVDEC frame -> DMA-BUF export -> Vulkan plane imports
+// ---------------------------------------------------------------------------
+
+/// FFmpeg 8 `AVCUDADeviceContext` (hwcontext_cuda.h).
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct CudaDeviceContext {
+	cuda_ctx: *mut std::ffi::c_void,
+	stream: *mut std::ffi::c_void,
+	internal: *mut std::ffi::c_void,
+}
+
+/// The leading fields of `AVHWDeviceContext` / `AVHWFramesContext`; only
+/// the fields needed to reach the CUDA context and the frame's sw format.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct HwDeviceContextHead {
+	av_class: *const std::ffi::c_void,
+	device_type: i32,
+	hwctx: *mut std::ffi::c_void,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct HwFramesContextHead {
+	av_class: *const std::ffi::c_void,
+	device_ref: *mut sys::AVBufferRef,
+	device_ctx: *mut HwDeviceContextHead,
+	hwctx: *mut std::ffi::c_void,
+	free: *mut std::ffi::c_void,
+	user_opaque: *mut std::ffi::c_void,
+	pool: *mut std::ffi::c_void,
+	initial_pool_size: i32,
+	format: i32,
+	sw_format: i32,
+	width: i32,
+	height: i32,
+}
+
+#[cfg(target_os = "linux")]
+mod cuda_driver {
+	use std::ffi::{c_char, c_int, c_void};
+	use std::sync::OnceLock;
+
+	unsafe extern "C" {
+		fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+		fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+	}
+	const RTLD_NOW: c_int = 2;
+
+	#[repr(C)]
+	#[derive(Clone, Copy, Default)]
+	pub struct MemLocation {
+		pub type_: i32,
+		pub id: i32,
+	}
+	#[repr(C)]
+	#[derive(Clone, Copy)]
+	pub struct MemAllocationProp {
+		pub type_: i32,
+		pub requested_handle_types: i32,
+		pub location: MemLocation,
+		pub win32_handle_metadata: *mut c_void,
+		pub compression_type: u8,
+		pub gpu_direct_rdma_capable: u8,
+		pub usage: u16,
+		pub reserved: [u8; 38],
+	}
+	impl Default for MemAllocationProp {
+		fn default() -> Self {
+			Self {
+				type_: 0,
+				requested_handle_types: 0,
+				location: MemLocation::default(),
+				win32_handle_metadata: std::ptr::null_mut(),
+				compression_type: 0,
+				gpu_direct_rdma_capable: 0,
+				usage: 0,
+				reserved: [0; 38],
+			}
+		}
+	}
+	#[repr(C)]
+	#[derive(Clone, Copy, Default)]
+	pub struct MemAccessDesc {
+		pub location: MemLocation,
+		pub flags: i32,
+		pub pad: i32,
+	}
+
+	pub type CuCtxPushCurrent = unsafe extern "C" fn(*mut c_void) -> i32;
+	pub type CuCtxPopCurrent = unsafe extern "C" fn(*mut *mut c_void) -> i32;
+	pub type CuCtxGetDevice = unsafe extern "C" fn(*mut c_int) -> i32;
+	pub type CuMemGetAllocationGranularity =
+		unsafe extern "C" fn(*mut usize, *const MemAllocationProp, i32) -> i32;
+	pub type CuMemCreate =
+		unsafe extern "C" fn(*mut u64, usize, *const MemAllocationProp, u64) -> i32;
+	pub type CuMemAddressReserve =
+		unsafe extern "C" fn(*mut u64, usize, usize, u64, u64) -> i32;
+	pub type CuMemMap = unsafe extern "C" fn(u64, usize, u64, u64, u64) -> i32;
+	pub type CuMemSetAccess =
+		unsafe extern "C" fn(u64, usize, *const MemAccessDesc, usize) -> i32;
+	pub type CuMemExportToShareableHandle =
+		unsafe extern "C" fn(*mut c_int, u64, i32, u64) -> i32;
+	pub type CuMemcpyDtoD = unsafe extern "C" fn(u64, u64, usize) -> i32;
+	pub type CuCtxSynchronize = unsafe extern "C" fn() -> i32;
+	pub type CuMemUnmap = unsafe extern "C" fn(u64, usize) -> i32;
+	pub type CuMemAddressFree = unsafe extern "C" fn(u64, usize) -> i32;
+	pub type CuMemRelease = unsafe extern "C" fn(u64) -> i32;
+
+	#[derive(Clone, Copy)]
+	pub struct Driver {
+		pub push: CuCtxPushCurrent,
+		pub pop: CuCtxPopCurrent,
+		pub get_device: CuCtxGetDevice,
+		pub granularity: CuMemGetAllocationGranularity,
+		pub create: CuMemCreate,
+		pub reserve: CuMemAddressReserve,
+		pub map: CuMemMap,
+		pub access: CuMemSetAccess,
+		pub export: CuMemExportToShareableHandle,
+		pub copy_dtod: CuMemcpyDtoD,
+		pub sync: CuCtxSynchronize,
+		pub unmap: CuMemUnmap,
+		pub address_free: CuMemAddressFree,
+		pub release: CuMemRelease,
+	}
+
+	static DRIVER: OnceLock<Option<Driver>> = OnceLock::new();
+
+	/// Looks up one symbol in an already-opened shared library.
+	///
+	/// `lib` is the `dlopen` handle and `name` a NUL-terminated symbol name;
+	/// returns the raw address, which is null when the symbol is absent. The
+	/// caller must cast it to the exact function-pointer type before calling
+	/// (see [`load`]); no type metadata is available here.
+	fn sym(lib: *mut c_void, name: &[u8]) -> *mut c_void {
+		unsafe { dlsym(lib, name.as_ptr() as *const c_char) }
+	}
+
+	/// Loads the CUDA driver library once and resolves every entry point the
+	/// VMM import path needs.
+	///
+	/// Opens `libcuda.so.1` with `RTLD_NOW`; returns `None` when the library is
+	/// missing (no CUDA driver installed) or any required symbol cannot be
+	/// resolved, and caches the result in a `OnceLock` — a failed load is not
+	/// retried and a successful one is shared by every thread. Never panics.
+	pub fn load() -> Option<Driver> {
+		*DRIVER.get_or_init(|| unsafe {
+			let lib = dlopen(b"libcuda.so.1\0".as_ptr() as *const c_char, RTLD_NOW);
+			if lib.is_null() {
+				return None;
+			}
+			macro_rules! get {
+				($name:literal) => {{
+					let p = sym(lib, $name);
+					if p.is_null() { return None; }
+					std::mem::transmute::<*mut c_void, _>(p)
+				}};
+			}
+			Some(Driver {
+				push: get!(b"cuCtxPushCurrent\0"),
+				pop: get!(b"cuCtxPopCurrent\0"),
+				get_device: get!(b"cuCtxGetDevice\0"),
+				granularity: get!(b"cuMemGetAllocationGranularity\0"),
+				create: get!(b"cuMemCreate\0"),
+				reserve: get!(b"cuMemAddressReserve\0"),
+				map: get!(b"cuMemMap\0"),
+				access: get!(b"cuMemSetAccess\0"),
+				export: get!(b"cuMemExportToShareableHandle\0"),
+				copy_dtod: get!(b"cuMemcpyDtoD_v2\0"),
+				sync: get!(b"cuCtxSynchronize\0"),
+				unmap: get!(b"cuMemUnmap\0"),
+				address_free: get!(b"cuMemAddressFree\0"),
+				release: get!(b"cuMemRelease\0"),
+			})
+		})
+	}
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CudaPlaneLayout {
+	offset: usize,
+	pitch: usize,
+	tex_w: usize,
+	ph: usize,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct CudaVmmSlot {
+	driver: cuda_driver::Driver,
+	ctx: *mut std::ffi::c_void,
+	planes: Vec<CudaVmmPlane>,
+	descriptor: PlanarDescriptor,
+	layouts: Vec<CudaPlaneLayout>,
+	gpu: Arc<GpuContext>,
+	free: std::sync::atomic::AtomicBool,
+}
+#[cfg(target_os = "linux")]
+struct CudaVmmPlane {
+	va: u64,
+	size: usize,
+	handle: u64,
+	fd: i32,
+}
+#[cfg(target_os = "linux")]
+unsafe impl Send for CudaVmmSlot {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for CudaVmmSlot {}
+#[cfg(target_os = "linux")]
+impl Drop for CudaVmmSlot {
+	fn drop(&mut self) {
+		unsafe {
+			(self.driver.push)(self.ctx);
+			for plane in &self.planes {
+				if plane.fd >= 0 {
+					close_fd(plane.fd);
+				}
+				let _ = (self.driver.unmap)(plane.va, plane.size);
+				let _ = (self.driver.address_free)(plane.va, plane.size);
+				let _ = (self.driver.release)(plane.handle);
+			}
+			_ = (self.driver.pop)(std::ptr::null_mut());
+		}
+	}
+}
+
+#[cfg(target_os = "linux")]
+struct CudaSlotLease(Arc<CudaVmmSlot>);
+#[cfg(target_os = "linux")]
+impl Drop for CudaSlotLease {
+	fn drop(&mut self) {
+		if std::env::var_os("OAK_DEBUG_HW").is_some() {
+			eprintln!("[cuda-import] lease dropped; scheduling slot release");
+		}
+		let slot = self.0.clone();
+		let gpu = slot.gpu.clone();
+		gpu.on_submitted_work_done(move || {
+			slot.free
+				.store(true, std::sync::atomic::Ordering::Release);
+			if std::env::var_os("OAK_DEBUG_HW").is_some() {
+				eprintln!("[cuda-import] slot marked free");
+			}
+		});
+	}
+}
+
+#[cfg(target_os = "linux")]
+static CUDA_SLOTS: std::sync::OnceLock<std::sync::Mutex<Vec<Arc<CudaVmmSlot>>>> =
+	std::sync::OnceLock::new();
+#[cfg(target_os = "linux")]
+fn cuda_slots() -> &'static std::sync::Mutex<Vec<Arc<CudaVmmSlot>>> {
+	CUDA_SLOTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+	fn close(fd: i32) -> i32;
+}
+
+#[cfg(target_os = "linux")]
+fn close_fd(fd: i32) {
+	// SAFETY: plain libc close.
+	unsafe {
+		close(fd);
+	}
+}
+
+
+/// Map an FFmpeg software pixel format to the engine's generic descriptor.
+///
+/// `sw_format` is the hardware frame's software layout
+/// (`AVHWFramesContext.sw_format`). The NV12/P010/NV16/P210 semi-planar formats
+/// and the 420/422/444 8- and 10-bit planar formats are recognized; anything
+/// else returns `None`, which makes the CUDA path fall back to staging. The
+/// mapping matches [`av_format_descriptor`] (kept separate for this path).
+#[cfg(target_os = "linux")]
+fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
+	use quercus_core::texture::{ColorModel, PlaneStorage, Subsampling};
+	use sys::AVPixelFormat as F;
+	let semi = |ss, st| PlanarDescriptor::yuv_semi_planar(ss, st);
+	let planar = |ss, st| PlanarDescriptor::yuv_planar(ss, st);
+	Some(match sw_format {
+		F::AV_PIX_FMT_NV12 => semi(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_P010LE => semi(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_NV16 => semi(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_P210LE => semi(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV420P => planar(Subsampling::Cs420, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV420P10LE => planar(Subsampling::Cs420, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV422P => planar(Subsampling::Cs422, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV422P10LE => planar(Subsampling::Cs422, PlaneStorage::U16),
+		F::AV_PIX_FMT_YUV444P => planar(Subsampling::Cs444, PlaneStorage::U8),
+		F::AV_PIX_FMT_YUV444P10LE => planar(Subsampling::Cs444, PlaneStorage::U16),
+		_ => return None,
+	})
+}
+
+/// Imports a CUDA (NVDEC) hardware frame on Linux by copying its planes into a
+/// reusable CUDA VMM slot and importing the slot's exported fds as Vulkan
+/// textures.
+///
+/// `req` is the decoded frame plus its luma size; the frame's `sw_format` picks
+/// the plane layout via [`cuda_descriptor`] and its FFmpeg `hw_frames_ctx`
+/// supplies the CUDA context. `ctx` is the GPU context that receives the plane
+/// textures. A free pool slot with the same descriptor and layout is reused;
+/// otherwise one is allocated, up to 8 slots (a 4K P210 slot is 32 MiB) — past
+/// that the frame takes the staging path instead of exhausting GPU memory. Each
+/// plane is copied with `cuMemcpyDtoD` under the device's external lifecycle
+/// lock, because a concurrent CUDA copy and mapped readback loses the device on
+/// NVIDIA, and the frame is then exposed as an owned slot lease.
+///
+/// Returns [`ImportOutcome::Unsupported`] when the driver, hwframes/CUDA
+/// context, plane layout or slot pool is unusable (no failure is counted), and
+/// [`ImportOutcome::Failed`] when a planned plane import fails after starting.
+#[cfg(target_os = "linux")]
+fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
+	use cuda_driver::{MemAccessDesc, MemAllocationProp, MemLocation};
+	// Serialize the CUDA copy/export with async readback using the same
+	// Vulkan device. Concurrent cuMemcpyDtoD + mapped readback loses the
+	// device on NVIDIA.
+	let external_lock = ctx.external_lifecycle_lock();
+	let _external = external_lock.lock().unwrap_or_else(|e| e.into_inner());
+	let driver = match cuda_driver::load() {
+		Some(driver) => driver,
+		None => return ImportOutcome::Unsupported,
+	};
+	let frames_ref = unsafe { (*req.frame).hw_frames_ctx };
+	if frames_ref.is_null() {
+		return ImportOutcome::Unsupported;
+	}
+	let frames = unsafe { &*((*frames_ref).data as *const HwFramesContextHead) };
+	let device = unsafe { &*frames.device_ctx };
+	let sw_format = unsafe { std::mem::transmute::<i32, sys::AVPixelFormat>(frames.sw_format) };
+	let Some(descriptor) = cuda_descriptor(sw_format) else {
+		return ImportOutcome::Unsupported;
+	};
+	let cuda_ctx = unsafe { (*(device.hwctx as *const CudaDeviceContext)).cuda_ctx };
+	if cuda_ctx.is_null() {
+		return ImportOutcome::Unsupported;
+	}
+	let (w, h) = req.luma_size;
+	if w == 0 || h == 0 {
+		return ImportOutcome::Unsupported;
+	}
+	let frame = unsafe { &*req.frame };
+	let bytes = descriptor.storage.bytes_per_component() as i32;
+	let mut layouts = Vec::with_capacity(descriptor.plane_count());
+	let mut total = 0usize;
+	for plane in 0..descriptor.plane_count() {
+		let Some((pw, ph)) = descriptor.plane_size(plane, w as i32, h as i32) else {
+			return ImportOutcome::Unsupported;
+		};
+		let Some(components) = descriptor.plane_source_components(plane) else {
+			return ImportOutcome::Unsupported;
+		};
+		let pitch = frame.linesize[plane];
+		if frame.data[plane].is_null() || pitch <= 0 {
+			return ImportOutcome::Unsupported;
+		}
+		let texel = (components * bytes as usize).max(1);
+		let tex_w = ((pitch as usize) / texel).max(pw as usize);
+		layouts.push(CudaPlaneLayout {
+			offset: total,
+			pitch: pitch as usize,
+			tex_w,
+			ph: ph as usize,
+		});
+		total = total.saturating_add((pitch as usize).saturating_mul(ph as usize));
+	}
+	if total == 0 {
+		return ImportOutcome::Unsupported;
+	}
+	let mut device_id = 0i32;
+	unsafe {
+		(driver.push)(cuda_ctx);
+		_ = (driver.get_device)(&mut device_id);
+	}
+	let mut granularity = 2 * 1024 * 1024usize;
+	let prop = MemAllocationProp {
+		type_: 1,
+		requested_handle_types: 1,
+		location: MemLocation { type_: 1, id: device_id },
+		win32_handle_metadata: std::ptr::null_mut(),
+		compression_type: 0,
+		gpu_direct_rdma_capable: 0,
+		usage: 0,
+		reserved: [0; 38],
+	};
+	unsafe { _ = (driver.granularity)(&mut granularity, &prop, 0) };
+	if granularity == 0 { granularity = 2 * 1024 * 1024; }
+	let slot = {
+		let mut pool = cuda_slots().lock().unwrap_or_else(|e| e.into_inner());
+		let found = pool.iter().position(|slot| {
+			slot.free.load(std::sync::atomic::Ordering::Acquire)
+				&& slot.descriptor == descriptor
+				&& slot.layouts.as_slice() == layouts.as_slice()
+		});
+		match found {
+			Some(index) => {
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[cuda-import] reusing slot {index}");
+				}
+				let slot = pool[index].clone();
+				slot.free.store(false, std::sync::atomic::Ordering::Release);
+				Some(slot)
+			}
+			None if pool.len() >= 8 => {
+				// If queue-completion callbacks stop advancing, do not grow
+				// VMM allocations without bound (each 4K P210 slot is 32 MiB).
+				// Fall back to staging for this frame instead of freezing or
+				// exhausting GPU memory.
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[cuda-import] slot pool exhausted; staging fallback");
+				}
+				None
+			}
+			None => {
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[cuda-import] allocating slot {}", pool.len());
+				}
+				let mut planes = Vec::with_capacity(layouts.len());
+				for layout in &layouts {
+					let mut handle = 0u64;
+					let mut va = 0u64;
+					let size = (layout.pitch * layout.ph).div_ceil(granularity) * granularity;
+					let mut ok = unsafe {
+						(driver.create)(&mut handle, size, &prop, 0) == 0
+							&& (driver.reserve)(&mut va, size, 0, 0, 0) == 0
+							&& (driver.map)(va, size, 0, handle, 0) == 0
+					};
+					if ok {
+						let access = MemAccessDesc {
+							location: MemLocation { type_: 1, id: device_id },
+							flags: 3,
+							pad: 0,
+						};
+						ok = unsafe { (driver.access)(va, size, &access, 1) == 0 };
+					}
+					let mut fd = -1i32;
+					if ok {
+						ok = unsafe { (driver.export)(&mut fd, handle, 1, 0) == 0 && fd >= 0 };
+					}
+					if ok {
+						planes.push(CudaVmmPlane {
+							va,
+							size,
+							handle,
+							fd,
+						});
+					} else {
+						unsafe {
+							if va != 0 {
+								_ = (driver.unmap)(va, size);
+								_ = (driver.address_free)(va, size);
+							}
+							if handle != 0 { _ = (driver.release)(handle); }
+							if fd >= 0 { close_fd(fd); }
+						}
+						break;
+					}
+				}
+				if planes.len() == layouts.len() {
+					let slot = Arc::new(CudaVmmSlot {
+						driver,
+						ctx: cuda_ctx,
+						planes,
+						descriptor,
+						layouts: layouts.clone(),
+						gpu: ctx.clone(),
+						free: std::sync::atomic::AtomicBool::new(false),
+					});
+					pool.push(slot.clone());
+					Some(slot)
+				} else {
+					unsafe {
+						for plane in planes {
+							if plane.fd >= 0 { close_fd(plane.fd); }
+							_ = (driver.unmap)(plane.va, plane.size);
+							_ = (driver.address_free)(plane.va, plane.size);
+							_ = (driver.release)(plane.handle);
+						}
+					}
+					None
+				}
+			}
+		}
+	};
+	let Some(slot) = slot else {
+		unsafe { _ = (driver.pop)(std::ptr::null_mut()) };
+		return ImportOutcome::Unsupported;
+	};
+	let mut copied = true;
+	unsafe {
+		for (plane, layout) in layouts.iter().enumerate() {
+			let src = frame.data[plane] as u64;
+			let dst = slot.planes[plane].va;
+			if (driver.copy_dtod)(dst, src, layout.pitch * layout.ph) != 0 {
+				copied = false;
+				break;
+			}
+		}
+		_ = (driver.sync)();
+		_ = (driver.pop)(std::ptr::null_mut());
+	}
+	if !copied {
+		return ImportOutcome::Unsupported;
+	}
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!("[cuda-import] VMM copy complete; importing planes");
+	}
+	let mut planes = Vec::with_capacity(descriptor.plane_count());
+	for (plane, layout) in layouts.iter().enumerate() {
+		let Some(format) = descriptor.plane_texture_format(plane) else {
+			copied = false;
+			break;
+		};
+		if std::env::var_os("OAK_DEBUG_HW").is_some() {
+			eprintln!("[cuda-import] plane {plane} import begin");
+		}
+		match ctx.import_opaque_fd_plane(
+			layout.tex_w as u32,
+			layout.ph as u32,
+			format,
+			slot.planes[plane].fd,
+			0,
+			layout.pitch as u64,
+			None,
+		) {
+			Ok(token) => {
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[cuda-import] plane {plane} import complete");
+				}
+				planes.push(token)
+			}
+			Err(_) => {
+				copied = false;
+				break;
+			}
+		}
+	}
+	if !copied {
+		for token in planes.drain(..) {
+			ctx.destroy_texture(token);
+		}
+		return ImportOutcome::Failed;
+	}
+	ImportOutcome::Imported {
+		planes,
+		descriptor,
+		keep_alive: Some(Arc::new(CudaSlotLease(slot))),
+		borrowed_planes: false,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -498,10 +1182,10 @@ fn d3d11_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 	}
 	match result {
 		Ok((y, uv)) => ImportOutcome::Imported {
-			y,
-			uv,
-			format: planar,
+			planes: vec![y, uv],
+			descriptor: planar.descriptor(),
 			keep_alive: None,
+			borrowed_planes: false,
 		},
 		// State/Invalid are capability gaps (missing device feature, wrong
 		// format), not failed attempts.
@@ -545,37 +1229,57 @@ fn videotoolbox_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> Impo
 	// SAFETY: `hw_frames_ctx` is an AVHWFramesContext for this frame.
 	let hw_frames = unsafe { (*frames).data as *const sys::AVHWFramesContext };
 	let sw_format = unsafe { (*hw_frames).sw_format };
-	let format = match sw_format {
-		sys::AVPixelFormat::AV_PIX_FMT_NV12 => PlanarFormat::Nv12,
-		sys::AVPixelFormat::AV_PIX_FMT_P010LE | sys::AVPixelFormat::AV_PIX_FMT_P010BE => {
-			PlanarFormat::P010
-		}
-		_ => return ImportOutcome::Unsupported,
+	let Some(descriptor) = av_format_descriptor(sw_format) else {
+		return ImportOutcome::Unsupported;
 	};
 	let (w, h) = req.luma_size;
-	let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-	// SAFETY: `surface` is the CVPixelBuffer's IOSurface and the decoder
-	// frame reference is kept alive by the import guard (planar texture).
-	let Ok(y) = (unsafe { ctx.import_iosurface_plane(surface, 0, w, h, format.y_format()) }) else {
-		return ImportOutcome::Failed;
-	};
-	let uv = match unsafe { ctx.import_iosurface_plane(surface, 1, cw, ch, format.uv_format()) } {
-		Ok(uv) => uv,
-		Err(_) => {
-			ctx.destroy_texture(y);
-			return ImportOutcome::Failed;
+	if w == 0 || h == 0 {
+		return ImportOutcome::Unsupported;
+	}
+	let mut planes = Vec::with_capacity(descriptor.plane_count());
+	for plane in 0..descriptor.plane_count() {
+		let Some((pw, ph)) = descriptor.plane_size(plane, w as i32, h as i32) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		let Some(format) = descriptor.plane_texture_format(plane) else {
+			for token in planes.drain(..) {
+				ctx.destroy_texture(token);
+			}
+			return ImportOutcome::Unsupported;
+		};
+		// SAFETY: `surface` is the CVPixelBuffer's IOSurface; plane slots
+		// follow the YUV plane order of the descriptor.
+		match unsafe { ctx.import_iosurface_plane(surface, plane as u32, pw as u32, ph as u32, format) } {
+			Ok(token) => planes.push(token),
+			Err(quercus_core::error::Error::State)
+			| Err(quercus_core::error::Error::Invalid) => {
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return ImportOutcome::Unsupported;
+			}
+			Err(_) => {
+				for token in planes.drain(..) {
+					ctx.destroy_texture(token);
+				}
+				return ImportOutcome::Failed;
+			}
 		}
-	};
+	}
 	let Some(keep) = crate::ffmpeg::RefFrame::clone_raw(req.frame) else {
-		ctx.destroy_texture(y);
-		ctx.destroy_texture(uv);
+		for token in planes.drain(..) {
+			ctx.destroy_texture(token);
+		}
 		return ImportOutcome::Failed;
 	};
 	ImportOutcome::Imported {
-		y,
-		uv,
-		format,
+		planes,
+		descriptor,
 		keep_alive: Some(Arc::new(keep)),
+		borrowed_planes: false,
 	}
 }
 

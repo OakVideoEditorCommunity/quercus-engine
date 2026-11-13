@@ -68,7 +68,11 @@ impl PixelFormat {
 		}
 	}
 
-	/// The integer code.
+	/// This format's integer code as declared in the enum.
+	///
+	/// The values (`Invalid = -1`, `U8 = 0`, `U10 = 1`, `U16 = 2`, `F16 = 3`,
+	/// `F32 = 4`, `Count = 5`) cross the C ABI and are load-bearing; use
+	/// [`PixelFormat::from_code`] for the reverse mapping.
 	pub fn code(self) -> i32 {
 		self as i32
 	}
@@ -134,7 +138,16 @@ unsafe impl Send for OcioProcessor {}
 unsafe impl Sync for OcioProcessor {}
 
 impl OcioConfig {
-	/// Loads a config from an OCIO `.ocio` file.
+	/// Loads an OCIO config from a `.ocio` file on disk.
+	///
+	/// `path` is a UTF-8 filesystem path; parsing (including relative includes
+	/// and environment-variable expansion) is done by OCIO itself. Use
+	/// [`Self::raw`] instead when no config file is available.
+	///
+	/// # Errors
+	///
+	/// Propagates the load error when the file cannot be read or is not a valid
+	/// OCIO config.
 	pub fn from_file(path: &str) -> Result<Self> {
 		let inner = ocio_rs::Config::from_file(path)?;
 		Ok(OcioConfig { inner })
@@ -152,7 +165,15 @@ impl OcioConfig {
 		Ok(self.inner.num_color_spaces())
 	}
 
-	/// Name of the color space at `index` (0-based).
+	/// The name of the color space at `index`.
+	///
+	/// `index` is 0-based and must be below [`Self::colorspace_count`]; the
+	/// enumeration order is the config's own, and [`Self::colorspaces`] builds
+	/// its list through this function so the indices stay consistent.
+	///
+	/// # Errors
+	///
+	/// Returns an error when `index` is negative or past the last color space.
 	pub fn colorspace_name(&self, index: i32) -> Result<String> {
 		self.inner.color_space_name_by_index(index).ok_or_else(|| {
 			Error::new(format!(
@@ -176,7 +197,15 @@ impl OcioConfig {
 		Ok(self.inner.num_roles())
 	}
 
-	/// Name of the role at `index` (0-based).
+	/// The name of the role at `index`.
+	///
+	/// `index` is 0-based and must be below [`Self::role_count`]; roles are
+	/// enumerated in the config's own order, which is also the order
+	/// [`Self::roles`] returns.
+	///
+	/// # Errors
+	///
+	/// Returns an error when `index` is negative or past the last role.
 	pub fn role_name(&self, index: i32) -> Result<String> {
 		self.inner
 			.role_name(index)
@@ -193,7 +222,16 @@ impl OcioConfig {
 		Ok(out)
 	}
 
-	/// Whether the config defines `role`.
+	/// Reports whether the config defines a role named `role`.
+	///
+	/// `role` is a role name such as `"default"` or `"scene_linear"`; the
+	/// built-in raw config always defines `"default"`. No name canonicalization
+	/// is applied, so an alias is not matched here.
+	///
+	/// # Errors
+	///
+	/// The query cannot fail; the `Result` only mirrors the C-ABI signature used
+	/// by the other `OcioConfig` queries.
 	pub fn has_role(&self, role: &str) -> Result<bool> {
 		Ok(self.inner.has_role(role))
 	}
@@ -214,7 +252,16 @@ impl OcioConfig {
 			.ok_or_else(|| Error::new("OcioConfig::default_display: config defines no displays"))
 	}
 
-	/// The default view for `display`.
+	/// The name of the config's default view for a display.
+	///
+	/// `display` is the display name as registered in the config (the name
+	/// [`Self::default_display`] returns for the config default); OCIO resolves
+	/// it case-sensitively.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the config has no display named `display`, or that
+	/// display declares no default view.
 	pub fn default_view(&self, display: &str) -> Result<String> {
 		self.inner.default_view(display).ok_or_else(|| {
 			Error::new(format!(

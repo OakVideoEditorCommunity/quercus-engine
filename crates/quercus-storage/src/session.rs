@@ -43,6 +43,11 @@ impl Session {
 	}
 
 	/// Source URI.
+	///
+	/// Returns the URI the project was loaded from (the same value passed to
+	/// [`Session::new`]), borrowed for as long as the session lives; it stays
+	/// valid after [`Session::take`] empties the project. Callers compare it to
+	/// identify which document a session refers to.
 	pub fn uri(&self) -> &StorageUri {
 		&self.uri
 	}

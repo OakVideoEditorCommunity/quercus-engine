@@ -137,6 +137,28 @@ impl VideoParams {
 	}
 
 	/// Create a parameter set without a time base.
+	///
+	/// Use this when a stream's timing is not (yet) known: `time_base` and
+	/// `frame_rate` stay `0/1`, which makes `time_in_timebase_units` return
+	/// `None` until they are set later. Everything else is initialized exactly
+	/// like `new_with_time_base`: depth 1, no offsets, stream type `Video`,
+	/// limited color range, straight alpha, color codes 0 and an empty
+	/// colorspace name.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - Frame size in pixels; not validated here (a
+	///   positive size is required by `is_valid`).
+	/// * `pixel_format` - Storage format of the frames.
+	/// * `nb_channels` - Channels per pixel, usually 3 (RGB) or 4 (RGBA); not
+	///   validated.
+	/// * `pixel_aspect_num` / `pixel_aspect_den` - Pixel shape as a rational;
+	///   a null ratio (numerator 0) falls back to `1/1`.
+	/// * `interlacing` - Interlacing code from the source: 0 = progressive,
+	///   1 = top field first, 2 = bottom field first; other values become
+	///   progressive.
+	/// * `divider` - Initial resolution divider (1 = full resolution); stored
+	///   without validation, so 0 would make the `effective_*` getters panic.
 	#[allow(clippy::too_many_arguments)]
 	pub fn new_basic(
 		width: i32,
@@ -178,8 +200,31 @@ impl VideoParams {
 		}
 	}
 
-	/// Create a parameter set with a time base; the frame rate is derived
-	/// as the flipped time base.
+	/// Create a parameter set from a time base, deriving the frame rate as the
+	/// flipped time base.
+	///
+	/// The frame bridges use this variant when the source header already carries a
+	/// time base (the OIIO bridge builds every frame this way), and `new_basic`
+	/// when the timing is not known yet. Both constructors start from the same
+	/// defaults (depth 1, no offsets, stream type `Video`, limited range, straight
+	/// alpha, color codes 0, empty colorspace); only the time base and frame rate
+	/// differ.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - Frame size in pixels; not validated here.
+	/// * `time_base_num` / `time_base_den` - Seconds per tick as a rational
+	///   (e.g. `1, 25` or `1001, 30000`); reduced and sign-normalized. A zero
+	///   denominator stores the NaN rational `0/0`, i.e. "no time base".
+	/// * `pixel_format` - Storage format of the frames.
+	/// * `nb_channels` - Channels per pixel, usually 3 or 4; not validated.
+	/// * `pixel_aspect_num` / `pixel_aspect_den` - Pixel shape as a rational;
+	///   a null ratio (numerator 0) falls back to `1/1`.
+	/// * `interlacing` - Interlacing code from the source: 0 = progressive,
+	///   1 = top field first, 2 = bottom field first; other values become
+	///   progressive.
+	/// * `divider` - Initial resolution divider (1 = full resolution); stored
+	///   without validation, so 0 would make the `effective_*` getters panic.
 	#[allow(clippy::too_many_arguments)]
 	pub fn new_with_time_base(
 		width: i32,
@@ -225,22 +270,41 @@ impl VideoParams {
 		}
 	}
 
-	/// Frame width.
+	/// Frame width in pixels.
+	///
+	/// This is the full-resolution width; the preview-scaled value is
+	/// `effective_width`, and `square_pixel_width` applies the pixel aspect ratio
+	/// to it. `is_valid` requires it to be positive, and it participates in
+	/// `buffer_size`.
 	pub fn width(&self) -> i32 {
 		self.width
 	}
 
-	/// Set the frame width.
+	/// Set the frame width in pixels.
+	///
+	/// `width` is stored as-is and is not validated; `is_valid` simply requires
+	/// it to be positive. It is used for buffer sizing and preview scaling, and
+	/// is persisted as the `width` element. Changing it leaves the divider and
+	/// pixel aspect ratio untouched.
 	pub fn set_width(&mut self, width: i32) {
 		self.width = width;
 	}
 
-	/// Frame height.
+	/// Frame height in pixels.
+	///
+	/// This is the full-resolution height; the preview-scaled value is
+	/// `effective_height`. `is_valid` requires it to be positive, and it
+	/// participates in `buffer_size` and the `save_xml` round-trip.
 	pub fn height(&self) -> i32 {
 		self.height
 	}
 
-	/// Set the frame height.
+	/// Set the frame height in pixels.
+	///
+	/// `height` is stored as-is and is not validated; `is_valid` simply requires
+	/// it to be positive. It is used for buffer sizing and preview scaling, and
+	/// is persisted as the `height` element. Changing it leaves the divider and
+	/// pixel aspect ratio untouched.
 	pub fn set_height(&mut self, height: i32) {
 		self.height = height;
 	}
@@ -250,7 +314,13 @@ impl VideoParams {
 		self.depth
 	}
 
-	/// Set the bit depth per channel.
+	/// Set the bit depth per channel, which also doubles as the 3D layer count.
+	///
+	/// `depth` is stored unchanged and is not range-checked. Any value greater
+	/// than 1 makes `is_3d` true and is scaled by the divider in
+	/// `effective_depth`; values of 0 or 1 are treated as a single 2D layer.
+	/// `new_basic` and `new_with_time_base` initialize it to 1, `new` leaves it
+	/// at 0, and it is persisted as the `depth` element.
 	pub fn set_depth(&mut self, depth: i32) {
 		self.depth = depth;
 	}
@@ -268,7 +338,14 @@ impl VideoParams {
 		self.time_base
 	}
 
-	/// Set the time base.
+	/// Set the time base: the length of one tick of `start_time`/`duration`.
+	///
+	/// `numerator`/`denominator` are seconds per tick, so `1001/30000`
+	/// corresponds to NTSC 29.97 fps and the frame rate is the reciprocal of the
+	/// time base. The pair is reduced and sign-normalized; a zero denominator
+	/// produces the NaN rational `0/0`, which every time conversion (including
+	/// `time_in_timebase_units`) treats as "no time base". Persisted as
+	/// `timebase`.
 	pub fn set_time_base(&mut self, numerator: i32, denominator: i32) {
 		self.time_base = make_rational(numerator, denominator);
 	}
@@ -278,7 +355,13 @@ impl VideoParams {
 		self.frame_rate
 	}
 
-	/// Set the frame rate.
+	/// Set the frame rate as a rational number of frames per second.
+	///
+	/// `numerator`/`denominator` are the frames-per-second ratio (`24000/1001`
+	/// for 23.976 fps, `25/1` for PAL); it is reduced and sign-normalized like a
+	/// `Rational`. This field is independent of the time base: `new_basic`
+	/// leaves it at `0/1`, while constructors that take a time base derive it as
+	/// the flipped time base. Persisted as `framerate`.
 	pub fn set_frame_rate(&mut self, numerator: i32, denominator: i32) {
 		self.frame_rate = make_rational(numerator, denominator);
 	}
@@ -293,7 +376,14 @@ impl VideoParams {
 		self.pixel_aspect_ratio
 	}
 
-	/// Set the pixel aspect ratio.
+	/// Set the pixel aspect ratio as a rational number.
+	///
+	/// `numerator`/`denominator` describe the shape of a single pixel: pixel
+	/// width divided by pixel height, so `1/1` is square. The pair is
+	/// sign-normalized and reduced like the C++ `Rational` constructor, and a
+	/// null ratio (numerator 0, as `0/5` gives) is replaced with `1/1` so an
+	/// invalid PAR can never be stored. The value feeds `square_pixel_width`
+	/// and is persisted as `pixelaspectratio`.
 	pub fn set_pixel_aspect_ratio(&mut self, numerator: i32, denominator: i32) {
 		let mut r = make_rational(numerator, denominator);
 		if rational_is_null(r) {
@@ -302,12 +392,23 @@ impl VideoParams {
 		self.pixel_aspect_ratio = r;
 	}
 
-	/// The pixel format.
+	/// Pixel storage format of the stream.
+	///
+	/// `U8`, `U10`, `U16`, `F16` or `F32` for real footage, and `Invalid` for an
+	/// uninitialized or unrecognized format (the `new()` default). It decides
+	/// `bytes_per_channel`/`bytes_per_pixel` and is one of the conditions
+	/// `is_valid` checks.
 	pub fn format(&self) -> PixelFormat {
 		self.format
 	}
 
-	/// Set the pixel format.
+	/// Set the pixel storage format.
+	///
+	/// `pixel_format` determines how samples are stored and therefore drives
+	/// `bytes_per_channel`, `bytes_per_pixel` and `format_is_float`; it is stored
+	/// unchanged. `is_valid` rejects `Invalid` and `Count`, so a set built with
+	/// `new()` (which defaults to `Invalid`) must be given a real format before
+	/// use. Persisted as the numeric `format` code.
 	pub fn set_format(&mut self, format: PixelFormat) {
 		self.format = format;
 	}
@@ -317,27 +418,54 @@ impl VideoParams {
 		self.channel_count
 	}
 
-	/// Set the number of channels.
+	/// Set how many color channels each pixel has.
+	///
+	/// Usually 4 (RGBA) or 3 (RGB); 1 (luma only) is also meaningful. The value
+	/// must be positive for `is_valid` to pass, scales `bytes_per_pixel` and
+	/// `buffer_size`, and is persisted as `channelcount`. No upper bound is
+	/// enforced here.
 	pub fn set_channel_count(&mut self, count: i32) {
 		self.channel_count = count;
 	}
 
-	/// The interlacing mode.
+	/// Interlacing mode of the stream.
+	///
+	/// `None` for progressive footage (the default in both constructors),
+	/// `TopFirst` or `BottomFirst` for interlaced sources. Values other than 1
+	/// and 2 that were loaded from XML fall back to `None`.
 	pub fn interlacing(&self) -> Interlacing {
 		self.interlacing
 	}
 
-	/// Set the interlacing mode.
+	/// Set the interlacing mode from the `Interlacing` enum.
+	///
+	/// `None` marks progressive footage, `TopFirst`/`BottomFirst` mark
+	/// interlaced fields and which field comes first; downstream readers use it
+	/// to decide whether deinterlacing is needed. The integer-taking
+	/// constructors and `load_xml` convert codes to this enum first, mapping
+	/// unknown codes to `None`. Persisted as the 0/1/2 `interlacing` code.
 	pub fn set_interlacing(&mut self, interlacing: Interlacing) {
 		self.interlacing = interlacing;
 	}
 
-	/// The resolution divider.
+	/// Resolution divider currently applied to this stream.
+	///
+	/// 1 means full resolution and `n` means frames are processed at `1/n` size
+	/// (see `effective_width`, `effective_height`, `effective_depth`). Defaults
+	/// to 1, is persisted as `divider`, and is what
+	/// `generate_auto_divider`/`get_divider_for_target_resolution` produce
+	/// candidate values for.
 	pub fn divider(&self) -> i32 {
 		self.divider
 	}
 
-	/// Set the resolution divider.
+	/// Set the resolution divider used for preview-quality scaling.
+	///
+	/// 1 keeps full resolution, 2 processes at half size, 3 at one third, and so
+	/// on; `effective_width`, `effective_height` and `effective_depth` apply it
+	/// with truncating division. It is not validated here, so 0 makes those
+	/// getters panic and a negative value yields negative "sizes". Persisted as
+	/// the `divider` XML element.
 	pub fn set_divider(&mut self, divider: i32) {
 		self.divider = divider;
 	}
@@ -347,7 +475,12 @@ impl VideoParams {
 		self.enabled
 	}
 
-	/// Set whether the stream is enabled.
+	/// Enable or disable this stream without removing it from the parameter set.
+	///
+	/// A disabled stream keeps all of its parameters but is skipped by rendering
+	/// and export. The default is `true` in both constructors; the flag is
+	/// persisted as `enabled` (1/0), and any non-zero integer read from XML
+	/// means enabled.
 	pub fn set_enabled(&mut self, enabled: bool) {
 		self.enabled = enabled;
 	}
@@ -357,7 +490,13 @@ impl VideoParams {
 		self.x
 	}
 
-	/// Set the X offset.
+	/// Set the horizontal offset of this stream inside its containing canvas, in
+	/// pixels.
+	///
+	/// `x` is an `f32`, defaults to 0.0, and is stored without clamping or
+	/// rounding; it is carried across the C ABI by `QuercusVideoParams` and
+	/// persisted as the `x` element with 6 decimal places. It does not affect
+	/// buffer sizes or the effective width/height.
 	pub fn set_x(&mut self, x: f32) {
 		self.x = x;
 	}
@@ -367,7 +506,13 @@ impl VideoParams {
 		self.y
 	}
 
-	/// Set the Y offset.
+	/// Set the vertical offset of this stream inside its containing canvas, in
+	/// pixels.
+	///
+	/// `y` is an `f32`, defaults to 0.0, and is stored without clamping or
+	/// rounding; it is carried across the C ABI by `QuercusVideoParams` and
+	/// persisted as the `y` element with 6 decimal places. It does not affect
+	/// buffer sizes or the effective width/height.
 	pub fn set_y(&mut self, y: f32) {
 		self.y = y;
 	}
@@ -377,17 +522,33 @@ impl VideoParams {
 		self.stream_index
 	}
 
-	/// Set the stream index.
+	/// Set the index of this stream within its source file.
+	///
+	/// `index` is the 0-based container stream index recorded by the probe. It
+	/// is stored unchanged with no bounds check, persisted as `streamindex`, is
+	/// used as the stream's index in the footage stream records, and is mirrored
+	/// across the C ABI by `QuercusVideoParams`.
 	pub fn set_stream_index(&mut self, index: i32) {
 		self.stream_index = index;
 	}
 
-	/// The stream type.
+	/// Kind of stream these parameters describe: regular `Video`, a single
+	/// `Still` image, or an `ImageSequence`.
+	///
+	/// Defaults to `Video` in both constructors. The media import path reads it
+	/// to decide whether footage should be treated as a still; the value is
+	/// also mirrored across the C ABI.
 	pub fn video_type(&self) -> VideoType {
 		self.video_type
 	}
 
-	/// Set the stream type.
+	/// Set what kind of stream this is: regular `Video`, a single `Still` image,
+	/// or an `ImageSequence`.
+	///
+	/// The distinction tells loaders/importers how to treat the source (the
+	/// import path checks `video_type() == VideoType::Video` before treating
+	/// footage as a still). Both constructors default to `Video`; persisted as
+	/// its discriminant, and unknown codes loaded from XML fall back to `Video`.
 	pub fn set_video_type(&mut self, video_type: VideoType) {
 		self.video_type = video_type;
 	}
@@ -397,7 +558,12 @@ impl VideoParams {
 		self.start_time
 	}
 
-	/// Set the stream start time.
+	/// Set the first timestamp of the stream, in time-base units.
+	///
+	/// `start_time` is an `i64` tick offset (not seconds) added to every value
+	/// produced by `time_in_timebase_units`, so a source that starts at
+	/// 00:00:05 can still be addressed from zero. Both constructors default it
+	/// to 0 and it is persisted as the `starttime` element.
 	pub fn set_start_time(&mut self, start_time: i64) {
 		self.start_time = start_time;
 	}
@@ -407,57 +573,117 @@ impl VideoParams {
 		self.duration
 	}
 
-	/// Set the stream duration.
+	/// Set the duration of the stream, in time-base units.
+	///
+	/// `duration` is a tick/frame count, not seconds: divide it by the time base
+	/// to get wall-clock length. Both constructors default it to 0, and negative
+	/// values are stored unchanged (no validation). Persisted as the `duration`
+	/// element and used, for example, when computing footage length.
 	pub fn set_duration(&mut self, duration: i64) {
 		self.duration = duration;
 	}
 
-	/// Whether alpha is premultiplied.
+	/// Whether alpha is premultiplied into the color channels.
+	///
+	/// `true` means the stored RGB is already multiplied by alpha; the default
+	/// from both constructors is `false` (straight/unassociated alpha). Read by
+	/// blending code to decide whether to premultiply before compositing.
 	pub fn premultiplied_alpha(&self) -> bool {
 		self.premultiplied_alpha
 	}
 
-	/// Set whether alpha is premultiplied.
+	/// Set whether the alpha channel is premultiplied into the color channels.
+	///
+	/// Premultiplied footage stores `R*a` in RGB; blending and keying code needs
+	/// to know which convention applies. `true` means premultiplied, the default
+	/// is `false` (straight/unassociated alpha) in both constructors, and the
+	/// flag is persisted as 1/0.
 	pub fn set_premultiplied_alpha(&mut self, premultiplied: bool) {
 		self.premultiplied_alpha = premultiplied;
 	}
 
-	/// The color range.
+	/// Color range of the stream: `Limited` (16-235, the default) or `Full`
+	/// (0-255).
+	///
+	/// Set by the decoder from the source's color metadata, or by
+	/// `set_color_range`; it is only meaningful for integer YUV footage and is
+	/// persisted as `colorrange`.
 	pub fn color_range(&self) -> ColorRange {
 		self.color_range
 	}
 
-	/// Set the color range.
+	/// Set whether the stream carries limited (16-235) or full (0-255) range
+	/// luma/chroma.
+	///
+	/// Takes the `ColorRange` enum; `Limited` is the default in both
+	/// constructors because most broadcast footage is limited range. The value
+	/// is stored as-is and serialized as its discriminant (0 = limited,
+	/// 1 = full); out-of-range codes loaded from XML fall back to `Limited`.
 	pub fn set_color_range(&mut self, color_range: ColorRange) {
 		self.color_range = color_range;
 	}
 
-	/// Color primaries code.
+	/// Color primaries code for this stream (an FFmpeg `AVCOL_PRI_*` value), or
+	/// 0 when unspecified.
+	///
+	/// The decoder fills it from the source's color metadata; the constructors
+	/// default it to 0. Persisted as `colorprimaries`.
 	pub fn color_primaries(&self) -> i32 {
 		self.color_primaries
 	}
 
-	/// Set the color primaries code.
+	/// Set the color primaries, as an FFmpeg `AVCOL_PRI_*` code.
+	///
+	/// `primaries` identifies the RGB gamut of the source (1 = BT.709,
+	/// 9 = BT.2020, ...); 0 means unspecified, which is the default from both
+	/// constructors. It is consumed alongside `color_transfer` and
+	/// `color_range` when converting into the working space. Stored and
+	/// serialized unchanged with no validation.
 	pub fn set_color_primaries(&mut self, primaries: i32) {
 		self.color_primaries = primaries;
 	}
 
-	/// Color transfer function code.
+	/// Color transfer function code for this stream (an FFmpeg `AVCOL_TRC_*`
+	/// value), or 0 when unspecified.
+	///
+	/// The decoder fills it from the source's color metadata; the constructors
+	/// default it to 0. It is part of the frame colorimetry together with
+	/// `color_primaries` and `color_range`, and is persisted as
+	/// `colortransfer`.
 	pub fn color_transfer(&self) -> i32 {
 		self.color_transfer
 	}
 
-	/// Set the color transfer function code.
+	/// Set the color transfer function, as an FFmpeg `AVCOL_TRC_*` code.
+	///
+	/// `transfer` is an opaque integer code taken from the source's color
+	/// metadata (1 = BT.709, 16 = SMPTE ST 2084/PQ, ...); 0 means unspecified,
+	/// which is the default from both constructors. The render layer uses it
+	/// with the primaries and range to build the source-to-working-space input
+	/// transform. Stored and serialized unchanged with no validation.
 	pub fn set_color_transfer(&mut self, transfer: i32) {
 		self.color_transfer = transfer;
 	}
 
-	/// The colorspace name.
+	/// Colorspace name of this stream, or `""` when color management is not
+	/// described.
+	///
+	/// Returns a borrowed view of the stored string, which is exactly what
+	/// `save_xml` writes and `load_xml` restores (so it may be any name, not
+	/// just a known one). It is a label for the color-management layer, not a
+	/// guarantee that the pixels were converted.
 	pub fn colorspace(&self) -> &str {
 		&self.colorspace
 	}
 
-	/// Set the colorspace name.
+	/// Set the colorspace name, e.g. `"sRGB"` or `"Rec.709"`.
+	///
+	/// The borrowed `&str` is copied into an owned `String`, replacing any
+	/// previous name; an empty string means "not color-managed". It is a label
+	/// carried through the project file rather than an enum, so arbitrary names
+	/// are preserved. Persisted as the `colorspace` XML element, and note that
+	/// the C ABI mirror `QuercusVideoParams` keeps only the first 63 bytes when
+	/// the value crosses into the host.
 	pub fn set_colorspace(&mut self, colorspace: &str) {
 		self.colorspace = colorspace.to_string();
 	}
@@ -473,17 +699,34 @@ impl VideoParams {
 		}
 	}
 
-	/// Effective (scaled) width.
+	/// Frame width divided by the resolution divider.
+	///
+	/// This is the width actually processed at the current preview quality.
+	/// The divisor is applied with truncating integer division, so odd sizes
+	/// lose up to `divider - 1` pixels, and a divider of 0 panics (see
+	/// `get_scaled_dimension`). Equivalent to
+	/// `get_scaled_dimension(self.width(), self.divider())`.
 	pub fn effective_width(&self) -> i32 {
 		Self::get_scaled_dimension(self.width, self.divider)
 	}
 
-	/// Effective (scaled) height.
+	/// Frame height divided by the resolution divider.
+	///
+	/// This is the height actually processed at the current preview quality.
+	/// The divisor is applied with truncating integer division, so odd sizes
+	/// lose up to `divider - 1` pixels, and a divider of 0 panics (see
+	/// `get_scaled_dimension`). Equivalent to
+	/// `get_scaled_dimension(self.height(), self.divider())`.
 	pub fn effective_height(&self) -> i32 {
 		Self::get_scaled_dimension(self.height, self.divider)
 	}
 
-	/// Effective (scaled) depth.
+	/// Frame depth after the resolution divider is applied, in the 3D sense.
+	///
+	/// A depth of 1 means a single 2D layer and is returned unchanged, so
+	/// preview scaling never turns a 2D frame into a 0-depth one. Any larger
+	/// depth is divided by the divider like `effective_width` and
+	/// `effective_height`, truncating toward zero.
 	pub fn effective_depth(&self) -> i32 {
 		if self.depth == 1 {
 			self.depth
@@ -503,12 +746,20 @@ impl VideoParams {
 			&& self.channel_count > 0
 	}
 
-	/// Bytes per channel.
+	/// Bytes per channel for this parameter set's pixel format.
+	///
+	/// Thin wrapper over `bytes_per_channel_for_format(self.format())`. Returns
+	/// 0 for the packed 10-bit format (which has no whole bytes per channel) and
+	/// for unknown formats, so use `bytes_per_pixel` for those.
 	pub fn bytes_per_channel(&self) -> i32 {
 		Self::bytes_per_channel_for_format(self.format)
 	}
 
-	/// Bytes per pixel.
+	/// Bytes per pixel for this parameter set's format and channel count.
+	///
+	/// Thin wrapper over `bytes_per_pixel_for_format(self.format(),
+	/// self.channel_count())`. Returns 0 for unknown formats and for the packed
+	/// 10-bit format unless the channel count is 4.
 	pub fn bytes_per_pixel(&self) -> i32 {
 		Self::bytes_per_pixel_for_format(self.format, self.channel_count)
 	}
@@ -518,8 +769,22 @@ impl VideoParams {
 		Self::calculate_buffer_size(self.width, self.height, self.format, self.channel_count)
 	}
 
-	/// Convert a time (in seconds, as a rational) to time-base units.
-	/// Returns `None` when no time base is set.
+	/// Convert a time expressed in seconds to this stream's time-base units.
+	///
+	/// `time_num` / `time_den` are the time in seconds as a rational, so `1/2`
+	/// is half a second. The result is `round(seconds * frame_rate) +
+	/// start_time`: the frame rate is the reciprocal of the time base, and
+	/// rounding is half away from zero (C `llround`). The addition of
+	/// `start_time` means a stream that begins at 00:00:05 can be addressed from
+	/// zero.
+	///
+	/// # Returns
+	///
+	/// `None` when the time base is null (numerator 0, including the default
+	/// `0/1`), which the C++ version signals with `AV_NOPTS_VALUE`. A NaN time
+	/// (zero denominator) converts to `0 + start_time` rather than failing; a
+	/// non-zero numerator over a zero denominator saturates at `i64::MAX` before
+	/// `start_time` is added, so a positive `start_time` then overflows.
 	pub fn time_in_timebase_units(&self, time_num: i32, time_den: i32) -> Option<i64> {
 		if rational_is_null(self.time_base) {
 			return None; // C++ returns INT64_MIN (AV_NOPTS_VALUE)
@@ -530,7 +795,16 @@ impl VideoParams {
 		Some(ts + self.start_time)
 	}
 
-	/// Compare two parameter sets for equality.
+	/// Whether `other` describes the same video stream as `self`.
+	///
+	/// Only the nine fields that participate in the C++ `operator==` are
+	/// compared: width, height, depth, interlacing, time base, pixel format,
+	/// pixel aspect ratio, divider and channel count. Stream metadata (enabled,
+	/// x/y offsets, stream index and type, start time, duration, premultiplied
+	/// alpha, color range/primaries/transfer, colorspace, frame rate) is
+	/// deliberately ignored, so two sets differing only in those still compare
+	/// equal — this is the C++ `operator==`'s notion of stream identity, not a
+	/// "same file metadata" comparison.
 	pub fn equals(&self, other: &VideoParams) -> bool {
 		self.width == other.width
 			&& self.height == other.height
@@ -543,7 +817,35 @@ impl VideoParams {
 			&& self.channel_count == other.channel_count
 	}
 
-	/// Load parameters from an XML fragment.
+	/// Parse an XML `<videoparams>` fragment and overwrite the fields it
+	/// contains.
+	///
+	/// `xml` is a whole document or fragment: it is parsed into an event stream,
+	/// the first start element is taken as the root (its name is not checked),
+	/// and its direct children are consumed one by one. Recognized child names
+	/// set the matching field: `width`, `height`, `depth`, `timebase`, `format`,
+	/// `channelcount`, `pixelaspectratio`, `interlacing`, `divider`, `enabled`,
+	/// `x`, `y`, `streamindex`, `videotype`, `framerate`, `starttime`,
+	/// `duration`, `premultipliedalpha`, `colorspace`, `colorrange`,
+	/// `colorprimaries`, `colortransfer`. Any other child is skipped together
+	/// with its subtree, and fields absent from the document keep their current
+	/// value, so loading on top of a default (`new`) instance is the usual
+	/// pattern.
+	///
+	/// Out-of-range enum codes fall back silently: interlacing, video type and
+	/// color range to their first variant, unknown pixel-format codes to
+	/// `Invalid` (which then fails `is_valid`). `enabled` and
+	/// `premultipliedalpha` accept any non-zero integer as true, and numeric
+	/// fields accept the leading number of the text, ignoring trailing junk.
+	///
+	/// # Errors
+	///
+	/// Returns `Error::Failed` when the text is malformed XML (bad nesting,
+	/// unterminated tag or comment, unknown entity, ...), when no root element
+	/// is present, or when a numeric child (`width`, `depth`, `x`,
+	/// `colorrange`, ...) has no leading digits. Because children are applied as
+	/// they are read, a failed load leaves `self` partially updated; callers
+	/// that care about that should load into a fresh instance first.
 	pub fn load_xml(&mut self, xml: &str) -> Result<()> {
 		// Mirrors quercus_core_videoparams_load_xml + VideoParams::load():
 		// parse, fail on error, position on the root element, then consume
@@ -611,7 +913,23 @@ impl VideoParams {
 		Ok(())
 	}
 
-	/// Save parameters to an XML fragment.
+	/// Serialize this parameter set as an XML `<videoparams>` fragment.
+	///
+	/// All fields are written as child elements in the fixed order the C++
+	/// writer uses: `width`, `height`, `depth`, `timebase`, `format`,
+	/// `channelcount`, `pixelaspectratio`, `interlacing`, `divider`, `enabled`,
+	/// `x`, `y`, `streamindex`, `videotype`, `framerate`, `starttime`,
+	/// `duration`, `premultipliedalpha`, `colorspace`, `colorrange`,
+	/// `colorprimaries`, `colortransfer`. Rationals are written as `"num/den"`,
+	/// floats with exactly 6 decimals, and booleans/enums as their integer code;
+	/// text is XML-escaped. No indentation or whitespace is emitted, matching the
+	/// C++ writer's layout, and the output round-trips through `load_xml`.
+	///
+	/// # Returns
+	///
+	/// The complete fragment including the root element, with no XML
+	/// declaration. Always `Ok`; the `Result` only exists for the C API's
+	/// try/catch boundary.
 	pub fn save_xml(&self) -> Result<String> {
 		// Mirrors quercus_core_videoparams_save_xml: a `<videoparams>` root with
 		// the exact child order of VideoParams::save(). The writer emits no
@@ -652,7 +970,16 @@ impl VideoParams {
 		Ok(out)
 	}
 
-	/// Bytes per channel for a given format.
+	/// Bytes occupied by one channel of `pixel_format`, not by one pixel.
+	///
+	/// `U8` gives 1, `U16` and `F16` give 2, and `F32` gives 4. The packed
+	/// 10-bit format (`U10`) has no whole number of bytes per channel, so it
+	/// reports 0 and callers must use `bytes_per_pixel_for_format` instead;
+	/// `Invalid` and `Count` also report 0.
+	///
+	/// # Returns
+	///
+	/// The per-channel byte count, or 0 when the format is packed or unknown.
 	pub fn bytes_per_channel_for_format(pixel_format: PixelFormat) -> i32 {
 		match pixel_format {
 			PixelFormat::U8 => 1,
@@ -664,7 +991,24 @@ impl VideoParams {
 		}
 	}
 
-	/// Bytes per pixel for a given format and channel count.
+	/// Bytes occupied by one pixel of `pixel_format` with `channels` channels.
+	///
+	/// For every format except packed 10-bit this is
+	/// `bytes_per_channel_for_format(pixel_format) * channels`. `U10` is stored
+	/// as packed RGBA10A2, one 32-bit word per RGBA pixel, so it reports exactly
+	/// 4 bytes when `channels == 4` and 0 for any other channel count.
+	///
+	/// # Arguments
+	///
+	/// * `pixel_format` - Storage format of the frame.
+	/// * `channels` - Channels per pixel; 4 (RGBA) is the only supported value
+	///   for `U10`.
+	///
+	/// # Returns
+	///
+	/// Bytes per pixel, or 0 for `Invalid`/`Count` and for a `U10` frame with an
+	/// unsupported channel count. The multiply wraps on overflow like the C++
+	/// `int` version.
 	pub fn bytes_per_pixel_for_format(pixel_format: PixelFormat, channels: i32) -> i32 {
 		if pixel_format == PixelFormat::U10 {
 			// Packed 10-bit RGBA10A2: 4 bytes per RGBA pixel.
@@ -673,7 +1017,26 @@ impl VideoParams {
 		Self::bytes_per_channel_for_format(pixel_format).wrapping_mul(channels)
 	}
 
-	/// Total buffer size for a frame.
+	/// Size in bytes of one uncompressed frame with the given geometry and
+	/// format.
+	///
+	/// Computed as `width * height * bytes_per_pixel_for_format(pixel_format,
+	/// channels)` using wrapping `i32` multiplication, mirroring the C++ `int`
+	/// arithmetic: an overflow wraps instead of panicking, so a nonsensical
+	/// value is possible for very large frames rather than a crash.
+	///
+	/// # Arguments
+	///
+	/// * `width` / `height` - Frame dimensions in pixels; pass the effective
+	///   (divider-applied) sizes when allocating a preview buffer.
+	/// * `pixel_format` - Storage format; `Invalid`/`Count` produce a 0-byte
+	///   result.
+	/// * `channels` - Channels per pixel; for packed `U10` only 4 is meaningful.
+	///
+	/// # Returns
+	///
+	/// The buffer size in bytes (0 for unknown formats), as a plain byte count
+	/// with no row alignment or padding added.
 	pub fn calculate_buffer_size(
 		width: i32,
 		height: i32,
@@ -686,12 +1049,34 @@ impl VideoParams {
 		width.wrapping_mul(height).wrapping_mul(bpp)
 	}
 
-	/// Whether the format stores floating-point channels.
+	/// Whether the pixel format stores channels as floating-point values.
+	///
+	/// True only for `F16` and `F32`; every integer format (`U8`, `U10`, `U16`)
+	/// and `Invalid`/`Count` return false. Consumers use it to choose float
+	/// versus integer processing paths; it says nothing about the channel count
+	/// or the bit width.
 	pub fn format_is_float(pixel_format: PixelFormat) -> bool {
 		matches!(pixel_format, PixelFormat::F16 | PixelFormat::F32)
 	}
 
-	/// Generate an auto divider for the given dimensions.
+	/// Pick a default resolution divider for a source of the given size.
+	///
+	/// The target is roughly 1280x720 of processing work: `sqrt(width * height
+	/// / (1280 * 720))` is computed and rounded to the nearest value in the
+	/// supported set `[1, 2, 3, 4, 6, 8, 12, 16]`, clamping at both ends. Ties
+	/// round up, so a ratio of exactly 2.5 selects 3. This is a pure helper with
+	/// no in-crate caller yet; a caller would store the result through
+	/// `set_divider`.
+	///
+	/// # Arguments
+	///
+	/// * `width` - Source frame width in pixels.
+	/// * `height` - Source frame height in pixels. Only the product matters.
+	///
+	/// # Returns
+	///
+	/// One of the eight supported dividers. A zero or negative product yields 1;
+	/// the product is formed in `i128`, so large dimensions cannot overflow.
 	pub fn generate_auto_divider(width: i64, height: i64) -> i32 {
 		// CPP-PARITY: the C++ computes `int64_t width*height`; we use i128 to
 		// avoid overflow for large dimensions (identical results in range).
@@ -720,12 +1105,44 @@ impl VideoParams {
 		}
 	}
 
-	/// Scale a dimension by a divider.
+	/// Divide a frame dimension by the resolution divider, truncating toward
+	/// zero.
+	///
+	/// `dimension` is a width, height or depth in pixels and `divider` the
+	/// integer divisor stored on the parameter set (1 = full size). Plain `i32`
+	/// division is used, so `1921 / 2` is `960` and an odd size loses up to
+	/// `divider - 1` pixels. Used by `effective_width`, `effective_height` and
+	/// `effective_depth`.
+	///
+	/// # Panics
+	///
+	/// Panics when `divider` is 0 (integer division by zero). `set_divider`
+	/// performs no validation, so a zero divider produces a parameter set whose
+	/// effective-size getters panic.
 	pub fn get_scaled_dimension(dimension: i32, divider: i32) -> i32 {
 		dimension / divider
 	}
 
-	/// Divider that maps `src_*` resolution to no more than `dst_*`.
+	/// Smallest integer divider that scales `src_width` x `src_height` down to
+	/// fit within `dst_width` x `dst_height`.
+	///
+	/// Starts at 1 and increments until both scaled dimensions (through
+	/// `get_scaled_dimension`, i.e. truncating division) are at most the
+	/// destination sizes, so a source that already fits yields 1. The fit is not
+	/// tight: the chosen divider may leave the result noticeably smaller than
+	/// the destination (e.g. 1921x1081 into 959x540 gives 3, not 2).
+	///
+	/// # Arguments
+	///
+	/// * `src_width` / `src_height` - Source frame size in pixels, positive.
+	/// * `dst_width` / `dst_height` - Maximum acceptable scaled size in pixels.
+	///
+	/// # Panics
+	///
+	/// Never terminates when `dst_width` or `dst_height` is negative (no
+	/// non-negative scaled size can satisfy the comparison), incrementing
+	/// `divider` until the `i32` overflow panics in a debug build. Callers pass
+	/// real frame sizes.
 	pub fn get_divider_for_target_resolution(
 		src_width: i32,
 		src_height: i32,
@@ -744,7 +1161,17 @@ impl VideoParams {
 		divider
 	}
 
-	/// Human-readable name for a divider (`"Full"`, `"1/2"`, ...).
+	/// Human-readable label for a resolution divider: `1` is `"Full"`, any
+	/// other `n` is `"1/n"` (so `2` is `"1/2"`, `8` is `"1/8"`).
+	///
+	/// `divider` is the integer divisor stored by `set_divider`; it is not
+	/// validated, so `0` and negative values render literally as `"1/0"` and
+	/// `"1/-2"`. Counterpart of `generate_auto_divider` and
+	/// `get_divider_for_target_resolution`, which choose the value this labels.
+	///
+	/// # Returns
+	///
+	/// Always `Ok`; the `Result` only mirrors the C API's try/catch boundary.
 	pub fn name_for_divider(divider: i32) -> Result<String> {
 		// C++ never fails here; the Result mirrors the c_api try/catch.
 		Ok(if divider == 1 {
@@ -754,7 +1181,17 @@ impl VideoParams {
 		})
 	}
 
-	/// Human-readable name for a pixel format.
+	/// Human-readable label for a pixel format, as shown in the UI.
+	///
+	/// Real formats map to fixed strings: `"8-bit"`, `"10-bit Packed"`,
+	/// `"16-bit Integer"`, `"Half-Float (16-bit)"` and `"Full-Float
+	/// (32-bit)"`. `Invalid` and `Count` are not real formats and render as
+	/// `"Unknown (0x<code>)"` with the raw discriminant in uppercase hex, so
+	/// `Invalid` (code -1) prints as `0xFFFFFFFF` and `Count` as `0x5`.
+	///
+	/// # Returns
+	///
+	/// Always `Ok`; the `Result` only mirrors the C API's try/catch boundary.
 	pub fn format_name(pixel_format: PixelFormat) -> Result<String> {
 		Ok(match pixel_format {
 			PixelFormat::U8 => "8-bit".to_string(),
@@ -769,7 +1206,20 @@ impl VideoParams {
 		})
 	}
 
-	/// Human-readable frame-rate string (`"23.976 FPS"`).
+	/// Format a frame rate as a human-readable string such as `"23.976 FPS"`.
+	///
+	/// `numerator` and `denominator` are the stored rational in frames per
+	/// second (`24000/1001` for 23.976 fps, `25/1` for PAL). The ratio is
+	/// rendered with C `%g` semantics — six significant digits, trailing
+	/// fractional zeros removed, exponent form outside `1e-4 .. 1e6` — and the
+	/// literal suffix `" FPS"` is appended.
+	///
+	/// # Returns
+	///
+	/// Always `Ok`; the `Result` only mirrors the C API's try/catch boundary. A
+	/// zero denominator yields `"nan FPS"` for a zero numerator and `"inf FPS"`
+	/// or `"-inf FPS"` otherwise, so callers should check `is_valid` first if a
+	/// real frame rate is required.
 	pub fn frame_rate_to_string(numerator: i32, denominator: i32) -> Result<String> {
 		// CPP-PARITY: `%g` is hand-rolled (no libc); see `format_g`.
 		let value = numerator as f64 / denominator as f64;
@@ -849,6 +1299,13 @@ fn f32_str(v: f32) -> String {
 	format!("{:.6}", v)
 }
 
+/// Escape the three characters that are unsafe inside XML character data.
+///
+/// `&`, `<` and `>` become `&amp;`, `&lt;` and `&gt;`; every other character,
+/// including `"` and `'`, is copied unchanged (quotes only matter in attribute
+/// values, which this writer never emits). Used by `push_text_element` so that
+/// strings such as a colorspace name survive a `save_xml` / `load_xml`
+/// round-trip. Returns a newly allocated string of at least `s.len()` bytes.
 fn escape_xml_text(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
 	for c in s.chars() {
@@ -862,6 +1319,13 @@ fn escape_xml_text(s: &str) -> String {
 	out
 }
 
+/// Append one `<name>text</name>` element to the XML fragment in `out`.
+///
+/// `out` is appended to in place (the caller keeps ownership and can build a
+/// whole document before wrapping it), `name` is written verbatim and must
+/// already be a valid element name — all callers pass literals — and `text` is
+/// escaped with `escape_xml_text`. No indentation, newlines or attributes are
+/// emitted, which is what keeps `save_xml` output compact and deterministic.
 fn push_text_element(out: &mut String, name: &str, text: &str) {
 	out.push('<');
 	out.push_str(name);
@@ -872,6 +1336,13 @@ fn push_text_element(out: &mut String, name: &str, text: &str) {
 	out.push('>');
 }
 
+/// Greatest common divisor of `a` and `b` by the Euclidean algorithm.
+///
+/// Both operands are taken by magnitude, so the result is never negative;
+/// `i64_gcd(0, 0)` is `0` (and `gcd(x, 0)` is `|x|`). Used by `make_rational`
+/// to reduce a fraction, where `make_rational` checks the result for zero
+/// before dividing. The operands here always come from widened `i32`s, so the
+/// magnitude step cannot overflow.
 fn i64_gcd(mut a: i64, mut b: i64) -> i64 {
 	if a < 0 {
 		a = -a;
@@ -945,7 +1416,13 @@ fn rational_flipped((n, d): (i32, i32)) -> (i32, i32) {
 	(n2, d2)
 }
 
-/// `Rational::to_string()` — `"%d/%d"`.
+/// Format a numerator/denominator pair as `"<num>/<den>"` for the XML writer.
+///
+/// No reduction or sign fixing happens here, so the pair is written exactly as
+/// stored (for example `"1001/30000"`); the NaN rational `(0, 0)` is written as
+/// `"0/0"`. Inverse of `rational_from_string`, which splits on `/` and
+/// normalizes, so `"0/0"` survives a save/load round-trip. Used by `save_xml`
+/// for the `timebase`, `pixelaspectratio` and `framerate` elements.
 fn rational_to_string((n, d): (i32, i32)) -> String {
 	format!("{}/{}", n, d)
 }
@@ -993,12 +1470,31 @@ fn stoi_field(s: &str) -> Result<i32> {
 		.ok_or_else(|| Error::Failed("invalid integer".to_string()))
 }
 
-/// Field `std::stoll`.
+/// Parse the leading integer in `s` as an `i64` for a 64-bit XML field.
+///
+/// Behaves like `std::stoll`: leading whitespace is skipped, an optional sign
+/// is accepted, digits are consumed up to the first non-digit, and trailing
+/// characters are ignored. Used for the `starttime` and `duration` elements,
+/// whose values are tick counts that can exceed `i32`.
+///
+/// # Errors
+///
+/// Returns `Error::Failed("invalid integer")` when `s` contains no digit,
+/// which `VideoParams::load_xml` propagates (surfacing through the C API as
+/// `E_FAILED`). No range check against the tick domain is performed.
 fn stoll_field(s: &str) -> Result<i64> {
 	parse_int_prefix(s).ok_or_else(|| Error::Failed("invalid integer".to_string()))
 }
 
-/// `StringUtils::to_int` — 0 on parse failure.
+/// Parse the leading integer in `s` and return it as an `i32`, or `0` when
+/// there is no integer to parse.
+///
+/// `s` is scanned like `std::stoi` (leading whitespace, optional `+`/`-`, then
+/// decimal digits; trailing junk is ignored) but this never fails, matching
+/// `StringUtils::to_int`. Only used where a missing number is acceptable, such
+/// as the components of a rational read from XML; use `stoi_field` when a bad
+/// value must be reported as an error. Values outside the `i32` range truncate
+/// like the C++ `int` cast rather than saturating.
 fn int_or_zero(s: &str) -> i32 {
 	parse_int_prefix(s).unwrap_or(0) as i32
 }
@@ -1087,7 +1583,14 @@ fn format_g(value: f64) -> String {
 	format!("{}{}", sign, body)
 }
 
-/// Strip trailing zeros (and a trailing '.') from a fixed-point string.
+/// Remove trailing fractional zeros from a fixed-point number string.
+///
+/// `s` is expected to be the output of a `{:.N}` float formatter, e.g.
+/// `"1.500000"`. Strings without a `.` are returned unchanged, so integer
+/// zeros are never stripped (`"100"` stays `"100"`). Otherwise trailing `0`s
+/// are popped and then a dangling `.` is popped too, so `"1.500000"` becomes
+/// `"1.5"` and `"2.000000"` becomes `"2"`. Used by `format_g` to reproduce C
+/// `%g` output, which also has no trailing fractional zeros.
 fn trim_frac_trailing(s: String) -> String {
 	if !s.contains('.') {
 		return s;
@@ -1138,6 +1641,15 @@ impl XmlCursor {
 		}
 	}
 
+	/// Advance the cursor by exactly one event and return its token type.
+	///
+	/// On a start or end element `name` holds the element name and `text` is
+	/// cleared; on character data `name` is cleared and `text` holds that run of
+	/// text. At the end of the event list the token is `EndDocument`, both
+	/// fields are empty, and the cursor stays at the end (`pos` is not advanced
+	/// further). Never fails: malformed structure is handled by the callers
+	/// (`next_start_element`, `read_element_text`, `skip_current_element`),
+	/// which all loop on the returned token.
 	fn read_next(&mut self) -> TokenType {
 		if self.pos >= self.events.len() {
 			self.cur = TokenType::EndDocument;
@@ -1203,7 +1715,16 @@ impl XmlCursor {
 		result
 	}
 
-	/// `skip_current_element()`.
+	/// Advance the cursor past the element it is currently positioned on,
+	/// discarding all of its content including nested children.
+	///
+	/// The cursor must be positioned on a start element, normally right after
+	/// `next_start_element` returned `true`. The call consumes through the
+	/// matching end element while tracking nesting depth; character data is
+	/// ignored. If the event stream ends before the element closes, the cursor
+	/// is left at end of document instead of looping. Used by
+	/// `VideoParams::load_xml` for child element names it does not recognize,
+	/// so an unknown subtree is skipped as a whole.
 	fn skip_current_element(&mut self) {
 		let mut depth = 1;
 		loop {
@@ -1222,6 +1743,19 @@ impl XmlCursor {
 	}
 }
 
+/// Scan an XML name starting at byte index `start` and return it together with
+/// the index of the first byte that is not part of it.
+///
+/// A name character is an ASCII alphanumeric or one of `_`, `-`, `.` and `:`.
+/// The scan is byte-oriented, so any non-ASCII byte starts a new token; this is
+/// deliberately more permissive than XML's `NCName` (leading digits, colon,
+/// etc. are all accepted) because the reader only needs to split tags.
+///
+/// # Returns
+///
+/// `None` when the byte at `start` is not a name character (including
+/// `start == data.len()`); otherwise `Some((name, end))` where `end` can be
+/// used to continue parsing, e.g. at the tag's attributes or closing `>`.
 fn parse_name(data: &str, start: usize) -> Option<(String, usize)> {
 	let bytes = data.as_bytes();
 	let mut i = start;
@@ -1242,7 +1776,22 @@ fn parse_name(data: &str, start: usize) -> Option<(String, usize)> {
 	}
 }
 
-/// Resolve the five named entities plus decimal/hex numeric entities.
+/// Expand one XML character reference given the byte offsets of its `&` and
+/// its terminating `;`.
+///
+/// `start` is the index of the `&` and `semi` the index of the `;`, so the
+/// reference name is the slice `data[start + 1..semi]` (quotes excluded). The
+/// five predefined XML entities `amp`, `lt`, `gt`, `quot` and `apos` are
+/// supported, plus numeric references either decimal (`&#65;`) or hexadecimal
+/// with a lowercase or uppercase `x` marker (`&#x41;`, `&#X41;`).
+///
+/// # Returns
+///
+/// The decoded text (always one character except for the named entities), or
+/// `None` when the name is unknown, a numeric body is empty or not valid
+/// digits, or the code point is not a Unicode scalar value (surrogates and
+/// values above `0x10FFFF`). Callers treat `None` as a parse error, unlike the
+/// subtitle reader which preserves unknown entities verbatim.
 fn resolve_entity(data: &str, start: usize, semi: usize) -> Option<String> {
 	let ent = &data[start + 1..semi];
 	match ent {
@@ -1268,7 +1817,21 @@ fn resolve_entity(data: &str, start: usize, semi: usize) -> Option<String> {
 	}
 }
 
-/// Parse character data (with entity resolution) up to the next '<'.
+/// Decode the character data starting at byte index `start`, stopping at the
+/// next `<` or at the end of the input, and resolve `&...;` references on the
+/// way.
+///
+/// `start` must lie on a UTF-8 `char` boundary of `data` (the parser only ever
+/// passes offsets it produced itself); slicing at a non-boundary would panic.
+/// Markup inside the text is not interpreted, only references are.
+///
+/// # Returns
+///
+/// `Some((text, end))` where `end` is the byte index of the terminating `<`
+/// (or `data.len()`) so the caller can continue parsing there. `None` when a
+/// `&` is not terminated by `;`, when the reference is unknown or out of range
+/// (see `resolve_entity`), or when `start` is not a char boundary; `parse_xml`
+/// treats any `None` as malformed XML.
 fn parse_chars(data: &str, start: usize) -> Option<(String, usize)> {
 	let bytes = data.as_bytes();
 	let mut i = start;

@@ -48,12 +48,23 @@ impl NodeId {
 		self.index != u32::MAX
 	}
 
-	/// Slot index.
+	/// The arena slot index of this id.
+	///
+	/// Combined with the generation it forms the packed identity
+	/// (`generation << 32 | index`). The index alone is not unique over time
+	/// and must not be used as a persistent key; two ids with the same index
+	/// but different generations name different nodes. For the sentinel
+	/// [`NodeId::INVALID`] this returns `u32::MAX`.
 	pub fn index(self) -> u32 {
 		self.index
 	}
 
-	/// Generation counter.
+	/// The generation counter of this id's arena slot.
+	///
+	/// A slot's generation is bumped when it is reused, so a stale id (same
+	/// index, older generation) fails the graph's generation check instead of
+	/// aliasing the new node. The counter occupies the high 32 bits of
+	/// [`NodeId::identity`]; [`NodeId::INVALID`] carries generation 0.
 	pub fn generation(self) -> u32 {
 		self.generation
 	}

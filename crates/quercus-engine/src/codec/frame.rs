@@ -27,8 +27,19 @@ pub extern "C" fn quercus_codec_frame_with_params(params: QuercusVideoParams) ->
 	into_ffi(Frame::with_params(params.to_native())) as *mut Frame
 }
 
-/// Allocates the pixel buffer per the current params. False on null,
-/// invalid params, or allocation failure.
+/// Allocates the pixel buffer per the current params.
+///
+/// Computes the line sizes and allocates width × height pixels at the frame's
+/// format; on success the frame reports `is_allocated` and `data` becomes a
+/// writable buffer. Returns `false` on a null handle, invalid params (an empty or
+/// inconsistent geometry) or an allocation failure, and the frame then stays
+/// unallocated.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle, and the caller must hold the only
+/// live reference: the old buffer is released and any pointer previously obtained
+/// from `quercus_codec_frame_data` is invalidated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_allocate(this: *mut Frame) -> bool {
 	if this.is_null() {
@@ -37,13 +48,33 @@ pub unsafe extern "C" fn quercus_codec_frame_allocate(this: *mut Frame) -> bool 
 	unsafe { &mut *this }.allocate().is_ok()
 }
 
+/// Whether the frame's pixel buffer is allocated.
+///
+/// Returns `false` for a null handle and for a frame whose
+/// `quercus_codec_frame_allocate` has not run (or failed) since creation or since
+/// its params were replaced.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle from this ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_is_allocated(this: *const Frame) -> bool {
 	!this.is_null() && unsafe { &*this }.is_allocated()
 }
 
-/// The pixel buffer (writable); null until allocated. See the module
-/// docs for the pointer's validity window.
+/// The pixel buffer (writable); null until allocated.
+///
+/// Returns the start of the allocated pixel block, or null for a null handle or
+/// an unallocated frame. The pointer stays valid until the next `allocate` /
+/// `set_params` on the frame or until its last release (the module contract); it
+/// is not NUL-terminated and its length is
+/// `quercus_codec_frame_allocated_size`.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle, and the caller must hold the only
+/// live reference when writing through the returned pointer; the buffer must not
+/// be used after the validity window above.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_data(this: *mut Frame) -> *mut u8 {
 	if this.is_null() {
@@ -56,6 +87,14 @@ pub unsafe extern "C" fn quercus_codec_frame_data(this: *mut Frame) -> *mut u8 {
 }
 
 /// The allocated buffer size in bytes (0 when unallocated).
+///
+/// This is the size the current params required at the last successful
+/// `quercus_codec_frame_allocate`, not the size the params would need now (a
+/// later `set_params` does not reallocate). Returns `0` for a null handle too.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle from this ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_allocated_size(this: *const Frame) -> usize {
 	if this.is_null() {
@@ -87,7 +126,16 @@ frame_getter! {
 	quercus_codec_frame_channel_count => channel_count,
 }
 
-/// The allocated pixel format as a PixelFormat code (0 on null).
+/// The frame's pixel format as a `PixelFormat` code.
+///
+/// The code mirrors `quercus_core::PixelFormat` (0 = U8, 1 = U10, 2 = U16,
+/// 3 = F16, 4 = F32 — F32 is the pipeline default). Returns `0` for a null
+/// handle, which is indistinguishable from U8, so check the handle first when
+/// that matters.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle from this ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_format(this: *const Frame) -> i32 {
 	if this.is_null() {
@@ -96,7 +144,16 @@ pub unsafe extern "C" fn quercus_codec_frame_format(this: *const Frame) -> i32 {
 	unsafe { &*this }.format() as i32
 }
 
-/// The frame timestamp (rational seconds).
+/// The frame's timestamp as a rational in seconds.
+///
+/// Returns the stored `num / den` (not normalized). A null handle returns
+/// `{num: 0, den: 0}`, so check the handle before trusting the value. Pairs with
+/// `quercus_codec_frame_set_timestamp`.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle from this ABI. The handle is
+/// borrowed, not released.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_timestamp(this: *const Frame) -> QuercusRational {
 	if this.is_null() {
@@ -105,6 +162,16 @@ pub unsafe extern "C" fn quercus_codec_frame_timestamp(this: *const Frame) -> Qu
 	QuercusRational::from_native(&unsafe { &*this }.timestamp())
 }
 
+/// Sets the frame's timestamp.
+///
+/// `ts` is a rational in seconds (numerator / denominator) copied into the
+/// frame; pixel data and params are untouched. A null `this` is a no-op. Pairs
+/// with `quercus_codec_frame_timestamp`.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle, and the caller must hold the only
+/// live reference while mutating it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_set_timestamp(this: *mut Frame, ts: QuercusRational) {
 	if this.is_null() {
@@ -113,8 +180,17 @@ pub unsafe extern "C" fn quercus_codec_frame_set_timestamp(this: *mut Frame, ts:
 	unsafe { &mut *this }.set_timestamp(ts.to_native());
 }
 
-/// Copies the frame's params into `out`. False on null input or a frame
-/// without params.
+/// Copies the frame's params into `out`.
+///
+/// `this` is the frame and `out` the caller-owned struct written on success; the
+/// copy carries the line sizes computed for the current params. Returns `false`
+/// on a null `this` or `out`, and on a default-constructed frame without params;
+/// `out` is left untouched in those cases.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle; `out` must be null or point to a
+/// writable `QuercusVideoParams`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_get_params(
 	this: *const Frame,
@@ -132,8 +208,19 @@ pub unsafe extern "C" fn quercus_codec_frame_get_params(
 	}
 }
 
-/// Replaces the frame's params (recomputes line sizes, does NOT
-/// reallocate the buffer).
+/// Replaces the frame's params (recomputes line sizes, does NOT reallocate the
+/// buffer).
+///
+/// `params` is copied in by value; line sizes follow the new width / height /
+/// format, but the existing pixel allocation (and its size) is untouched, so call
+/// `quercus_codec_frame_allocate` afterwards when the geometry grew. A null
+/// `this` is a no-op.
+///
+/// # Safety
+///
+/// `this` must be null or a live frame handle, and the caller must hold the only
+/// live reference (the same discipline the C++ `Frame` has): mutating a frame
+/// another owner is reading is not synchronized.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_set_params(this: *mut Frame, params: QuercusVideoParams) {
 	if this.is_null() {

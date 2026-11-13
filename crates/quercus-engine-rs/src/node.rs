@@ -11,8 +11,8 @@ use std::ffi::c_void;
 use crate::codec::string_out;
 use crate::types::Rational;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_node_id_invalid() -> u64;
 	fn quercus_node_id_is_valid(id: u64) -> bool;
@@ -248,6 +248,13 @@ unsafe extern "C" {
 
 	fn quercus_project_save(project: *const c_void, path: *const u8, path_len: usize) -> bool;
 	fn quercus_project_load(path: *const u8, path_len: usize) -> *mut c_void;
+	fn quercus_project_save_to_bytes(project: *const c_void, buf: *mut u8, cap: usize) -> i32;
+	fn quercus_project_load_from_bytes(
+		bytes: *const u8,
+		len: usize,
+		version_info: *mut i32,
+		error: *mut i32,
+	) -> *mut c_void;
 	fn quercus_project_set_filename(project: *const c_void, path: *const u8, path_len: usize) -> bool;
 	fn quercus_project_set_working_color_space(
 		project: *const c_void,
@@ -301,8 +308,18 @@ impl NodeId {
 	}
 }
 
-/// Creates a generator node from the factory table (unknown/non-generator
-/// type ids return `None`).
+/// Instantiates the generator node type `type_id` in `project`.
+///
+/// `type_id` is a factory type id such as
+/// `org.olivevideoeditor.Olive.text`; it is looked up in the global
+/// factory (built-ins plus discovered plugins) and must be registered
+/// with the Generator category.
+///
+/// # Returns
+///
+/// The new node's token, or `None` when `type_id` is unknown, names a
+/// non-generator type, or the project handle is invalid. The node is
+/// created in the graph but not mounted in the bin tree.
 pub fn create_generator(project: &Project, type_id: &str) -> Option<NodeId> {
 	the_id(unsafe { quercus_generator_create(project.ptr, type_id.as_ptr(), type_id.len()) })
 }
@@ -344,6 +361,11 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+	/// Converts a C ABI node-kind discriminant into a [`NodeKind`].
+	///
+	/// Returns `None` for `0` (no kind) or any value outside `1..=9`. This
+	/// mapping mirrors the `#[repr(i32)]` discriminants on [`NodeKind`] and
+	/// must stay in sync with `include/quercus_engine.h`.
 	fn from_i32(v: i32) -> Option<NodeKind> {
 		match v {
 			1 => Some(NodeKind::Folder),
@@ -411,7 +433,11 @@ impl NodeValue {
 		Self::default()
 	}
 
-	/// A float value (`FLOAT`).
+	/// Builds a `FLOAT` value (`kind = 2`) with `value` in the first float
+	/// slot; `num` and `den` stay zero.
+	///
+	/// Pairs with [`Project::set_standard_value`]. Use [`NodeValue::rational`]
+	/// for exact time values and [`NodeValue::int`] for integral parameters.
 	pub fn float(value: f64) -> Self {
 		let mut raw = Self {
 			kind: 2,
@@ -421,7 +447,11 @@ impl NodeValue {
 		raw
 	}
 
-	/// An integer value (`INT`).
+	/// Builds an `INT` value (`kind = 1`) holding `value` in `num` with
+	/// `den = 1`; the float slots stay zero.
+	///
+	/// Use for integer and combo inputs; [`NodeValue::float`] covers
+	/// continuous float parameters.
 	pub fn int(value: i64) -> Self {
 		Self {
 			kind: 1,
@@ -431,7 +461,11 @@ impl NodeValue {
 		}
 	}
 
-	/// A boolean value (`BOOL`).
+	/// Builds a `BOOL` value (`kind = 3`): `num` is `0`/`1`, `den` is `1`
+	/// and the float slots stay zero.
+	///
+	/// The engine converts it to the input's declared boolean type; see
+	/// [`Project::set_standard_value`].
 	pub fn bool(value: bool) -> Self {
 		Self {
 			kind: 3,
@@ -441,7 +475,12 @@ impl NodeValue {
 		}
 	}
 
-	/// A rational-seconds value (`RATIONAL`).
+	/// Builds a `RATIONAL` value (`kind = 4`) from an exact rational-seconds
+	/// number, copying `value.num` and `value.den` into the value.
+	///
+	/// `den` must be non-zero for a usable time (`0/0` is the engine's null
+	/// rational); the float slots stay zero. Use [`NodeValue::float`] for
+	/// plain numeric parameters.
 	pub fn rational(value: Rational) -> Self {
 		Self {
 			kind: 4,
@@ -521,14 +560,27 @@ impl Project {
 		string_out(|buf, len| unsafe { quercus_project_uuid(self.ptr, buf, len) }).unwrap_or_default()
 	}
 
-	/// Reads a persisted project setting.
+	/// Reads the persisted project setting `key` from the project file's
+	/// settings map.
+	///
+	/// # Returns
+	///
+	/// The stored string, or `None` when the key is absent or the project
+	/// handle is invalid. An empty stored value is returned as `Some("")`.
+	/// Pairs with [`Project::set_setting`] and
+	/// [`Project::unset_setting`].
 	pub fn setting(&self, key: &str) -> Option<String> {
 		string_out(|buf, len| unsafe {
 			quercus_project_setting(self.ptr, key.as_ptr(), key.len(), buf, len)
 		})
 	}
 
-	/// Writes a persisted project setting and marks the project modified.
+	/// Writes the persisted project setting `key` to `value`, replacing any
+	/// previous value, and marks the project modified.
+	///
+	/// Settings live in the project file's settings map and are not undoable.
+	/// `key` must be non-empty. Returns `false` when the key is empty or the
+	/// project handle is invalid.
 	pub fn set_setting(&self, key: &str, value: &str) -> bool {
 		unsafe {
 			quercus_project_set_setting(
@@ -551,7 +603,13 @@ impl Project {
 		(mode.get(), path)
 	}
 
-	/// Writes the cache policy and marks the project modified.
+	/// Writes the project's cache policy and custom cache path, marking the
+	/// project modified.
+	///
+	/// `mode` is clamped to `0..=2`; mode `2` means "custom location" and
+	/// stores `path` (trimmed), while the other modes store an empty path and
+	/// use the default location. Returns `false` when the project handle is
+	/// invalid. Read back with [`Project::cache_location`].
 	pub fn set_cache_location(&self, mode: i32, path: &str) -> bool {
 		unsafe {
 			quercus_project_set_cache_location(self.ptr, mode, path.as_ptr(), path.len())
@@ -565,19 +623,32 @@ impl Project {
 
 	// -- generic node queries ------------------------------------------
 
-	/// The node's coarse kind (`None` for unknown/invalid).
+	/// Returns the node's coarse [`NodeKind`] (folder, footage, sequence,
+	/// track, clip, gap, transition, adjustment or track list).
+	///
+	/// Returns `None` for a stale token or an engine kind this build does
+	/// not know. Pairs with [`Project::node_type_id`] for the exact type.
 	pub fn node_kind(&self, id: NodeId) -> Option<NodeKind> {
 		NodeKind::from_i32(unsafe { quercus_node_kind(self.ptr, id.0) })
 	}
 
-	/// The node's full type id string.
+	/// Returns the node's full factory type id string (for example
+	/// `org.olivevideoeditor.Olive.video`), or `None` when the token names
+	/// no live node.
+	///
+	/// This is the exact type; [`Project::node_kind`] gives the coarse
+	/// category.
 	pub fn node_type_id(&self, id: NodeId) -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_node_type_id(self.ptr, id.0, buf, len) })
 	}
 
 	// -- folder --------------------------------------------------------
 
-	/// Number of children in a folder.
+	/// Returns the number of direct children of the bin folder `folder`.
+	///
+	/// Children are the footage, sequence and folder nodes mounted under that
+	/// folder (not recursive). `0` when `folder` is not a folder or the token
+	/// is stale. Pairs with [`Project::folder_child_at`].
 	pub fn folder_child_count(&self, folder: NodeId) -> usize {
 		unsafe { quercus_folder_child_count(self.ptr, folder.0) as usize }
 	}
@@ -590,42 +661,73 @@ impl Project {
 
 	// -- footage -------------------------------------------------------
 
-	/// The footage's absolute file path.
+	/// Returns the footage's absolute source file path, or `None` when
+	/// `footage` is not a footage node. An unset path is returned as
+	/// `Some("")`.
 	pub fn footage_filename(&self, footage: NodeId) -> Option<String> {
 		string_out(|buf, len| unsafe { quercus_footage_filename(self.ptr, footage.0, buf, len) })
 	}
 
-	/// Total stream count.
+	/// Returns the total number of streams (video + audio + subtitle) in the
+	/// footage's probed media.
+	///
+	/// `0` for a non-footage token or a footage that has not been probed yet.
+	/// Pairs with the per-kind counts.
 	pub fn footage_total_stream_count(&self, footage: NodeId) -> usize {
 		unsafe { quercus_footage_total_stream_count(self.ptr, footage.0) as usize }
 	}
 
-	/// The `footage_video_stream_count` operation.
+	/// Returns the number of video streams in the footage's probed media;
+	/// `0` for a non-footage token or an unprobed file. Stream ordinals for
+	/// [`Project::footage_video_params`] count video streams only.
 	pub fn footage_video_stream_count(&self, footage: NodeId) -> usize {
 		unsafe { quercus_footage_video_stream_count(self.ptr, footage.0) as usize }
 	}
 
-	/// The `footage_audio_stream_count` operation.
+	/// Returns the number of audio streams in the footage's probed media;
+	/// `0` for a non-footage token or an unprobed file. Stream ordinals for
+	/// [`Project::footage_audio_params`] count audio streams only.
 	pub fn footage_audio_stream_count(&self, footage: NodeId) -> usize {
 		unsafe { quercus_footage_audio_stream_count(self.ptr, footage.0) as usize }
 	}
 
-	/// The `footage_subtitle_stream_count` operation.
+	/// Returns the number of subtitle streams in the footage's probed media;
+	/// `0` for a non-footage token, an unprobed file, or media without
+	/// subtitle tracks.
 	pub fn footage_subtitle_stream_count(&self, footage: NodeId) -> usize {
 		unsafe { quercus_footage_subtitle_stream_count(self.ptr, footage.0) as usize }
 	}
 
-	/// Total duration (rational seconds).
+	/// Returns the footage's total duration in rational seconds: the longest
+	/// stream duration reported by the probe.
+	///
+	/// Returns the null rational (`den == 0`) when the token is not footage;
+	/// an unprobed footage reports `0/1`. Pairs with
+	/// [`Project::footage_video_length`].
 	pub fn footage_duration(&self, footage: NodeId) -> Rational {
 		unsafe { quercus_footage_duration(self.ptr, footage.0) }
 	}
 
-	/// Video stream length (rational seconds).
+	/// Returns the duration of the footage's longest video stream in rational
+	/// seconds, or the null rational (`den == 0`) when the token is not
+	/// footage.
+	///
+	/// Use [`Project::footage_duration`] for the overall media length
+	/// including audio.
 	pub fn footage_video_length(&self, footage: NodeId) -> Rational {
 		unsafe { quercus_footage_video_length(self.ptr, footage.0) }
 	}
 
-	/// The `ordinal`-th video stream's params.
+	/// Returns the parameters of the `ordinal`-th video stream of `footage`
+	/// (zero-based; counts video streams only).
+	///
+	/// The result carries width, height, frame rate, pixel format, channel
+	/// count and the interlaced flag as reported by the probe.
+	///
+	/// # Returns
+	///
+	/// `None` when `footage` is not footage or `ordinal` is out of range;
+	/// check [`Project::footage_video_stream_count`] first.
 	pub fn footage_video_params(&self, footage: NodeId, ordinal: usize) -> Option<StreamVideoParams> {
 		let mut out = StreamVideoParams::default();
 		if unsafe { quercus_footage_video_params(self.ptr, footage.0, ordinal as i32, &mut out) } {
@@ -635,7 +737,16 @@ impl Project {
 		}
 	}
 
-	/// The `ordinal`-th audio stream's params.
+	/// Returns the parameters of the `ordinal`-th audio stream of `footage`
+	/// (zero-based; counts audio streams only).
+	///
+	/// The result carries sample rate, channel layout and sample format as
+	/// reported by the probe.
+	///
+	/// # Returns
+	///
+	/// `None` when `footage` is not footage or `ordinal` is out of range;
+	/// check [`Project::footage_audio_stream_count`] first.
 	pub fn footage_audio_params(&self, footage: NodeId, ordinal: usize) -> Option<StreamAudioParams> {
 		let mut out = StreamAudioParams::default();
 		if unsafe { quercus_footage_audio_params(self.ptr, footage.0, ordinal as i32, &mut out) } {
@@ -665,22 +776,39 @@ impl Project {
 
 	// -- sequence / track list / track ---------------------------------
 
-	/// Number of track lists in a sequence (video lists first).
+	/// Returns the number of track lists in `sequence`; `0` for a
+	/// non-sequence token.
+	///
+	/// Track lists are ordered video first, then audio, then subtitle; use
+	/// [`Project::sequence_track_list_at`] with an index below this count.
 	pub fn sequence_track_list_count(&self, sequence: NodeId) -> usize {
 		unsafe { quercus_sequence_track_list_count(self.ptr, sequence.0) as usize }
 	}
 
-	/// The `index`-th track list of a sequence.
+	/// Returns the token of the `index`-th track list of `sequence` (video
+	/// lists first, then audio, then subtitle).
+	///
+	/// Returns [`NodeId::INVALID`] when `index` is out of range or
+	/// `sequence` is not a sequence.
 	pub fn sequence_track_list_at(&self, sequence: NodeId, index: usize) -> NodeId {
 		NodeId::from_raw(unsafe { quercus_sequence_track_list_at(self.ptr, sequence.0, index as i32) })
 	}
 
-	/// The sequence playhead (rational seconds).
+	/// Returns the sequence playhead position in rational seconds, relative
+	/// to the sequence start.
+	///
+	/// Returns the null rational (`den == 0`) for a non-sequence token.
 	pub fn sequence_playhead(&self, sequence: NodeId) -> Rational {
 		unsafe { quercus_sequence_playhead(self.ptr, sequence.0) }
 	}
 
-	/// The sequence's length.
+	/// Returns the sequence's length in rational seconds.
+	///
+	/// The length is the extent of the content on its tracks, falling back to
+	/// the last length requested when the content is empty, so an empty
+	/// sequence can still report its configured duration.
+	///
+	/// Returns the null rational (`den == 0`) for a non-sequence token.
 	pub fn sequence_length(&self, sequence: NodeId) -> Rational {
 		unsafe { quercus_sequence_length(self.ptr, sequence.0) }
 	}
@@ -734,7 +862,11 @@ impl Project {
 		}
 	}
 
-	/// The node's user label ("" when unset).
+	/// Returns the node's user-visible label (set on import/creation or via
+	/// [`Project::node_set_label`]).
+	///
+	/// Returns `""` when the label is unset or the token is unknown; the
+	/// label is not unique and may be empty for generated nodes.
 	pub fn node_label(&self, id: NodeId) -> String {
 		string_out(|buf, len| unsafe { quercus_node_label(self.ptr, id.0, buf, len) })
 			.unwrap_or_default()
@@ -746,89 +878,155 @@ impl Project {
 		unsafe { quercus_node_set_label(self.ptr, id.0, label.as_ptr(), label.len()) }
 	}
 
-	/// The track list's media type code (`TrackType`).
+	/// Returns the track list's media type as a `TrackType` code:
+	/// `0` = video, `1` = audio, `2` = subtitle.
+	///
+	/// Returns `-1` when `tracklist` is not a track list or the token is
+	/// stale. Pairs with [`Project::track_kind`].
 	pub fn tracklist_kind(&self, tracklist: NodeId) -> i32 {
 		unsafe { quercus_tracklist_kind(self.ptr, tracklist.0) }
 	}
 
-	/// Number of tracks in a track list.
+	/// Returns the number of tracks in `tracklist`; `0` for a
+	/// non-track-list token. Pairs with [`Project::tracklist_track_at`].
 	pub fn tracklist_track_count(&self, tracklist: NodeId) -> usize {
 		unsafe { quercus_tracklist_track_count(self.ptr, tracklist.0) as usize }
 	}
 
-	/// The `index`-th track of a track list (stack order).
+	/// Returns the token of the `index`-th track of `tracklist` in stack
+	/// order (`0` = bottom of the stack).
+	///
+	/// Returns [`NodeId::INVALID`] when `index` is out of range or
+	/// `tracklist` is not a track list.
 	pub fn tracklist_track_at(&self, tracklist: NodeId, index: usize) -> NodeId {
 		NodeId::from_raw(unsafe { quercus_tracklist_track_at(self.ptr, tracklist.0, index as i32) })
 	}
 
-	/// The track's media type code (`TrackType`).
+	/// Returns the track's media type as a `TrackType` code:
+	/// `0` = video, `1` = audio, `2` = subtitle.
+	///
+	/// Returns `-1` when `track` is not a track. Pairs with
+	/// [`Project::tracklist_kind`].
 	pub fn track_kind(&self, track: NodeId) -> i32 {
 		unsafe { quercus_track_kind(self.ptr, track.0) }
 	}
 
-	/// The `track_height` operation.
+	/// Returns the track's height in the graph's internal height units (not
+	/// pixels) as stored on the track.
+	///
+	/// Use [`Project::track_height_pixels`] for the display height and
+	/// [`internal_height_from_pixels`] to convert an edited pixel height
+	/// before writing it back. Returns `0.0` for a non-track token.
 	pub fn track_height(&self, track: NodeId) -> f64 {
 		unsafe { quercus_track_height(self.ptr, track.0) }
 	}
 
-	/// The `track_muted` operation.
+	/// Whether the track's muted flag is set: silenced on audio tracks,
+	/// hidden on video/subtitle tracks (one flag drives both).
+	///
+	/// Returns `false` for a non-track token. Pairs with
+	/// [`Project::track_locked`].
 	pub fn track_muted(&self, track: NodeId) -> bool {
 		unsafe { quercus_track_muted(self.ptr, track.0) }
 	}
 
-	/// The `track_locked` operation.
+	/// Whether the track's locked flag is set. Editing commands that move or
+	/// remove blocks skip locked tracks.
+	///
+	/// Returns `false` for a non-track token. This is a presentation flag:
+	/// low-level mutation methods such as [`Project::track_append_block`]
+	/// do not enforce it.
 	pub fn track_locked(&self, track: NodeId) -> bool {
 		unsafe { quercus_track_locked(self.ptr, track.0) }
 	}
 
-	/// Number of blocks on a track.
+	/// Returns the number of blocks on `track` (clips, gaps, transitions
+	/// and adjustments all count); `0` for a non-track token.
+	///
+	/// Blocks are stored in timeline order; [`Project::track_block_at`]
+	/// indexes them.
 	pub fn track_block_count(&self, track: NodeId) -> usize {
 		unsafe { quercus_track_block_count(self.ptr, track.0) as usize }
 	}
 
-	/// The `index`-th block on a track (timeline order).
+	/// Returns the token of the `index`-th block on `track` in timeline order
+	/// (`0` = the first/leftmost block).
+	///
+	/// Returns [`NodeId::INVALID`] when `index` is out of range or the token
+	/// is not a track.
 	pub fn track_block_at(&self, track: NodeId, index: usize) -> NodeId {
 		NodeId::from_raw(unsafe { quercus_track_block_at(self.ptr, track.0, index as i32) })
 	}
 
-	/// The block strictly containing `time` on this track.
+	/// Returns the block on `track` whose half-open range `[in, out)`
+	/// contains `time`, or [`NodeId::INVALID`] when `time` falls in a gap, on
+	/// an out-point boundary, or the token is not a track.
+	///
+	/// `time` is in rational seconds on the sequence timeline. Pairs with
+	/// [`Project::track_block_at`] for ordered traversal.
 	pub fn track_block_containing_time(&self, track: NodeId, time: Rational) -> NodeId {
 		NodeId::from_raw(unsafe { quercus_track_block_containing_time(self.ptr, track.0, time) })
 	}
 
-	/// The track's total length (end of the last block).
+	/// Returns the track's total length in rational seconds: the out-point of
+	/// its last block.
+	///
+	/// Returns the null rational (`den == 0`) when `track` is not a track;
+	/// an empty track reports `0/1`.
 	pub fn track_length(&self, track: NodeId) -> Rational {
 		unsafe { quercus_track_length(self.ptr, track.0) }
 	}
 
 	// -- block ----------------------------------------------------------
 
-	/// The block's timeline in-point.
+	/// Returns the block's timeline in-point in rational seconds: where the
+	/// block starts on the sequence timeline.
+	///
+	/// Returns the null rational (`den == 0`) for a non-block token.
 	pub fn block_in(&self, block: NodeId) -> Rational {
 		unsafe { quercus_block_in(self.ptr, block.0) }
 	}
 
-	/// The block's timeline out-point.
+	/// Returns the block's timeline out-point in rational seconds (the
+	/// exclusive end of the block's timeline range).
+	///
+	/// Returns the null rational (`den == 0`) for a non-block token.
 	pub fn block_out(&self, block: NodeId) -> Rational {
 		unsafe { quercus_block_out(self.ptr, block.0) }
 	}
 
-	/// The block's length.
+	/// Returns the block's timeline length in rational seconds, equal to
+	/// `block_out - block_in` for a normal block.
+	///
+	/// Returns the null rational (`den == 0`) for a non-block token.
 	pub fn block_length(&self, block: NodeId) -> Rational {
 		unsafe { quercus_block_length(self.ptr, block.0) }
 	}
 
-	/// The block's media in-point.
+	/// Returns the block's media in-point in rational seconds: the position
+	/// in the source media where playback starts.
+	///
+	/// The media in-point differs from the timeline in-point by the left-edge
+	/// trim. Returns the null rational (`den == 0`) for a non-block token.
 	pub fn block_media_in(&self, block: NodeId) -> Rational {
 		unsafe { quercus_block_media_in(self.ptr, block.0) }
 	}
 
-	/// The block's media out-point.
+	/// Returns the block's media out-point in rational seconds: the source
+	/// position where playback ends.
+	///
+	/// Returns the null rational (`den == 0`) for a non-block token. The
+	/// media range [`Project::block_media_in`] up to this point is what the
+	/// block plays.
 	pub fn block_media_out(&self, block: NodeId) -> Rational {
 		unsafe { quercus_block_media_out(self.ptr, block.0) }
 	}
 
-	/// The block's standard enabled flag.
+	/// Whether the block is enabled; disabled clips, gaps, transitions and
+	/// adjustments contribute nothing to playback or render.
+	///
+	/// Returns `false` for a non-block or stale token (the flag lives on
+	/// every block kind).
 	pub fn block_enabled(&self, block: NodeId) -> bool {
 		unsafe { quercus_block_enabled(self.ptr, block.0) }
 	}
@@ -838,27 +1036,45 @@ impl Project {
 		unsafe { quercus_track_height_pixels(self.ptr, track.0) }
 	}
 
-	/// The track's owning track list, if any.
+	/// Returns the track list that owns `track`, or `None` when the track is
+	/// detached, stale, or not a track.
+	///
+	/// Pairs with [`Project::tracklist_track_at`].
 	pub fn track_list(&self, track: NodeId) -> Option<NodeId> {
 		the_id(unsafe { quercus_track_list(self.ptr, track.0) })
 	}
 
-	/// The track's index inside its list (-1 when not a track).
+	/// Returns the zero-based index of `track` in its owning track list's
+	/// stack order (`0` = bottom of the stack).
+	///
+	/// Returns `-1` when `track` is not a track or has no owning list.
 	pub fn track_index(&self, track: NodeId) -> i32 {
 		unsafe { quercus_track_index(self.ptr, track.0) }
 	}
 
-	/// The block's owning track, if any.
+	/// Returns the track that currently holds `block`, or `None` when the
+	/// block is not placed on a track, is stale, or is not a block.
+	///
+	/// Pairs with [`Project::track_block_at`] and
+	/// [`Project::track_append_block`].
 	pub fn block_track(&self, block: NodeId) -> Option<NodeId> {
 		the_id(unsafe { quercus_block_track(self.ptr, block.0) })
 	}
 
-	/// The block's playback speed (`1.0` when unknown).
+	/// Returns the block's playback speed multiplier: `1.0` = normal,
+	/// `0.5` = half speed, `2.0` = double speed.
+	///
+	/// Returns `1.0` for a stale or non-block token. Speed changes the
+	/// timeline-to-media time mapping, not the block's timeline length.
 	pub fn block_speed(&self, block: NodeId) -> f64 {
 		unsafe { quercus_block_speed(self.ptr, block.0) }
 	}
 
-	/// The block's linked partners (the A/V link group).
+	/// Returns the linked-block tokens recorded for `block` (its A/V link
+	/// group), in stored order; stale partner tokens are filtered out.
+	///
+	/// The list is empty for an unlinked or non-block token.
+	/// [`Project::block_is_linked`] is the cheap predicate.
 	pub fn block_links(&self, block: NodeId) -> Vec<NodeId> {
 		let count = unsafe { quercus_block_link_count(self.ptr, block.0) }.max(0);
 		(0..count)
@@ -866,17 +1082,21 @@ impl Project {
 			.collect()
 	}
 
-	/// Whether the block belongs to a linked group.
+	/// Whether `block` belongs to an A/V link group, i.e. whether
+	/// [`Project::block_links`] reports at least one partner.
 	pub fn block_is_linked(&self, block: NodeId) -> bool {
 		!self.block_links(block).is_empty()
 	}
 
-	/// The node's creation-time color override (-1 when unset).
+	/// Returns the node's color override: a palette index in `0..=7` chosen
+	/// when a clip is created and kept for the node's lifetime, or `-1` when
+	/// no override is set / the token is stale.
 	pub fn node_color(&self, id: NodeId) -> i32 {
 		unsafe { quercus_node_color(self.ptr, id.0) }
 	}
 
-	/// The clip's connected footage, if it is a clip.
+	/// Returns the footage node that supplies `block`'s media, or `None` when
+	/// `block` is not a clip, is stale, or has no footage connected yet.
 	pub fn block_footage(&self, block: NodeId) -> Option<NodeId> {
 		the_id(unsafe { quercus_block_footage(self.ptr, block.0) })
 	}
@@ -893,7 +1113,11 @@ impl Project {
 		(width.den != 0).then_some(width)
 	}
 
-	/// Removes a project setting key.
+	/// Removes the persisted project setting `key`, marking the project
+	/// modified when a value was present.
+	///
+	/// Returns `false` when the key is empty, absent, or the project handle
+	/// is invalid. Not undoable; pairs with [`Project::set_setting`].
 	pub fn unset_setting(&self, key: &str) -> bool {
 		unsafe { quercus_project_unset_setting(self.ptr, key.as_ptr(), key.len()) }
 	}
@@ -910,7 +1134,12 @@ impl Project {
 		unsafe { quercus_project_node_count(self.ptr) }.max(0) as usize
 	}
 
-	/// The `index`-th live node token in arena order.
+	/// Returns the token of the `index`-th live node in graph arena order,
+	/// or `None` when `index` is past [`Project::node_count`].
+	///
+	/// Arena order is an implementation detail and changes as nodes are
+	/// added/removed; use it to iterate the graph (as [`Project::node_ids`]
+	/// does), not as a stable node order.
 	pub fn node_at(&self, index: usize) -> Option<NodeId> {
 		the_id(unsafe { quercus_project_node_at(self.ptr, index as i32) })
 	}
@@ -922,8 +1151,13 @@ impl Project {
 
 	// -- node parameters -------------------------------------------------
 
-	/// The input's static value. `None` for unknown inputs or values
-	/// without a POD representation (strings are not bridged yet).
+	/// Reads the static (non-animated) value of `id`'s input `input_id` at
+	/// element index `element` (`-1` = the scalar input).
+	///
+	/// Returns `None` for an unknown node/input, an out-of-range element, or
+	/// a declared value type without a POD representation (string-typed
+	/// inputs are not bridged yet). Use [`Project::value_at_time`] for the
+	/// keyframe-interpolated value.
 	pub fn standard_value(&self, id: NodeId, input_id: &str, element: i32) -> Option<NodeValue> {
 		let mut out = NodeValue::default();
 		if unsafe {
@@ -974,14 +1208,30 @@ impl Project {
 		id.is_valid().then_some(id)
 	}
 
-	/// Creates a folder under `parent` (the root works). Undoable.
+	/// Creates a new empty bin folder named `name` under the folder
+	/// `parent` (pass [`Project::root`] to add at the top level). Undoable.
+	///
+	/// `parent` must be a well-formed folder token; `name` becomes both the
+	/// folder's display name and the node label, and may be empty.
+	///
+	/// # Returns
+	///
+	/// The new folder's token, or `None` when the parent token is malformed
+	/// or the undo push fails. A failed push can leave an unparented folder
+	/// in the graph (the node is created before the insertion command).
 	pub fn create_folder(&self, parent: NodeId, name: &str) -> Option<NodeId> {
 		let id = unsafe { quercus_folder_create(self.ptr, parent.0, name.as_ptr(), name.len()) };
 		let id = NodeId::from_raw(id);
 		id.is_valid().then_some(id)
 	}
 
-	/// Removes a node from the project entirely. Undoable.
+	/// Deletes `id` from the project graph entirely, along with the edges
+	/// that referenced it. Undoable.
+	///
+	/// Use the type-specific removal helpers where one exists (for example
+	/// [`Project::track_ripple_remove_block`]) so track membership and
+	/// timeline layout stay consistent. Returns `false` when the project
+	/// handle or the token is invalid.
 	pub fn remove_node(&self, id: NodeId) -> bool {
 		unsafe { quercus_node_remove(self.ptr, id.0) }
 	}
@@ -1027,12 +1277,25 @@ impl Project {
 		id.is_valid().then_some(id)
 	}
 
-	/// Appends `block` to the end of `track`. Undoable.
+	/// Places `block` on `track` and records `track` as the block's owning
+	/// track. Undoable.
+	///
+	/// This is the append helper: it delegates to
+	/// [`Project::track_insert_block_after`] with no predecessor, which the
+	/// insert command treats as a front insert. `block` must not already be
+	/// on a track. Returns `false` when the project handle or either token
+	/// is invalid.
 	pub fn track_append_block(&self, track: NodeId, block: NodeId) -> bool {
 		unsafe { quercus_track_append_block(self.ptr, track.0, block.0) }
 	}
 
-	/// Inserts `block` after `before` (`None` = append). Undoable.
+	/// Inserts `block` into `track` immediately after `before`, or at the
+	/// front when `before` is `None` (the insert command treats a missing
+	/// predecessor as a prepend). Undoable.
+	///
+	/// `before` must be a block already on `track`; `block` must not be on a
+	/// track yet. Returns `false` when the project handle, `track` or
+	/// `block` is invalid.
 	pub fn track_insert_block_after(
 		&self,
 		track: NodeId,
@@ -1048,12 +1311,26 @@ impl Project {
 		unsafe { quercus_track_ripple_remove_block(self.ptr, track.0, block.0) }
 	}
 
-	/// Replaces `old` with `new` on `track`. Undoable.
+	/// Replaces the block `old` with `new` at `old`'s position on `track`,
+	/// moving the track ownership to `new`. Undoable.
+	///
+	/// Both tokens must be live blocks. The engine's `Track::replace_block`
+	/// documents that the two blocks must have equal lengths; neither that
+	/// method nor this wrapper enforces it.
+	///
+	/// Returns `false` when the project handle or any token is invalid.
 	pub fn track_replace_block(&self, track: NodeId, old: NodeId, new: NodeId) -> bool {
 		unsafe { quercus_track_replace_block(self.ptr, track.0, old.0, new.0) }
 	}
 
-	/// Sets the block's length (right-edge resize). Undoable.
+	/// Resizes the block from its right edge to `length`, leaving the
+	/// timeline in-point and the media in-point fixed (the media out-point
+	/// follows the new length). Undoable.
+	///
+	/// `length` is in rational seconds and is written as-is: there is no
+	/// validation or clamping, so a negative or zero length produces an
+	/// inverted or empty timeline range. Returns `false` when the project
+	/// handle or the token is invalid.
 	pub fn block_set_length(&self, block: NodeId, length: Rational) -> bool {
 		unsafe { quercus_block_set_length(self.ptr, block.0, length) }
 	}
@@ -1064,12 +1341,27 @@ impl Project {
 		unsafe { quercus_block_set_length_and_media_in(self.ptr, block.0, length) }
 	}
 
-	/// Sets the block's media in-point. Undoable.
+	/// Sets the block's media in-point, changing which part of the source is
+	/// shown while keeping the timeline placement and length. Undoable.
+	///
+	/// `media_in` is in rational seconds on the source timeline. Returns
+	/// `false` when the project handle or the token is invalid.
 	pub fn block_set_media_in(&self, block: NodeId, media_in: Rational) -> bool {
 		unsafe { quercus_block_set_media_in(self.ptr, block.0, media_in) }
 	}
 
-	/// Sets the input's static value (POD types only). Undoable.
+	/// Writes the static value of `id`'s input `input_id` as a single
+	/// undoable parameter edit.
+	///
+	/// `element` is the array element index (`-1` = the scalar input).
+	/// `value` is copied field-for-field and converted according to the
+	/// input's declared type (see [`NodeValue`]).
+	///
+	/// # Returns
+	///
+	/// `false` when the node or named input does not exist, when the value
+	/// type is incompatible with the input, or when the project handle is
+	/// invalid; nothing is pushed onto the undo stack in those cases.
 	pub fn set_standard_value(
 		&self,
 		id: NodeId,
@@ -1098,7 +1390,14 @@ impl Project {
 		}
 	}
 
-	/// Disconnects `to`'s `input_id` at `element`.
+	/// Removes the connection feeding `to`'s input `input_id` at element
+	/// index `element` (`-1` = the scalar input; `0..` selects an array
+	/// element).
+	///
+	/// These edges are document structure (persisted in the project file);
+	/// this is the counterpart of [`Project::connect`]. Returns `false` when
+	/// the project handle, the token or the input id is invalid; an input
+	/// with no incoming connection is a no-op that still returns `true`.
 	pub fn disconnect(&self, to: NodeId, input_id: &str, element: i32) -> bool {
 		unsafe { quercus_node_disconnect(self.ptr, to.0, input_id.as_ptr(), input_id.len(), element) }
 	}
@@ -1168,6 +1467,58 @@ impl Project {
 		}
 	}
 
+	/// Serializes the project to its XML byte representation, the same
+	/// document [`Project::save`] writes. Returns `None` on a serialization
+	/// failure. The bytes are UTF-8 project XML with no trailing NUL and do
+	/// not depend on the project's filename, so an unsaved project
+	/// round-trips too.
+	pub fn to_xml_bytes(&self) -> Option<Vec<u8>> {
+		let n = unsafe { quercus_project_save_to_bytes(self.ptr, std::ptr::null_mut(), 0) };
+		if n < 0 {
+			return None;
+		}
+		let mut buf = vec![0u8; n as usize + 1];
+		let written =
+			unsafe { quercus_project_save_to_bytes(self.ptr, buf.as_mut_ptr(), buf.len()) };
+		if written != n {
+			// The project changed between the size query and the fetch.
+			return None;
+		}
+		buf.truncate(n as usize);
+		Some(buf)
+	}
+
+	/// Parses a project from its XML byte representation (as produced by
+	/// [`Project::to_xml_bytes`] or [`Project::save`]).
+	///
+	/// On success returns `(project, version_info)`, where `version_info` is
+	/// `0` (current), `1` (too old; upgraded on load), `2` (too new) or `3`
+	/// (unknown version). For the latter two the project is `None` while
+	/// `version_info` is still meaningful — the document was intact but this
+	/// build cannot load it. A genuine failure is `Err(negative
+	/// QUERCUSSTORAGE_E_* code)`.
+	pub fn from_xml_bytes(bytes: &[u8]) -> Result<(Option<Project>, i32), i32> {
+		let mut version_info = 0i32;
+		let mut error = 0i32;
+		let ptr = unsafe {
+			quercus_project_load_from_bytes(
+				bytes.as_ptr(),
+				bytes.len(),
+				&mut version_info,
+				&mut error,
+			)
+		};
+		if error != 0 {
+			return Err(error);
+		}
+		let project = if ptr.is_null() {
+			None
+		} else {
+			Some(Project { ptr })
+		};
+		Ok((project, version_info))
+	}
+
 	/// Sets the project file path (used by save when no path is given).
 	pub fn set_filename(&self, path: &str) -> bool {
 		unsafe { quercus_project_set_filename(self.ptr, path.as_ptr(), path.len()) }
@@ -1204,7 +1555,13 @@ impl Project {
 	}
 }
 
-/// Begins an undo group (calls inside form one undo step).
+/// Opens a global undo group: every undoable edit until
+/// [`undo_group_end`] (or [`undo_group_abort`]) is merged into one
+/// history row named `name`.
+///
+/// `name` is the user-visible label for that row. Returns `false` when a
+/// group is already open or `name` is invalid. The stack is
+/// process-global, so all callers in the process share it.
 pub fn undo_group_begin(name: &str) -> bool {
 	unsafe { quercus_undo_group_begin(name.as_ptr(), name.len()) }
 }
@@ -1288,6 +1645,15 @@ static UNDO_OBSERVERS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec:
 /// (push, undo, redo, jump, clear) — the "project modified" signal.
 /// Registration-only (no removal).
 pub fn add_undo_observer(f: impl Fn() + Send + 'static) {
+	/// C callback that forwards one undo-observer notification to the boxed
+	/// Rust closure registered by [`add_undo_observer`].
+	///
+	/// # Safety
+	///
+	/// `userdata` must be null or a pointer created by [`add_undo_observer`]
+	/// (a `Box<Box<dyn Fn() + Send>>` kept alive in `UNDO_OBSERVERS`). The
+	/// engine may call this from any thread after an undoable command lands,
+	/// so the pointee must stay valid for the lifetime of the registration.
 	unsafe extern "C" fn trampoline(userdata: *mut c_void) {
 		if userdata.is_null() {
 			return;
@@ -1575,6 +1941,41 @@ mod persist_tests {
 
 		assert!(Project::load("/nonexistent/quercus-sdk.ove").is_none());
 		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn xml_bytes_roundtrip_and_version_info() {
+		let _guard = UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+		let project = Project::new();
+		project
+			.create_folder(project.root(), "Bytes")
+			.expect("folder");
+		project.set_setting("byte-test", "1");
+
+		let bytes = project.to_xml_bytes().expect("serialize");
+		assert!(bytes.starts_with(b"<project"), "the bytes are project XML");
+
+		let (loaded, version_info) = Project::from_xml_bytes(&bytes).expect("parse");
+		let loaded = loaded.expect("loadable document");
+		assert_eq!(version_info, 0);
+		assert_eq!(loaded.uuid(), project.uuid());
+		assert_eq!(loaded.folder_child_count(loaded.root()), 1);
+		assert_eq!(loaded.setting("byte-test").as_deref(), Some("1"));
+		assert!(loaded.filename().is_empty(), "bytes carry no filename");
+
+		// Newer/unknown documents parse but report a version code without
+		// an error, and yield no project.
+		let (too_new, version_info) =
+			Project::from_xml_bytes(b"<olive version=\"999999\"></olive>").expect("probe");
+		assert!(too_new.is_none());
+		assert_eq!(version_info, 2);
+		let (unknown, version_info) =
+			Project::from_xml_bytes(b"<thirdparty></thirdparty>").expect("probe");
+		assert!(unknown.is_none());
+		assert_eq!(version_info, 3);
+
+		// Genuine failures surface the negative engine error code.
+		assert!(Project::from_xml_bytes(b"not xml").is_err());
 	}
 
 	#[test]

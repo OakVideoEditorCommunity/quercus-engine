@@ -299,8 +299,20 @@ impl OfxHost {
 		inner.permanently_dead = true;
 	}
 
-	/// One attempt: ensure a live host, write the inputs, send the job and
-	/// wait for its result (or the host's death).
+	/// Runs one submit attempt: ensures a live host, writes the inputs, sends
+	/// the job and waits for its result (or the host's death).
+	///
+	/// `job` is the caller-assigned id used to match the result, and `frames`
+	/// carries the converted core texture frames and wire param values. The
+	/// pools grow to fit the job (the host is reaped first when the job
+	/// outgrows them), then the call blocks on the `wait` condvar until `job`'s
+	/// result arrives or the host is flagged dead.
+	///
+	/// # Errors
+	///
+	/// [`SubmitError::Failed`] for a permanently dead host, an unwritable input
+	/// or a failed result; [`SubmitError::Died`] when no host/pool/stdin is
+	/// available, the stdin write fails, or the host exits while waiting.
 	fn attempt(&self, job: u64, frames: &HostJobFrames) -> std::result::Result<Frame, SubmitError> {
 		let mut inner = lock(&self.inner);
 		if inner.permanently_dead {
@@ -424,7 +436,20 @@ impl OfxHost {
 		})
 	}
 
-	/// Create the pools and spawn the host. No-op when it is already up.
+	/// Creates the shared pools and spawns the host process; no-op when it is
+	/// already up.
+	///
+	/// `inner` holds the generation counter, slot sizing and process handles;
+	/// `config` supplies default slot counts, the host binary/args/env and
+	/// generation limits; `wait` is the condvar state handed to the stdout
+	/// reader. The generation is bumped and embedded in the shared-memory keys,
+	/// then the handshake is written and the reader thread is started.
+	///
+	/// # Errors
+	///
+	/// Returns an error when the host is permanently dead, shared memory cannot
+	/// be created, the worker binary cannot be resolved/spawned, stdio is not
+	/// piped, or the handshake write fails.
 	fn ensure_started(
 		inner: &mut HostInner,
 		config: &OfxHostConfig,
@@ -500,7 +525,11 @@ impl OfxHost {
 		Ok(())
 	}
 
-	/// Kill/join the current generation and drop its pools.
+	/// Kills and joins the current host generation and drops its pools.
+	///
+	/// Takes and kills/waits the child (if any), drops stdin, joins the reader
+	/// thread and clears the input/output regions; always increments
+	/// `restarts`, which is how forced reaps show up in the restart count.
 	fn reap(inner: &mut HostInner) {
 		if let Some(mut child) = inner.child.take() {
 			let _ = child.kill();
@@ -534,7 +563,11 @@ pub fn install_client(client: Option<Arc<OfxHost>>) {
 	*lock(client_slot()) = client;
 }
 
-/// The installed client, if any.
+/// The process-wide installed host client, if any.
+///
+/// Returns a clone of the [`Arc`] set by [`install_client`]; the evaluator uses
+/// it to prefer the out-of-process OFX host, and `None` means fall back to the
+/// in-process executor. Also the entry point used by [`request_cancel_all`].
 pub fn client() -> Option<Arc<OfxHost>> {
 	lock(client_slot()).clone()
 }
@@ -576,7 +609,17 @@ fn resolve_host_bin(config: &OfxHostConfig) -> Result<PathBuf> {
 	)))
 }
 
-/// Write one input frame into the host's input pool, returning its slot.
+/// Writes one input frame into the host's input pool and returns its slot.
+///
+/// `region` is the shared input region; `frame` supplies the pixel bytes,
+/// dimensions, linesize, format (always F32 with four channels) and timestamp,
+/// which are copied into the slot's data and metadata before publishing.
+///
+/// # Errors
+///
+/// Returns a message when the pool has no free slot, the frame payload is
+/// larger than one slot, or publishing fails; the slot is released in every
+/// error path.
 fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> std::result::Result<u32, String> {
 	let pool = region.pool();
 	let mut slot = 0u32;
@@ -615,8 +658,18 @@ fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> std::result::Resu
 	Ok(slot)
 }
 
-/// Copy one output frame out of the host's output pool and release the
-/// slot (the consumer side of the SPSC protocol).
+/// Copies one output frame out of the host's output pool and releases its slot
+/// (the consumer side of the SPSC protocol).
+///
+/// `region` is the shared output region and `slot` the slot index the host
+/// announced. Reads the metadata, validates width/height/`data_size`, copies
+/// the pixels into an F32 RGBA [`Frame`] and recycles the slot.
+///
+/// # Errors
+///
+/// Returns a message when the slot is missing or arrives out of order, the
+/// metadata is invalid, or the announced size exceeds the region's slot (the
+/// copy is then truncated to the slot size).
 fn read_output_frame(
 	region: &ShmRegionView,
 	slot: u32,
@@ -657,8 +710,14 @@ fn read_output_frame(
 	Ok(frame)
 }
 
-/// The host's stdout reader: forwards progress, delivers results and
-/// flags death for the blocked submitter.
+/// Starts the host's stdout reader thread: forwards progress, delivers job
+/// results and flags host death for the blocked submitter.
+///
+/// `stdout` is the child's piped stdout, `output` the shared output region used
+/// to recover frames for result messages, and `wait` the condvar state that
+/// results and death are published to. Parses JSON lines until EOF or an I/O
+/// error, then marks `wait.dead` and wakes all waiters; the returned handle
+/// joins the thread and is stored in the host's `reader` field.
 fn spawn_reader(
 	stdout: std::process::ChildStdout,
 	output: Arc<ShmRegionView>,

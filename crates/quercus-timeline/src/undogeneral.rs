@@ -379,7 +379,10 @@ impl TimelineRemoveTrackCommand {
 		}
 	}
 
-	/// `prepare`: locate the owning list and index.
+	/// `prepare`: locates the track's owning list and its index there and
+	/// caches both for [`Self::redo`]/[`Self::undo`]. Idempotent: returns early
+	/// once a list has been found, and does nothing when the track is missing
+	/// from the graph, is not a track node, or has no list.
 	pub fn prepare(&mut self) {
 		if self.list.is_some() {
 			return;
@@ -414,7 +417,10 @@ impl TimelineRemoveTrackCommand {
 		self.index = index;
 	}
 
-	/// `redo`: remove the track from the list and from the graph.
+	/// `redo`: removes the track from its list and from the graph: calls
+	/// [`Self::prepare`], removes the id from the list, shifts the later
+	/// tracks' indexes down, and detaches the track's arena entry so
+	/// [`Self::undo`] can re-attach it. No-op when no owning list was found.
 	pub fn redo(&mut self) {
 		self.prepare();
 		let Some(list) = &self.list else {
@@ -472,7 +478,10 @@ impl TimelineRemoveTrackCommand {
 		}
 	}
 
-	/// `undo`: re-insert the track at its former index.
+	/// `undo`: re-inserts the track at its former index: re-attaches its arena
+	/// entry to the graph, inserts it into the list, shifts the later tracks'
+	/// indexes up, and re-points the track at its list/index. No-op when
+	/// [`Self::prepare`] never found an owning list.
 	pub fn undo(&mut self) {
 		let Some(list) = &self.list else {
 			return;
@@ -694,7 +703,11 @@ impl TransitionRemoveCommand {
 		}
 	}
 
-	/// `redo`: unlink the transition from its neighbours and remove it.
+	/// `redo`: unlinks the transition from its neighbours and removes it:
+	/// disconnects its `out_block_in`/`in_block_in` edges, ripple-removes it
+	/// from its track and, when constructed with `remove_from_graph`, removes
+	/// it from the graph. Offsets, stored range and both input edges are
+	/// captured on the first call so [`Self::undo`] can restore them.
 	pub fn redo(&mut self) {
 		self.track = block_track(&self.block);
 		self.out_block = block_next(&self.block);
@@ -826,7 +839,13 @@ impl TrackReplaceBlockWithGapCommand {
 		}
 	}
 
-	/// `redo`: merge/replace with a gap, removing transitions as configured.
+	/// `redo`: merges/replaces the block with a gap, removing adjacent
+	/// transitions first when `handle_transitions` is set.
+	///
+	/// When the block is not last on the track, a gap fills its space: two
+	/// adjacent gaps are merged, one adjacent gap is extended toward the
+	/// block's span, or a new gap is created and swapped in. When the block is
+	/// last, it is removed and a preceding gap is dropped with it.
 	pub fn redo(&mut self) {
 		if self.handle_transitions && self.transition_remove_commands.is_empty() {
 			self.create_remove_transition_command_if_necessary(false);
@@ -913,7 +932,11 @@ impl TrackReplaceBlockWithGapCommand {
 		}
 	}
 
-	/// `undo`: replace the gap back with the block.
+	/// `undo`: replaces the gap back with the block — swaps back the gap this
+	/// command created, or restores an extended existing gap to its original
+	/// length and position (re-inserting a gap that `redo` merged into it), or
+	/// re-appends the block at the end of the track. Queued transition
+	/// removals are then undone in reverse order.
 	pub fn undo(&mut self) {
 		if self.our_gap.is_some() || self.existing_gap.is_some() {
 			if let Some(gap) = &self.our_gap {
@@ -969,6 +992,17 @@ impl TrackReplaceBlockWithGapCommand {
 		}
 	}
 
+	/// Queues a [`TransitionRemoveCommand`] for the neighbour of the replaced
+	/// block when that neighbour is a transition block.
+	///
+	/// # Arguments
+	///
+	/// * `next` - `true` inspects the block following the replaced block,
+	///   `false` the one preceding it; non-transition neighbours are ignored.
+	///
+	/// The C++ first checks that the transition connects only to this block;
+	/// that guard is not ported, so the queued command removes the transition
+	/// outright (`remove_from_graph = true`).
 	fn create_remove_transition_command_if_necessary(&mut self, next: bool) {
 		let relevant_block = if next {
 			block_next(&self.block)
@@ -1034,7 +1068,8 @@ impl BlockEnableDisableCommand {
 		}
 	}
 
-	/// `redo`: set the new enabled value.
+	/// `redo`: writes the new enabled value to the block; [`Self::undo`]
+	/// restores the value captured at construction.
 	pub fn redo(&mut self) {
 		block_set_enabled(&self.block, self.new_enabled);
 	}
@@ -1111,7 +1146,15 @@ impl TrackListInsertGaps {
 		}
 	}
 
-	/// `prepare`: build the per-track split/gap commands.
+	/// `prepare`: collects the unlocked tracks, then for each track decides how
+	/// to open a gap of `length` at `point`: extend an existing gap that spans
+	/// the point, split a clip the point falls inside (one shared
+	/// [`BlockSplitPreservingLinksCommand`]) and append a gap, or append a gap
+	/// after the preceding block. No gap is added at the end of a track when
+	/// nothing follows the point.
+	///
+	/// The derived tracks, gaps and split command are cached for
+	/// [`Self::redo`]/[`Self::undo`]; locked tracks are skipped.
 	pub fn prepare(&mut self) {
 		let track_count = tracklist_track_count(&self.track_list);
 		for i in 0..track_count {
@@ -1294,7 +1337,15 @@ impl TimelineAddDefaultTransitionCommand {
 		}
 	}
 
-	/// `prepare`: build the per-clip transition commands.
+	/// `prepare`: builds the per-clip transition commands.
+	///
+	/// For each selected clip: the in transition is skipped when the preceding
+	/// clip is also selected (the predecessor's dual transition covers it) and
+	/// added when the predecessor is a gap or absent; the out transition is
+	/// added as a dual one when the following clip is selected, or as a plain
+	/// out transition when the follower is a gap or absent. In this port
+	/// [`Self::add_transition`] is a no-op, so no child commands are actually
+	/// built.
 	pub fn prepare(&mut self) {
 		let selection = self.clips.clone();
 		for c in self.clips.clone() {
@@ -1330,6 +1381,18 @@ impl TimelineAddDefaultTransitionCommand {
 		}
 	}
 
+	/// Records the (currently unimplemented) creation of one default transition
+	/// for clip `c` on the side(s) selected by `mode`.
+	///
+	/// The C++ builds a child command here (looks up the default transition id,
+	/// creates the node, clips the neighbours' lengths and connects it); the
+	/// Rust port has no default-transition config key, so this only keeps the
+	/// call sites and produces no command — [`Self::commands`] stays empty.
+	///
+	/// # Arguments
+	///
+	/// * `c` - clip that would receive the transition.
+	/// * `mode` - which side(s) of the clip the transition goes on.
 	fn add_transition(&mut self, c: &NodeRef, mode: CreateTransitionMode) {
 		let _ = (c, mode);
 		// NOTE: the C++ builds one child command per transition: it looks up the

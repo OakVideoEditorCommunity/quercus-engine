@@ -245,6 +245,10 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 }
 
 /// Register this node type.
+///
+/// Appends one [`NodeMeta`] for `org.olivevideoeditor.Olive.dirblur`
+/// ("Directional Blur", [`Category::Filter`]) with [`create`] as the factory;
+/// the node registry calls this once at startup.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.dirblur",

@@ -2,11 +2,11 @@
 
 use std::ffi::c_void;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_thumbnail_add_ref(thumbnail: *const c_void);
 	fn quercus_thumbnail_release(thumbnail: *const c_void);
@@ -38,6 +38,18 @@ unsafe impl Send for Thumbnail {}
 unsafe impl Sync for Thumbnail {}
 
 impl Thumbnail {
+	/// Wraps a raw engine thumbnail pointer, or `None` when it is null.
+	///
+	/// Takes ownership of the reference the C call returned: the handle releases
+	/// it on `Drop` and `clone` adds a reference, so the engine allocation is
+	/// freed exactly once. Only pointers produced by the engine's thumbnail
+	/// render path may be passed here; wrapping any other pointer would release
+	/// memory the engine does not own.
+	///
+	/// # Arguments
+	///
+	/// * `ptr` - pointer returned by the engine; null means no thumbnail was
+	///   produced.
 	pub(crate) fn from_raw(ptr: *const c_void) -> Option<Self> {
 		(!ptr.is_null()).then_some(Self { ptr })
 	}

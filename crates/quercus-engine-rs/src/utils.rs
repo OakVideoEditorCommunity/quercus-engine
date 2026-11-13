@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use crate::codec::string_out;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 #[allow(improper_ctypes)]
 unsafe extern "C" {
 	fn quercus_core_colormath_working_to_display_target(
@@ -171,12 +171,24 @@ transfer_fns! {
 	hlg_eotf => quercus_core_colormath_hlg_eotf,
 }
 
-/// Component-wise gamma encode with an explicit exponent.
+/// Encodes one linear component with a gamma curve: `sign(v)*|v|^(1/gamma)`.
+///
+/// `v` is a normalized linear value (typically 0..1; negative values keep their
+/// sign instead of being clamped) and `gamma` is the exponent (e.g. 2.2). This
+/// is the pure-power OETF, not the sRGB piecewise curve — use `srgb_oetf` for
+/// sRGB. No range clamp is applied and the call cannot panic; degenerate
+/// exponents follow f32 `powf` semantics.
 pub fn gamma_oetf(v: f32, gamma: f32) -> f32 {
 	unsafe { quercus_core_colormath_gamma_oetf(v, gamma) }
 }
 
-/// Component-wise gamma decode with an explicit exponent.
+/// Decodes one gamma-encoded component to linear light: `sign(v)*|v|^gamma`.
+///
+/// `v` is a normalized encoded value (typically 0..1; negative values keep
+/// their sign instead of being clamped) and `gamma` is the exponent (e.g. 2.2).
+/// This is the pure-power EOTF, not the sRGB piecewise curve — use
+/// `srgb_eotf` for sRGB. No range clamp is applied and the call cannot panic;
+/// degenerate exponents follow f32 `powf` semantics.
 pub fn gamma_eotf(v: f32, gamma: f32) -> f32 {
 	unsafe { quercus_core_colormath_gamma_eotf(v, gamma) }
 }
@@ -229,17 +241,44 @@ pub struct Primaries {
 /// A 3x3 color matrix (`[[f32; 3]; 3]`, plain C layout).
 pub type Mat3 = [[f32; 3]; 3];
 
-/// The Bradford chromatic adaptation matrix between two white points.
+/// The Bradford chromatic adaptation matrix from `src_white` to `dst_white`.
+///
+/// Both arguments are CIE 1931 chromaticity coordinates (x, y). The returned
+/// row-major 3x3 matrix maps XYZ tristimulus values so that the source white
+/// becomes the destination white; `rgb_to_rgb_matrix` applies it when the two
+/// color spaces use different white points.
+///
+/// # Arguments
+///
+/// * `src_white` - white point of the source space.
+/// * `dst_white` - white point of the destination space.
 pub fn chromatic_adaptation(src_white: Xy, dst_white: Xy) -> Mat3 {
 	unsafe { quercus_core_colormath_chromatic_adaptation(src_white, dst_white) }
 }
 
-/// The RGB→XYZ matrix for a set of primaries.
+/// The RGB→XYZ matrix of a set of primaries.
+///
+/// Columns are the primaries' tristimulus values scaled so the white point maps
+/// to unit luminance (Y = 1). Row-major `Mat3`; multiply it with an RGB column
+/// vector to obtain CIE XYZ.
+///
+/// # Arguments
+///
+/// * `primaries` - red/green/blue chromaticities plus the white point.
 pub fn rgb_to_xyz_matrix(primaries: Primaries) -> Mat3 {
 	unsafe { quercus_core_colormath_rgb_to_xyz(primaries) }
 }
 
-/// The direct RGB→RGB conversion matrix between two primary sets.
+/// The 3x3 matrix converting RGB values from `src` primaries to `dst`.
+///
+/// Equivalent to `inverse(XYZ(dst)) * adaptation * XYZ(src)`, where a Bradford
+/// chromatic adaptation is inserted only when the two white points differ.
+/// Row-major plain-C layout; multiply it with an RGB column vector.
+///
+/// # Arguments
+///
+/// * `src` - source primaries plus white point.
+/// * `dst` - destination primaries plus white point.
 pub fn rgb_to_rgb_matrix(src: Primaries, dst: Primaries) -> Mat3 {
 	unsafe { quercus_core_colormath_rgb_to_rgb(src, dst) }
 }
@@ -278,12 +317,23 @@ pub fn configuration_location() -> Option<String> {
 	string_out(|buf, len| unsafe { quercus_core_file_get_configuration_location(buf, len) })
 }
 
-/// The application install path.
+/// The directory containing the running application executable.
+///
+/// Resolved from the current executable (`/proc/self/exe` on Linux,
+/// `current_exe` on macOS), falling back to the current working directory.
+/// Used for portable-mode detection and bundled-resource lookup; the result has
+/// no trailing separator (except a filesystem root). `None` only when the
+/// engine rejects the query.
 pub fn application_path() -> Option<String> {
 	string_out(|buf, len| unsafe { quercus_core_file_get_application_path(buf, len) })
 }
 
-/// A temporary file path.
+/// The process-wide temporary directory used for intermediate files.
+///
+/// Resolves to `<system temp>/quercus` and creates the directory when missing;
+/// this is a directory, not a file name — callers pick their own unique name
+/// inside it (see `safe_temporary_filename`). `None` only when the engine
+/// rejects the query.
 pub fn temp_file_path() -> Option<String> {
 	string_out(|buf, len| unsafe { quercus_core_file_get_temp_file_path(buf, len) })
 }
@@ -343,7 +393,22 @@ pub fn formatted_executable_for_platform(unformatted: &str) -> Option<String> {
 	})
 }
 
-/// Renames `from` to `to`, replacing `to` when it exists.
+/// Renames `from` to `to`, overwriting an existing `to`.
+///
+/// If `to` exists it is removed first (files only — directories are not
+/// removed), then the rename is attempted. Both paths are passed to the
+/// engine as UTF-8.
+///
+/// # Arguments
+///
+/// * `from` - existing source path.
+/// * `to` - destination path; replaced when present.
+///
+/// # Errors
+///
+/// Returns the unit [`struct@Error`] when the engine reports failure (source missing,
+/// the existing target cannot be removed, or the rename syscall fails). The
+/// engine also prints a diagnostic to stderr.
 pub fn rename_file_allow_overwrite(from: &str, to: &str) -> Result<(), Error> {
 	let (f, fl) = arg(from);
 	let (t, tl) = arg(to);

@@ -39,8 +39,12 @@ pub enum PixelFormat {
 }
 
 impl PixelFormat {
-	/// Bytes per channel (C++ `byte_count`; Invalid -> 0, U10 -> 4
-	/// since it is packed RGBA10A2 stored as 4 bytes per pixel).
+	/// Returns the storage size of one channel of this pixel format, in bytes.
+	///
+	/// `U8` is 1, `U16`/`F16` are 2, `F32` is 4, `Invalid` is 0, and `U10` is 4
+	/// because it is packed RGBA10A2 stored as one 4-byte word per pixel (C++
+	/// `PixelFormat::byte_count`). Counterpart of [`PixelFormat::bytes_per_pixel`],
+	/// which multiplies this value by the channel count.
 	pub fn bytes_per_channel(self) -> usize {
 		match self {
 			PixelFormat::Invalid => 0,
@@ -51,7 +55,12 @@ impl PixelFormat {
 		}
 	}
 
-	/// Bytes per pixel for `channels` (C++ `bytes_per_pixel`).
+	/// Returns the size of one pixel with `channels` channels, in bytes.
+	///
+	/// `channels` is the number of channels per pixel (4 for RGBA, 3 for RGB); the
+	/// result is [`PixelFormat::bytes_per_channel`] multiplied by `channels`, so it
+	/// is `0` for `Invalid` and may overflow for an absurd channel count. C++
+	/// `PixelFormat::bytes_per_pixel`.
 	pub fn bytes_per_pixel(self, channels: usize) -> usize {
 		self.bytes_per_channel() * channels
 	}
@@ -94,7 +103,12 @@ pub enum SampleFormat {
 }
 
 impl SampleFormat {
-	/// Bytes per sample (C++ `byte_count`; Invalid -> 0).
+	/// Returns the storage size of one sample of this format, in bytes.
+	///
+	/// A sample is one channel: 1 byte for `U8`/`U8Planar`, 2 for the `S16` pair, 4
+	/// for the `S32`/`F32` pairs and 8 for the `S64`/`F64` pairs; `Invalid` returns
+	/// `0`. Planar and packed variants of the same depth agree, so the result does
+	/// not depend on the channel layout. C++ `SampleFormat::byte_count`.
 	pub fn bytes_per_sample(self) -> usize {
 		match self {
 			SampleFormat::Invalid => 0,
@@ -111,7 +125,12 @@ impl SampleFormat {
 		}
 	}
 
-	/// True for planar layouts (C++ `is_planar`).
+	/// True when this format is planar, i.e. one plane per channel.
+	///
+	/// The planar formats are the first six discriminants (`0..=5`, `U8Planar`
+	/// through `F64Planar`); `Invalid` (-1) and the packed formats (`U8`..`F64`,
+	/// `6..=11`) return `false`. C++ `SampleFormat::is_planar` uses the same range
+	/// test.
 	pub fn is_planar(self) -> bool {
 		(self as i32) >= 0 && (self as i32) < 6
 	}

@@ -71,7 +71,13 @@ pub enum BitDepth {
 }
 
 impl BitDepth {
-	/// Bytes per component.
+	/// The number of bytes one component occupies at this depth: 1 for `Byte`,
+	/// 2 for `Short` and `Half`, 4 for `Float`.
+	///
+	/// Multiplied by the component count it gives the pixel size used for row
+	/// strides and buffer sizing in [`Image::allocate`]. Pairs with
+	/// [`BitDepth::to_ofx`] / [`BitDepth::from_ofx`], which map the depth to and
+	/// from its OFX string.
 	pub(crate) fn bytes_per_component(self) -> usize {
 		match self {
 			BitDepth::Byte => 1,
@@ -131,8 +137,15 @@ pub(crate) fn f16_to_f32(bits: u16) -> f32 {
 	f32::from_bits(f32_bits)
 }
 
-/// Single → IEEE 754 half (round-to-nearest-even; overflow → Inf,
-/// NaN/Inf map per the standard).
+/// Converts a single-precision float to its IEEE 754 binary16 bit pattern.
+///
+/// `value` is any `f32`; the result is the raw `u16` half representation,
+/// using round-to-nearest-even so finite values match a hardware/`half`
+/// conversion. Overflow saturates to signed infinity, values below the half
+/// subnormal range flush to signed zero, and a NaN payload collapses to a
+/// quiet NaN with the sign preserved, per the standard. Inverse of
+/// [`f16_to_f32`]; used by [`Image::convert_depth`] when a plugin negotiates
+/// `Half` output.
 pub(crate) fn f32_to_f16(value: f32) -> u16 {
 	let bits = value.to_bits();
 	let sign = ((bits >> 16) & 0x8000) as u16;
@@ -180,7 +193,12 @@ pub enum Components {
 }
 
 impl Components {
-	/// Channel count.
+	/// The number of channels this layout stores per pixel: 4 for RGBA, 3 for
+	/// RGB, 1 for Alpha.
+	///
+	/// Used together with [`BitDepth::bytes_per_component`] to size rows and
+	/// buffers in [`Image::allocate`]; matches the OFX `kOfxImageComponent*`
+	/// counts.
 	pub(crate) fn channel_count(self) -> usize {
 		match self {
 			Components::Rgba => 4,
@@ -337,17 +355,30 @@ impl Image {
 		self.bounds
 	}
 
-	/// Bit depth.
+	/// The image's pixel bit depth (Byte, Short, Half or Float).
+	///
+	/// One component occupies `BitDepth::bytes_per_component` bytes. The
+	/// pipeline works in `Float` throughout; plugins that negotiate another depth
+	/// see converted buffers (see `Image::convert_depth`).
 	pub fn depth(&self) -> BitDepth {
 		self.depth
 	}
 
-	/// Components.
+	/// The image's component layout (RGBA, RGB or Alpha).
+	///
+	/// Fixed at allocation time by [`Image::allocate`]. Together with
+	/// [`Self::depth`] it determines the bytes per pixel, and through
+	/// `Components::channel_count` how many samples a row holds.
 	pub fn components(&self) -> Components {
 		self.components
 	}
 
-	/// Row byte count.
+	/// The number of bytes in one pixel row.
+	///
+	/// [`Image::allocate`] sets this to `width * components.channel_count() *
+	/// depth.bytes_per_component()`; the struct allows a padded stride, so stride
+	/// over [`Self::pixels`] with this value rather than recomputing the width
+	/// from the bounds.
 	pub fn row_bytes(&self) -> usize {
 		self.row_bytes
 	}
@@ -440,8 +471,9 @@ mod tests {
 			.collect()
 	}
 
-	/// F32 → U8/U16/F16 → F32 的往返保持 [0,1] 归一化语义（OFX 低位深
-	/// 协商插件的输入转低、输出转回路径）。
+	/// F32 → U8/U16/F16 → F32 round-trips preserve [0,1] normalized
+	/// semantics (the OFX low-bit-depth negotiation path that converts plugin
+	/// inputs down and outputs back).
 	#[test]
 	fn convert_depth_roundtrips() {
 		let src = f32_image(&[0.0, 0.25, 0.5, 1.0]);
@@ -474,7 +506,7 @@ mod tests {
 		assert!(!std::ptr::eq(same.pixels().as_ptr(), src.pixels().as_ptr()));
 	}
 
-	/// f16 转换的边界：零/次规格数/Inf/NaN。
+	/// f16 conversion edges: zero/subnormal/Inf/NaN.
 	#[test]
 	fn f16_edges() {
 		assert_eq!(f32_to_f16(0.0), 0);

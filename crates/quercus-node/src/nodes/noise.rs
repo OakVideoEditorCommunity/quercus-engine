@@ -219,8 +219,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(NoiseGeneratorNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.noise`).
+/// Registers the Noise generator in the factory's static entry list.
+///
+/// `meta` is the entry vector `nodes::register_all` builds at startup; the
+/// descriptor is appended in registration order (the create-menu order) with
+/// type id `org.olivevideoeditor.Olive.noise`, display name "Noise",
+/// [`Category::Generator`] and [`create`] as the constructor. Appends without
+/// deduplicating, so it must run once.
+///
+/// C++ counterpart: the factory entry for `org.olivevideoeditor.Olive.noise`.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.noise",

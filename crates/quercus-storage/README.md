@@ -16,9 +16,9 @@ Project persistence — the single module that knows where projects come
 from and where they are saved to. Backends are pluggable via a manual
 vtable; shipping in this pass: `ove-xml` (the XML project format) and
 `otio` (the `.otio` / `.fcpxml` interchange, via the native quercusotio
-crate). The **database** backend (PostgreSQL + SQLite, SeaORM) is a
-declared stub for a later proxy — not registered, `todo!()` bodies.
-Consumers never branch on backend.
+crate). The **database** backend (PostgreSQL + SQLite, SeaORM) is
+implemented and pre-registered with the other built-ins; it backs the
+project library / write-through path. Consumers never branch on backend.
 
 ## Architectural decisions
 
@@ -26,11 +26,18 @@ Consumers never branch on backend.
    `file:///…proj.ove` / `file:///…proj.otio` / `quercusdb://…`. Bare
    paths are normalized to `file://`. The core resolves scheme +
    backend `can_handle` arbitration (M10 §2.3).
-2. **Manual vtable backends** (`backend.rs` `StorageBackend` trait =
-   the M10 C vtable's Rust shape). The public C ABI vtable
-   (`quercusstorage_backend_register`) accepts foreign (C-side) backends —
-   the database-swap interface proof — and in-crate backends implement
-   the Rust trait directly.
+2. **Two backend layers.** In-crate backends implement the Rust
+   `StorageBackend` trait (`backend.rs`) directly; this crate exposes only
+   that safe trait plus the registry. Hosts register their own *byte
+   transport* through the C ABI (`quercus_storage_register_transport` /
+   `quercus_storage_unregister_transport`); the unsafe vtable adapter that
+   marshals the caller's callbacks into the safe trait lives in
+   `quercus-engine` (`src/ext/storage_transport.rs`), not here. The
+   transport stores opaque engine-serialized project bytes and never
+   sees the project graph. Version probing and schema stay in the engine.
+   A transport may optionally implement the project-library capability
+   (list/delete/rename/snapshot) and a write-policy hint; the engine then
+   drives the library and write-through paths through the registry.
 3. **The graph (de)serialization itself stays in quercusnode** — every
    backend calls the quercusnode serializer (`quercusnode::serializer::load` /
    `save`) through `bridge::node` (direct Rust calls, single-lib
@@ -66,19 +73,23 @@ src/
   registry.rs     backend registry (register/unregister/arbitrate)
   backend.rs      StorageBackend trait + LoadResult
   backends/
-    ove_xml.rs    built-in .ove XML backend (via bridge::node)
+    ove_xml.rs    built-in .ove XML backend (via nodeutil)
     otio.rs       built-in .otio/.fcpxml backend (via quercusotio)
-    database.rs   declared stub (later proxy)
-  bridge/
-    node.rs       quercusnode calls (project + serializer + sequence builder)
-  ffi.rs          export layer (M10 §2.2/§2.3 verbatim)
-tests/            contract tests incl. the pluggability proof
+    database/     built-in SQLite/PostgreSQL library backend (SeaORM)
+  nodeutil.rs     quercusnode calls (project + serializer + sequence builder)
+  writethrough.rs library binding, write-through and snapshot thread
+tests/            contract tests for the built-in and database backends
 ```
+
+The caller-supplied C ABI transport adapter (`ForeignBackend` and the
+`QuercusStorageTransportVTable` family) lives in `quercus-engine`'s
+`ext::storage_transport` module; this crate contains no raw-callback
+adapter, only safe traits and backends.
 
 ## Build / test
 
 A workspace member (not a default member); build and test explicitly:
 
 ```
-cargo test -p quercusstorage
+cargo test -p quercus-storage
 ```

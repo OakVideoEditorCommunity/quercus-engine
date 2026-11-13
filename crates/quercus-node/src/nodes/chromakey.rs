@@ -420,8 +420,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(ChromaKeyNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.chromakey`).
+/// Appends the Chroma Key node's factory entry to `meta`.
+///
+/// Called by `crate::nodes::register_all` while it assembles the global node
+/// table. The entry registers the type id
+/// `org.olivevideoeditor.Olive.chromakey`, the display name "Chroma Key", the
+/// `Keying` menu category and this module's `create` constructor. Registering
+/// only adds the type to the factory; instances are created on demand.
+///
+/// # Arguments
+///
+/// * `meta` - factory table under construction; the entry is appended in
+///   registration order, which is also the create-menu order.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.chromakey",

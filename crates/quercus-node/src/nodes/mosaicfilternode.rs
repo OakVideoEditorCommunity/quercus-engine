@@ -216,6 +216,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 /// Register this node type (C++ `k_mosaic_filter` in
 /// `factory.cpp::create_from_factory_index`).
+///
+/// Appends one [`NodeMeta`] to `meta` (the registry vector assembled by
+/// `nodes::register_all`): type id
+/// `org.olivevideoeditor.Olive.mosaicfilter`, display name `Mosaic`, the
+/// [`Category::Filter`] Add-menu category, and [`create`] as the constructor.
+/// Callers must pass the same vector every other `nodes::…::register` writes
+/// to. Counterpart of the C++ factory table entry; the node itself is the
+/// [`MosaicFilterNode`] behavior.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.mosaicfilter",

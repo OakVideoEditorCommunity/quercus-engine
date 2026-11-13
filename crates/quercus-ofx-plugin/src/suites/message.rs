@@ -14,30 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxMessageSuite v1/v2：插件消息 → 宿主日志。
+//! OfxMessageSuite v1/v2: plugin messages -> host log.
 //!
-//! stable Rust 无法定义 C-variadic 函数（c_variadic 仍不稳定），
-//! v1 的 `...` 与 v2 的 va_list 入口由 C shim 承载
-//! （cbits/ofx_message_shim.c，build.rs 经 `cc` 编译，符号随
-//! staticlib 进入 libquercusplugin）：C 侧 vsnprintf 成定长缓冲后转发
-//! 到本模块的 `quercus_ofx_message_impl`。
+//! Stable Rust cannot define C-variadic functions (c_variadic is still unstable), so
+//! v1's `...` and v2's va_list entry points are carried by a C shim
+//! (cbits/ofx_message_shim.c, compiled by build.rs via `cc`; the symbols enter
+//! libquercusplugin through the staticlib): the C side vsnprintf's into a fixed buffer and forwards
+//! to this module's `quercus_ofx_message_impl`.
 //!
-//! 消息出口 = facade 注册的 `quercusplugin_message_fn`
-//! （include/plugin/host.h）。本模块按头文件契约建模。
-//! （原 C ABI 出口层已随单库化删除；注册点由 facade 直接调用。）
+//! The message sink is the facade-registered `quercusplugin_message_fn`
+//! (include/plugin/host.h). This module models the header's contract.
+//! (The original C ABI export layer was removed with the single-library change; the facade calls the registration point directly.)
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 
 use crate::suites::status;
 
-/// facade 消息回调（include/plugin/host.h `quercusplugin_message_fn`）：
-/// `(type, message, userdata) -> QUERCUSPLUGIN_MESSAGE_ANSWER_NO/YES`。
+/// Facade message callback (include/plugin/host.h `quercusplugin_message_fn`):
+/// `(type, message, userdata) -> QUERCUSPLUGIN_MESSAGE_ANSWER_NO/YES`.
 pub(crate) type MessageHandler =
 	unsafe extern "C" fn(*const c_char, *const c_char, *mut c_void) -> c_int;
 
-/// 消息出口注册表（facade 写入，suite 读；userdata 以 usize 存，
-/// 避免裸指针破坏 static 的 Send/Sync 推导）。
+/// Message-sink registry (written by the facade, read by the suite; userdata is stored as a usize
+/// to avoid a raw pointer breaking the static's Send/Sync inference).
 static HANDLER: std::sync::Mutex<(Option<MessageHandler>, usize)> =
 	std::sync::Mutex::new((None, 0));
 
@@ -57,7 +57,15 @@ fn persistent_slot() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
 	PERSISTENT.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// 实例 handle（props 地址）的持久消息数（未登记 → 0）。
+/// The persistent message count of one instance (the data source for the inspector effect card's badge).
+///
+/// Looked up by instance handle (the props address after removing the tag, per [`crate::suites::tag`]);
+/// an instance that was never registered returns `0`.
+///
+/// # Arguments
+///
+/// * `handle` - the instance's props address (the bare handle with the tag stripped, see
+///   [`crate::suites::tag::strip`]).
 pub fn persistent_message_count(handle: usize) -> usize {
 	persistent_slot()
 		.lock()
@@ -67,7 +75,15 @@ pub fn persistent_message_count(handle: usize) -> usize {
 		.unwrap_or(0)
 }
 
-/// 清空某实例的持久消息（实例释放/宿主关闭路径；未登记的键 no-op）。
+/// Clears one instance's persistent message count and removes its entry (instance-release/host-shutdown path).
+///
+/// An unregistered `handle` is a no-op and does not create an entry; after clearing,
+/// [`persistent_message_count`] returns `0` for it.
+///
+/// # Arguments
+///
+/// * `handle` - the instance's props address (tag already stripped, see
+///   [`crate::suites::tag::strip`]).
 pub fn clear_persistent_messages(handle: usize) {
 	persistent_slot()
 		.lock()
@@ -75,22 +91,40 @@ pub fn clear_persistent_messages(handle: usize) {
 		.remove(&handle);
 }
 
-/// 注册/注销消息出口（facade 调用；公开：测试直接注入捕获器）。
+/// Registers or unregisters the plugin message sink (called by the facade; tests inject a capturer directly).
+///
+/// The sink receives the plugin's `(type, message, userdata)` and returns whether to answer "yes"
+/// (the answer for `question`-type messages). Registration is overwriting: only the most recent one takes effect.
+///
+/// # Arguments
+///
+/// * `f` - the C ABI callback `(type, message, userdata) -> 0/1` (NO/YES);
+///   `None` unregisters, after which messages go only to stderr.
+/// * `userdata` - an opaque pointer passed back to `f` unchanged; may be null.
 pub fn set_handler(f: Option<MessageHandler>, userdata: *mut c_void) {
 	let mut h = HANDLER.lock().unwrap_or_else(|e| e.into_inner());
 	*h = (f, userdata as usize);
 }
 
-/// 读取当前出口。
+/// Reads the current sink.
 fn handler() -> (Option<MessageHandler>, *mut c_void) {
 	let h = HANDLER.lock().unwrap_or_else(|e| e.into_inner());
 	(h.0, h.1 as *mut c_void)
 }
 
-/// kOfxMessageQuestion（ofxMessage.h:61）：无出口时答"否"。
+/// kOfxMessageQuestion (ofxMessage.h:61): answers "no" when there is no sink.
 const K_MESSAGE_QUESTION: &[u8] = b"OfxMessageQuestion";
 
-/// 消息类型是否为 question。
+/// Returns whether the message type is OFX's `kOfxMessageQuestion`
+/// (`"OfxMessageQuestion"`).
+///
+/// question-type messages require the host to return a "yes"/"no" answer to the plugin; other types ignore the handler's
+/// return value. The comparison is byte-for-byte, case-sensitive equality.
+///
+/// # Arguments
+///
+/// * `type_` - a NUL-terminated message-type string; a null pointer returns `false` (call sites
+///   normally reject that first).
 fn is_question(type_: *const c_char) -> bool {
 	// 空指针已在调用点拦截；此处仍防御（CStr::from_ptr 的调用方义务）。
 	if type_.is_null() {
@@ -99,19 +133,19 @@ fn is_question(type_: *const c_char) -> bool {
 	unsafe { CStr::from_ptr(type_) }.to_bytes() == K_MESSAGE_QUESTION
 }
 
-/// Rust 侧实现（C shim 转发至此；`#[no_mangle]` 保证符号名与 C 侧
-/// 引用一致）。语义逐条对照 C++：
-/// - type/message 为空 → kOfxStatFailed（olivehost.cpp:267，vmessage
-///   对 !type || !format 的处理；format 为空的 case 由 shim 以
-///   NULL message 转发）；
-/// - 有出口 → 转发 `(type, message, userdata)`，返回按头文件契约
-///   映射为 REPLY_YES/REPLY_NO（olivehost.cpp:277-279 的 handler
-///   路径；非 question 消息插件忽略返回值）；
-/// - 无出口 → stderr 日志（镜像 olivehost.cpp:282 的 fprintf 默认），
-///   question 答"否"（olivehost.cpp:283-284）。
+/// Rust-side implementation (the C shim forwards here; `#[no_mangle]` keeps the symbol name identical to the C side's
+/// reference). Semantics map to C++ clause by clause:
+/// - an empty type/message -> kOfxStatFailed (olivehost.cpp:267, vmessage's
+///   handling of !type || !format; the empty-format case is forwarded by the shim with a
+///   NULL message);
+/// - with a sink -> forwards `(type, message, userdata)`, and the return value is mapped
+///   to REPLY_YES/REPLY_NO per the header contract (the handler path at olivehost.cpp:277-279;
+///   plugins ignore the return value for non-question messages);
+/// - no sink -> stderr log (mirroring olivehost.cpp:282's fprintf default),
+///   answering "no" for questions (olivehost.cpp:283-284).
 ///
-/// `# Safety`：`type`/`message` 必须是有效 C 字符串（插件契约，
-/// shim 已保证 message 非悬垂——指向其栈缓冲，调用期间有效）。
+/// `# Safety`: `type`/`message` must be valid C strings (plugin contract;
+/// the shim already guarantees `message` is not dangling — it points to its stack buffer, valid during the call).
 #[no_mangle]
 pub unsafe extern "C" fn quercus_ofx_message_impl(
 	_handle: *mut c_void,
@@ -155,10 +189,10 @@ pub unsafe extern "C" fn quercus_ofx_message_impl(
 	.unwrap_or(status::FAILED)
 }
 
-/// 函数表布局（OfxMessageSuiteV1）。
+/// Function-table layout (OfxMessageSuiteV1).
 #[repr(C)]
 pub struct MessageSuiteV1 {
-	/// message（变长参数版；入口在 C shim）
+	/// message (variadic version; the entry point is in the C shim)
 	pub message: unsafe extern "C" fn(
 		*mut c_void,
 		*const c_char,
@@ -168,14 +202,14 @@ pub struct MessageSuiteV1 {
 	) -> c_int,
 }
 
-/// 函数表布局（OfxMessageSuiteV2：第 5 参为平台相关 `va_list`）。
+/// Function-table layout (OfxMessageSuiteV2: the 5th parameter is a platform-dependent `va_list`).
 ///
-/// 真实 ABI 是 C 的 va_list（Apple arm64 上是结构体按值传递）；
-/// 声明为不透明指针仅作占位——本表只被插件→C shim 调用，Rust 侧
-/// 永不直接调用，指针类型不参与任何实际调用。
+/// The real ABI is C's va_list (on Apple arm64 it is a struct passed by value);
+/// declaring it as an opaque pointer is only a placeholder — this table is called only from the plugin to the C shim, the Rust side
+/// never calls it directly, and the pointer type takes part in no actual call.
 #[repr(C)]
 pub struct MessageSuiteV2 {
-	/// message（va_list 版；入口在 C shim）
+	/// message (va_list version; the entry point is in the C shim)
 	pub message: unsafe extern "C" fn(
 		*mut c_void,
 		*const c_char,
@@ -186,7 +220,7 @@ pub struct MessageSuiteV2 {
 }
 
 extern "C" {
-	/// C shim 的 v1 入口（cbits/ofx_message_shim.c）。
+	/// The C shim's v1 entry point (cbits/ofx_message_shim.c).
 	fn ofx_message_shim_v1(
 		handle: *mut c_void,
 		type_: *const c_char,
@@ -194,7 +228,7 @@ extern "C" {
 		format: *const c_char,
 		...
 	) -> c_int;
-	/// C shim 的 v2 入口（va_list 已由 C 侧消费，Rust 只见不透明值）。
+	/// The C shim's v2 entry point (the va_list has already been consumed by the C side; Rust sees only an opaque value).
 	fn ofx_message_shim_v2(
 		handle: *mut c_void,
 		type_: *const c_char,
@@ -204,7 +238,7 @@ extern "C" {
 	) -> c_int;
 }
 
-/// 静态函数表实例（v1）。
+/// Static function-table instance (v1).
 pub fn suite_v1() -> &'static MessageSuiteV1 {
 	static SUITE: std::sync::OnceLock<MessageSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| MessageSuiteV1 {
@@ -212,7 +246,7 @@ pub fn suite_v1() -> &'static MessageSuiteV1 {
 	})
 }
 
-/// 静态函数表实例（v2）。
+/// Static function-table instance (v2).
 pub fn suite_v2() -> &'static MessageSuiteV2 {
 	static SUITE: std::sync::OnceLock<MessageSuiteV2> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| MessageSuiteV2 {
@@ -225,10 +259,10 @@ mod tests {
 	use super::*;
 	use std::ffi::CString;
 
-	/// 测试共享全局 HANDLER，cargo 默认并行执行——串行化契约用例。
+	/// The tests share the global HANDLER and cargo runs them in parallel by default — serialize the contract cases.
 	static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-	/// 捕获型出口：把 (type, message) 记进 userdata 指向的 Vec。
+	/// Capturing sink: records (type, message) into the Vec pointed to by userdata.
 	unsafe extern "C" fn capture(
 		type_: *const c_char,
 		message: *const c_char,
@@ -246,7 +280,7 @@ mod tests {
 		1
 	}
 
-	/// v1 入口：`...` 在 C shim 侧 vsnprintf 后转发，格式化正确。
+	/// v1 entry point: `...` is vsnprintf'd on the C shim side and forwarded; formatting is correct.
 	#[test]
 	fn shim_v1_formats_and_forwards() {
 		let _g = TEST_LOCK.lock().unwrap();
@@ -278,7 +312,7 @@ mod tests {
 		set_handler(None, std::ptr::null_mut());
 	}
 
-	/// v1 入口：NULL format → kOfxStatFailed（C++ olivehost.cpp:267）。
+	/// v1 entry point: NULL format -> kOfxStatFailed (C++ olivehost.cpp:267).
 	#[test]
 	fn shim_v1_null_format_fails() {
 		let _g = TEST_LOCK.lock().unwrap();
@@ -296,8 +330,8 @@ mod tests {
 		assert_eq!(r, status::FAILED);
 	}
 
-	/// v2 入口：表字段非空且指向 C shim 符号（va_list 路径无法从
-	/// Rust 构造 va_list 调用，链的其余部分与 v1 共用 forward）。
+	/// v2 entry point: the table field is non-null and points to the C shim symbol (the va_list path cannot be called from
+	/// Rust by constructing a va_list; the rest of the chain shares v1's forward).
 	#[test]
 	fn shim_v2_table_entry_resolves() {
 		let _g = TEST_LOCK.lock().unwrap();
@@ -308,7 +342,7 @@ mod tests {
 		));
 	}
 
-	/// 无出口（headless 默认）：非 question → OK；question → REPLY_NO。
+	/// No sink (headless default): non-question -> OK; question -> REPLY_NO.
 	#[test]
 	fn no_handler_headless_defaults() {
 		let _g = TEST_LOCK.lock().unwrap();
@@ -342,7 +376,7 @@ mod tests {
 		assert_eq!(r, status::REPLY_NO);
 	}
 
-	/// 持久消息按实例 handle 累计（徽标数据源）；clear 摘除。
+	/// Persistent messages accumulate per instance handle (the badge data source); clear removes the entry.
 	#[test]
 	fn persistent_messages_accumulate_per_handle() {
 		let _g = TEST_LOCK.lock().unwrap();

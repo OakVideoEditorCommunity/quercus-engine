@@ -54,6 +54,10 @@ impl TimeRange {
 	}
 
 	/// True when `t` lies in [in, out).
+	///
+	/// The start is inclusive and the end exclusive, so an empty range
+	/// (`in == out`) contains nothing and a point exactly on the end is
+	/// outside.
 	pub fn contains(&self, t: Rational) -> bool {
 		t >= self.in_ && t < self.out
 	}
@@ -103,6 +107,10 @@ impl TimeRange {
 	}
 
 	/// Union that also merges touching ranges (C++ `combined`).
+	///
+	/// Returns the smallest range covering both `self` and `other`
+	/// (`min(in)`, `max(out)`), including when they only touch at an
+	/// endpoint. The result is normalized by [`Self::new`].
 	pub fn combined(&self, other: &TimeRange) -> TimeRange {
 		TimeRange::new(
 			std::cmp::min(self.in_, other.in_),
@@ -111,18 +119,30 @@ impl TimeRange {
 	}
 
 	/// C++ `set_in` + `normalize`.
+	///
+	/// Sets the inclusive start to `in_`, then swaps the endpoints if the
+	/// result would have `out < in`, so the range stays normalized. A
+	/// private helper of [`TimeRangeList::remove`].
 	fn set_in(&mut self, in_: Rational) {
 		self.in_ = in_;
 		self.normalize();
 	}
 
 	/// C++ `set_out` + `normalize`.
+	///
+	/// Sets the exclusive end to `out`, then swaps the endpoints if the
+	/// result would have `out < in`, so the range stays normalized. A
+	/// private helper of [`TimeRangeList::remove`].
 	fn set_out(&mut self, out: Rational) {
 		self.out = out;
 		self.normalize();
 	}
 
 	/// C++ `normalize`: swap if `out < in`.
+	///
+	/// Mutates both endpoints so that `out >= in`, keeping the half-open
+	/// invariant. Called by [`Self::new`], [`Self::set_in`] and
+	/// [`Self::set_out`]; an empty range (`in == out`) is left as is.
 	fn normalize(&mut self) {
 		if self.out < self.in_ {
 			std::mem::swap(&mut self.out, &mut self.in_);
@@ -180,6 +200,17 @@ impl TimeRangeList {
 	}
 
 	/// Subtract a range (C++ `remove`, via `util_remove`).
+	///
+	/// `range` is the half-open interval `[in, out)` to cut out of every
+	/// element. Elements fully covered by it are removed, an element that
+	/// strictly contains it is split in two (before `range.in_` and from
+	/// `range.out` on), and elements overlapping only one edge are
+	/// trimmed to that edge; elements that merely touch the range at an
+	/// endpoint are left unchanged.
+	///
+	/// Note: the right-hand half of a split is appended at the end of the
+	/// vector instead of taking the split element's position, so the list
+	/// is not guaranteed to be sorted after a split.
 	pub fn remove(&mut self, range: TimeRange) {
 		let mut additions: Vec<TimeRange> = Vec::new();
 

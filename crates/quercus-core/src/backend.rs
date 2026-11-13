@@ -42,12 +42,14 @@ use crate::PixelFormat;
 
 use crate::error::{Error, Result};
 use crate::frame::VideoParamsPod;
-use crate::texture::{Frame, Texture};
+use crate::texture::{Frame, PlanarDescriptor, PlanarFormat, PlaneStorage, Subsampling, Texture};
 
 pub mod external;
 
 #[cfg(target_os = "linux")]
 pub use external::DmaBufPlane;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub use external::GlMemoryExport;
 pub use external::ImportGuard;
 
 /// Backend selection preference (mapped onto wgpu backends).
@@ -72,8 +74,13 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-	/// Parse the settings string (C++ `backend_from_string` semantics for
-	/// the legacy values; unknown values yield Auto).
+	/// Parse the persisted backend settings string into a [`BackendKind`].
+	///
+	/// Matching trims whitespace and ignores case: `""`/`"auto"` → Auto,
+	/// `"metal"` → Metal, `"vulkan"` → Vulkan, `"opengl"`/`"gl"` → Gl and
+	/// `"cpu"`/`"dummy"`/`"multiprocess"` → Cpu (the legacy C++
+	/// `backend_from_string` values). Unknown strings fall back to
+	/// [`BackendKind::Auto`]. Counterpart of [`BackendKind::to_config_string`].
 	pub fn from_config_string(s: &str) -> BackendKind {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"" | "auto" => BackendKind::Auto,
@@ -140,7 +147,12 @@ impl BackendKind {
 		}
 	}
 
-	/// The resolved kind for a wgpu backend id.
+	/// Map a concrete [`wgpu::Backend`] id to the [`BackendKind`] this build
+	/// reports for it.
+	///
+	/// Anything other than Metal, Vulkan or GL (e.g. DX12 or a browser backend)
+	/// maps to [`BackendKind::Cpu`], because those adapters are never created
+	/// here.
 	fn from_wgpu_backend(b: wgpu::Backend) -> BackendKind {
 		match b {
 			wgpu::Backend::Metal => BackendKind::Metal,
@@ -237,6 +249,14 @@ struct GpuTexture {
 	/// count))` when this token aliases one slice. `None` = the whole
 	/// (single-layer) texture.
 	layer: Option<(u32, u32)>,
+	/// Linux/Vulkan external memory backing (OpenFX GL zero-copy). The
+	/// texture was allocated with `OPAQUE_FD` exportable memory, so the
+	/// plugin's GL context can import the very same allocation.
+	#[cfg(any(target_os = "linux", target_os = "windows"))]
+	external: Option<Arc<external::ExternalTexture>>,
+	/// Optional lifetime guard (CUDA VMM slot): held until the token is
+	/// destroyed, so a resolved texture cannot outlive its source surface.
+	keep_alive: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -268,6 +288,10 @@ pub trait GpuContextLike: Send + Sync {
 	fn upload(&self, token: u64, frame: &Frame) -> Result<()>;
 	/// Download a texture into a CPU frame.
 	fn download(&self, token: u64) -> Result<Frame>;
+	/// Async download (default falls back to a synchronous implementation).
+	fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		Err(Error::State)
+	}
 	/// Blit texture → texture (plain copy; color-managed deferred).
 	fn blit(
 		&self,
@@ -310,6 +334,9 @@ pub struct GpuContext {
 	textures: Mutex<HashMap<u64, GpuTexture>>,
 	next_token: AtomicU64,
 	blit: Mutex<Option<wgpu::RenderPipeline>>,
+	/// Copy pipeline targeting `Rgba16Float` (the gpui surface pipeline is
+	/// filterable and expects half-float, not `Rgba32Float`).
+	blit16: Mutex<Option<wgpu::RenderPipeline>>,
 	/// FLOAT32_FILTERABLE was available (linear sampling on F32 textures).
 	filterable: bool,
 	/// Compiled effect pipelines, keyed by the shaderfx cache key.
@@ -326,12 +353,26 @@ pub struct GpuContext {
 	/// The compiled planar (imported hardware NV12/P010) YUV→RGB pass
 	/// (M5): luma + interleaved chroma plane bindings.
 	yuv_planar: Mutex<Option<PresentPipeline>>,
+	/// The compiled descriptor-driven planar-matrix → Rgba32Float pass
+	/// (full pixel matrix: 1–3 planes, YUV planar/semi-planar and
+	/// interleaved RGB(A), bilinear target scaling).
+	planar_matrix: Mutex<Option<PresentPipeline>>,
 	/// Caller-keyed 3D LUT textures (per-node color transforms; M2).
 	color_luts: Mutex<Vec<(String, u64)>>,
 	/// Set once this context has created a GPU resource (texture or
 	/// pipeline). A context that has never touched the GPU can still be
 	/// replaced by the UI's adopted device (`install_shared`).
 	used: AtomicBool,
+	/// Set after a fatal wgpu poll/device-lost error. Further readbacks
+	/// must fail cleanly instead of polling the lost device again.
+	device_lost: Arc<AtomicBool>,
+	/// Serializes CUDA external-memory import with GPU passes and readbacks.
+	external_lock: Arc<Mutex<()>>,
+	/// Linux/Vulkan OpenFX GL zero-copy: allocate `Rgba32Float` textures
+	/// with exportable `OPAQUE_FD` memory. Disabled by
+	/// `QUERCUS_OFX_GPU_ZEROCOPY=0`; every allocation failure falls back
+	/// to a normal wgpu texture.
+	ofx_zerocopy: bool,
 }
 
 /// The installed display transform: a 3D LUT texture plus its input domain.
@@ -386,6 +427,36 @@ fn shared_slot() -> &'static Mutex<SharedSlot> {
 			ctx: None,
 		})
 	})
+}
+
+/// Whether Vulkan OpenFX GL zero-copy allocation is requested.
+///
+/// Linux is the first-class platform: default on, disabled with
+/// `QUERCUS_OFX_GPU_ZEROCOPY=0` / `false`.
+///
+/// Windows is **experimental and unverified**: default off, enabled only
+/// with `QUERCUS_OFX_GPU_ZEROCOPY=1` / `true`. The runtime still checks
+/// `VK_KHR_external_memory_win32` and the GL memory-object extension; any
+/// failure falls back to the existing CPU/GL-readback path.
+fn zerocopy_requested() -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		!matches!(
+			std::env::var("QUERCUS_OFX_GPU_ZEROCOPY").ok().as_deref(),
+			Some("0") | Some("false") | Some("FALSE") | Some("False")
+		)
+	}
+	#[cfg(target_os = "windows")]
+	{
+		matches!(
+			std::env::var("QUERCUS_OFX_GPU_ZEROCOPY").ok().as_deref(),
+			Some("1") | Some("true") | Some("TRUE") | Some("True")
+		)
+	}
+	#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+	{
+		false
+	}
 }
 
 /// Parse an `QUERCUS_REQUIRE_GPU` value: unset means "skipping is allowed";
@@ -449,6 +520,331 @@ pub fn shared_gpu_or_skip(what: &str) -> Option<Arc<GpuContext>> {
 unsafe impl Send for GpuContext {}
 unsafe impl Sync for GpuContext {}
 
+/// Raw CPU bytes for one plane of a descriptor-driven frame, consumed by
+/// [`GpuContext::upload_planar_matrix_planes`].
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneData<'a> {
+	/// Source plane bytes (row-major).
+	pub data: &'a [u8],
+	/// Source bytes per row; `0` means tightly packed (derived from the
+	/// plane width and source component count).
+	pub stride: usize,
+}
+
+impl<'a> PlaneData<'a> {
+	/// Plane bytes whose rows are packed back-to-back (`stride == 0`, derived
+	/// from the plane width when uploaded). Counterpart of
+	/// [`PlaneData::strided`].
+	pub fn tight(data: &'a [u8]) -> Self {
+		Self { data, stride: 0 }
+	}
+
+	/// Plane bytes with an explicit source row stride, in bytes.
+	///
+	/// `stride` is the distance between the starts of consecutive rows and may
+	/// exceed the packed row length when the decoder pads rows. Counterpart of
+	/// [`PlaneData::tight`].
+	pub fn strided(data: &'a [u8], stride: usize) -> Self {
+		Self { data, stride }
+	}
+}
+
+/// The `wgpu` copy row alignment for texture uploads (256 bytes).
+const PLANE_ROW_ALIGNMENT: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+
+/// Round a packed row up to [`PLANE_ROW_ALIGNMENT`] (256 bytes), the row
+/// stride wgpu requires for buffer↔texture copies. `0` stays `0`.
+fn aligned_plane_row_bytes(row_bytes: usize) -> usize {
+	row_bytes.div_ceil(PLANE_ROW_ALIGNMENT) * PLANE_ROW_ALIGNMENT
+}
+
+/// Copy `height` rows of `row_bytes` from `data` (source stride
+/// `src_stride`, `0` = tightly packed) into a staging buffer whose rows
+/// are [`PLANE_ROW_ALIGNMENT`]-aligned, as `queue.write_texture`
+/// expects. Short buffers and invalid strides are rejected.
+fn repack_plane_rows(
+	data: &[u8],
+	src_stride: usize,
+	row_bytes: usize,
+	height: usize,
+) -> Result<Vec<u8>> {
+	if row_bytes == 0 || height == 0 {
+		return Err(Error::Invalid);
+	}
+	let stride = if src_stride == 0 {
+		row_bytes
+	} else {
+		src_stride
+	};
+	if stride < row_bytes {
+		return Err(Error::Invalid);
+	}
+	let needed = height
+		.checked_sub(1)
+		.and_then(|rows| rows.checked_mul(stride))
+		.and_then(|n| n.checked_add(row_bytes))
+		.ok_or(Error::Invalid)?;
+	if data.len() < needed {
+		return Err(Error::Invalid);
+	}
+	let staged_row = aligned_plane_row_bytes(row_bytes);
+	let staged_len = staged_row.checked_mul(height).ok_or(Error::Invalid)?;
+	let mut staged = vec![0u8; staged_len];
+	for row in 0..height {
+		let src_start = row * stride;
+		let dst_start = row * staged_row;
+		staged[dst_start..dst_start + row_bytes]
+			.copy_from_slice(&data[src_start..src_start + row_bytes]);
+	}
+	Ok(staged)
+}
+
+/// Expand 3-channel interleaved rows into the 4-channel RGBA texture
+/// layout, filling alpha with 1.0 for the storage depth. Returns a
+/// tightly packed RGBA buffer.
+fn expand_rgb_to_rgba(
+	data: &[u8],
+	src_stride: usize,
+	width: usize,
+	height: usize,
+	storage: PlaneStorage,
+) -> Result<Vec<u8>> {
+	if width == 0 || height == 0 {
+		return Err(Error::Invalid);
+	}
+	let bpc = storage.bytes_per_component();
+	let src_row = width.checked_mul(3 * bpc).ok_or(Error::Invalid)?;
+	let dst_row = width.checked_mul(4 * bpc).ok_or(Error::Invalid)?;
+	let stride = if src_stride == 0 { src_row } else { src_stride };
+	if stride < src_row {
+		return Err(Error::Invalid);
+	}
+	let needed = height
+		.checked_sub(1)
+		.and_then(|rows| rows.checked_mul(stride))
+		.and_then(|n| n.checked_add(src_row))
+		.ok_or(Error::Invalid)?;
+	if data.len() < needed {
+		return Err(Error::Invalid);
+	}
+	let alpha: &[u8] = match storage {
+		PlaneStorage::U8 => &[0xFF],
+		PlaneStorage::U16 => &[0xFF, 0xFF],
+		PlaneStorage::F16 => &[0x00, 0x3C],
+		PlaneStorage::F32 => &[0x00, 0x00, 0x80, 0x3F],
+	};
+	let mut out = vec![0u8; dst_row.checked_mul(height).ok_or(Error::Invalid)?];
+	for row in 0..height {
+		let src_start = row * stride;
+		let dst_start = row * dst_row;
+		for pixel in 0..width {
+			let s = src_start + pixel * 3 * bpc;
+			let d = dst_start + pixel * 4 * bpc;
+			out[d..d + 3 * bpc].copy_from_slice(&data[s..s + 3 * bpc]);
+			out[d + 3 * bpc..d + 4 * bpc].copy_from_slice(&alpha[..bpc]);
+		}
+	}
+	Ok(out)
+}
+
+/// One asynchronous readback request: the caller waits on this while the
+/// dedicated readback thread performs the GPU wait/map.
+pub struct FrameReadback {
+	rx: std::sync::mpsc::Receiver<Result<Frame>>,
+	/// Source lifetime guard (CUDA VMM slot): held until the asynchronous
+	/// readback completes, not just until the original Texture drops.
+	_guard: Option<Arc<dyn std::any::Any + Send + Sync>>,
+}
+
+impl FrameReadback {
+	/// Block until the readback thread has produced the frame or an error.
+	pub fn wait(self) -> Result<Frame> {
+		self.rx
+			.recv()
+			.unwrap_or_else(|_| Err(Error::Failed("readback worker stopped".into())))
+	}
+}
+
+struct ReadbackJob {
+	device: wgpu::Device,
+	queue: wgpu::Queue,
+	texture: Arc<wgpu::Texture>,
+	format: wgpu::TextureFormat,
+	width: u32,
+	height: u32,
+	external_lock: Arc<Mutex<()>>,
+	tx: std::sync::mpsc::Sender<Result<Frame>>,
+}
+
+/// The process-wide readback thread, spawned lazily on first use.
+///
+/// Returns the sender side of the job channel. The `quercus-readback`
+/// thread takes each job's external lifecycle lock, runs
+/// [`download_texture`] and sends the result back on the job's own channel.
+/// One thread serialises every [`GpuContext::download_async`] request,
+/// keeping the render thread free but delaying a queued readback behind a
+/// slow one.
+fn readback_worker() -> &'static std::sync::mpsc::Sender<ReadbackJob> {
+	static TX: std::sync::OnceLock<std::sync::mpsc::Sender<ReadbackJob>> = std::sync::OnceLock::new();
+	TX.get_or_init(|| {
+		let (tx, rx) = std::sync::mpsc::channel::<ReadbackJob>();
+		let _ = std::thread::Builder::new()
+			.name("quercus-readback".into())
+			.spawn(move || {
+				while let Ok(job) = rx.recv() {
+					let _external = job
+						.external_lock
+						.lock()
+						.unwrap_or_else(|e| e.into_inner());
+					let result = download_texture(
+						&job.device,
+						&job.queue,
+						&job.texture,
+						job.format,
+						job.width,
+						job.height,
+					);
+					let _ = job.tx.send(result);
+				}
+			});
+		tx
+	})
+}
+
+/// Copy a GPU texture back into a CPU [`Frame`] of `PixelFormat::F32`.
+///
+/// `Rgba32Float` is copied as-is and `Rgba16Float` is converted half→f32;
+/// any other format is rejected. The copy goes through a `MAP_READ` staging
+/// buffer whose rows are padded to 256 bytes and then repacked tightly into
+/// `frame.data`. Because this may run on the readback thread, the device is
+/// polled incrementally (never a blocking `PollType::Wait`) with a 30-second
+/// deadline. Counted in [`gpu_transfer_counters`] as a GPU→CPU transfer.
+///
+/// # Errors
+///
+/// `Error::Failed` for an unsupported format, a failed/timed-out map, or a
+/// device lost while polling (a `panic` from `device.poll` counts as lost).
+fn download_texture(
+	device: &wgpu::Device,
+	queue: &wgpu::Queue,
+	texture: &wgpu::Texture,
+	format: wgpu::TextureFormat,
+	width: u32,
+	height: u32,
+) -> Result<Frame> {
+	GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
+	let (bpp, convert_half) = match format {
+		wgpu::TextureFormat::Rgba32Float => (16usize, false),
+		wgpu::TextureFormat::Rgba16Float => (8usize, true),
+		other => {
+			return Err(Error::Failed(format!(
+				"texture download: unsupported format {other:?}"
+			)))
+		}
+	};
+	let w = width as usize;
+	let h = height as usize;
+	let linesize = w * bpp;
+	// copy_texture_to_buffer requires a 256-byte-aligned row stride.
+	let padded = (linesize + 255) & !255;
+	let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+		label: Some("quercusrender-download"),
+		size: (padded * h) as u64,
+		usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+		mapped_at_creation: false,
+	});
+	let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+		label: Some("quercusrender-download"),
+	});
+	encoder.copy_texture_to_buffer(
+		wgpu::TexelCopyTextureInfo {
+			texture,
+			mip_level: 0,
+			origin: wgpu::Origin3d::ZERO,
+			aspect: wgpu::TextureAspect::All,
+		},
+		wgpu::TexelCopyBufferInfo {
+			buffer: &buffer,
+			layout: wgpu::TexelCopyBufferLayout {
+				offset: 0,
+				bytes_per_row: Some(padded as u32),
+				rows_per_image: None,
+			},
+		},
+		wgpu::Extent3d {
+			width: w as u32,
+			height: h as u32,
+			depth_or_array_layers: 1,
+		},
+	);
+	queue.submit(Some(encoder.finish()));
+	let (tx, rx) = std::sync::mpsc::channel();
+	buffer
+		.slice(..)
+		.map_async(wgpu::MapMode::Read, move |result| {
+			let _ = tx.send(result.is_ok());
+		});
+	// Poll incrementally: a blocking `PollType::Wait` on the readback
+	// thread can serialize against the render thread's submits. Polling
+	// keeps the queue lock held only for the maintenance call, and the
+	// map callback is still driven by the same device.
+	let deadline =
+		std::time::Instant::now() + std::time::Duration::from_secs(30);
+	let mapped_ok = loop {
+		let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let _ = device.poll(wgpu::PollType::Poll);
+		}));
+		if poll.is_err() {
+			return Err(Error::Failed(
+				"wgpu device lost during texture download".into(),
+			));
+		}
+		match rx.try_recv() {
+			Ok(ok) => break ok,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+			Err(std::sync::mpsc::TryRecvError::Empty) => {}
+		}
+		if std::time::Instant::now() > deadline {
+			return Err(Error::Failed("texture download map timed out".into()));
+		}
+		std::thread::sleep(std::time::Duration::from_millis(1));
+	};
+	if !mapped_ok {
+		return Err(Error::Failed("texture download map failed".into()));
+	}
+	let mapped = buffer.slice(..).get_mapped_range();
+	let mut data = if padded == linesize {
+		// Tight rows: one bulk copy instead of `height` per-row memcpys.
+		mapped.to_vec()
+	} else {
+		let mut data = vec![0u8; linesize * h];
+		for row in 0..h {
+			let src = &mapped[row * padded..row * padded + linesize];
+			data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
+		}
+		data
+	};
+	drop(mapped);
+	buffer.unmap();
+	if convert_half {
+		let mut f32_data = vec![0u8; w * h * 16];
+		for i in 0..w * h * 4 {
+			let bits = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
+			let v = half::f16::from_bits(bits).to_f32();
+			f32_data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+		}
+		data = f32_data;
+	}
+	let mut frame = Frame::new();
+	let mut pod = VideoParamsPod::default();
+	pod.width = w as i32;
+	pod.height = h as i32;
+	pod.format = PixelFormat::F32 as i32;
+	frame.set_video_params(pod);
+	frame.data = data;
+	Ok(frame)
+}
+
 impl GpuContext {
 	/// Create for the preferred backend; falls back across the backend
 	/// order. `None` when no adapter is available (callers use the CPU
@@ -507,6 +903,28 @@ impl GpuContext {
 					required_features |= feature;
 				}
 			}
+			// Normalized 16-bit plane textures (P010, YUV422P10,
+			// YUV444P16, and every CPU raw-plane upload at U16 storage)
+			// are native-only formats gated behind this feature. Request
+			// it when the adapter advertises it; the upload path reports
+			// a clean error when an adopted host device lacks it.
+			if adapter
+				.features()
+				.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+			{
+				required_features |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+			}
+			// Windows OpenFX GL zero-copy needs VK_KHR_external_memory_win32
+			// enabled at device creation (OPAQUE_WIN32 export). Request it
+			// only when the adapter advertises it; the runtime gate then
+			// disables zero-copy on drivers without it.
+			#[cfg(target_os = "windows")]
+			if adapter
+				.features()
+				.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
+			{
+				required_features |= wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32;
+			}
 			let (device, queue) =
 				match pollster_block_on(adapter.request_device(&wgpu::DeviceDescriptor {
 					label: Some("quercusrender"),
@@ -523,6 +941,8 @@ impl GpuContext {
 			if kind == BackendKind::Cpu {
 				continue;
 			}
+			let device_lost = Arc::new(AtomicBool::new(false));
+			install_device_lost_logging(&device, device_lost.clone());
 			return Some(Arc::new(Self {
 				_instance: Some(instance),
 				_adapter: Some(adapter),
@@ -532,6 +952,7 @@ impl GpuContext {
 				textures: Mutex::new(HashMap::new()),
 				next_token: AtomicU64::new(1),
 				blit: Mutex::new(None),
+				blit16: Mutex::new(None),
 				filterable,
 				programs: Mutex::new(HashMap::new()),
 				placeholder: Mutex::new(None),
@@ -539,8 +960,12 @@ impl GpuContext {
 				present: Mutex::new(Vec::new()),
 				yuv: Mutex::new(None),
 				yuv_planar: Mutex::new(None),
+				planar_matrix: Mutex::new(None),
 				color_luts: Mutex::new(Vec::new()),
 				used: AtomicBool::new(false),
+				device_lost,
+				external_lock: Arc::new(Mutex::new(())),
+				ofx_zerocopy: zerocopy_requested(),
 			}));
 		}
 		None
@@ -572,6 +997,7 @@ impl GpuContext {
 			textures: Mutex::new(HashMap::new()),
 			next_token: AtomicU64::new(1),
 			blit: Mutex::new(None),
+			blit16: Mutex::new(None),
 			filterable,
 			programs: Mutex::new(HashMap::new()),
 			placeholder: Mutex::new(None),
@@ -579,8 +1005,12 @@ impl GpuContext {
 			present: Mutex::new(Vec::new()),
 			yuv: Mutex::new(None),
 			yuv_planar: Mutex::new(None),
+			planar_matrix: Mutex::new(None),
 			color_luts: Mutex::new(Vec::new()),
 			used: AtomicBool::new(false),
+			device_lost: Arc::new(AtomicBool::new(false)),
+			external_lock: Arc::new(Mutex::new(())),
+			ofx_zerocopy: zerocopy_requested(),
 		})
 	}
 
@@ -588,6 +1018,12 @@ impl GpuContext {
 	/// shared its device; presentation is zero-copy on this context).
 	pub fn is_adopted(&self) -> bool {
 		self._adapter.is_none()
+	}
+
+	/// The adapter description, when this context created its own device
+	/// (adopted contexts do not own an adapter).
+	pub fn adapter_name(&self) -> Option<String> {
+		self._adapter.as_ref().map(|a| a.get_info().name)
 	}
 
 	/// True once the context has created a GPU resource (texture or
@@ -604,6 +1040,77 @@ impl GpuContext {
 		(Arc::new(self.device.clone()), Arc::new(self.queue.clone()))
 	}
 
+	/// Wait until the wgpu queue has finished all submitted work. Used as
+	/// the coarse cross-API synchronization boundary for the OpenFX GL
+	/// zero-copy path (the first version does not yet use external
+	/// semaphores).
+	pub fn wait_idle(&self) {
+		// Flush any queued `Queue::write_texture` staging copies first:
+		// they are only submitted with the next `Queue::submit`, and a
+		// bare `poll` does not necessarily submit them.
+		let _ = self.queue.submit(std::iter::empty());
+		// `Device::poll` panics via wgpu's fatal-error hook once the device
+		// has been lost. A plugin/host readback must fail that frame, not
+		// abort the whole editor.
+		if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+		}))
+		.is_err()
+		{
+			self.mark_device_lost();
+		}
+	}
+
+	/// Bounded variant of [`GpuContext::wait_idle`]. Returns false when the
+	/// GPU did not finish within `timeout` (external-memory/OFX paths must
+	/// not block the render thread forever on a driver stall).
+	pub fn wait_idle_for(&self, timeout: std::time::Duration) -> bool {
+		let _ = self.queue.submit(std::iter::empty());
+		std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			matches!(
+				self.device.poll(wgpu::PollType::Wait {
+					submission_index: None,
+					timeout: Some(timeout),
+				}),
+				Ok(wgpu::PollStatus::WaitSucceeded) | Ok(wgpu::PollStatus::QueueEmpty)
+			)
+		}))
+		.unwrap_or_else(|_| {
+			self.mark_device_lost();
+			false
+		})
+	}
+
+	/// Run `callback` once all GPU work submitted so far has completed.
+	/// External-memory producers use this to know when a reusable VMM
+	/// buffer is no longer read by the renderer.
+	/// Lock shared with the CUDA import path: CUDA writes into exported
+	/// Vulkan memory must not run concurrently with a readback using that
+	/// device.
+	pub fn external_lifecycle_lock(&self) -> Arc<Mutex<()>> {
+		self.external_lock.clone()
+	}
+
+	/// Run `callback` once every command buffer submitted so far has finished
+	/// on the GPU.
+	///
+	/// Thin forwarding to [`wgpu::Queue::on_submitted_work_done`]: `callback`
+	/// runs on wgpu's internal thread, so it must capture everything it needs
+	/// and must not block.
+	pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static) {
+		self.queue.on_submitted_work_done(callback);
+	}
+
+	/// True after a fatal wgpu device-lost/poll error.
+	pub fn device_lost(&self) -> bool {
+		self.device_lost.load(std::sync::atomic::Ordering::Acquire)
+	}
+
+	fn mark_device_lost(&self) {
+		self.device_lost
+			.store(true, std::sync::atomic::Ordering::Release);
+	}
+
 	/// The backend actually in use.
 	pub fn kind(&self) -> BackendKind {
 		self.kind
@@ -615,7 +1122,18 @@ impl GpuContext {
 		self.kind != BackendKind::Cpu
 	}
 
-	/// Create an F32 RGBA texture (the pipeline's canonical format).
+	/// Create an `Rgba32Float` texture with the pipeline's canonical usage flags
+	/// and register it.
+	///
+	/// `width`/`height` are in pixels and must be positive. The texture can be
+	/// sampled, rendered to, uploaded into and copied from; this is the format
+	/// every working-space pass produces. Returns the registry token consumed by
+	/// [`GpuContext::upload`], [`GpuContext::blit`], [`GpuContext::download`]
+	/// and the rest of the texture API.
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `width` or `height` is not positive.
 	pub fn create_texture(&self, width: i32, height: i32) -> Result<u64> {
 		self.create_texture_format(
 			width,
@@ -642,6 +1160,15 @@ impl GpuContext {
 	) -> Result<u64> {
 		if width <= 0 || height <= 0 || depth == 0 {
 			return Err(Error::Invalid);
+		}
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		if self.ofx_zerocopy && depth == 1 && format == wgpu::TextureFormat::Rgba32Float {
+			match self.create_exportable_texture(width, height, format, usage) {
+				Ok(token) => return Ok(token),
+				Err(err) => {
+					log::debug!("exportable Rgba32Float texture unavailable, falling back: {err}");
+				}
+			}
 		}
 		self.used.store(true, Ordering::Release);
 		let size = wgpu::Extent3d {
@@ -673,24 +1200,46 @@ impl GpuContext {
 				format,
 				aspect: wgpu::TextureAspect::All,
 				layer: None,
+				#[cfg(any(target_os = "linux", target_os = "windows"))]
+				external: None,
+				keep_alive: None,
 			},
 		);
 		Ok(token)
 	}
 
-	/// Destroy a texture token (idempotent).
+	/// Drop `token` from the registry, releasing the GPU texture once the last
+	/// reference is gone. Unknown tokens are ignored, so repeated calls are
+	/// harmless (idempotent).
 	pub fn destroy_texture(&self, token: u64) {
 		lock(&self.textures).remove(&token);
 	}
 
-	/// Look up a texture's (width, height).
+	/// Attach a lifetime guard to a token (e.g. the CUDA VMM slot backing an
+	/// imported frame). Dropped when the token is destroyed.
+	pub fn set_texture_keep_alive(
+		&self,
+		token: u64,
+		guard: Arc<dyn std::any::Any + Send + Sync>,
+	) {
+		if let Some(entry) = lock(&self.textures).get_mut(&token) {
+			entry.keep_alive = Some(guard);
+		}
+	}
+
+	/// The `(width, height)` of the texture behind `token`, in pixels; `None`
+	/// when the token is unknown.
 	pub fn texture_size(&self, token: u64) -> Option<(u32, u32)> {
 		lock(&self.textures)
 			.get(&token)
 			.map(|t| (t.width, t.height))
 	}
 
-	/// True when the registry holds the token.
+	/// Whether the registry still holds `token`.
+	///
+	/// Tokens leave the registry via [`GpuContext::destroy_texture`] and
+	/// [`GpuContext::take_texture_handle`], so `false` means the texture has
+	/// already been released.
 	pub fn has_texture(&self, token: u64) -> bool {
 		lock(&self.textures).contains_key(&token)
 	}
@@ -703,13 +1252,30 @@ impl GpuContext {
 		lock(&self.textures).get(&token).map(|t| t.texture.clone())
 	}
 
-	/// The texture's format (tests/plane uploads).
+	/// Remove a token from the registry and return its texture. Used for
+	/// transient conversion/presentation textures handed to the host.
+	pub fn take_texture_handle(&self, token: u64) -> Option<Arc<wgpu::Texture>> {
+		lock(&self.textures).remove(&token).map(|t| t.texture)
+	}
+
+	/// The format `token` was created with, or `None` when the token is unknown.
+	/// Used by plane uploads and tests.
 	pub fn texture_format(&self, token: u64) -> Option<wgpu::TextureFormat> {
 		lock(&self.textures).get(&token).map(|t| t.format)
 	}
 
-	/// Upload tightly packed raw bytes into a plain-format texture (the
-	/// YUV→RGB planes). Counted as a CPU→GPU transfer.
+	/// Upload tightly packed raw bytes into a plain single-channel texture (the
+	/// YUV→RGB planes).
+	///
+	/// `data` must be at least `width * bytes-per-texel * height` bytes with no
+	/// row padding; accepted texture formats are `R8Unorm`, `R16Unorm`,
+	/// `R16Float` and `R32Float` (1, 2, 2 and 4 bytes per texel). Counted in
+	/// [`gpu_transfer_counters`] as a CPU→GPU transfer.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` for an unknown `token`; `Error::Invalid` for an
+	/// unsupported texture format or a buffer shorter than the texture needs.
 	pub fn upload_plane(&self, token: u64, data: &[u8]) -> Result<()> {
 		GPU_UPLOADS.fetch_add(1, Ordering::Relaxed);
 		let entry = lock(&self.textures)
@@ -750,7 +1316,287 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// Install the display transform LUT (M2). The LUT maps working-space
+	/// True when the device enabled the normalized 16-bit texture
+	/// formats (`R16Unorm`/`Rg16Unorm`/`Rgba16Unorm`). Required for U16
+	/// plane storage (P010, YUV422P10, 10-bit-in-16 raw uploads).
+	pub fn supports_16bit_norm_planes(&self) -> bool {
+		self.device
+			.features()
+			.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+	}
+
+	/// Create the plane textures for a descriptor-driven frame: three
+	/// single-channel planes for planar YUV, luma + interleaved two-channel
+	/// chroma for semi-planar YUV, one RGBA plane for interleaved RGB(A).
+	/// Chroma planes follow the descriptor's subsampling (odd dimensions
+	/// round up). Every plane is `TEXTURE_BINDING | COPY_DST`; upload CPU
+	/// bytes with [`GpuContext::upload_planar_matrix_planes`]. The caller
+	/// owns the returned tokens (wrap them in a `PlanarTexture` or destroy
+	/// them).
+	pub fn create_planar_matrix_textures(
+		&self,
+		descriptor: PlanarDescriptor,
+		width: i32,
+		height: i32,
+	) -> Result<Vec<u64>> {
+		if width <= 0 || height <= 0 || descriptor.plane_count() == 0 {
+			return Err(Error::Invalid);
+		}
+		if descriptor.storage == PlaneStorage::U16 && !self.supports_16bit_norm_planes() {
+			return Err(Error::Failed(
+				"16-bit normalized texture formats are not enabled on this device".into(),
+			));
+		}
+		let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+		let mut tokens = Vec::with_capacity(descriptor.plane_count());
+		for plane in 0..descriptor.plane_count() {
+			let (plane_width, plane_height) = descriptor
+				.plane_size(plane, width, height)
+				.ok_or(Error::Invalid)?;
+			let format = descriptor
+				.plane_texture_format(plane)
+				.ok_or(Error::Invalid)?;
+			match self.create_texture_format(plane_width, plane_height, 1, format, usage) {
+				Ok(token) => tokens.push(token),
+				Err(err) => {
+					for token in &tokens {
+						self.destroy_texture(*token);
+					}
+					return Err(err);
+				}
+			}
+		}
+		Ok(tokens)
+	}
+
+	/// Upload raw CPU plane bytes for a descriptor-driven frame. `planes`
+	/// are the tokens from [`GpuContext::create_planar_matrix_textures`]
+	/// in descriptor order and `data` has exactly one entry per plane.
+	///
+	/// Rows may be tightly packed (`stride == 0`) or strided; each row is
+	/// copied into a 256-byte (`COPY_BYTES_PER_ROW_ALIGNMENT`) aligned
+	/// staging row before `queue.write_texture`, and 16-bit values are
+	/// preserved verbatim. Interleaved RGB source data (3 channels) is
+	/// expanded into the RGBA texture layout with alpha = 1.0. A failure
+	/// after an earlier plane was written leaves that plane uploaded; the
+	/// frame-level helpers destroy the tokens on failure.
+	pub fn upload_planar_matrix_planes(
+		&self,
+		planes: &[u64],
+		descriptor: PlanarDescriptor,
+		data: &[PlaneData<'_>],
+	) -> Result<()> {
+		if planes.len() != descriptor.plane_count() || data.len() != planes.len() {
+			return Err(Error::Invalid);
+		}
+		for (plane, (token, plane_data)) in planes.iter().zip(data).enumerate() {
+			self.write_planar_plane(*token, descriptor, plane, plane_data)?;
+		}
+		Ok(())
+	}
+
+	/// Create and upload one descriptor-driven frame in one call.
+	/// Returns the plane tokens in descriptor order; the caller owns them.
+	/// On failure every created token is destroyed before returning.
+	pub fn upload_planar_matrix_frame(
+		&self,
+		descriptor: PlanarDescriptor,
+		width: i32,
+		height: i32,
+		data: &[PlaneData<'_>],
+	) -> Result<Vec<u64>> {
+		if data.len() != descriptor.plane_count() {
+			return Err(Error::Invalid);
+		}
+		let planes = self.create_planar_matrix_textures(descriptor, width, height)?;
+		if let Err(err) = self.upload_planar_matrix_planes(&planes, descriptor, data) {
+			for token in &planes {
+				self.destroy_texture(*token);
+			}
+			return Err(err);
+		}
+		Ok(planes)
+	}
+
+	/// Legacy adapter: create the `(y, uv)` semi-planar plane textures for a
+	/// [`PlanarFormat`].
+	///
+	/// `width`/`height` are the luma dimensions; the chroma plane is sized by
+	/// the format's subsampling. Returns the two tokens, or `Error::Invalid`
+	/// after destroying whatever was created when the format does not describe
+	/// exactly two planes. Counterpart of
+	/// [`GpuContext::upload_planar_frame`].
+	pub fn create_planar_textures(
+		&self,
+		format: PlanarFormat,
+		width: i32,
+		height: i32,
+	) -> Result<(u64, u64)> {
+		let mut planes = self.create_planar_matrix_textures(format.descriptor(), width, height)?;
+		if planes.len() == 2 {
+			Ok((planes[0], planes[1]))
+		} else {
+			for token in &planes {
+				self.destroy_texture(*token);
+			}
+			planes.clear();
+			Err(Error::Invalid)
+		}
+	}
+
+	/// Legacy adapter: upload tightly packed `y`/`uv` CPU bytes into
+	/// textures created by [`GpuContext::create_planar_textures`].
+	pub fn upload_planar_planes(
+		&self,
+		y: u64,
+		uv: u64,
+		y_bytes: &[u8],
+		uv_bytes: &[u8],
+	) -> Result<()> {
+		self.upload_planar_planes_strided(y, uv, y_bytes, 0, uv_bytes, 0)
+	}
+
+	/// Legacy stride-aware adapter: `y_stride`/`uv_stride` are the source
+	/// bytes per row (`0` = tightly packed).
+	pub fn upload_planar_planes_strided(
+		&self,
+		y: u64,
+		uv: u64,
+		y_bytes: &[u8],
+		y_stride: usize,
+		uv_bytes: &[u8],
+		uv_stride: usize,
+	) -> Result<()> {
+		let descriptor = self.infer_semi_planar_descriptor(y, uv, None)?;
+		self.upload_planar_matrix_planes(
+			&[y, uv],
+			descriptor,
+			&[
+				PlaneData::strided(y_bytes, y_stride),
+				PlaneData::strided(uv_bytes, uv_stride),
+			],
+		)
+	}
+
+	/// Legacy adapter: create and upload one complete [`PlanarFormat`] frame,
+	/// returning the `(y, uv)` tokens.
+	///
+	/// `width`/`height` are the luma dimensions; `y_bytes`/`uv_bytes` carry the
+	/// plane data and `y_stride`/`uv_stride` the source bytes per row (`0` =
+	/// tightly packed). Both textures are created first and destroyed again if
+	/// the upload fails, so an `Err` leaks nothing. The caller owns the returned
+	/// tokens (wrap them in a `PlanarTexture` or destroy them).
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` for non-positive dimensions or plane bytes too short for
+	/// the given stride and size; `Error::Failed` when the device lacks 16-bit
+	/// normalized plane formats.
+	#[allow(clippy::too_many_arguments)]
+	pub fn upload_planar_frame(
+		&self,
+		format: PlanarFormat,
+		width: i32,
+		height: i32,
+		y_bytes: &[u8],
+		y_stride: usize,
+		uv_bytes: &[u8],
+		uv_stride: usize,
+	) -> Result<(u64, u64)> {
+		let descriptor = format.descriptor();
+		let planes = self.create_planar_matrix_textures(descriptor, width, height)?;
+		if let Err(err) = self.upload_planar_matrix_planes(
+			&planes,
+			descriptor,
+			&[
+				PlaneData::strided(y_bytes, y_stride),
+				PlaneData::strided(uv_bytes, uv_stride),
+			],
+		) {
+			for token in &planes {
+				self.destroy_texture(*token);
+			}
+			return Err(err);
+		}
+		Ok((planes[0], planes[1]))
+	}
+
+	/// Write one plane's CPU bytes into a registry texture: validate the
+	/// descriptor matches the texture, repack rows to the copy alignment
+	/// and expand RGB to RGBA where needed.
+	fn write_planar_plane(
+		&self,
+		token: u64,
+		descriptor: PlanarDescriptor,
+		plane: usize,
+		data: &PlaneData<'_>,
+	) -> Result<()> {
+		let entry = lock(&self.textures)
+			.get(&token)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let expected_format = descriptor
+			.plane_texture_format(plane)
+			.ok_or(Error::Invalid)?;
+		if entry.format != expected_format
+			|| !entry
+				.texture
+				.usage()
+				.contains(wgpu::TextureUsages::COPY_DST)
+		{
+			return Err(Error::Invalid);
+		}
+		let source_components = descriptor
+			.plane_source_components(plane)
+			.ok_or(Error::Invalid)?;
+		let texture_components = descriptor
+			.plane_texture_components(plane)
+			.ok_or(Error::Invalid)?;
+		let bpc = descriptor.storage.bytes_per_component();
+		let width = entry.width as usize;
+		let height = entry.height as usize;
+		if width == 0 || height == 0 {
+			return Err(Error::Invalid);
+		}
+		let source_row_bytes = width
+			.checked_mul(source_components * bpc)
+			.ok_or(Error::Invalid)?;
+		let texture_row_bytes = width
+			.checked_mul(texture_components * bpc)
+			.ok_or(Error::Invalid)?;
+		let staged = if source_components == texture_components {
+			repack_plane_rows(data.data, data.stride, source_row_bytes, height)?
+		} else if source_components == 3 && texture_components == 4 {
+			let expanded =
+				expand_rgb_to_rgba(data.data, data.stride, width, height, descriptor.storage)?;
+			repack_plane_rows(&expanded, 0, texture_row_bytes, height)?
+		} else {
+			return Err(Error::Invalid);
+		};
+		let staged_row = aligned_plane_row_bytes(texture_row_bytes);
+		GPU_UPLOADS.fetch_add(1, Ordering::Relaxed);
+		self.queue.write_texture(
+			wgpu::TexelCopyTextureInfo {
+				texture: &entry.texture,
+				mip_level: 0,
+				origin: wgpu::Origin3d::ZERO,
+				aspect: wgpu::TextureAspect::All,
+			},
+			&staged,
+			wgpu::TexelCopyBufferLayout {
+				offset: 0,
+				bytes_per_row: Some(staged_row as u32),
+				rows_per_image: Some(entry.height),
+			},
+			wgpu::Extent3d {
+				width: entry.width,
+				height: entry.height,
+				depth_or_array_layers: 1,
+			},
+		);
+		Ok(())
+	}
+
 	/// RGB to display-encoded RGB (the output node plus the display ICC
 	/// chain, baked on the CPU by the app); [`present_texture`] applies it
 	/// entirely on the GPU. Replaces (and destroys) any previous LUT.
@@ -769,8 +1615,17 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// Upload a 3D LUT as an `Rgba32Float` D3 texture. Counted as a
-	/// CPU→GPU transfer; callers cache the GPU resource per LUT.
+	/// Upload a [`crate::lut::Lut3d`] as an `edge³` `Rgba32Float` 3D texture.
+	///
+	/// `lut.data` holds RGB triplets ordered z-major, then y, then x; they are
+	/// expanded to RGBA with alpha 1.0 and rows padded to wgpu's 256-byte copy
+	/// alignment. Counted in [`gpu_transfer_counters`] as a CPU→GPU transfer.
+	/// Callers cache the returned token per LUT (see
+	/// [`GpuContext::apply_color_lut`] and [`GpuContext::set_display_lut`]).
+	///
+	/// # Errors
+	///
+	/// `Error::Invalid` when `lut.data.len() != edge³ * 3`.
 	fn upload_lut(&self, lut: &crate::lut::Lut3d) -> Result<u64> {
 		let expected = (lut.edge as usize).pow(3) * 3;
 		if lut.data.len() != expected {
@@ -837,7 +1692,7 @@ impl GpuContext {
 	}
 
 	/// Apply the installed display LUT to `src` (a working-space
-	/// `Rgba32Float` texture) and return the resulting `Rgba16Float`
+	/// `Rgba32Float` texture) and return the resulting `Rgba32Float`
 	/// display texture token. GPU→GPU: no upload, no download. The caller
 	/// retrieves the raw handle with [`GpuContext::texture_handle`].
 	pub fn present_texture(&self, src: u64) -> Result<u64> {
@@ -854,7 +1709,7 @@ impl GpuContext {
 			lut.1,
 			lut.2,
 			lut.3,
-			wgpu::TextureFormat::Rgba16Float,
+			wgpu::TextureFormat::Rgba32Float,
 		)
 	}
 
@@ -888,8 +1743,19 @@ impl GpuContext {
 		)
 	}
 
-	/// The shared LUT pass: sample the D3 LUT with manual trilinear
-	/// interpolation into a new texture of `dst_format`.
+	/// Run the display LUT pass: sample the 3D `lut_token` texture at every
+	/// pixel of `src` and write the result into a new texture of `dst_format`.
+	///
+	/// `edge` is the LUT's grid size and `lo`/`hi` the input value ranges it was
+	/// baked for; they are passed to the shader verbatim. The destination is
+	/// sized from `src`, registered like any other texture and owned by the
+	/// caller. The external lifecycle lock is held for the whole pass so an
+	/// external producer cannot write the source concurrently.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` when `src` or `lut_token` is unknown; texture and
+	/// pipeline creation errors propagate unchanged.
 	fn apply_lut_to(
 		&self,
 		src: u64,
@@ -899,6 +1765,10 @@ impl GpuContext {
 		hi: [f32; 3],
 		dst_format: wgpu::TextureFormat,
 	) -> Result<u64> {
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		let src_tex = lock(&self.textures)
 			.get(&src)
 			.cloned()
@@ -1001,8 +1871,17 @@ impl GpuContext {
 		Ok(dst)
 	}
 
-	/// The LUT pass (manual trilinear, no float-filtering feature
-	/// required), cached per output format.
+	/// The display LUT pass, cached per destination format.
+	///
+	/// Samples the working-space `Rgba32Float` source and an `edge³` 3D LUT with
+	/// manual trilinear interpolation, so no float-filtering device feature is
+	/// required, and writes the result as `format`. Binds the source (0), the
+	/// LUT as `texture_3d` (1) and a 48-byte edge/lo/hi uniform (2). Built
+	/// inside a validation error scope; a rejected pipeline is never cached.
+	///
+	/// # Errors
+	///
+	/// `Error::Failed` when wgpu rejects the new render pipeline.
 	fn present_pipeline(&self, format: wgpu::TextureFormat) -> Result<PresentPipeline> {
 		let mut cache = lock(&self.present);
 		if let Some((_, p)) = cache.iter().find(|(f, _)| *f == format) {
@@ -1225,7 +2104,12 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// The YUV→RGB pass pipeline (built once).
+	/// The three-plane YUV→RGB pipeline, built once and then reused.
+	///
+	/// Binds three fragment-visible, non-filterable `texture_2d<f32>` planes
+	/// (Y, U and V, sampled with `textureLoad`) plus the uniform
+	/// [`YuvTransform`] at binding 3. Cached in the `yuv` slot and drawn by
+	/// [`GpuContext::run_yuv_to_rgb`].
 	fn yuv_pipeline(&self) -> Result<PresentPipeline> {
 		let mut cache = lock(&self.yuv);
 		if let Some(p) = cache.as_ref() {
@@ -1332,10 +2216,6 @@ impl GpuContext {
 	) -> Result<()> {
 		let y_view = self.texture_view(y)?;
 		let uv_view = self.texture_view(uv)?;
-		let dst_tex = lock(&self.textures)
-			.get(&dst)
-			.cloned()
-			.ok_or(Error::NotFound)?;
 		let (y_size, uv_size) = {
 			let textures = lock(&self.textures);
 			let y = textures.get(&y).ok_or(Error::NotFound)?;
@@ -1363,43 +2243,87 @@ impl GpuContext {
 			0.0,
 			0.0,
 		];
-		let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("quercusrender-yuv-planar-params"),
-			size: 64,
-			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-			mapped_at_creation: false,
-		});
-		self.queue
-			.write_buffer(&uniform, 0, &f32_uniform_bytes(&params));
+		self.run_planar_views_pass(
+			&[&y_view, &uv_view],
+			dst,
+			&pipeline,
+			&params,
+			"quercusrender-yuv-planar",
+		)
+	}
+
+	/// Bind `views` (1–3 plane textures) plus the uniform `params` and
+	/// draw the fullscreen planar pass into `dst`. Shared by the legacy
+	/// 1:1 semi-planar pass and the descriptor-driven matrix pass; the
+	/// pipeline's layout must have one sampled-texture binding per view
+	/// (0..n) and the uniform block at binding n.
+	fn run_planar_views_pass(
+		&self,
+		views: &[&wgpu::TextureView],
+		dst: u64,
+		pipeline: &PresentPipeline,
+		params: &[f32],
+		label: &str,
+	) -> Result<()> {
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost before planar pass".into(),
+			));
+		}
+		if views.is_empty() || views.len() > 3 {
+			return Err(Error::Invalid);
+		}
+		let dst_tex = lock(&self.textures)
+			.get(&dst)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let mut uniform_bytes = f32_uniform_bytes(params);
+		let uniform_size = (uniform_bytes.len() as u64).next_multiple_of(16).max(16);
+		uniform_bytes.resize(uniform_size as usize, 0);
+		let params_label = format!("{label}-params");
+		let uniform = match uniform_buffer_from_bytes(
+			&self.device,
+			&params_label,
+			&uniform_bytes,
+			uniform_size,
+		) {
+			Ok(buffer) => buffer,
+			Err(error) => {
+				self.mark_device_lost();
+				return Err(error);
+			}
+		};
 		let dst_view = dst_tex
 			.texture
 			.create_view(&wgpu::TextureViewDescriptor::default());
-		let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-			label: Some("quercusrender-yuv-planar-bg"),
-			layout: &pipeline.layout,
-			entries: &[
-				wgpu::BindGroupEntry {
-					binding: 0,
-					resource: wgpu::BindingResource::TextureView(&y_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 1,
-					resource: wgpu::BindingResource::TextureView(&uv_view),
-				},
-				wgpu::BindGroupEntry {
-					binding: 2,
-					resource: uniform.as_entire_binding(),
-				},
-			],
+		let mut entries: Vec<wgpu::BindGroupEntry<'_>> = Vec::with_capacity(views.len() + 1);
+		for (binding, view) in views.iter().enumerate() {
+			entries.push(wgpu::BindGroupEntry {
+				binding: binding as u32,
+				resource: wgpu::BindingResource::TextureView(view),
+			});
+		}
+		entries.push(wgpu::BindGroupEntry {
+			binding: views.len() as u32,
+			resource: uniform.as_entire_binding(),
 		});
+		let bg_label = format!("{label}-bg");
+		let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some(&bg_label),
+			layout: &pipeline.layout,
+			entries: &entries,
+		});
+		let pass_label = format!("{label}-pass");
 		let mut encoder = self
 			.device
-			.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-				label: Some("quercusrender-yuv-planar"),
-			});
+			.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
 		{
 			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-				label: Some("quercusrender-yuv-planar-pass"),
+				label: Some(&pass_label),
 				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
 					view: &dst_view,
 					depth_slice: None,
@@ -1422,12 +2346,41 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// The planar YUV→RGB pass pipeline (built once).
+	/// The legacy semi-planar YUV→RGB pass pipeline (built once): two
+	/// plane bindings (luma + interleaved chroma) and the uniform block.
 	fn planar_yuv_pipeline(&self) -> Result<PresentPipeline> {
 		let mut cache = lock(&self.yuv_planar);
 		if let Some(p) = cache.as_ref() {
 			return Ok(p.clone());
 		}
+		let program = self.build_planar_pipeline(YUV_PLANAR_WGSL, 2, "quercusrender-yuv-planar")?;
+		*cache = Some(program.clone());
+		Ok(program)
+	}
+
+	/// The descriptor-driven planar-matrix → Rgba32Float pipeline: three
+	/// plane bindings (unused slots are bound to a duplicate view) and the
+	/// uniform block.
+	fn planar_matrix_pipeline(&self) -> Result<PresentPipeline> {
+		let mut cache = lock(&self.planar_matrix);
+		if let Some(p) = cache.as_ref() {
+			return Ok(p.clone());
+		}
+		let program =
+			self.build_planar_pipeline(YUV_PLANAR_MATRIX_WGSL, 3, "quercusrender-planar-matrix")?;
+		*cache = Some(program.clone());
+		Ok(program)
+	}
+
+	/// Build a planar pass pipeline: `texture_count` sampled plane
+	/// bindings (0..n) plus the uniform block at binding n, the fixed
+	/// fullscreen-triangle vertex stage and one `Rgba32Float` target.
+	fn build_planar_pipeline(
+		&self,
+		shader: &str,
+		texture_count: usize,
+		label: &str,
+	) -> Result<PresentPipeline> {
 		let plane = |binding: u32| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1438,49 +2391,55 @@ impl GpuContext {
 			},
 			count: None,
 		};
+		let mut layout_entries = Vec::with_capacity(texture_count + 1);
+		for binding in 0..texture_count {
+			layout_entries.push(plane(binding as u32));
+		}
+		layout_entries.push(wgpu::BindGroupLayoutEntry {
+			binding: texture_count as u32,
+			visibility: wgpu::ShaderStages::FRAGMENT,
+			ty: wgpu::BindingType::Buffer {
+				ty: wgpu::BufferBindingType::Uniform,
+				has_dynamic_offset: false,
+				min_binding_size: None,
+			},
+			count: None,
+		});
+		let layout_label = format!("{label}-layout");
 		let layout = self
 			.device
 			.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-				label: Some("quercusrender-yuv-planar-layout"),
-				entries: &[
-					plane(0),
-					plane(1),
-					wgpu::BindGroupLayoutEntry {
-						binding: 2,
-						visibility: wgpu::ShaderStages::FRAGMENT,
-						ty: wgpu::BindingType::Buffer {
-							ty: wgpu::BufferBindingType::Uniform,
-							has_dynamic_offset: false,
-							min_binding_size: None,
-						},
-						count: None,
-					},
-				],
+				label: Some(&layout_label),
+				entries: &layout_entries,
 			});
+		let vs_label = format!("{label}-vs");
 		let vs = self
 			.device
 			.create_shader_module(wgpu::ShaderModuleDescriptor {
-				label: Some("quercusrender-yuv-planar-vs"),
+				label: Some(&vs_label),
 				source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(EFFECT_VS_WGSL)),
 			});
+		let fs_label = format!("{label}-fs");
 		let fs = self
 			.device
 			.create_shader_module(wgpu::ShaderModuleDescriptor {
-				label: Some("quercusrender-yuv-planar-fs"),
-				source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(YUV_PLANAR_WGSL)),
+				label: Some(&fs_label),
+				source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(shader)),
 			});
+		let pipeline_layout_label = format!("{label}-pipeline-layout");
 		let pipeline_layout = self
 			.device
 			.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-				label: Some("quercusrender-yuv-planar-pipeline-layout"),
+				label: Some(&pipeline_layout_label),
 				bind_group_layouts: &[Some(&layout)],
 				immediate_size: 0,
 			});
+		let pipeline_label = format!("{label}-pipeline");
 		let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
 		let pipeline = self
 			.device
 			.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-				label: Some("quercusrender-yuv-planar"),
+				label: Some(&pipeline_label),
 				layout: Some(&pipeline_layout),
 				vertex: wgpu::VertexState {
 					module: &vs,
@@ -1506,12 +2465,227 @@ impl GpuContext {
 			});
 		if let Some(err) = pollster_block_on(scope.pop()) {
 			return Err(Error::Failed(format!(
-				"planar YUV pipeline validation failed: {err}"
+				"{label} pipeline validation failed: {err}"
 			)));
 		}
-		let program = PresentPipeline { pipeline, layout };
-		*cache = Some(program.clone());
-		Ok(program)
+		Ok(PresentPipeline { pipeline, layout })
+	}
+
+	/// Run the descriptor-driven planar-matrix → RGBA pass with bilinear
+	/// target scaling. Handles 1–3 plane bindings: planar YUV (`[Y,U,V]`),
+	/// semi-planar YUV (`[Y,UV]`) and interleaved RGB/RGBA; output is
+	/// always `Rgba32Float`.
+	///
+	/// `src_size` is the frame's visible luma size (the first plane's
+	/// texture may be larger when a hardware surface pads its allocation);
+	/// every plane texture must be at least the descriptor's nominal size
+	/// for that luma size (odd chroma dimensions round up). `dst_size` must
+	/// equal the destination texture's dimensions. All
+	/// sampling is normalized and bilinear (`textureLoad` 4-tap, edge
+	/// clamped), so arbitrary source/destination sizes work. `transform`
+	/// is applied to the YUV models and ignored for RGB/RGBA (direct
+	/// passthrough; RGBA keeps alpha, RGB outputs alpha 1.0).
+	pub fn run_planar_matrix_to_rgb(
+		&self,
+		planes: &[u64],
+		dst: u64,
+		descriptor: PlanarDescriptor,
+		transform: &YuvTransform,
+		src_size: (u32, u32),
+		dst_size: (u32, u32),
+	) -> Result<()> {
+		let plane_count = descriptor.plane_count();
+		if planes.len() != plane_count
+			|| src_size.0 == 0
+			|| src_size.1 == 0
+			|| dst_size.0 == 0
+			|| dst_size.1 == 0
+		{
+			return Err(Error::Invalid);
+		}
+		let mut views = Vec::with_capacity(plane_count);
+		for (plane, token) in planes.iter().enumerate() {
+			let view = self.texture_view(*token)?;
+			let (size, format) = {
+				let textures = lock(&self.textures);
+				let entry = textures.get(token).ok_or(Error::NotFound)?;
+				((entry.width, entry.height), entry.format)
+			};
+			let want_size = descriptor
+				.plane_size(plane, src_size.0 as i32, src_size.1 as i32)
+				.ok_or(Error::Invalid)?;
+			// Hardware surfaces may pad plane allocations beyond the
+			// visible chroma size (row/height alignment). The pass only
+			// samples the visible region, so accept any texture at least as
+			// large as the descriptor's nominal plane; a smaller plane is
+			// an error.
+			if size.0 < want_size.0 as u32
+				|| size.1 < want_size.1 as u32
+				|| Some(format) != descriptor.plane_texture_format(plane)
+			{
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!(
+						"[planar] plane {plane} mismatch: size={size:?} format={format:?} want={want_size:?} descriptor={:?}",
+						descriptor.plane_texture_format(plane),
+					);
+				}
+				return Err(Error::Invalid);
+			}
+			views.push(view);
+		}
+		{
+			let dst_tex = lock(&self.textures)
+				.get(&dst)
+				.cloned()
+				.ok_or(Error::NotFound)?;
+			if (dst_tex.width, dst_tex.height) != dst_size
+				|| dst_tex.format != wgpu::TextureFormat::Rgba32Float
+			{
+				return Err(Error::Invalid);
+			}
+		}
+		// Bind a duplicate view for unused plane slots; the shader
+		// references all three bindings, and distinct view objects avoid
+		// any question of binding one view twice.
+		let pad_view = if plane_count < 3 {
+			Some(self.texture_view(planes[0])?)
+		} else {
+			None
+		};
+		let v0 = &views[0];
+		let v1 = views.get(1).or(pad_view.as_ref()).unwrap_or(v0);
+		let v2 = views.get(2).or(pad_view.as_ref()).unwrap_or(v0);
+		let mode = match descriptor.model {
+			crate::texture::ColorModel::YuvPlanar => 0.0,
+			crate::texture::ColorModel::YuvSemiPlanar => 1.0,
+			crate::texture::ColorModel::Rgb => 2.0,
+			crate::texture::ColorModel::Rgba => 3.0,
+		};
+		let m = transform.matrix;
+		let b = transform.offset;
+		let uv_scale = descriptor.uv_scale();
+		let chroma_size = descriptor
+			.plane_size(1, src_size.0 as i32, src_size.1 as i32)
+			.unwrap_or((src_size.0 as i32, src_size.1 as i32));
+		let params: [f32; 24] = [
+			m[0][0],
+			m[0][1],
+			m[0][2],
+			b[0],
+			m[1][0],
+			m[1][1],
+			m[1][2],
+			b[1],
+			m[2][0],
+			m[2][1],
+			m[2][2],
+			b[2],
+			uv_scale.0,
+			uv_scale.1,
+			mode,
+			0.0,
+			src_size.0 as f32 / dst_size.0 as f32,
+			src_size.1 as f32 / dst_size.1 as f32,
+			0.0,
+			0.0,
+			src_size.0 as f32,
+			src_size.1 as f32,
+			chroma_size.0 as f32,
+			chroma_size.1 as f32,
+		];
+		let pipeline = self.planar_matrix_pipeline()?;
+		self.run_planar_views_pass(
+			&[v0, v1, v2],
+			dst,
+			&pipeline,
+			&params,
+			"quercusrender-planar-matrix",
+		)
+	}
+
+	/// Native-size (1:1) convenience twin of
+	/// [`GpuContext::run_planar_matrix_to_rgb`]: the source size is read
+	/// from the first plane texture and the destination size from `dst`.
+	///
+	/// For hardware imports whose plane textures are padded beyond the
+	/// visible frame, call [`GpuContext::run_planar_matrix_to_rgb`] with
+	/// the frame's visible size instead (the descriptor twin then samples
+	/// only the visible top-left region).
+	pub fn run_planar_matrix_to_rgb_native(
+		&self,
+		planes: &[u64],
+		dst: u64,
+		descriptor: PlanarDescriptor,
+		transform: &YuvTransform,
+	) -> Result<()> {
+		let first = planes.first().copied().ok_or(Error::Invalid)?;
+		let (width, height) = self.texture_size(first).ok_or(Error::NotFound)?;
+		let (dst_width, dst_height) = self.texture_size(dst).ok_or(Error::NotFound)?;
+		self.run_planar_matrix_to_rgb(
+			planes,
+			dst,
+			descriptor,
+			transform,
+			(width, height),
+			(dst_width, dst_height),
+		)
+	}
+
+	/// Legacy scaled adapter for the two-plane semi-planar layouts: the
+	/// storage is inferred from the luma texture format and the
+	/// subsampling from the actual UV/luma texture dimensions, so 4:2:2
+	/// (`uv width = src width / 2`, `uv height = src height`) and 4:2:0
+	/// both map without a chroma-location hint.
+	pub fn run_planar_yuv_to_rgb_scaled(
+		&self,
+		y: u64,
+		uv: u64,
+		dst: u64,
+		transform: &YuvTransform,
+		src_size: (u32, u32),
+		dst_size: (u32, u32),
+	) -> Result<()> {
+		if src_size.0 == 0 || src_size.1 == 0 || dst_size.0 == 0 || dst_size.1 == 0 {
+			return Err(Error::Invalid);
+		}
+		let descriptor = self.infer_semi_planar_descriptor(y, uv, Some(src_size))?;
+		self.run_planar_matrix_to_rgb(&[y, uv], dst, descriptor, transform, src_size, dst_size)
+	}
+
+	/// Infer a semi-planar descriptor from an imported luma/chroma pair
+	/// (legacy adapters and raw uploads). `visible_size` is the luma size
+	/// the pass will sample (the texture dimensions may be larger due to
+	/// hardware plane padding); `None` means the luma texture's own size.
+	///
+	/// Candidate subsamplings are tried from least to most subsampled and
+	/// the first whose nominal chroma plane fits inside the actual chroma
+	/// texture wins, so aligned/padded allocations (and odd visible
+	/// dimensions, which round chroma up) infer correctly.
+	fn infer_semi_planar_descriptor(
+		&self,
+		y: u64,
+		uv: u64,
+		visible_size: Option<(u32, u32)>,
+	) -> Result<PlanarDescriptor> {
+		let (y_size, y_format, uv_size) = {
+			let textures = lock(&self.textures);
+			let y = textures.get(&y).ok_or(Error::NotFound)?;
+			let uv = textures.get(&uv).ok_or(Error::NotFound)?;
+			((y.width, y.height), y.format, (uv.width, uv.height))
+		};
+		let visible = visible_size.unwrap_or(y_size);
+		if visible.0 == 0 || visible.1 == 0 || y_size.0 < visible.0 || y_size.1 < visible.1 {
+			return Err(Error::Invalid);
+		}
+		let subsampling = [Subsampling::Cs444, Subsampling::Cs422, Subsampling::Cs420]
+			.into_iter()
+			.find(|candidate| {
+				let (width, height) = candidate.chroma_size(visible.0 as i32, visible.1 as i32);
+				width > 0 && height > 0 && uv_size.0 >= width as u32 && uv_size.1 >= height as u32
+			})
+			.ok_or(Error::Invalid)?;
+		let storage = PlaneStorage::from_texture_format(y_format).ok_or(Error::Invalid)?;
+		Ok(PlanarDescriptor::yuv_semi_planar(subsampling, storage))
 	}
 
 	/// Clear a texture to transparent black on the GPU (no CPU transfer):
@@ -1552,8 +2726,18 @@ impl GpuContext {
 		Ok(())
 	}
 
-	/// Upload a CPU frame into a texture (F32 RGBA). Counted as a CPU→GPU
-	/// transfer ([`gpu_transfer_counters`]).
+	/// Upload a tightly packed CPU [`Frame`] into a registry texture.
+	///
+	/// `frame` must be `PixelFormat::F32` and match the texture's width/height
+	/// exactly; `frame.data` must hold at least `linesize_bytes() * height`
+	/// bytes, and that prefix is what is uploaded (the frame's line size becomes
+	/// the copy row pitch). Counted in [`gpu_transfer_counters`] as a CPU→GPU
+	/// transfer.
+	///
+	/// # Errors
+	///
+	/// `Error::NotFound` for an unknown `token`; `Error::Invalid` when the frame
+	/// is not F32, has the wrong size, or is shorter than its line size implies.
 	pub fn upload(&self, token: u64, frame: &Frame) -> Result<()> {
 		GPU_UPLOADS.fetch_add(1, Ordering::Relaxed);
 		if frame.format != PixelFormat::F32 {
@@ -1601,101 +2785,89 @@ impl GpuContext {
 	/// present target) converts half→f32. Other formats are rejected —
 	/// explicit readback boundaries only ever meet these two.
 	pub fn download(&self, token: u64) -> Result<Frame> {
-		GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost; texture download unavailable".into(),
+			));
+		}
 		let entry = lock(&self.textures)
 			.get(&token)
 			.cloned()
 			.ok_or(Error::NotFound)?;
-		let (bpp, convert_half) = match entry.format {
-			wgpu::TextureFormat::Rgba32Float => (16usize, false),
-			wgpu::TextureFormat::Rgba16Float => (8usize, true),
-			other => {
-				return Err(Error::Failed(format!(
-					"texture download: unsupported format {other:?}"
-				)))
-			}
-		};
-		let w = entry.width as usize;
-		let h = entry.height as usize;
-		let linesize = w * bpp;
-		// copy_texture_to_buffer requires a 256-byte-aligned row stride.
-		let padded = (linesize + 255) & !255;
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		download_texture(
+			&self.device,
+			&self.queue,
+			&entry.texture,
+			entry.format,
+			entry.width,
+			entry.height,
+		)
+	}
 
-		let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("quercusrender-download"),
-			size: (padded * h) as u64,
-			usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-			mapped_at_creation: false,
-		});
+	/// Download a texture this context already owns (not a registry token)
+	/// into a CPU [`Frame`] for an explicit consumer.
+	///
+	/// `texture`, `format`, `width` and `height` must describe the same
+	/// resource. Only `Rgba32Float` (copied raw) and `Rgba16Float` (converted
+	/// half→f32) are supported, so the frame is always `PixelFormat::F32`. The
+	/// external lifecycle lock is held for the whole copy, keeping an external
+	/// producer (e.g. a CUDA writer) from touching the texture mid-read.
+	///
+	/// # Errors
+	///
+	/// `Error::Failed` on a lost device, an unsupported format, or a map
+	/// timeout/failure.
+	pub fn download_shared_texture(
+		&self,
+		texture: &wgpu::Texture,
+		format: wgpu::TextureFormat,
+		width: u32,
+		height: u32,
+	) -> Result<Frame> {
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost; texture download unavailable".into(),
+			));
+		}
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
+		download_texture(&self.device, &self.queue, texture, format, width, height)
+	}
 
-		let mut encoder = self
-			.device
-			.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-				label: Some("quercusrender-download"),
-			});
-		encoder.copy_texture_to_buffer(
-			wgpu::TexelCopyTextureInfo {
-				texture: &entry.texture,
-				mip_level: 0,
-				origin: wgpu::Origin3d::ZERO,
-				aspect: wgpu::TextureAspect::All,
-			},
-			wgpu::TexelCopyBufferInfo {
-				buffer: &buffer,
-				layout: wgpu::TexelCopyBufferLayout {
-					offset: 0,
-					bytes_per_row: Some(padded as u32),
-					rows_per_image: None,
-				},
-			},
-			wgpu::Extent3d {
-				width: w as u32,
-				height: h as u32,
-				depth_or_array_layers: 1,
-			},
-		);
-		self.queue.submit(Some(encoder.finish()));
-
-		// Map + block until the callback fires (headless-safe: no surface,
-		// no event loop; PollType::Wait drives the callbacks).
+	/// Asynchronous variant of [`GpuContext::download`]: the GPU wait/map
+	/// runs on a dedicated readback thread, so the render thread can submit
+	/// the next frame while this one is being mapped.
+	pub fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		if self.device_lost() {
+			return Err(Error::Failed(
+				"wgpu device lost; texture download unavailable".into(),
+			));
+		}
+		let entry = lock(&self.textures)
+			.get(&token)
+			.cloned()
+			.ok_or(Error::NotFound)?;
+		let guard = entry.keep_alive.clone();
 		let (tx, rx) = std::sync::mpsc::channel();
-		buffer
-			.slice(..)
-			.map_async(wgpu::MapMode::Read, move |result| {
-				let _ = tx.send(result.is_ok());
-			});
-		let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-		if !rx.recv().unwrap_or(false) {
-			return Err(Error::Failed("texture download map failed".into()));
-		}
-
-		let mapped = buffer.slice(..).get_mapped_range();
-		let mut data = vec![0u8; linesize * h];
-		for row in 0..h {
-			let src = &mapped[row * padded..row * padded + linesize];
-			data[row * linesize..(row + 1) * linesize].copy_from_slice(src);
-		}
-		drop(mapped);
-		buffer.unmap();
-
-		if convert_half {
-			let mut f32_data = vec![0u8; w * h * 16];
-			for i in 0..w * h * 4 {
-				let bits = u16::from_le_bytes([data[i * 2], data[i * 2 + 1]]);
-				let v = half::f16::from_bits(bits).to_f32();
-				f32_data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-			}
-			data = f32_data;
-		}
-
-		let mut frame = Frame::new();
-		let mut pod = VideoParamsPod::default();
-		pod.width = w as i32;
-		pod.height = h as i32;
-		pod.format = PixelFormat::F32 as i32;
-		frame.set_video_params(pod);
-		frame.data = data;
-		Ok(frame)
+		readback_worker()
+			.send(ReadbackJob {
+				device: self.device.clone(),
+				queue: self.queue.clone(),
+				texture: entry.texture,
+				format: entry.format,
+				width: entry.width,
+				height: entry.height,
+				external_lock: self.external_lock.clone(),
+				tx,
+			})
+			.map_err(|_| Error::Failed("readback worker stopped".into()))?;
+		Ok(FrameReadback { rx, _guard: guard })
 	}
 
 	/// Blit texture → texture. `processor` selects the color-managed path,
@@ -1769,6 +2941,12 @@ impl GpuContext {
 		Ok(())
 	}
 
+	/// The bind-group layout shared by both copy blit pipelines.
+	///
+	/// One fragment-visible `texture_2d<f32>` at binding 0, declared
+	/// non-filterable to match the shader's `textureLoad`. Recreated on each
+	/// call (there is no cache); used by [`GpuContext::blit`] and
+	/// [`GpuContext::convert_to_rgba16f`].
 	fn blit_bind_group_layout(&self) -> wgpu::BindGroupLayout {
 		self.device
 			.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1786,6 +2964,129 @@ impl GpuContext {
 			})
 	}
 
+	/// GPU->GPU copy of `src` into a new `Rgba16Float` texture. The host
+	/// presenter's surface pipeline samples with a filterable layout, which
+	/// `Rgba32Float` does not satisfy on devices without FLOAT32_FILTERABLE;
+	/// half-float is also the 10-bit display format. Returns the new token.
+	pub fn convert_to_rgba16f(&self, src: u64) -> Result<u64> {
+		let (src_tex, width, height) = {
+			let reg = lock(&self.textures);
+			let entry = reg.get(&src).ok_or(Error::NotFound)?;
+			(entry.texture.clone(), entry.width, entry.height)
+		};
+		let dst = self.create_texture_format(
+			width as i32,
+			height as i32,
+			1,
+			wgpu::TextureFormat::Rgba16Float,
+			wgpu::TextureUsages::TEXTURE_BINDING
+				| wgpu::TextureUsages::RENDER_ATTACHMENT
+				| wgpu::TextureUsages::COPY_DST
+				| wgpu::TextureUsages::COPY_SRC,
+		)?;
+		let dst_tex = {
+			let reg = lock(&self.textures);
+			reg.get(&dst).map(|e| e.texture.clone()).ok_or(Error::NotFound)?
+		};
+		let pipeline = {
+			let mut cache = lock(&self.blit16);
+			if cache.is_none() {
+				*cache = Some(self.create_blit_pipeline16()?);
+			}
+			cache.clone().unwrap()
+		};
+		let src_view = src_tex.create_view(&wgpu::TextureViewDescriptor::default());
+		let dst_view = dst_tex.create_view(&wgpu::TextureViewDescriptor::default());
+		let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("quercusrender-blit16-bg"),
+			layout: &self.blit_bind_group_layout(),
+			entries: &[wgpu::BindGroupEntry {
+				binding: 0,
+				resource: wgpu::BindingResource::TextureView(&src_view),
+			}],
+		});
+		let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+			label: Some("quercusrender-blit16"),
+		});
+		{
+			let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: Some("quercusrender-blit16-pass"),
+				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+					view: &dst_view,
+					depth_slice: None,
+					resolve_target: None,
+					ops: wgpu::Operations {
+						load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+						store: wgpu::StoreOp::Store,
+					},
+				})],
+				depth_stencil_attachment: None,
+				timestamp_writes: None,
+				occlusion_query_set: None,
+				multiview_mask: None,
+			});
+			pass.set_pipeline(&pipeline);
+			pass.set_bind_group(0, &bind_group, &[]);
+			pass.draw(0..3, 0..1);
+		}
+		self.queue.submit(Some(encoder.finish()));
+		Ok(dst)
+	}
+
+	/// Build the copy blit pipeline whose color target is `Rgba16Float`.
+	///
+	/// Same shader, bind-group layout and vertex stage as
+	/// [`GpuContext::create_blit_pipeline`]; only the render-target format
+	/// differs. Used by [`GpuContext::convert_to_rgba16f`] for the host
+	/// presenter, whose surface path needs a filterable format. Cached in the
+	/// `blit16` slot of the context.
+	fn create_blit_pipeline16(&self) -> Result<wgpu::RenderPipeline> {
+		// Recreate with the half-float target; the layout/vertex/fragment
+		// modules are identical to the Rgba32 blit.
+		let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+			label: Some("quercusrender-blit16-shader"),
+			source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(BLIT_WGSL)),
+		});
+		let layout = self.blit_bind_group_layout();
+		let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+			label: Some("quercusrender-blit16-layout"),
+			bind_group_layouts: &[Some(&layout)],
+			immediate_size: 0,
+		});
+		Ok(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+				label: Some("quercusrender-blit16"),
+				layout: Some(&pipeline_layout),
+				vertex: wgpu::VertexState {
+					module: &shader,
+					entry_point: Some("vs_main"),
+					compilation_options: Default::default(),
+					buffers: &[],
+				},
+				primitive: wgpu::PrimitiveState::default(),
+				depth_stencil: None,
+				multisample: wgpu::MultisampleState::default(),
+				fragment: Some(wgpu::FragmentState {
+					module: &shader,
+					entry_point: Some("fs_main"),
+					compilation_options: Default::default(),
+					targets: &[Some(wgpu::ColorTargetState {
+						format: wgpu::TextureFormat::Rgba16Float,
+						blend: None,
+						write_mask: wgpu::ColorWrites::ALL,
+					})],
+				}),
+				multiview_mask: None,
+				cache: None,
+			}))
+	}
+
+	/// Build the `Rgba32Float` copy blit pipeline used by [`GpuContext::blit`].
+	///
+	/// The fragment shader samples the single bound source texture with
+	/// `textureLoad` (nearest texel, no filtering) and writes it unchanged, so
+	/// the pass is a straight GPU→GPU copy. The bind group comes from
+	/// [`GpuContext::blit_bind_group_layout`]; [`GpuContext::blit`] caches the
+	/// pipeline in the `blit` slot, so it is built once per context.
 	fn create_blit_pipeline(&self) -> Result<wgpu::RenderPipeline> {
 		let shader = self
 			.device
@@ -2090,6 +3391,10 @@ impl GpuContext {
 		if textures.len() != program.texture_count as usize {
 			return Err(Error::Invalid);
 		}
+		let _external = self
+			.external_lock
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		let dst_tex = lock(&self.textures)
 			.get(&dst)
 			.cloned()
@@ -2097,15 +3402,12 @@ impl GpuContext {
 
 		let uniform_buffer = if program.has_uniforms {
 			let size = uniforms.len().max(16) as u64;
-			let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-				label: Some("quercusrender-fx-uniforms"),
+			let buffer = uniform_buffer_from_bytes(
+				&self.device,
+				"quercusrender-fx-uniforms",
+				uniforms,
 				size,
-				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-				mapped_at_creation: false,
-			});
-			if !uniforms.is_empty() {
-				self.queue.write_buffer(&buffer, 0, uniforms);
-			}
+			)?;
 			Some(buffer)
 		} else {
 			None
@@ -2283,35 +3585,114 @@ impl YuvTransform {
 		}
 	}
 
-	/// BT.601, limited range.
+	/// BT.601 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the usual choice
+	/// for broadcast SD. Counterpart of [`YuvTransform::bt601_full`].
 	pub fn bt601_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt601, false)
 	}
 
-	/// BT.601, full range.
+	/// BT.601 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; use it for
+	/// full-range SD sources such as computer-generated or JPEG-origin video.
+	/// Counterpart of [`YuvTransform::bt601_limited`].
 	pub fn bt601_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt601, true)
 	}
 
-	/// BT.709, limited range.
+	/// BT.709 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the common case
+	/// for broadcast HD. Counterpart of [`YuvTransform::bt709_full`].
 	pub fn bt709_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt709, false)
 	}
 
-	/// BT.709, full range.
+	/// BT.709 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; use it for
+	/// full-range HD sources. Counterpart of [`YuvTransform::bt709_limited`].
 	pub fn bt709_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt709, true)
 	}
 
-	/// BT.2020, limited range.
+	/// BT.2020 luma matrix with limited/studio range.
+	///
+	/// Luma 16..235 and chroma 16..240 (8-bit equivalents) are expanded to
+	/// 0..1 at the 16-bit code scale this constructor implies; the usual choice
+	/// for broadcast UHD. Counterpart of [`YuvTransform::bt2020_full`].
 	pub fn bt2020_limited() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt2020, false)
 	}
 
-	/// BT.2020, full range.
+	/// BT.2020 luma matrix with full range.
+	///
+	/// The whole code range maps to 0..1 with no 16..235 expansion; plane
+	/// inputs stay 16-bit normalized code values. Counterpart of
+	/// [`YuvTransform::bt2020_limited`].
 	pub fn bt2020_full() -> Self {
 		Self::from_matrix(crate::colormath::YuvMatrix::Bt2020, true)
 	}
+}
+
+fn install_device_lost_logging(device: &wgpu::Device, device_lost: Arc<AtomicBool>) {
+	device.set_device_lost_callback(move |reason, message| {
+		eprintln!("[wgpu] device lost: reason={reason:?} message={message}");
+		device_lost.store(true, Ordering::Release);
+	});
+}
+
+/// Create a `UNIFORM | COPY_DST` buffer of `size` bytes filled from `data`.
+///
+/// The buffer is created `mapped_at_creation` and written through the
+/// mapping instead of `queue.write_buffer` with
+/// `wgpu::BufferUsages::COPY_DST`, because a queue write can block a render
+/// thread behind a host/UI write (observed as a playback freeze on the
+/// CUDA/OpenFX path). At most `min(data.len(), size)` bytes are copied; the
+/// rest of the buffer stays zero. `label` is only a wgpu debug label.
+///
+/// # Errors
+///
+/// `Error::Failed` when wgpu reports a validation or out-of-memory error,
+/// or when buffer creation unwinds (device lost).
+fn uniform_buffer_from_bytes(
+	device: &wgpu::Device,
+	label: &str,
+	data: &[u8],
+	size: u64,
+) -> Result<wgpu::Buffer> {
+	let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+	let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some(label),
+			size,
+			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: true,
+		});
+		{
+			let mut view = buffer.slice(..).get_mapped_range_mut();
+			let n = data.len().min(view.len());
+			view.slice(..n).copy_from_slice(&data[..n]);
+		}
+		buffer.unmap();
+		buffer
+	}));
+	let oom_error = pollster_block_on(oom_scope.pop());
+	let validation_error = pollster_block_on(validation_scope.pop());
+	if let Some(error) = oom_error.or(validation_error) {
+		eprintln!("[wgpu] create buffer {label} failed: {error}");
+		return Err(Error::Failed(format!(
+			"create planar uniform failed: {error}"
+		)));
+	}
+	result.map_err(|_| {
+		Error::Failed("wgpu device lost creating planar uniforms".into())
+	})
 }
 
 /// Pack an f32 slice as little-endian bytes for `write_buffer`.
@@ -2458,6 +3839,120 @@ fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// The descriptor-driven planar-matrix pass: 1–3 plane textures sampled
+/// with normalized bilinear mapping (four `textureLoad` taps, edge
+/// clamped) and converted to RGB either through the YUV matrix (planar
+/// and semi-planar models) or directly (interleaved RGB/RGBA). The mode
+/// uniform selects the model, so one pipeline serves the whole matrix.
+///
+/// `pos = frag.xy * (src_size / dst_size) - 0.5` puts destination pixel
+/// centers on source texel coordinates for any source/destination size;
+/// chroma uses `src_size/dst_size * uv_scale`, so 4:2:0
+/// (`uv_scale = 0.5,0.5`) and 4:2:2 (`0.5,1.0`) and 4:4:4 (`1,1`) all
+/// resolve in their own plane. The visible luma/chroma sizes are
+/// uniforms (odd dimensions round the nominal chroma up), and sampling
+/// is clamped to them, so padded hardware plane allocations never leak
+/// into the result.
+const YUV_PLANAR_MATRIX_WGSL: &str = r#"
+struct Params {
+    m0: vec4<f32>,
+    m1: vec4<f32>,
+    m2: vec4<f32>,
+    // x,y = chroma/luma dimension ratio; z = model (0 planar, 1
+    // semi-planar, 2 rgb, 3 rgba); w unused.
+    uv_scale_mode: vec4<f32>,
+    // x,y = source luma size / destination size.
+    src_scale: vec4<f32>,
+    // x,y = visible luma size; z,w = nominal (ceil-subsampled) chroma
+    // size. Sampling is clamped to these, not to the (possibly padded)
+    // texture allocation.
+    src_size: vec4<f32>,
+};
+@group(0) @binding(0) var plane0: texture_2d<f32>;
+@group(0) @binding(1) var plane1: texture_2d<f32>;
+@group(0) @binding(2) var plane2: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn sample_bilinear(tex: texture_2d<f32>, pos: vec2<f32>, limit: vec2<f32>) -> vec4<f32> {
+    // Clamp to the visible plane extent, then to the allocation (hardware
+    // planes may be padded beyond the visible region).
+    let dims = textureDimensions(tex);
+    let hi = min(limit, vec2<f32>(dims) - vec2<f32>(1.0));
+    let clamped = clamp(pos, vec2<f32>(0.0), hi);
+    let base = vec2<i32>(floor(clamped));
+    let f = clamped - vec2<f32>(base);
+    let x1 = min(base.x + 1, i32(hi.x));
+    let y1 = min(base.y + 1, i32(hi.y));
+    let c00 = textureLoad(tex, base, 0);
+    let c10 = textureLoad(tex, vec2<i32>(x1, base.y), 0);
+    let c01 = textureLoad(tex, vec2<i32>(base.x, y1), 0);
+    let c11 = textureLoad(tex, vec2<i32>(x1, y1), 0);
+    let top = mix(c00, c10, f.x);
+    let bottom = mix(c01, c11, f.x);
+    return mix(top, bottom, f.y);
+}
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let mode = i32(p.uv_scale_mode.z + 0.5);
+    // Destination pixel center -> source luma texel coordinate.
+    let y_pos = frag.xy * p.src_scale.xy - vec2<f32>(0.5);
+    let y_limit = vec2<f32>(p.src_size.x, p.src_size.y) - vec2<f32>(1.0);
+    // At 1:1, use exact texel loads: bilinear on a subsampled UV plane
+    // would blend neighbouring chroma samples that the CPU/native path
+    // does not blend. Scaled output keeps the 4-tap bilinear.
+    let native = p.src_scale.x == 1.0 && p.src_scale.y == 1.0;
+    if (mode >= 2) {
+        var c: vec4<f32>;
+        if (native) {
+            c = textureLoad(plane0, vec2<i32>(frag.xy), 0);
+        } else {
+            c = sample_bilinear(plane0, y_pos, y_limit);
+        }
+        if (mode == 3) {
+            return vec4<f32>(c.rgb, c.a);
+        }
+        return vec4<f32>(c.rgb, 1.0);
+    }
+    var yv: f32;
+    if (native) {
+        yv = textureLoad(plane0, vec2<i32>(frag.xy), 0).r;
+    } else {
+        yv = sample_bilinear(plane0, y_pos, y_limit).r;
+    }
+    let c_pos = frag.xy * (p.src_scale.xy * p.uv_scale_mode.xy) - vec2<f32>(0.5);
+    let c_limit = vec2<f32>(p.src_size.z, p.src_size.w) - vec2<f32>(1.0);
+    let c_native = vec2<i32>(frag.xy * p.uv_scale_mode.xy);
+    var u: f32;
+    var v: f32;
+    if (mode == 0) {
+        if (native) {
+            u = textureLoad(plane1, c_native, 0).r;
+            v = textureLoad(plane2, c_native, 0).r;
+        } else {
+            u = sample_bilinear(plane1, c_pos, c_limit).r;
+            v = sample_bilinear(plane2, c_pos, c_limit).r;
+        }
+    } else {
+        var uv: vec4<f32>;
+        if (native) {
+            uv = textureLoad(plane1, c_native, 0);
+        } else {
+            uv = sample_bilinear(plane1, c_pos, c_limit);
+        }
+        u = uv.r;
+        v = uv.g;
+    }
+    let yuv = vec3<f32>(yv, u, v);
+    let rgb = vec3<f32>(
+        dot(p.m0.xyz, yuv) + p.m0.w,
+        dot(p.m1.xyz, yuv) + p.m1.w,
+        dot(p.m2.xyz, yuv) + p.m2.w,
+    );
+    return vec4<f32>(rgb, 1.0);
+}
+"#;
+
 /// The fixed vertex stage for effect passes: a fullscreen triangle
 /// emitting `ove_texcoord`-convention UVs at location 0. UV v=0 is the
 /// first texture data row (the upload/download row order), so effect
@@ -2496,6 +3991,10 @@ impl GpuContextLike for GpuContext {
 
 	fn download(&self, token: u64) -> Result<Frame> {
 		self.download(token)
+	}
+
+	fn download_async(&self, token: u64) -> Result<FrameReadback> {
+		self.download_async(token)
 	}
 
 	fn blit(
@@ -2627,7 +4126,11 @@ impl DisplayRenderer {
 		Ok(())
 	}
 
-	/// The backend kind.
+	/// The backend this renderer was built for.
+	///
+	/// This is the requested [`BackendKind`], which need not be the kind its
+	/// live context ended up on — [`DisplayRenderer::init`] may adopt the
+	/// process-wide shared context; compare with [`GpuContext::kind`].
 	pub fn backend(&self) -> BackendKind {
 		self.backend
 	}
@@ -2771,9 +4274,18 @@ impl DisplayRenderer {
 		Ok(())
 	}
 
-	/// Color-managed blit. CPU path: copy + in-place OCIO conversion.
-	/// GPU path: plain-copy WGSL blit; a color processor on the GPU path is
-	/// deferred (`Error::Failed`, see [`GpuContext::blit`]).
+	/// Blit `src` into `dst`, optionally through a color processor.
+	///
+	/// Both textures must live on the same backend: a `Texture::Gpu` pair owned
+	/// by one [`GpuContext`] blits on the GPU ([`GpuContext::blit`]), a
+	/// `Texture::Cpu` pair copies the source bytes into `dst` and then runs
+	/// `processor.convert_frame` in place. A CPU/GPU mix, two different GPU
+	/// contexts, or `src == None` returns `Error::Failed`; a CPU pair with
+	/// differing sizes returns `Error::Invalid`.
+	///
+	/// A `Some` processor on the GPU path is deferred in this pass and fails
+	/// with `Error::Failed`, so color management currently only happens on the
+	/// CPU path. `dst` is fully overwritten.
 	pub fn blit_color_managed(
 		&self,
 		src: Option<&Texture>,
@@ -3119,8 +4631,8 @@ mod tests {
 		ctx.destroy_texture(dst);
 	}
 
-	/// The GPU present pass reproduces the CPU 3D-LUT evaluation (within
-	/// the Rgba16Float output quantization) and performs no CPU transfer.
+	/// The GPU present pass reproduces the CPU 3D-LUT evaluation without
+	/// leaving F32 or performing a CPU transfer.
 	#[test]
 	fn gpu_present_lut_matches_cpu_trilinear() {
 		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -3166,6 +4678,10 @@ mod tests {
 		// present itself must transfer nothing to/from the CPU.
 		reset_gpu_transfer_counters();
 		let dst = ctx.present_texture(src).unwrap();
+		assert_eq!(
+			ctx.texture_handle(dst).unwrap().format(),
+			wgpu::TextureFormat::Rgba32Float
+		);
 		assert_eq!(gpu_transfer_counters(), (0, 0), "present is GPU→GPU");
 		let out = ctx.download(dst).unwrap();
 		for i in 0..(w * h) as usize {
@@ -3187,6 +4703,40 @@ mod tests {
 		}
 		ctx.destroy_texture(src);
 		ctx.destroy_texture(dst);
+	}
+
+	#[test]
+	fn planar_passes_serialize_concurrent_uniform_uploads() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let mut workers = Vec::new();
+		for _ in 0..8 {
+			let ctx = ctx.clone();
+			workers.push(std::thread::spawn(move || {
+				let pipeline = ctx.planar_yuv_pipeline().unwrap();
+				let src = ctx.create_texture(2, 2).unwrap();
+				let dst = ctx.create_texture(2, 2).unwrap();
+				let src_view = ctx.texture_view(src).unwrap();
+				let params = [0.0f32; 16];
+				for _ in 0..16 {
+					ctx.run_planar_views_pass(
+						&[&src_view, &src_view],
+						dst,
+						&pipeline,
+						&params,
+						"quercusrender-planar-concurrency-test",
+					)
+					.unwrap();
+				}
+				ctx.destroy_texture(src);
+				ctx.destroy_texture(dst);
+			}));
+		}
+		for worker in workers {
+			worker.join().expect("planar worker panicked");
+		}
 	}
 
 	#[test]
@@ -3641,17 +5191,12 @@ mod tests {
 			(Some("yes"), true),
 			(Some(""), true),
 		] {
-			assert_eq!(
-				require_gpu_from_value(value),
-				expected,
-				"value {value:?}"
-			);
+			assert_eq!(require_gpu_from_value(value), expected, "value {value:?}");
 		}
 		// The soft-skip arm logs and returns instead of failing.
 		skip_or_fail_gpu_with(false, "a coverage probe");
 		// The hard-fail arm panics when a GPU is required.
-		let panicked =
-			std::panic::catch_unwind(|| skip_or_fail_gpu_with(true, "a coverage probe"));
+		let panicked = std::panic::catch_unwind(|| skip_or_fail_gpu_with(true, "a coverage probe"));
 		assert!(
 			panicked.is_err(),
 			"a required GPU must hard-fail a missing adapter"
@@ -3814,8 +5359,8 @@ mod tests {
 		};
 		let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
 		// Every single-channel format the bpp table accepts (R16Float
-		// covers the 2-byte arm; R16Unorm requires an optional device
-		// feature the context does not enable).
+		// covers the 2-byte arm; the raw planar upload API exercises
+		// R16Unorm/Rg16Unorm separately).
 		let r8 = ctx
 			.create_texture_format(4, 2, 1, wgpu::TextureFormat::R8Unorm, usage)
 			.unwrap();
@@ -3872,7 +5417,7 @@ mod tests {
 		assert!(ctx.has_display_lut());
 
 		let src = ctx.create_texture(2, 2).unwrap();
-		// Two present calls: the first builds the Rgba16Float pipeline, the
+		// Two present calls: the first builds the display pipeline, the
 		// second reuses the cached one.
 		let presented = ctx.present_texture(src).unwrap();
 		let presented2 = ctx.present_texture(src).unwrap();
@@ -4420,5 +5965,736 @@ fn main() -> @location(0) vec4<f32> { return u.v; }
 			"init follows the shared slot"
 		);
 		assert_eq!(renderer.is_initialized(), result.is_ok());
+	}
+
+	/// Read one `Rgba32Float` output pixel.
+	fn pixel_f32(data: &[u8], index: usize) -> [f32; 4] {
+		let base = index * 16;
+		[
+			f32::from_le_bytes(data[base..base + 4].try_into().unwrap()),
+			f32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap()),
+			f32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap()),
+			f32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap()),
+		]
+	}
+
+	/// CPU reference for the matrix shader's edge-clamped bilinear sample
+	/// of a 16-bit unorm code plane.
+	fn bilinear_code_ref(codes: &[u16], width: usize, height: usize, pos: (f32, f32)) -> f32 {
+		let max_x = (width - 1) as f32;
+		let max_y = (height - 1) as f32;
+		let x = pos.0.clamp(0.0, max_x);
+		let y = pos.1.clamp(0.0, max_y);
+		let x0 = x.floor() as usize;
+		let y0 = y.floor() as usize;
+		let fx = x - x0 as f32;
+		let fy = y - y0 as f32;
+		let x1 = (x0 + 1).min(width - 1);
+		let y1 = (y0 + 1).min(height - 1);
+		let s = |px: usize, py: usize| codes[py * width + px] as f32 / 65535.0;
+		let top = s(x0, y0) * (1.0 - fx) + s(x1, y0) * fx;
+		let bottom = s(x0, y1) * (1.0 - fx) + s(x1, y1) * fx;
+		top * (1.0 - fy) + bottom * fy
+	}
+
+	/// The identity YUV→RGB matrix: the pass outputs raw plane values.
+	fn identity_yuv_transform() -> YuvTransform {
+		YuvTransform {
+			matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+			offset: [0.0, 0.0, 0.0],
+		}
+	}
+
+	fn u16_bytes(values: &[u16]) -> Vec<u8> {
+		values.iter().flat_map(|v| v.to_le_bytes()).collect()
+	}
+
+	#[test]
+	fn plane_row_packing_and_rgb_expansion() {
+		// R8 rows with a padded source stride 5 (3 valid bytes per row).
+		let src = [1u8, 2, 3, 0xFF, 0xFF, 4, 5, 6, 0xFF, 0xFF];
+		let staged = repack_plane_rows(&src, 5, 3, 2).unwrap();
+		assert_eq!(staged.len(), 2 * PLANE_ROW_ALIGNMENT);
+		assert_eq!(&staged[..3], &[1, 2, 3]);
+		assert_eq!(
+			&staged[PLANE_ROW_ALIGNMENT..PLANE_ROW_ALIGNMENT + 3],
+			&[4, 5, 6]
+		);
+		assert!(staged[3..PLANE_ROW_ALIGNMENT].iter().all(|&b| b == 0));
+
+		// Tightly packed rows keep their bytes and get aligned rows.
+		let tight = repack_plane_rows(&[7, 8, 9, 10], 0, 2, 2).unwrap();
+		assert_eq!(&tight[..2], &[7, 8]);
+		assert_eq!(
+			&tight[PLANE_ROW_ALIGNMENT..PLANE_ROW_ALIGNMENT + 2],
+			&[9, 10]
+		);
+
+		// Any row size rounds up to the 256-byte copy alignment.
+		assert_eq!(aligned_plane_row_bytes(1), PLANE_ROW_ALIGNMENT);
+		assert_eq!(aligned_plane_row_bytes(256), 256);
+		assert_eq!(aligned_plane_row_bytes(257), 512);
+
+		// Short buffers and invalid source strides are rejected.
+		assert!(repack_plane_rows(&[0u8; 3], 0, 2, 2).is_err());
+		assert!(repack_plane_rows(&[0u8; 4], 1, 2, 2).is_err());
+		assert!(repack_plane_rows(&[], 0, 0, 0).is_err());
+
+		// RGB (3-channel) -> RGBA texture expansion, alpha 1.0 per depth.
+		let rgb8 = [1u8, 2, 3, 4, 5, 6];
+		assert_eq!(
+			expand_rgb_to_rgba(&rgb8, 0, 2, 1, PlaneStorage::U8).unwrap(),
+			vec![1, 2, 3, 255, 4, 5, 6, 255]
+		);
+		let rgb16 = [0x34u8, 0x12, 0x78, 0x56, 0xBC, 0x9A];
+		assert_eq!(
+			expand_rgb_to_rgba(&rgb16, 0, 1, 1, PlaneStorage::U16).unwrap(),
+			vec![0x34, 0x12, 0x78, 0x56, 0xBC, 0x9A, 0xFF, 0xFF]
+		);
+		let rgb_f16 = [0u8; 6];
+		assert_eq!(
+			expand_rgb_to_rgba(&rgb_f16, 0, 1, 1, PlaneStorage::F16).unwrap(),
+			vec![0, 0, 0, 0, 0, 0, 0x00, 0x3C]
+		);
+		let rgb_f32 = [0u8; 12];
+		assert_eq!(
+			expand_rgb_to_rgba(&rgb_f32, 0, 1, 1, PlaneStorage::F32).unwrap(),
+			vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x80, 0x3F]
+		);
+
+		// Strided RGB rows expand per row; short/bad-stride data fails.
+		let mut padded = vec![0u8; 8 * 2];
+		padded[0..3].copy_from_slice(&[10, 11, 12]);
+		padded[8..11].copy_from_slice(&[20, 21, 22]);
+		let expanded = expand_rgb_to_rgba(&padded, 8, 1, 2, PlaneStorage::U8).unwrap();
+		assert_eq!(expanded, vec![10, 11, 12, 255, 20, 21, 22, 255]);
+		assert!(expand_rgb_to_rgba(&[1u8, 2, 3], 0, 2, 1, PlaneStorage::U8).is_err());
+		assert!(expand_rgb_to_rgba(&rgb8, 2, 2, 1, PlaneStorage::U8).is_err());
+	}
+
+	/// The legacy NV12 upload path (tightly packed CPU bytes, unaligned
+	/// rows) feeds both the 1:1 native pass and the scaled adapter.
+	#[test]
+	fn gpu_planar_nv12_cpu_upload_native_and_scaled() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let (w, h) = (10usize, 6usize);
+		let y_bytes: Vec<u8> = (0..w * h).map(|i| ((i * 7) % 251) as u8).collect();
+		let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+		let uv_bytes = vec![128u8; cw * ch * 2];
+
+		let (y, uv) = ctx
+			.upload_planar_frame(
+				PlanarFormat::Nv12,
+				w as i32,
+				h as i32,
+				&y_bytes,
+				0,
+				&uv_bytes,
+				0,
+			)
+			.unwrap();
+		assert_eq!(ctx.texture_size(y), Some((w as u32, h as u32)));
+		assert_eq!(ctx.texture_size(uv), Some((cw as u32, ch as u32)));
+		assert_eq!(ctx.texture_format(y), Some(wgpu::TextureFormat::R8Unorm));
+
+		let identity = identity_yuv_transform();
+		let dst = ctx.create_texture(w as i32, h as i32).unwrap();
+		ctx.run_planar_yuv_to_rgb(y, uv, dst, &identity).unwrap();
+		let native = ctx.download(dst).unwrap();
+		for row in 0..h {
+			for col in 0..w {
+				let i = row * w + col;
+				let got = pixel_f32(&native.data, i);
+				assert!((got[0] - y_bytes[i] as f32 / 255.0).abs() < 1e-6);
+				assert!((got[1] - 128.0 / 255.0).abs() < 1e-6);
+				assert!((got[2] - 128.0 / 255.0).abs() < 1e-6);
+				assert_eq!(got[3], 1.0);
+			}
+		}
+
+		// The scaled adapter at 1:1 reproduces the native pass for a
+		// constant-chroma frame.
+		let scaled = ctx.create_texture(w as i32, h as i32).unwrap();
+		ctx.run_planar_yuv_to_rgb_scaled(
+			y,
+			uv,
+			scaled,
+			&identity,
+			(w as u32, h as u32),
+			(w as u32, h as u32),
+		)
+		.unwrap();
+		let scaled_out = ctx.download(scaled).unwrap();
+		for i in 0..w * h {
+			let a = pixel_f32(&native.data, i);
+			let b = pixel_f32(&scaled_out.data, i);
+			for channel in 0..3 {
+				assert!(
+					(a[channel] - b[channel]).abs() < 1e-6,
+					"px {i} channel {channel}: {a:?} vs {b:?}"
+				);
+			}
+		}
+
+		for token in [y, uv, dst, scaled] {
+			ctx.destroy_texture(token);
+		}
+	}
+
+	/// 4:2:2 U16 raw upload scaled to an arbitrary destination: verifies
+	/// the half-width/full-height chroma mapping, unorm 16-bit
+	/// preservation and the normalized bilinear filter against a CPU
+	/// reference.
+	#[test]
+	fn gpu_planar_yuv422p10_scaled_bilinear_matches_reference() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		if !ctx.supports_16bit_norm_planes() {
+			eprintln!("16-bit normalized texture formats unavailable; skipping");
+			return;
+		}
+		let (w, h) = (6usize, 4usize);
+		let (cw, ch) = (3usize, 4usize);
+		let (dw, dh) = (9usize, 7usize);
+
+		let y_codes: Vec<u16> = (0..w * h)
+			.map(|i| 1000 + ((i as u16) * 977) % 60000)
+			.collect();
+		let uv_codes: Vec<u16> = (0..cw * ch).map(|i| 4000 + (i as u16) * 2500).collect();
+		let mut uv_bytes = Vec::with_capacity(cw * ch * 4);
+		for u in &uv_codes {
+			uv_bytes.extend_from_slice(&u.to_le_bytes());
+			uv_bytes.extend_from_slice(&0x8000u16.to_le_bytes());
+		}
+
+		let (y, uv) = ctx
+			.upload_planar_frame(
+				PlanarFormat::Yuv422P10,
+				w as i32,
+				h as i32,
+				&u16_bytes(&y_codes),
+				0,
+				&uv_bytes,
+				0,
+			)
+			.unwrap();
+		assert_eq!(ctx.texture_size(y), Some((w as u32, h as u32)));
+		assert_eq!(ctx.texture_size(uv), Some((cw as u32, ch as u32)));
+		assert_eq!(ctx.texture_format(uv), Some(wgpu::TextureFormat::Rg16Unorm));
+
+		let dst = ctx.create_texture(dw as i32, dh as i32).unwrap();
+		ctx.run_planar_yuv_to_rgb_scaled(
+			y,
+			uv,
+			dst,
+			&identity_yuv_transform(),
+			(w as u32, h as u32),
+			(dw as u32, dh as u32),
+		)
+		.unwrap();
+		let out = ctx.download(dst).unwrap();
+		for row in 0..dh {
+			for col in 0..dw {
+				let fx = (col as f32 + 0.5) * (w as f32 / dw as f32) - 0.5;
+				let fy = (row as f32 + 0.5) * (h as f32 / dh as f32) - 0.5;
+				let cx = (col as f32 + 0.5) * (cw as f32 / dw as f32) - 0.5;
+				let cy = (row as f32 + 0.5) * (ch as f32 / dh as f32) - 0.5;
+				let want_y = bilinear_code_ref(&y_codes, w, h, (fx, fy));
+				let want_u = bilinear_code_ref(&uv_codes, cw, ch, (cx, cy));
+				let got = pixel_f32(&out.data, row * dw + col);
+				assert!(
+					(got[0] - want_y).abs() < 1e-4,
+					"Y px ({col},{row}): got {} want {want_y}",
+					got[0]
+				);
+				assert!(
+					(got[1] - want_u).abs() < 1e-4,
+					"U px ({col},{row}): got {} want {want_u}",
+					got[1]
+				);
+				assert!((got[2] - 0.5).abs() < 2e-5, "V px ({col},{row})");
+				assert_eq!(got[3], 1.0);
+			}
+		}
+
+		for token in [y, uv, dst] {
+			ctx.destroy_texture(token);
+		}
+	}
+
+	/// Padded/aligned hardware plane allocations and odd visible sizes:
+	/// the pass samples only the visible top-left region, so padding rows
+	/// and columns never leak in, at native size and when scaling.
+	#[test]
+	fn gpu_planar_padded_planes_and_odd_visible_size() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+		// Visible 7x5 (odd) 4:2:0: nominal chroma 4x3. The allocations are
+		// padded to 9x7 luma / 5x4 chroma, as hardware surfaces can be.
+		let (vw, vh) = (7usize, 5usize);
+		let (cw, ch) = (4usize, 3usize);
+		let (yw, yh) = (9usize, 7usize);
+		let (uw, uh) = (5usize, 4usize);
+		let y = ctx
+			.create_texture_format(yw as i32, yh as i32, 1, wgpu::TextureFormat::R8Unorm, usage)
+			.unwrap();
+		let uv = ctx
+			.create_texture_format(
+				uw as i32,
+				uh as i32,
+				1,
+				wgpu::TextureFormat::Rg8Unorm,
+				usage,
+			)
+			.unwrap();
+		let mut y_data = vec![255u8; yw * yh];
+		for row in 0..vh {
+			for col in 0..vw {
+				y_data[row * yw + col] = (col * 17 + row * 31) as u8;
+			}
+		}
+		let mut uv_data = vec![255u8; uw * uh * 2];
+		for row in 0..ch {
+			for col in 0..cw {
+				let offset = (row * uw + col) * 2;
+				uv_data[offset] = 128;
+				uv_data[offset + 1] = 64;
+			}
+		}
+		let descriptor = PlanarDescriptor::yuv_semi_planar(Subsampling::Cs420, PlaneStorage::U8);
+		ctx.upload_planar_matrix_planes(
+			&[y, uv],
+			descriptor,
+			&[PlaneData::tight(&y_data), PlaneData::tight(&uv_data)],
+		)
+		.unwrap();
+		let identity = identity_yuv_transform();
+
+		// 1:1 using the explicit visible size: exact visible-region pixels.
+		let dst = ctx.create_texture(vw as i32, vh as i32).unwrap();
+		ctx.run_planar_matrix_to_rgb(
+			&[y, uv],
+			dst,
+			descriptor,
+			&identity,
+			(vw as u32, vh as u32),
+			(vw as u32, vh as u32),
+		)
+		.unwrap();
+		let out = ctx.download(dst).unwrap();
+		for row in 0..vh {
+			for col in 0..vw {
+				let i = row * vw + col;
+				let got = pixel_f32(&out.data, i);
+				let want = y_data[row * yw + col] as f32 / 255.0;
+				assert!((got[0] - want).abs() < 1e-6, "Y px ({col},{row})");
+				assert!((got[1] - 128.0 / 255.0).abs() < 1e-6, "U px ({col},{row})");
+				assert!((got[2] - 64.0 / 255.0).abs() < 1e-6, "V px ({col},{row})");
+				assert_eq!(got[3], 1.0);
+			}
+		}
+
+		// Scaled 7x5 -> 11x9: every sample must stay inside the visible
+		// region (max visible Y = 226/255, visible U = 128/255); padded
+		// 255 bytes would show up as brighter values.
+		let scaled = ctx.create_texture(11, 9).unwrap();
+		ctx.run_planar_matrix_to_rgb(
+			&[y, uv],
+			scaled,
+			descriptor,
+			&identity,
+			(vw as u32, vh as u32),
+			(11, 9),
+		)
+		.unwrap();
+		let scaled_out = ctx.download(scaled).unwrap();
+		let max_visible_y = 226.0 / 255.0;
+		for i in 0..11 * 9 {
+			let got = pixel_f32(&scaled_out.data, i);
+			assert!(
+				got[0] <= max_visible_y + 1e-6,
+				"padding leaked into Y at px {i}: {}",
+				got[0]
+			);
+			assert!(
+				got[1] <= 128.0 / 255.0 + 1e-6,
+				"padding leaked into U at px {i}: {}",
+				got[1]
+			);
+		}
+
+		for token in [y, uv, dst, scaled] {
+			ctx.destroy_texture(token);
+		}
+	}
+
+	/// The descriptor-driven pass for the remaining matrix cells: 4:4:4
+	/// planar U16, 4:2:0 semi-planar F16, interleaved RGB U8 (expanded)
+	/// and interleaved RGBA F32 (alpha preserved).
+	#[test]
+	fn gpu_planar_matrix_cells_444_rgb_rgba() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let identity = identity_yuv_transform();
+
+		// 4:4:4 planar U16: three full-size planes, exact native mapping.
+		if ctx.supports_16bit_norm_planes() {
+			let (w, h) = (7usize, 5usize);
+			let descriptor = PlanarDescriptor::yuv_planar(Subsampling::Cs444, PlaneStorage::U16);
+			let y_codes: Vec<u16> = (0..w * h).map(|i| 1000 + (i as u16 % 50000)).collect();
+			let u_codes: Vec<u16> = (0..w * h).map(|i| 500 + (i as u16 * 3) % 40000).collect();
+			let v_codes: Vec<u16> = (0..w * h).map(|i| 30000 - (i as u16 * 2) % 20000).collect();
+			let planes = ctx
+				.upload_planar_matrix_frame(
+					descriptor,
+					w as i32,
+					h as i32,
+					&[
+						PlaneData::tight(&u16_bytes(&y_codes)),
+						PlaneData::tight(&u16_bytes(&u_codes)),
+						PlaneData::tight(&u16_bytes(&v_codes)),
+					],
+				)
+				.unwrap();
+			assert_eq!(planes.len(), 3);
+			let dst = ctx.create_texture(w as i32, h as i32).unwrap();
+			ctx.run_planar_matrix_to_rgb_native(&planes, dst, descriptor, &identity)
+				.unwrap();
+			let out = ctx.download(dst).unwrap();
+			for i in 0..w * h {
+				let got = pixel_f32(&out.data, i);
+				assert!((got[0] - y_codes[i] as f32 / 65535.0).abs() < 1e-6);
+				assert!((got[1] - u_codes[i] as f32 / 65535.0).abs() < 1e-6);
+				assert!((got[2] - v_codes[i] as f32 / 65535.0).abs() < 1e-6);
+				assert_eq!(got[3], 1.0);
+			}
+			for token in planes.iter().chain([&dst]) {
+				ctx.destroy_texture(*token);
+			}
+		}
+
+		// 4:2:0 semi-planar F16: exact half values survive as-is.
+		{
+			let (w, h) = (4usize, 2usize);
+			let (cw, ch) = (2usize, 1usize);
+			let descriptor =
+				PlanarDescriptor::yuv_semi_planar(Subsampling::Cs420, PlaneStorage::F16);
+			let half = |v: f32| half::f16::from_f32(v).to_bits().to_le_bytes();
+			let y_bytes: Vec<u8> = (0..w * h).flat_map(|_| half(0.5)).collect();
+			let mut uv_bytes = Vec::with_capacity(cw * ch * 4);
+			for _ in 0..cw * ch {
+				uv_bytes.extend_from_slice(&half(0.25));
+				uv_bytes.extend_from_slice(&half(0.75));
+			}
+			let planes = ctx
+				.upload_planar_matrix_frame(
+					descriptor,
+					w as i32,
+					h as i32,
+					&[PlaneData::tight(&y_bytes), PlaneData::tight(&uv_bytes)],
+				)
+				.unwrap();
+			let dst = ctx.create_texture(w as i32, h as i32).unwrap();
+			ctx.run_planar_matrix_to_rgb_native(&planes, dst, descriptor, &identity)
+				.unwrap();
+			let out = ctx.download(dst).unwrap();
+			for i in 0..w * h {
+				let got = pixel_f32(&out.data, i);
+				assert_eq!(got, [0.5, 0.25, 0.75, 1.0], "px {i}");
+			}
+			for token in planes.iter().chain([&dst]) {
+				ctx.destroy_texture(*token);
+			}
+		}
+
+		// Interleaved RGB U8 with a padded source stride: expanded to
+		// RGBA with alpha 1.0, RGB passthrough.
+		{
+			let (w, h) = (5usize, 3usize);
+			let descriptor = PlanarDescriptor::rgb(PlaneStorage::U8);
+			let stride = w * 3 + 2;
+			let mut rgb = vec![0u8; stride * h];
+			for row in 0..h {
+				for col in 0..w {
+					let i = row * w + col;
+					let o = row * stride + col * 3;
+					rgb[o] = (i * 3) as u8;
+					rgb[o + 1] = (i * 5 + 1) as u8;
+					rgb[o + 2] = (i * 7 + 2) as u8;
+				}
+			}
+			let planes = ctx
+				.upload_planar_matrix_frame(
+					descriptor,
+					w as i32,
+					h as i32,
+					&[PlaneData::strided(&rgb, stride)],
+				)
+				.unwrap();
+			assert_eq!(planes.len(), 1);
+			assert_eq!(
+				ctx.texture_format(planes[0]),
+				Some(wgpu::TextureFormat::Rgba8Unorm)
+			);
+			let dst = ctx.create_texture(w as i32, h as i32).unwrap();
+			ctx.run_planar_matrix_to_rgb_native(&planes, dst, descriptor, &identity)
+				.unwrap();
+			let out = ctx.download(dst).unwrap();
+			for row in 0..h {
+				for col in 0..w {
+					let i = row * w + col;
+					let o = row * stride + col * 3;
+					let got = pixel_f32(&out.data, i);
+					assert!((got[0] - rgb[o] as f32 / 255.0).abs() < 1e-6);
+					assert!((got[1] - rgb[o + 1] as f32 / 255.0).abs() < 1e-6);
+					assert!((got[2] - rgb[o + 2] as f32 / 255.0).abs() < 1e-6);
+					assert_eq!(got[3], 1.0);
+				}
+			}
+			for token in planes.iter().chain([&dst]) {
+				ctx.destroy_texture(*token);
+			}
+		}
+
+		// Interleaved RGBA F32: direct passthrough with alpha preserved.
+		{
+			let (w, h) = (4usize, 2usize);
+			let descriptor = PlanarDescriptor::rgba(PlaneStorage::F32);
+			let mut rgba = vec![0u8; w * h * 16];
+			for i in 0..w * h {
+				for channel in 0..4 {
+					let value = (i * 4 + channel) as f32 * 0.25;
+					let base = i * 16 + channel * 4;
+					rgba[base..base + 4].copy_from_slice(&value.to_le_bytes());
+				}
+			}
+			let planes = ctx
+				.upload_planar_matrix_frame(
+					descriptor,
+					w as i32,
+					h as i32,
+					&[PlaneData::tight(&rgba)],
+				)
+				.unwrap();
+			let dst = ctx.create_texture(w as i32, h as i32).unwrap();
+			ctx.run_planar_matrix_to_rgb_native(&planes, dst, descriptor, &identity)
+				.unwrap();
+			let out = ctx.download(dst).unwrap();
+			assert_eq!(&out.data, &rgba, "RGBA F32 is a direct passthrough");
+			for token in planes.iter().chain([&dst]) {
+				ctx.destroy_texture(*token);
+			}
+		}
+	}
+
+	/// Validation arms for the descriptor-driven allocation, upload and
+	/// pass APIs (sizes, formats, missing tokens, feature gating).
+	#[test]
+	fn gpu_planar_matrix_creation_upload_and_pass_validation() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		let identity = identity_yuv_transform();
+
+		// Legacy creation geometry (6x4 NV12 -> 3x2 chroma).
+		let (y, uv) = ctx
+			.create_planar_textures(PlanarFormat::Nv12, 6, 4)
+			.unwrap();
+		assert_eq!(ctx.texture_size(y), Some((6, 4)));
+		assert_eq!(ctx.texture_size(uv), Some((3, 2)));
+		assert_eq!(ctx.texture_format(uv), Some(wgpu::TextureFormat::Rg8Unorm));
+
+		// Upload validation: short data, missing token, invalid dims.
+		assert_eq!(
+			ctx.upload_planar_planes(y, uv, &[0u8; 24], &[0u8; 11])
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.upload_planar_planes(999_999, uv, &[0u8; 24], &[0u8; 12])
+				.unwrap_err()
+				.code(),
+			Error::NotFound.code()
+		);
+		assert_eq!(
+			ctx.create_planar_textures(PlanarFormat::Nv12, 0, 4)
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+
+		// U16 storage is gated on the 16-bit norm feature.
+		let u16_descriptor = PlanarDescriptor::yuv_planar(Subsampling::Cs422, PlaneStorage::U16);
+		if ctx.supports_16bit_norm_planes() {
+			let planes = ctx
+				.create_planar_matrix_textures(u16_descriptor, 5, 3)
+				.unwrap();
+			assert_eq!(planes.len(), 3);
+			assert_eq!(ctx.texture_size(planes[1]), Some((3, 3)));
+			assert_eq!(
+				ctx.texture_format(planes[1]),
+				Some(wgpu::TextureFormat::R16Unorm)
+			);
+			// A plane without COPY_DST is rejected before any GPU write.
+			let readonly = ctx
+				.create_texture_format(
+					3,
+					3,
+					1,
+					wgpu::TextureFormat::R16Unorm,
+					wgpu::TextureUsages::TEXTURE_BINDING,
+				)
+				.unwrap();
+			assert_eq!(
+				ctx.upload_planar_matrix_planes(
+					&[planes[0], readonly],
+					u16_descriptor,
+					&[PlaneData::tight(&[0u8; 30]), PlaneData::tight(&[0u8; 36])],
+				)
+				.unwrap_err()
+				.code(),
+				Error::Invalid.code()
+			);
+			ctx.destroy_texture(readonly);
+			for token in &planes {
+				ctx.destroy_texture(*token);
+			}
+
+			// A frame-level upload failure destroys every token it made.
+			let before = lock(&ctx.textures).len();
+			assert_eq!(
+				ctx.upload_planar_matrix_frame(
+					u16_descriptor,
+					5,
+					3,
+					&[PlaneData::tight(&[0u8; 30]), PlaneData::tight(&[0u8; 17])],
+				)
+				.unwrap_err()
+				.code(),
+				Error::Invalid.code()
+			);
+			assert_eq!(lock(&ctx.textures).len(), before, "no leaked plane tokens");
+		} else {
+			assert!(matches!(
+				ctx.create_planar_matrix_textures(u16_descriptor, 5, 3),
+				Err(Error::Failed(_))
+			));
+		}
+
+		// Pass validation: plane count / sizes / formats / missing tokens.
+		let descriptor = PlanarDescriptor::yuv_semi_planar(Subsampling::Cs420, PlaneStorage::U8);
+		let dst = ctx.create_texture(6, 4).unwrap();
+		// The legacy planes are 4:2:0; claiming 4:2:2 makes the chroma
+		// plane dimensions mismatch and is rejected.
+		let wrong_subsampling =
+			PlanarDescriptor::yuv_semi_planar(Subsampling::Cs422, PlaneStorage::U8);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(
+				&[y, uv],
+				dst,
+				wrong_subsampling,
+				&identity,
+				(6, 4),
+				(6, 4),
+			)
+			.unwrap_err()
+			.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(
+				&[999_999, uv],
+				dst,
+				descriptor,
+				&identity,
+				(6, 4),
+				(6, 4)
+			)
+			.unwrap_err()
+			.code(),
+			Error::NotFound.code()
+		);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(&[y], dst, descriptor, &identity, (6, 4), (6, 4))
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(&[y, uv], dst, descriptor, &identity, (7, 4), (6, 4))
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(&[y, uv], dst, descriptor, &identity, (6, 4), (7, 4))
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		// A non-Rgba32Float destination is rejected.
+		let wrong_dst = ctx
+			.create_texture_format(
+				6,
+				4,
+				1,
+				wgpu::TextureFormat::Rgba16Float,
+				wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+			)
+			.unwrap();
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb(
+				&[y, uv],
+				wrong_dst,
+				descriptor,
+				&identity,
+				(6, 4),
+				(6, 4)
+			)
+			.unwrap_err()
+			.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb_native(&[y, uv], wrong_dst, descriptor, &identity)
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		// Missing tokens are NotFound even before size checks.
+		assert_eq!(
+			ctx.run_planar_matrix_to_rgb_native(&[999_999], dst, descriptor, &identity)
+				.unwrap_err()
+				.code(),
+			Error::NotFound.code()
+		);
+		assert_eq!(
+			ctx.run_planar_yuv_to_rgb_scaled(y, uv, dst, &identity, (0, 4), (6, 4))
+				.unwrap_err()
+				.code(),
+			Error::Invalid.code()
+		);
+		assert_eq!(
+			ctx.run_planar_yuv_to_rgb_scaled(999_999, uv, dst, &identity, (6, 4), (6, 4))
+				.unwrap_err()
+				.code(),
+			Error::NotFound.code()
+		);
+
+		for token in [y, uv, dst, wrong_dst] {
+			ctx.destroy_texture(token);
+		}
 	}
 }

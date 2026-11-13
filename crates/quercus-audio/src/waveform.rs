@@ -119,12 +119,23 @@ impl AudioVisualWaveform {
 		w
 	}
 
-	/// Channel count.
+	/// The number of interleaved channels the stored samples are indexed by.
+	///
+	/// `0` means unset (a fresh [`AudioVisualWaveform`]) and makes
+	/// [`AudioVisualWaveform::overwrite_samples`] a no-op; readers such as
+	/// [`AudioVisualWaveform::get_summary_from_time`] clamp negative counts to
+	/// 0. Set with [`AudioVisualWaveform::set_channel_count`].
 	pub fn channel_count(&self) -> i32 {
 		self.channels
 	}
 
-	/// Replace the channel count.
+	/// Replace the waveform's channel count without touching stored samples.
+	///
+	/// `channels` is the new interleaved channel count; `0` means unset (the
+	/// fresh state after [`AudioVisualWaveform::new`]) and makes
+	/// [`AudioVisualWaveform::overwrite_samples`] a no-op. Existing data is
+	/// still indexed with the old count, so callers change this only before a
+	/// full rewrite (e.g. when reusing a cache entry for different media).
 	pub fn set_channel_count(&mut self, channels: i32) {
 		self.channels = channels;
 	}
@@ -147,6 +158,23 @@ impl AudioVisualWaveform {
 		}
 	}
 
+	/// Resample raw planar f32 samples into one mipmap's interleaved min/max
+	/// data, starting at time `start`.
+	///
+	/// `planar` holds one slice per channel, all the same length (`planar[0]`
+	/// defines the source sample count); `sample_rate` is their native rate in
+	/// Hz and `target_rate` the mipmap's points-per-second rate. `channels` is
+	/// the interleaved channel count used to size each output point, and
+	/// `data` is grown with default points to fit the written range. `start` is
+	/// already relative to the waveform's `virtual_start`.
+	///
+	/// # Returns
+	///
+	/// `(start_index, samples_length)`: the first written element and the
+	/// element count, forwarded to
+	/// [`AudioVisualWaveform::overwrite_samples_from_mipmap`] for the next
+	/// mipmap down.
+	///
 	/// `// CPP-PARITY: src/audio/src/audiovisualwaveform.cpp:40`
 	/// (`AudioVisualWaveform::overwrite_samples_from_buffer`).
 	#[allow(clippy::too_many_arguments)]
@@ -190,9 +218,25 @@ impl AudioVisualWaveform {
 		(start_index, samples_length)
 	}
 
+	/// Resample a coarser mipmap's interleaved min/max data into `output_data`
+	/// at `output_rate`, starting at time `start`.
+	///
+	/// `input` is the source mipmap (channel-interleaved), `input_sample_rate`
+	/// its points-per-second rate, and `input_start`/`input_length` are the
+	/// element index and count produced by the previous (coarser) pass.
+	/// `channels` is the interleaved channel count; `output_data` is grown with
+	/// default points to `start_index + samples_length`. Mipmap rates are
+	/// powers of two, so `input_sample_rate / output_rate` is an exact integer
+	/// chunk size (the reason no rounding compensation is needed here).
+	///
+	/// # Returns
+	///
+	/// `(start_index, samples_length)`: the first written element and the
+	/// number of elements written, to be forwarded as the next pass's input
+	/// range.
+	///
 	/// `// CPP-PARITY: src/audio/src/audiovisualwaveform.cpp:69`
-	/// (`AudioVisualWaveform::overwrite_samples_from_mipmap`): mipmaps are
-	/// powers of two so the integer chunk division is exact.
+	/// (`AudioVisualWaveform::overwrite_samples_from_mipmap`).
 	#[allow(clippy::too_many_arguments)]
 	fn overwrite_samples_from_mipmap(
 		input: &Sample,
@@ -359,7 +403,17 @@ impl AudioVisualWaveform {
 		);
 	}
 
-	/// Write silence over a range.
+	/// Write silence (min = max = 0) over `[start, start + length)`, growing
+	/// the stored data as needed and extending `length`.
+	///
+	/// `start` is a timeline time in seconds, converted relative to
+	/// `virtual_start` (which is first aligned with `start` via
+	/// [`AudioVisualWaveform::validate_virtual_start`]); `length` is the range
+	/// duration and a negative value writes nothing. Every mipmap is padded
+	/// with default points to the range end before being zeroed, so writing
+	/// past the current data is safe. `self.length` is set to
+	/// `max(old, start + length)`. Counterpart of
+	/// [`AudioVisualWaveform::overwrite_samples`] for silence.
 	///
 	/// `// CPP-PARITY: src/audio/src/audiovisualwaveform.cpp:187`
 	/// (`AudioVisualWaveform::overwrite_silence`).
@@ -556,13 +610,25 @@ impl AudioVisualWaveform {
 		summed
 	}
 
-	/// Merge already-summed min/max pairs across channels.
+	/// Merge already-summed min/max pairs into one result point per channel,
+	/// i.e. reduce a channel-interleaved slice to a single min/max per channel.
+	///
+	/// `samples` is channel-interleaved (`nb_channels` consecutive entries per
+	/// point), `nb_samples` is how many entries to consume (clamped to
+	/// `samples.len()`), and `nb_channels` is the channel count (negative
+	/// treated as 0; 0 returns an empty vector). The accumulator starts from
+	/// the FIRST point rather than `{0, 0}`, so an all-positive or all-negative
+	/// range keeps its real extremes (the C++ engine version clamped those to
+	/// zero). Used by [`AudioVisualWaveform::get_summary_from_time`] and the
+	/// mipmap rebase.
+	///
+	/// # Returns
+	///
+	/// One `SamplePerChannel` per channel; when `nb_samples` is smaller than
+	/// the channel count, channels not reached by the scan stay `{0, 0}`.
 	///
 	/// `// CPP-PARITY: src/audio/src/audiovisualwaveform.cpp:353`
-	/// (`AudioVisualWaveform::re_sum_samples`): initialized from the FIRST
-	/// point rather than {0,0} — the engine version clamped all-positive
-	/// (resp. all-negative) ranges to zero; fixed in quercusaudio (see the
-	/// comment in the C++ source).
+	/// (`AudioVisualWaveform::re_sum_samples`).
 	pub fn re_sum_samples(
 		samples: &[SamplePerChannel],
 		nb_samples: usize,

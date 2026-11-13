@@ -68,6 +68,10 @@ pub fn save_cache_frame(path: &str, frame: &Frame) -> Result<()> {
 		.map_err(|e| Error::Failed(format!("frame cache write failed: {tmp}: {e}")))?;
 	std::fs::rename(&tmp, path)
 		.map_err(|e| Error::Failed(format!("frame cache rename failed: {tmp}: {e}")))?;
+	// A completed frame write may push the cache over its configured byte
+	// budget; enforcement is debounced and best-effort, so it never fails
+	// the write itself.
+	crate::manager::enforce_disk_cache_quota();
 	Ok(())
 }
 
@@ -163,24 +167,70 @@ pub fn load_cache_frame(path: &str) -> Result<Frame> {
 	})
 }
 
+/// Read a little-endian `i32` of the frame-cache header at the cursor
+/// `*off`, then advance `*off` by 4.
+///
+/// `bytes` is the whole cached file; the caller must have validated that the
+/// fixed header ([`HEADER_LEN`]) is present.
+///
+/// # Panics
+///
+/// Panics when fewer than 4 bytes remain at `*off` (slice indexing); the
+/// header-length check in [`load_cache_frame`] keeps that unreachable for
+/// well-formed input.
 fn read_i32(bytes: &[u8], off: &mut usize) -> i32 {
 	let v = i32::from_le_bytes(bytes[*off..*off + 4].try_into().unwrap());
 	*off += 4;
 	v
 }
 
+/// Read a little-endian `u32` of the frame-cache header at the cursor
+/// `*off`, then advance `*off` by 4.
+///
+/// Used for the format version. `bytes` is the whole cached file; the caller
+/// must have validated that the fixed header ([`HEADER_LEN`]) is present.
+///
+/// # Panics
+///
+/// Panics when fewer than 4 bytes remain at `*off` (slice indexing); the
+/// header-length check in [`load_cache_frame`] keeps that unreachable for
+/// well-formed input.
 fn read_u32(bytes: &[u8], off: &mut usize) -> u32 {
 	let v = u32::from_le_bytes(bytes[*off..*off + 4].try_into().unwrap());
 	*off += 4;
 	v
 }
 
+/// Read a little-endian `i64` of the frame-cache header at the cursor
+/// `*off`, then advance `*off` by 8.
+///
+/// Used for the timestamp numerator and denominator. `bytes` is the whole
+/// cached file; the caller must have validated that the fixed header
+/// ([`HEADER_LEN`]) is present.
+///
+/// # Panics
+///
+/// Panics when fewer than 8 bytes remain at `*off` (slice indexing); the
+/// header-length check in [`load_cache_frame`] keeps that unreachable for
+/// well-formed input.
 fn read_i64(bytes: &[u8], off: &mut usize) -> i64 {
 	let v = i64::from_le_bytes(bytes[*off..*off + 8].try_into().unwrap());
 	*off += 8;
 	v
 }
 
+/// Read a little-endian `u64` of the frame-cache header at the cursor
+/// `*off`, then advance `*off` by 8.
+///
+/// Used for the payload byte length. `bytes` is the whole cached file; the
+/// caller must have validated that the fixed header ([`HEADER_LEN`]) is
+/// present.
+///
+/// # Panics
+///
+/// Panics when fewer than 8 bytes remain at `*off` (slice indexing); the
+/// header-length check in [`load_cache_frame`] keeps that unreachable for
+/// well-formed input.
 fn read_u64(bytes: &[u8], off: &mut usize) -> u64 {
 	let v = u64::from_le_bytes(bytes[*off..*off + 8].try_into().unwrap());
 	*off += 8;

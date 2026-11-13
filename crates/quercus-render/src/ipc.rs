@@ -392,6 +392,22 @@ pub struct WireMontageEffect {
 	pub params: Vec<WireEffectParam>,
 }
 
+/// One effect of a montage clip's audio chain on the wire (protocol v2
+/// additive field of [`WireMontageClip`]; source-first order).
+///
+/// The audio chain has no effect-input id: every entry feeds the mixer's
+/// sample buffer, so this is a slimmer shape than [`WireMontageEffect`].
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct WireMontageAudioEffect {
+	/// Built-in node type id (e.g. `org.olivevideoeditor.Olive.volume`).
+	pub type_id: String,
+	/// Enabled flag (disabled effects are bypassed).
+	pub enabled: bool,
+	/// Static parameter values.
+	pub params: Vec<WireEffectParam>,
+}
+
 /// One montage clip on the wire (rationals flattened to num/den pairs).
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
@@ -414,9 +430,146 @@ pub struct WireMontageClip {
 	pub media_in_den: i64,
 	/// Playback gain (1.0 = unity).
 	pub gain: f32,
-	/// The clip's effect stack (protocol v2 additive: older peers omit the
-	/// field and it defaults to an empty stack).
+	/// Constant-power stereo pan (-1..1).
+	pub pan: f32,
+	/// Fade-in numerator (protocol v2 additive; 0/1 when absent).
+	pub fade_in_num: i64,
+	/// Fade-in denominator (0 in older payloads; read as "no fade").
+	pub fade_in_den: i64,
+	/// Fade-out numerator (protocol v2 additive; 0/1 when absent).
+	pub fade_out_num: i64,
+	/// Fade-out denominator (0 in older payloads; read as "no fade").
+	pub fade_out_den: i64,
+	/// The clip's audio effect chain (protocol v2 additive: older peers
+	/// omit the field and it defaults to an empty chain).
+	pub audio_effects: Vec<WireMontageAudioEffect>,
+	/// The clip's video effect stack (protocol v2 additive: older peers omit
+	/// the field and it defaults to an empty stack).
 	pub effects: Vec<WireMontageEffect>,
+}
+
+/// A rational's wire parts. `0/1` is the no-duration sentinel.
+///
+/// Returns `(numerator, denominator)`; a non-positive denominator (an
+/// unset rational) is normalized to `0/1`, so peers never receive a
+/// division by zero. Inverse of `rational_from_wire_parts`.
+fn wire_rational_parts(value: quercus_core::Rational) -> (i64, i64) {
+	if value.denominator() <= 0 {
+		(0, 1)
+	} else {
+		(value.numerator(), value.denominator())
+	}
+}
+
+/// Rebuild a rational from wire parts. Old payloads omit the fields
+/// (0/0) and must read as "no fade", not NaN.
+///
+/// Any non-positive `den` collapses to the `0/1` sentinel; otherwise
+/// `(num, den)` is used as given. Inverse of `wire_rational_parts`.
+fn rational_from_wire_parts(num: i64, den: i64) -> quercus_core::Rational {
+	if den <= 0 {
+		quercus_core::Rational::new(0, 1)
+	} else {
+		quercus_core::Rational::new(num, den)
+	}
+}
+
+/// Map a ticket-side audio effect to its wire form.
+///
+/// `type_id` and `enabled` are copied verbatim; `params` entries whose
+/// value has no wire representation are dropped (the wire value enum is
+/// a subset of the node value), so a round trip through
+/// [`montage_audio_effect_from`] keeps only representable inputs.
+pub fn wire_audio_effect_from(
+	effect: &crate::ticket::MontageAudioEffect,
+) -> WireMontageAudioEffect {
+	WireMontageAudioEffect {
+		type_id: effect.type_id.clone(),
+		enabled: effect.enabled,
+		params: effect
+			.params
+			.iter()
+			.filter_map(|(input, value)| {
+				WireNodeValue::from_node_value(value).map(|value| WireEffectParam {
+					input: input.clone(),
+					value,
+				})
+			})
+			.collect(),
+	}
+}
+
+/// Map a wire audio effect back to the ticket-side form (worker).
+pub fn montage_audio_effect_from(
+	wire: &WireMontageAudioEffect,
+) -> crate::ticket::MontageAudioEffect {
+	crate::ticket::MontageAudioEffect {
+		type_id: wire.type_id.clone(),
+		enabled: wire.enabled,
+		params: wire
+			.params
+			.iter()
+			.map(|p| (p.input.clone(), p.value.to_node_value()))
+			.collect(),
+	}
+}
+
+/// Map a ticket-side montage clip to its wire form.
+///
+/// Every rational is flattened to a num/den pair; the fades go through
+/// `wire_rational_parts`, so an unset fade becomes the `0/1` "no
+/// fade" sentinel, and the effect stacks are mapped with
+/// [`wire_effect_from`] / [`wire_audio_effect_from`]. Inverse of
+/// [`montage_clip_from`].
+pub fn wire_montage_clip_from(clip: &crate::ticket::MontageClip) -> WireMontageClip {
+	let (fade_in_num, fade_in_den) = wire_rational_parts(clip.fade_in);
+	let (fade_out_num, fade_out_den) = wire_rational_parts(clip.fade_out);
+	WireMontageClip {
+		filename: clip.filename.clone(),
+		stream_index: clip.stream_index,
+		in_num: clip.in_time.numerator(),
+		in_den: clip.in_time.denominator(),
+		out_num: clip.out_time.numerator(),
+		out_den: clip.out_time.denominator(),
+		media_in_num: clip.media_in.numerator(),
+		media_in_den: clip.media_in.denominator(),
+		gain: clip.gain,
+		pan: clip.pan,
+		fade_in_num,
+		fade_in_den,
+		fade_out_num,
+		fade_out_den,
+		audio_effects: clip.audio_effects.iter().map(wire_audio_effect_from).collect(),
+		effects: clip.effects.iter().map(wire_effect_from).collect(),
+	}
+}
+
+/// Map a wire montage clip back to the ticket-side form (worker).
+///
+/// The in/out and media-in rationals are rebuilt straight from their
+/// num/den parts; the fades go through `rational_from_wire_parts`, so
+/// a payload that omitted the protocol-v2 fade fields reads as "no
+/// fade" instead of `0/0`. Both effect stacks are rebuilt with
+/// [`montage_effect_from`] / [`montage_audio_effect_from`]. Inverse of
+/// [`wire_montage_clip_from`].
+pub fn montage_clip_from(wire: &WireMontageClip) -> crate::ticket::MontageClip {
+	crate::ticket::MontageClip {
+		filename: wire.filename.clone(),
+		stream_index: wire.stream_index,
+		in_time: quercus_core::Rational::new(wire.in_num, wire.in_den),
+		out_time: quercus_core::Rational::new(wire.out_num, wire.out_den),
+		media_in: quercus_core::Rational::new(wire.media_in_num, wire.media_in_den),
+		gain: wire.gain,
+		pan: wire.pan,
+		fade_in: rational_from_wire_parts(wire.fade_in_num, wire.fade_in_den),
+		fade_out: rational_from_wire_parts(wire.fade_out_num, wire.fade_out_den),
+		effects: wire.effects.iter().map(montage_effect_from).collect(),
+		audio_effects: wire
+			.audio_effects
+			.iter()
+			.map(montage_audio_effect_from)
+			.collect(),
+	}
 }
 
 /// Map a ticket-side montage effect to its wire form (main process;
@@ -440,6 +593,12 @@ pub fn wire_effect_from(effect: &crate::ticket::MontageEffect) -> WireMontageEff
 }
 
 /// Map a wire effect back to the ticket-side form (worker).
+///
+/// `effect_input_id` is rebuilt as `None` when the wire string is empty
+/// (the effect is not tied to a specific input node), and `params` are
+/// converted from their wire representation via
+/// `WireNodeValue::to_node_value`. Inverse of [`wire_effect_from`]; used
+/// when a worker deserializes a batch ticket.
 pub fn montage_effect_from(wire: &WireMontageEffect) -> crate::ticket::MontageEffect {
 	crate::ticket::MontageEffect {
 		type_id: wire.type_id.clone(),
@@ -591,6 +750,9 @@ pub struct AudioTicketSpec {
 	pub channels: i32,
 	/// Sequence montage (ordered topmost-last; empty = silence).
 	pub montage: Vec<WireMontageClip>,
+	/// Sequence master-bus chain (protocol v2 additive: older peers omit
+	/// the field and it defaults to no bus processing).
+	pub bus_effects: Vec<WireMontageAudioEffect>,
 }
 
 /// `render_audio_batch` (main->worker, M15 S3) — a batch of audio range
@@ -745,8 +907,18 @@ pub fn error_message(message: &str, ticket: Option<i64>) -> Value {
 	}
 }
 
-/// Write one NDJSON message line (compact JSON + `\n`), the Rust port of
-/// `ipcmessage.cpp write_message()`.
+/// Write one NDJSON message line (compact JSON + `\n`), the Rust port
+/// of `ipcmessage.cpp write_message()`.
+///
+/// `w` is the sink (a pipe or socket stream) and `msg` the already-built
+/// JSON object; `w` is not flushed, so buffered sinks must be flushed
+/// by the caller. The newline is written in a second `write_all`, so a
+/// partial write can leave a message split across calls.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] with kind `InvalidData` when `msg` cannot be
+/// serialized, or the underlying write error.
 pub fn write_message(w: &mut impl Write, msg: &Value) -> io::Result<()> {
 	let line =
 		serde_json::to_string(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -998,21 +1170,68 @@ impl SpscRingBuffer {
 	}
 
 	#[inline]
+	/// The ring's `head` counter (`AtomicU32` at offset 0): the producer's
+	/// next write slot.
+	///
+	/// Read by [`Self::pop`] (acquire) and advanced by [`Self::push`]
+	/// (release); written to `0` by [`Self::create`].
+	///
+	/// # Safety
+	///
+	/// The ring must be live: `self.base` must point at a mapped segment of
+	/// at least [`Self::HEADER_BYTES`] bytes initialized by
+	/// [`Self::create`] or an ABI-identical C++ peer. The returned
+	/// reference must not outlive that mapping.
 	unsafe fn head(&self) -> &AtomicU32 {
 		unsafe { &*(self.base as *const AtomicU32) }
 	}
 
 	#[inline]
+	/// The ring's `tail` counter (`AtomicU32` at offset 4): the consumer's
+	/// next read slot.
+	///
+	/// Read by [`Self::push`] (acquire) and advanced by [`Self::pop`]
+	/// (release); written to `0` by [`Self::create`].
+	///
+	/// # Safety
+	///
+	/// The ring must be live: `self.base` must point at a mapped segment of
+	/// at least [`Self::HEADER_BYTES`] bytes initialized by
+	/// [`Self::create`] or an ABI-identical C++ peer. The returned
+	/// reference must not outlive that mapping.
 	unsafe fn tail(&self) -> &AtomicU32 {
 		unsafe { &*(self.base.add(4) as *const AtomicU32) }
 	}
 
 	#[inline]
+	/// Writes the ring's capacity (slot count) into the header at offset
+	/// 8.
+	///
+	/// Only [`Self::create`] calls this, on the process that owns segment
+	/// creation; peers read the value back through [`Self::capacity`].
+	///
+	/// # Safety
+	///
+	/// `self.base` must point at a writable mapped segment of at least
+	/// [`Self::HEADER_BYTES`] bytes, and the header must be exclusively
+	/// owned during initialization (no peer may be reading it yet).
 	unsafe fn store_capacity(&self, capacity: u32) {
 		unsafe { *(self.base.add(8) as *mut u32) = capacity };
 	}
 
 	#[inline]
+	/// Raw `*mut u32` to slot `index` in the slot array that follows the
+	/// 12-byte header (`HEADER_BYTES + index * 4`).
+	///
+	/// Used by [`Self::create`], [`Self::push`] and [`Self::pop`] to read
+	/// and write the queued index/value.
+	///
+	/// # Safety
+	///
+	/// The ring must be live, `index` must be `< self.capacity()`, and
+	/// `self.base` must address at least `HEADER_BYTES + (index + 1) * 4`
+	/// writable bytes. The pointer is valid only while the segment mapping
+	/// stays alive and outlives the last use.
 	unsafe fn slot_ptr(&self, index: usize) -> *mut u32 {
 		unsafe { self.base.add(Self::HEADER_BYTES + index * 4) as *mut u32 }
 	}
@@ -1401,6 +1620,12 @@ impl SharedMemoryRegion {
 	/// "olive-rw-<pid>-<index>" (`SharedMemoryRegion::make_key`).
 	/// Centralized so the owner and the spawned worker agree on the same
 	/// name.
+	///
+	/// `owner_pid` is the owning process id and `worker_index` the worker's
+	/// ordinal within that owner; the pair must be unique among live
+	/// segments. The key is also the input to the platform shm name
+	/// derivation (`shm_name_for_key`), so both sides must pass the same
+	/// numbers.
 	pub fn make_key(owner_pid: i64, worker_index: i32) -> String {
 		format!("olive-rw-{owner_pid}-{worker_index}")
 	}
@@ -2239,6 +2464,19 @@ mod tests {
 						media_in_num: 10,
 						media_in_den: 24,
 						gain: 0.5,
+						pan: -0.5,
+						fade_in_num: 1,
+						fade_in_den: 4,
+						fade_out_num: 0,
+						fade_out_den: 1,
+						audio_effects: vec![WireMontageAudioEffect {
+							type_id: "org.olivevideoeditor.Olive.volume".into(),
+							enabled: true,
+							params: vec![WireEffectParam {
+								input: "volume_in".into(),
+								value: WireNodeValue::Float(0.25),
+							}],
+						}],
 						effects: vec![WireMontageEffect {
 							type_id: "org.olivevideoeditor.Olive.opacity".into(),
 							enabled: true,
@@ -2281,6 +2519,18 @@ mod tests {
 		assert_eq!(
 			value["tickets"][1]["montage"][0]["effects"][0]["type_id"],
 			"org.olivevideoeditor.Olive.opacity"
+		);
+		// Per-clip audio post fields ride the same additive wire shape.
+		assert_eq!(value["tickets"][1]["montage"][0]["pan"], -0.5);
+		assert_eq!(value["tickets"][1]["montage"][0]["fade_in_num"], 1);
+		assert_eq!(value["tickets"][1]["montage"][0]["fade_in_den"], 4);
+		assert_eq!(
+			value["tickets"][1]["montage"][0]["audio_effects"][0]["type_id"],
+			"org.olivevideoeditor.Olive.volume"
+		);
+		assert_eq!(
+			value["tickets"][1]["montage"][0]["audio_effects"][0]["params"][0]["value"],
+			json!({ "t": "float", "v": 0.25 })
 		);
 		assert_eq!(
 			value["tickets"][1]["montage"][0]["effects"][0]["params"][0]["value"],
@@ -2355,6 +2605,41 @@ mod tests {
 		});
 		let parsed: WireMontageClip = serde_json::from_value(legacy).unwrap();
 		assert!(parsed.effects.is_empty(), "v1 clips carry no effects");
+		assert!(parsed.audio_effects.is_empty(), "v1 clips carry no audio effects");
+		assert_eq!(parsed.pan, 0.0, "v1 clips are unpanned");
+		assert_eq!(parsed.fade_in_den, 0, "v1 clips have no fade fields");
+		// The conversion treats the missing 0/0 rationals as "no fade"
+		// rather than a NaN duration.
+		let clip = montage_clip_from(&parsed);
+		assert_eq!(clip.fade_in, quercus_core::Rational::new(0, 1));
+		assert_eq!(clip.fade_out, quercus_core::Rational::new(0, 1));
+		assert_eq!(clip.pan, 0.0);
+		assert!(clip.audio_effects.is_empty());
+
+		// Ticket -> wire -> ticket keeps the audio post fields.
+		let mut ticket_clip = clip;
+		ticket_clip.gain = 0.5;
+		ticket_clip.pan = 0.25;
+		ticket_clip.fade_in = quercus_core::Rational::new(1, 8);
+		ticket_clip.fade_out = quercus_core::Rational::new(3, 8);
+		ticket_clip.audio_effects = vec![crate::ticket::MontageAudioEffect {
+			type_id: "org.olivevideoeditor.Olive.pan".into(),
+			enabled: false,
+			params: vec![(
+				"panning_in".into(),
+				quercus_node::value::NodeValue::Float(-0.25),
+			)],
+		}];
+		let wire = wire_montage_clip_from(&ticket_clip);
+		assert_eq!(wire.pan, 0.25);
+		assert_eq!((wire.fade_in_num, wire.fade_in_den), (1, 8));
+		assert_eq!((wire.fade_out_num, wire.fade_out_den), (3, 8));
+		let back = montage_clip_from(&wire);
+		assert_eq!(back.gain, ticket_clip.gain);
+		assert_eq!(back.pan, ticket_clip.pan);
+		assert_eq!(back.fade_in, ticket_clip.fade_in);
+		assert_eq!(back.fade_out, ticket_clip.fade_out);
+		assert_eq!(back.audio_effects, ticket_clip.audio_effects);
 
 		use quercus_node::value::NodeValue as NV;
 		let cases = [
@@ -2440,7 +2725,21 @@ mod tests {
 					media_in_num: 10,
 					media_in_den: 24,
 					gain: 0.5,
+					pan: 0.0,
+					fade_in_num: 0,
+					fade_in_den: 24,
+					fade_out_num: 0,
+					fade_out_den: 24,
+					audio_effects: vec![],
 					effects: vec![],
+				}],
+				bus_effects: vec![WireMontageAudioEffect {
+					type_id: "org.olivevideoeditor.Olive.limiter".into(),
+					enabled: true,
+					params: vec![WireEffectParam {
+						input: "ceiling_db".into(),
+						value: WireNodeValue::Float(-1.0),
+					}],
 				}],
 			}],
 		};
@@ -2453,6 +2752,10 @@ mod tests {
 		assert_eq!(value["tickets"][0]["channels"], 2);
 		assert_eq!(value["tickets"][0]["duration_num"], 1600);
 		assert_eq!(value["tickets"][0]["montage"][0]["filename"], "a.mp4");
+		assert_eq!(
+			value["tickets"][0]["bus_effects"][0]["type_id"],
+			"org.olivevideoeditor.Olive.limiter"
+		);
 		let round: RenderAudioBatchMsg = serde_json::from_value(value).unwrap();
 		assert_eq!(round, batch);
 		// Defaults: a bare audio ticket parses (missing fields default).
@@ -2461,6 +2764,7 @@ mod tests {
 		assert_eq!(bare.slot, 2);
 		assert_eq!(bare.sample_rate, 0);
 		assert!(bare.montage.is_empty());
+		assert!(bare.bus_effects.is_empty(), "v2 additive bus field defaults");
 	}
 
 	#[test]

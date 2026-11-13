@@ -6,8 +6,8 @@ use std::ffi::{CStr, CString, c_void};
 
 use crate::vecs::VecI32;
 
-#[cfg_attr(windows, link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	// exportcodec
 	fn quercus_codec_codec_is_valid(codec: i32) -> bool;
@@ -302,7 +302,11 @@ impl Codec {
 		unsafe { quercus_codec_codec_count() }
 	}
 
-	/// The display name (e.g. "H.264"). Infallible for valid codecs.
+	/// The human-readable display name (e.g. `"H.264"`).
+	///
+	/// Sourced from the engine's codec table and infallible for
+	/// [`Codec::from_i32`]-validated values; returns `""` when the engine has no
+	/// name for the discriminant.
 	pub fn name(self) -> String {
 		string_out(|buf, len| unsafe { quercus_codec_codec_get_name(self as i32, buf, len) })
 			.unwrap_or_default()
@@ -374,13 +378,20 @@ impl Format {
 		unsafe { quercus_codec_format_count() }
 	}
 
-	/// The display name (e.g. "Matroska Video").
+	/// The human-readable display name (e.g. `"Matroska Video"`).
+	///
+	/// Sourced from the engine's format table; returns `""` when the engine has
+	/// no name for the discriminant. Counterpart of [`Format::extension`].
 	pub fn name(self) -> String {
 		string_out(|buf, len| unsafe { quercus_codec_format_get_name(self as i32, buf, len) })
 			.unwrap_or_default()
 	}
 
-	/// The file extension (e.g. "mkv").
+	/// The file extension this format normally uses (e.g. `"mkv"`).
+	///
+	/// Sourced from the engine's format table and returned without a leading
+	/// dot; returns `""` when the engine has no extension for the
+	/// discriminant. See [`Format::name`] for the display form.
 	pub fn extension(self) -> String {
 		string_out(|buf, len| unsafe { quercus_codec_format_get_extension(self as i32, buf, len) })
 			.unwrap_or_default()
@@ -470,6 +481,16 @@ impl ProxyParams {
 		std::str::from_utf8(&field[..end]).unwrap_or("")
 	}
 
+	/// Copies `value` into a fixed 32-byte NUL-terminated field.
+	///
+	/// `field` is the destination buffer and `value` must be at most 31 bytes.
+	/// On success the field is zero-filled and then written; on error it is
+	/// left untouched.
+	///
+	/// # Errors
+	///
+	/// Returns [`ProxyParamsError::TooLong`] when `value` exceeds 31 bytes and
+	/// [`ProxyParamsError::InteriorNul`] when it contains a NUL byte.
 	fn write_cstr(field: &mut [u8; 32], value: &str) -> Result<(), ProxyParamsError> {
 		if value.len() > 31 {
 			return Err(ProxyParamsError::TooLong(value.to_string()));
@@ -483,22 +504,47 @@ impl ProxyParams {
 		Ok(())
 	}
 
-	/// The `extension` operation.
+	/// The ffmpeg output container extension (e.g. `"mp4"`).
+	///
+	/// Decoded from the fixed 32-byte NUL-terminated field as UTF-8; returns
+	/// `""` when unset or not valid UTF-8, in which case proxy naming falls
+	/// back to `"mp4"`. Set through [`ProxyParams::set_extension`].
 	pub fn extension(&self) -> &str {
 		Self::read_cstr(&self.extension)
 	}
 
-	/// The `preset` operation.
+	/// The ffmpeg encoder preset (e.g. `"veryfast"`).
+	///
+	/// Decoded from the fixed 32-byte NUL-terminated field as UTF-8; returns
+	/// `""` when unset or not valid UTF-8. Set through
+	/// [`ProxyParams::set_preset`].
 	pub fn preset(&self) -> &str {
 		Self::read_cstr(&self.preset)
 	}
 
-	/// The `set_extension` operation.
+	/// Sets the ffmpeg output container extension (e.g. `"mp4"`).
+	///
+	/// `value` is stored in a fixed 32-byte NUL-terminated field, so at most 31
+	/// bytes; an empty value makes proxy naming fall back to `"mp4"`.
+	/// Counterpart of [`ProxyParams::extension`].
+	///
+	/// # Errors
+	///
+	/// Returns [`ProxyParamsError::TooLong`] when `value` exceeds 31 bytes and
+	/// [`ProxyParamsError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_extension(&mut self, value: &str) -> Result<(), ProxyParamsError> {
 		Self::write_cstr(&mut self.extension, value)
 	}
 
-	/// The `set_preset` operation.
+	/// Sets the ffmpeg encoder preset (e.g. `"veryfast"`).
+	///
+	/// `value` is stored in a fixed 32-byte NUL-terminated field, so at most 31
+	/// bytes. Counterpart of [`ProxyParams::preset`].
+	///
+	/// # Errors
+	///
+	/// Returns [`ProxyParamsError::TooLong`] when `value` exceeds 31 bytes and
+	/// [`ProxyParamsError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_preset(&mut self, value: &str) -> Result<(), ProxyParamsError> {
 		Self::write_cstr(&mut self.preset, value)
 	}
@@ -512,13 +558,24 @@ pub fn proxy_get_state(proxy_filename: &str) -> ProxyState {
 	ProxyState::from_i32(v).unwrap_or(ProxyState::Missing)
 }
 
-/// Whether the proxy file carries an audio stream.
+/// Whether the proxy filename encodes an audio stream.
+///
+/// The engine tests the file name for the `.a1.` audio-stream marker rather
+/// than opening the file, so this is a pure name check and returns `false` for
+/// empty or malformed names.
 pub fn proxy_filename_has_audio(proxy_filename: &str) -> bool {
 	unsafe { quercus_codec_proxy_filename_has_audio(proxy_filename.as_ptr(), proxy_filename.len()) }
 }
 
-/// Derives the proxy filename for a source stream; `None` on engine
-/// error.
+/// Derives the proxy filename for a source stream.
+///
+/// `cache_path` is the proxy cache directory, `source_filename` the media
+/// file, `stream_index` the stream within it and `params` the proxy settings
+/// baked into the name (divider/size, extension, version). The name is
+/// deterministic for the same inputs and is only derived, not created.
+///
+/// Returns `None` when the engine cannot build the name (e.g. a string field
+/// that is not valid UTF-8); see [`proxy_get_or_start`] for the full result.
 pub fn proxy_get_filename(
 	cache_path: &str,
 	source_filename: &str,
@@ -565,6 +622,18 @@ pub struct ProxyResult {
 
 /// Returns the proxy for a source stream, starting generation through
 /// the registered task callback when it is missing.
+///
+/// `cache_path` is the proxy cache directory, `source_filename` the media
+/// file, `stream_index` the stream within it, and `params` the requested proxy
+/// settings (size/divider, container extension, encoder preset, audio
+/// inclusion). The returned [`ProxyResult`] reports the on-disk state and the
+/// derived filename; when no proxy exists yet the engine submits a
+/// [`TaskKind::Proxy`] task and typically reports [`ProxyState::Generating`].
+///
+/// # Errors
+///
+/// Returns [`Error`] when the engine cannot derive the filename or reports an
+/// unknown state or a filename that is not valid UTF-8.
 pub fn proxy_get_or_start(
 	cache_path: &str,
 	source_filename: &str,
@@ -652,6 +721,12 @@ fn borrow_cstr<'a>(p: *const std::ffi::c_char) -> &'a str {
 	unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("")
 }
 
+/// Converts a C ABI [`QuercusCodecTaskRequest`] into a borrowed
+/// [`TaskRequest`].
+///
+/// Borrowed strings point into `raw` and are only valid while it is; null
+/// string pointers become `""`. `kind == 1` maps to [`TaskKind::Proxy`] and
+/// every other value to [`TaskKind::Conform`].
 fn request_from_c(raw: &QuercusCodecTaskRequest) -> TaskRequest<'_> {
 	TaskRequest {
 		kind: if raw.kind == 1 { TaskKind::Proxy } else { TaskKind::Conform },
@@ -685,6 +760,18 @@ where
 	match cb {
 		None => unsafe { quercus_codec_task_set_submit_cb(None, std::ptr::null_mut()) },
 		Some(f) => {
+			/// C ABI trampoline that forwards one task request to the boxed
+			/// `F` callback held in `userdata`.
+			///
+			/// Converts the raw request with [`request_from_c`] and returns the
+			/// callback's status; null `req`/`userdata` return `-1`.
+			///
+			/// # Safety
+			///
+			/// `userdata` must be the `*mut F` produced by [`Box::into_raw`] in
+			/// [`set_task_submit_cb`] and stay valid for as long as the callback
+			/// is registered; `req` must be null or point to a valid
+			/// [`QuercusCodecTaskRequest`].
 			unsafe extern "C" fn trampoline<F>(
 				req: *const QuercusCodecTaskRequest,
 				userdata: *mut c_void,
@@ -758,7 +845,12 @@ impl Frame {
 		}
 	}
 
-	/// A frame with a copy of `params` (line sizes computed).
+	/// A frame carrying a copy of `params`, with line sizes computed.
+	///
+	/// `params` supplies width, height, pixel format and pixel aspect; the
+	/// buffer itself is not allocated yet, so call [`Frame::allocate`] before
+	/// writing pixels. Counterpart of [`Frame::new`] (which starts with invalid
+	/// default params).
 	pub fn with_params(params: &VideoParams) -> Self {
 		Self {
 			ptr: unsafe { quercus_codec_frame_with_params(params.clone()) },
@@ -774,7 +866,10 @@ impl Frame {
 		}
 	}
 
-	/// The `is_allocated` operation.
+	/// Whether the pixel buffer has been allocated.
+	///
+	/// Becomes `true` after a successful [`Frame::allocate`] and `false` again
+	/// for a new frame with default params.
 	pub fn is_allocated(&self) -> bool {
 		unsafe { quercus_codec_frame_is_allocated(self.ptr) }
 	}
@@ -795,22 +890,35 @@ impl Frame {
 		unsafe { quercus_codec_frame_allocated_size(self.ptr) }
 	}
 
-	/// The `linesize_bytes` operation.
+	/// The row stride in bytes.
+	///
+	/// Returns 0 while the frame is unallocated; see
+	/// [`Frame::linesize_pixels`] for the pixel-count form.
 	pub fn linesize_bytes(&self) -> i32 {
 		unsafe { quercus_codec_frame_linesize_bytes(self.ptr) }
 	}
 
-	/// The `linesize_pixels` operation.
+	/// The row stride in pixels (the allocated linesize divided by the pixel
+	/// size).
+	///
+	/// Returns 0 while the frame is unallocated; the buffer is only valid in
+	/// the window described on [`Frame`].
 	pub fn linesize_pixels(&self) -> i32 {
 		unsafe { quercus_codec_frame_linesize_pixels(self.ptr) }
 	}
 
-	/// The `width` operation.
+	/// The frame width in pixels.
+	///
+	/// Comes from the frame's params; 0 while the frame is unallocated or has
+	/// invalid params.
 	pub fn width(&self) -> i32 {
 		unsafe { quercus_codec_frame_width(self.ptr) }
 	}
 
-	/// The `height` operation.
+	/// The frame height in pixels.
+	///
+	/// Comes from the frame's params; 0 while the frame is unallocated or has
+	/// invalid params.
 	pub fn height(&self) -> i32 {
 		unsafe { quercus_codec_frame_height(self.ptr) }
 	}
@@ -821,7 +929,10 @@ impl Frame {
 			.unwrap_or(PixelFormat::Invalid)
 	}
 
-	/// The `channel_count` operation.
+	/// The number of audio channels in the allocated frame.
+	///
+	/// Derived from the frame's sample format and channel layout; returns 0
+	/// while the frame is unallocated or has no audio params.
 	pub fn channel_count(&self) -> i32 {
 		unsafe { quercus_codec_frame_channel_count(self.ptr) }
 	}
@@ -831,7 +942,11 @@ impl Frame {
 		unsafe { quercus_codec_frame_timestamp(self.ptr) }
 	}
 
-	/// The `set_timestamp` operation.
+	/// Sets the frame timestamp.
+	///
+	/// `ts` is in rational seconds and replaces any previous value. Requires
+	/// holding the only live clone, like the other mutating `Frame` methods
+	/// (see the type docs); reads back through [`Frame::timestamp`].
 	pub fn set_timestamp(&mut self, ts: Rational) {
 		unsafe { quercus_codec_frame_set_timestamp(self.ptr, ts) };
 	}
@@ -929,7 +1044,11 @@ pub fn placeholder_digit_count(filename: &str) -> Option<i32> {
 	(n >= 0).then_some(n)
 }
 
-/// `filename` with the digit placeholder removed.
+/// `filename` with the image-sequence digit placeholder removed.
+///
+/// The placeholder is the `[####]`-style run recognised by
+/// [`filename_contains_digit_placeholder`]. Returns `None` when the engine
+/// cannot produce the stripped name (see also [`placeholder_digit_count`]).
 pub fn remove_digit_placeholder(filename: &str) -> Option<String> {
 	string_out(|buf, len| unsafe {
 		quercus_codec_encoder_filename_remove_digit_placeholder(
@@ -1006,7 +1125,10 @@ unsafe impl Send for FootageDescription {}
 unsafe impl Sync for FootageDescription {}
 
 impl FootageDescription {
-	/// The probing decoder's id (e.g. "ffmpeg").
+	/// The id of the decoder that produced this description (e.g. "ffmpeg").
+	///
+	/// Comes from the decoder that won the probe; returns an empty string when
+	/// the id is unavailable or not valid UTF-8.
 	pub fn decoder_name(&self) -> String {
 		string_out(|buf, len| unsafe { quercus_codec_footage_decoder_name(self.ptr, buf, len) })
 			.unwrap_or_default()
@@ -1018,6 +1140,10 @@ impl FootageDescription {
 	}
 
 	/// The kind of the `index`-th stream in probe order.
+	///
+	/// `index` is the mixed video/audio/subtitle index up to
+	/// [`FootageDescription::total_stream_count`]. Returns `None` when `index`
+	/// is out of range or the engine reports an unknown kind.
 	pub fn stream_type(&self, index: usize) -> Option<StreamType> {
 		StreamType::from_i32(unsafe { quercus_codec_footage_stream_type(self.ptr, index as i32) })
 	}
@@ -1048,7 +1174,11 @@ impl FootageDescription {
 		}
 	}
 
-	/// The `ordinal`-th audio stream's params (per-type ordinal).
+	/// The `ordinal`-th audio stream's params.
+	///
+	/// `ordinal` counts within audio streams only (per-type ordinal), not in
+	/// probe order; use [`FootageDescription::stream_type`] to map probe-order
+	/// indices. Returns `None` when `ordinal` is out of range.
 	pub fn audio_stream(&self, ordinal: usize) -> Option<AudioStreamParams> {
 		let mut out = AudioStreamParams::default();
 		if unsafe { quercus_codec_footage_get_audio_stream(self.ptr, ordinal as i32, &mut out) } {
@@ -1127,7 +1257,11 @@ impl RetrieveParams {
 		}
 	}
 
-	/// The stream to read from (filename + stream index).
+	/// Selects the source file and stream to decode.
+	///
+	/// `filename` is copied into the parameter set (so the borrow ends with the
+	/// call) and `stream_index` is the stream's probe-order index within that
+	/// file. Returns `self` for chaining.
 	pub fn stream(self, filename: &str, stream_index: i32) -> Self {
 		unsafe {
 			quercus_codec_retrieve_params_set_stream(
@@ -1140,19 +1274,30 @@ impl RetrieveParams {
 		self
 	}
 
-	/// The timestamp to retrieve (rational seconds).
+	/// Sets the timestamp to retrieve.
+	///
+	/// `time` is in rational seconds; it defaults to zero. Returns `self` for
+	/// chaining.
 	pub fn time(self, time: Rational) -> Self {
 		unsafe { quercus_codec_retrieve_params_set_time(self.ptr, time) };
 		self
 	}
 
-	/// The footage range (for early-seek semantics).
+	/// Sets the footage length used for early-seek semantics.
+	///
+	/// `length` is the full `[in, out)` span of the footage; the decoder may
+	/// use it to seek near the target before scanning. Returns `self` for
+	/// chaining; the default is an empty range.
 	pub fn length(self, length: TimeRange) -> Self {
 		unsafe { quercus_codec_retrieve_params_set_length(self.ptr, length) };
 		self
 	}
 
-	/// Force a color range (`None` = don't force, the default).
+	/// Forces a color-range override for the retrieved frame.
+	///
+	/// `range` holds the raw color-range code point (`Some(value)`), or `None`
+	/// (the default) to let the decoder keep the stream's own range; `None` is
+	/// forwarded as the `-1` sentinel. Returns `self` for chaining.
 	pub fn force_range(self, range: Option<i32>) -> Self {
 		unsafe { quercus_codec_retrieve_params_set_force_range(self.ptr, range.unwrap_or(-1)) };
 		self
@@ -1177,13 +1322,22 @@ impl RetrieveParams {
 		self
 	}
 
-	/// 0 = offline, 1 = online.
+	/// Selects the render mode the decoder should use.
+	///
+	/// `online = true` requests the real-time/online path (mode 1), `false`
+	/// the offline/background path (mode 0, the default); the mode drives
+	/// texture-path choices inside the decoder implementations. Returns `self`
+	/// for chaining.
 	pub fn mode(self, online: bool) -> Self {
 		unsafe { quercus_codec_retrieve_params_set_mode(self.ptr, online as i32) };
 		self
 	}
 
-	/// Whether the frame's alpha is premultiplied.
+	/// Declares whether the retrieved frame's alpha is premultiplied.
+	///
+	/// `premultiplied` tells the decoder/consumer that RGB is already
+	/// multiplied by alpha, so the frame can be blended without an extra
+	/// unpremultiply pass. Returns `self` for chaining; the default is `false`.
 	pub fn premultiplied_alpha(self, premultiplied: bool) -> Self {
 		unsafe { quercus_codec_retrieve_params_set_premultiplied_alpha(self.ptr, premultiplied) };
 		self
@@ -1264,7 +1418,13 @@ impl DecoderSession {
 		}
 	}
 
-	/// Retrieves one video frame into CPU memory. `None` on error.
+	/// Retrieves one video frame into CPU memory.
+	///
+	/// `params` selects the source stream, timestamp, range and target size
+	/// (see [`RetrieveParams`]); the returned [`Frame`] owns a reference that is
+	/// released when it drops. Counterpart of [`DecoderSession::retrieve_audio`].
+	///
+	/// Returns `None` when the decoder reports an error or yields no frame.
 	pub fn retrieve_video_frame(&self, params: &RetrieveParams) -> Option<Frame> {
 		let ptr = unsafe { quercus_codec_decoder_retrieve_video_frame(self.ptr, params.ptr) };
 		if ptr.is_null() {
@@ -1274,7 +1434,19 @@ impl DecoderSession {
 		}
 	}
 
-	/// Retrieves interleaved f32 audio covering `range` into `dest`.
+	/// Decodes the interleaved f32 audio covering `range` into `dest`.
+	///
+	/// `dest` is the destination buffer; its length is forwarded as the sample
+	/// capacity and it is filled at `sample_rate` in the ffmpeg-style
+	/// `channel_layout` mask. `range` is the timeline span to decode, in
+	/// rational seconds. The returned [`RetrieveAudioStatus`] distinguishes a
+	/// successful decode from an invalid range, an unsupported request, a
+	/// stream that needs conforming first and a decoder error.
+	///
+	/// # Errors
+	///
+	/// Returns [`Error`] only for an unknown backend status code, not for a
+	/// normal decoding failure (which is reported by the returned status).
 	pub fn retrieve_audio(
 		&self,
 		dest: &mut [f32],
@@ -1341,9 +1513,10 @@ pub struct EncodingParams {
 	pub video_width: i32,
 	/// The `video_height` field.
 	pub video_height: i32,
-	/// The `video_time_base_num` field.
+	/// Frame **duration** numerator (for 25 fps pass `1`, denominator `25`;
+	/// passing `25/1` makes the export six times too long).
 	pub video_time_base_num: i32,
-	/// The `video_time_base_den` field.
+	/// Frame **duration** denominator (for 25 fps pass `25`).
 	pub video_time_base_den: i32,
 	/// [`crate::types::PixelFormat`] discriminant.
 	pub video_pixel_format: i32,
@@ -1432,6 +1605,18 @@ impl EncodingParams {
 		std::str::from_utf8(&field[..end]).unwrap_or("")
 	}
 
+	/// Copies `value` into a fixed-size NUL-terminated string field.
+	///
+	/// `field` is the destination buffer, `field_name` is only used to build
+	/// the error variant, and `value` must fit while leaving room for the
+	/// terminator. On success the field is zero-filled and then written; on
+	/// error it is left untouched.
+	///
+	/// # Errors
+	///
+	/// Returns [`ParamsStringError::TooLong`] when `value` plus the terminator
+	/// does not fit `field`, and [`ParamsStringError::InteriorNul`] when
+	/// `value` contains a NUL byte.
 	fn write_cstr(
 		field: &mut [u8],
 		field_name: &'static str,
@@ -1449,12 +1634,24 @@ impl EncodingParams {
 		Ok(())
 	}
 
-	/// The `filename` operation.
+	/// The output filename (or image-sequence `"[#####]"` template).
+	///
+	/// Decoded from the fixed 1024-byte NUL-terminated field as UTF-8; returns
+	/// `""` when the field is empty or is not valid UTF-8. Set through
+	/// [`EncodingParams::set_filename`].
 	pub fn filename(&self) -> &str {
 		Self::read_cstr(&self.filename)
 	}
 
-	/// The `set_filename` operation.
+	/// Sets the output filename (or image-sequence `"[#####]"` template).
+	///
+	/// `value` is copied into a fixed 1024-byte NUL-terminated field; the empty
+	/// string is allowed. Counterpart of [`EncodingParams::filename`].
+	///
+	/// # Errors
+	///
+	/// Returns [`ParamsStringError::TooLong`] when `value` does not fit the
+	/// field and [`ParamsStringError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_filename(&mut self, value: &str) -> Result<(), ParamsStringError> {
 		Self::write_cstr(&mut self.filename, "filename", value)
 	}
@@ -1464,7 +1661,15 @@ impl EncodingParams {
 		Self::read_cstr(&self.video_pix_fmt)
 	}
 
-	/// The `set_video_pix_fmt` operation.
+	/// Sets the encoded pixel-format name (e.g. `"yuv420p"`).
+	///
+	/// `value` is copied into a fixed 64-byte NUL-terminated field, so it must
+	/// be at most 63 bytes. Counterpart of [`EncodingParams::video_pix_fmt`].
+	///
+	/// # Errors
+	///
+	/// Returns [`ParamsStringError::TooLong`] when `value` does not fit the
+	/// field and [`ParamsStringError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_video_pix_fmt(&mut self, value: &str) -> Result<(), ParamsStringError> {
 		Self::write_cstr(&mut self.video_pix_fmt, "video_pix_fmt", value)
 	}
@@ -1474,7 +1679,16 @@ impl EncodingParams {
 		Self::read_cstr(&self.color_transform_output)
 	}
 
-	/// The `set_color_transform_output` operation.
+	/// Sets the output colorspace name written into the container.
+	///
+	/// `value` is the OCIO output colorspace name stored in a fixed 256-byte
+	/// NUL-terminated field; the empty string means the reference space.
+	/// Counterpart of [`EncodingParams::color_transform_output`].
+	///
+	/// # Errors
+	///
+	/// Returns [`ParamsStringError::TooLong`] when `value` does not fit the
+	/// field and [`ParamsStringError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_color_transform_output(&mut self, value: &str) -> Result<(), ParamsStringError> {
 		Self::write_cstr(&mut self.color_transform_output, "color_transform_output", value)
 	}
@@ -1531,6 +1745,17 @@ impl EncoderSession {
 	}
 
 	/// Encodes `frame_count` frames of interleaved f32 audio.
+	///
+	/// `samples` is the interleaved sample buffer for the session's sample
+	/// format and channel layout; its whole length is forwarded to the backend
+	/// as the sample count and `frame_count` selects how many frames are
+	/// written. Pairs with [`EncoderSession::write_video`] on a session that has
+	/// already been [opened](EncoderSession::open).
+	///
+	/// # Errors
+	///
+	/// Returns [`Error`] when the session is closed or the encoder rejects the
+	/// buffer (for example when `frame_count` disagrees with `samples`).
 	pub fn write_audio(&self, samples: &[f32], frame_count: i32) -> Result<(), Error> {
 		if unsafe {
 			quercus_codec_encoder_write_audio(self.ptr, samples.as_ptr(), samples.len(), frame_count)

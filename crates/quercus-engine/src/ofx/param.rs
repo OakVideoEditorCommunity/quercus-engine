@@ -43,8 +43,21 @@ pub extern "C" fn quercus_ofx_instance_param_count(id: u64) -> i32 {
 		.unwrap_or(-1)
 }
 
-/// The parameter name at `index`, snprintf-style; -1 when out of
-/// range.
+/// Reads a parameter's name by definition index, snprintf-style.
+///
+/// Names are the keys accepted by the typed getters/setters in this module
+/// and by [`quercus_ofx_instance_param_count`] to enumerate the definition
+/// order. The text is NUL-terminated in `buf` and the full byte length
+/// excluding the NUL is returned, so a null/zero-length buffer queries the
+/// required size.
+///
+/// # Returns
+///
+/// `-1` when `id` is unknown or `index` is negative/out of range.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_name_at(
 	id: u64,
@@ -58,8 +71,21 @@ pub unsafe extern "C" fn quercus_ofx_param_name_at(
 	}
 }
 
-/// The parameter's OFX type string (`kOfxParamType*`) at `index`,
-/// snprintf-style; -1 when out of range.
+/// Reads a parameter's OFX type string (`kOfxParamType*`) by definition
+/// index, snprintf-style.
+///
+/// This is the declared type of the parameter at `index` (definition order,
+/// including pages/groups), useful for choosing the matching typed getter.
+/// The text is NUL-terminated in `buf` and the full byte length excluding the
+/// NUL is returned, so a null/zero-length buffer queries the required size.
+///
+/// # Returns
+///
+/// `-1` when `id` is unknown or `index` is negative/out of range.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_type_at(
 	id: u64,
@@ -73,8 +99,22 @@ pub unsafe extern "C" fn quercus_ofx_param_type_at(
 	}
 }
 
-/// The parameter's display label (`kOfxPropLabel`) at `index`,
-/// snprintf-style; -1 when out of range.
+/// Reads a parameter's display label (`kOfxPropLabel`) by definition index,
+/// snprintf-style.
+///
+/// The label is the OFX generic label property; when the definition does not
+/// carry one, an empty string is written and `0` is returned (not `-1`), so a
+/// zero-length result can mean "no label". The text is NUL-terminated in
+/// `buf` and the full byte length excluding the NUL is returned, so a
+/// null/zero-length buffer queries the required size.
+///
+/// # Returns
+///
+/// `-1` when `id` is unknown or `index` is negative/out of range.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_label_at(
 	id: u64,
@@ -96,9 +136,21 @@ pub unsafe extern "C" fn quercus_ofx_param_label_at(
 // Typed get/set (by parameter name)
 // ---------------------------------------------------------------------------
 
-/// Reads an integer-family parameter (Integer/Integer2D/Integer3D)
-/// into `out` (up to `cap` values written). Returns the parameter's
-/// dimension; -1 on unknown id/name or a type mismatch.
+/// Reads an integer-family parameter (Integer/Integer2D/Integer3D) into
+/// `out`.
+///
+/// Writes `min(dim, cap)` components into `out`; a null `out` only queries
+/// the dimension.
+///
+/// # Returns
+///
+/// The parameter's dimension (1..=3), or `-1` on an unknown `id`/`name` or a
+/// parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `out` must be null or point to at least `cap` writable `i32` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_int(
 	id: u64,
@@ -126,9 +178,25 @@ pub unsafe extern "C" fn quercus_ofx_param_get_int(
 	dim
 }
 
-/// Writes an integer-family parameter from `values` (`dim` must match
-/// the parameter's arity, 1..=3). False on unknown id/name or a type
-/// or arity mismatch.
+/// Writes an integer-family parameter from `values`, keeping the declared
+/// arity.
+///
+/// `dim` is the number of components supplied and must equal the parameter's
+/// arity (Integer = 1, Integer2D = 2, Integer3D = 3); it must also lie in
+/// `1..=3`. Values are set with OFX `paramSetValue` semantics (current value
+/// only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, a parameter of another type, a `dim`
+/// outside `1..=3`, a `dim` that disagrees with the parameter's arity, or a
+/// null `values`.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `values` must be null or point to at least `dim` readable `i32`
+/// values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_int(
 	id: u64,
@@ -161,9 +229,20 @@ pub unsafe extern "C" fn quercus_ofx_param_set_int(
 	.unwrap_or(false)
 }
 
-/// Reads a double-family parameter (Double/Double2D/Double3D) into
-/// `out`. Returns the dimension; -1 on unknown id/name or a type
-/// mismatch.
+/// Reads a double-family parameter (Double/Double2D/Double3D) into `out`.
+///
+/// Writes `min(dim, cap)` components into `out`; a null `out` only queries
+/// the dimension.
+///
+/// # Returns
+///
+/// The parameter's dimension (1..=3), or `-1` on an unknown `id`/`name` or a
+/// parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `out` must be null or point to at least `cap` writable `f64` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_double(
 	id: u64,
@@ -191,9 +270,25 @@ pub unsafe extern "C" fn quercus_ofx_param_get_double(
 	dim
 }
 
-/// Writes a double-family parameter from `values` (`dim` must match
-/// the parameter's arity, 1..=3). False on unknown id/name or a type
-/// or arity mismatch.
+/// Writes a double-family parameter from `values`, keeping the declared
+/// arity.
+///
+/// `dim` is the number of components supplied and must equal the parameter's
+/// arity (Double = 1, Double2D = 2, Double3D = 3); it must also lie in
+/// `1..=3`. Values are set with OFX `paramSetValue` semantics (current value
+/// only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, a parameter of another type, a `dim`
+/// outside `1..=3`, a `dim` that disagrees with the parameter's arity, or a
+/// null `values`.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `values` must be null or point to at least `dim` readable `f64`
+/// values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_double(
 	id: u64,
@@ -226,8 +321,18 @@ pub unsafe extern "C" fn quercus_ofx_param_set_double(
 	.unwrap_or(false)
 }
 
-/// Reads a boolean parameter: 0/1, -1 on unknown id/name or a type
-/// mismatch.
+/// Reads a boolean parameter.
+///
+/// # Returns
+///
+/// `1` for true and `0` for false, or `-1` on an unknown `id`/`name` or a
+/// parameter of another type (so `-1` must be checked before using the value
+/// as a boolean).
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_bool(id: u64, name: *const u8, name_len: usize) -> i32 {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
@@ -240,8 +345,19 @@ pub unsafe extern "C" fn quercus_ofx_param_get_bool(id: u64, name: *const u8, na
 	.unwrap_or(-1)
 }
 
-/// Writes a boolean parameter. False on unknown id/name or a type
-/// mismatch.
+/// Writes a boolean parameter.
+///
+/// Values are set with OFX `paramSetValue` semantics (current value only, no
+/// undo); writing the value that is already stored still succeeds.
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, or a parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_bool(
 	id: u64,
@@ -262,8 +378,17 @@ pub unsafe extern "C" fn quercus_ofx_param_set_bool(
 	.unwrap_or(false)
 }
 
-/// Reads a choice parameter (the option index); -1 on unknown
-/// id/name or a type mismatch.
+/// Reads a choice parameter (the 0-based option index).
+///
+/// # Returns
+///
+/// The current option index, or `-1` on an unknown `id`/`name` or a parameter
+/// of another type (the return value cannot distinguish the two).
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_choice(
 	id: u64,
@@ -280,8 +405,20 @@ pub unsafe extern "C" fn quercus_ofx_param_get_choice(
 	.unwrap_or(-1)
 }
 
-/// Writes a choice parameter (the option index). False on unknown
-/// id/name or a type mismatch.
+/// Writes a choice parameter (the 0-based option index).
+///
+/// The index is stored as given: it is not validated against the option list,
+/// so callers are responsible for staying in range. Values are set with OFX
+/// `paramSetValue` semantics (current value only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, or a parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8
+/// for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_choice(
 	id: u64,
@@ -302,9 +439,21 @@ pub unsafe extern "C" fn quercus_ofx_param_set_choice(
 	.unwrap_or(false)
 }
 
-/// Reads a color parameter (RGB/RGBA) into `out` (up to `cap`
-/// values). Returns the dimension (3 or 4); -1 on unknown id/name or
-/// a type mismatch.
+/// Reads a color parameter (RGB/RGBA) into `out`.
+///
+/// Writes `min(dim, cap)` components into `out`; a null `out` only queries
+/// the dimension. The values are the parameter's color components in the
+/// order the parameter declares them.
+///
+/// # Returns
+///
+/// The parameter's dimension (3 or 4), or `-1` on an unknown `id`/`name` or a
+/// parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `out` must be null or point to at least `cap` writable `f64` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_color(
 	id: u64,
@@ -332,9 +481,23 @@ pub unsafe extern "C" fn quercus_ofx_param_get_color(
 	dim
 }
 
-/// Writes a color parameter from `values` (`dim` 3 or 4 must match
-/// the parameter's arity). False on unknown id/name or a type or
-/// arity mismatch.
+/// Writes a color parameter from `values`.
+///
+/// `dim` is the number of components supplied (`3` = RGB, `4` = RGBA) and
+/// must equal the parameter's declared arity. Values are set with OFX
+/// `paramSetValue` semantics (current value only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, a non-color parameter, a `dim`
+/// outside `3..=4`, a `dim` that disagrees with the parameter's arity, or a
+/// null `values`.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `values` must be null or point to at least `dim` readable `f64`
+/// values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_color(
 	id: u64,
@@ -367,8 +530,21 @@ pub unsafe extern "C" fn quercus_ofx_param_set_color(
 	.unwrap_or(false)
 }
 
-/// Reads a string-family parameter (String/StrChoice), snprintf-style;
-/// -1 on unknown id/name or a type mismatch.
+/// Reads a string-family parameter (String/StrChoice), snprintf-style.
+///
+/// The text is NUL-terminated in `buf` and the full byte length (excluding
+/// the NUL) is returned, so a null/zero-length buffer queries the required
+/// size and `ret >= buf_len` means the output was truncated. Invalid UTF-8 in
+/// the stored value is replaced with U+FFFD rather than failing.
+///
+/// # Returns
+///
+/// `-1` on an unknown `id` or `name`, or a parameter of another type.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `buf` must be null or point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_string(
 	id: u64,
@@ -390,8 +566,22 @@ pub unsafe extern "C" fn quercus_ofx_param_get_string(
 	}
 }
 
-/// Writes a string-family parameter (String/StrChoice). False on
-/// unknown id/name or a type mismatch.
+/// Writes a string-family parameter (String/StrChoice).
+///
+/// The parameter keeps its family: a `String` parameter receives a `String`
+/// value and a `StrChoice` parameter a `StrChoice` value. Values are set with
+/// OFX `paramSetValue` semantics (current value only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, a parameter of another type, a
+/// null/non-UTF-8 `value`, or a `value` containing an interior NUL byte.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `value` must be null or point to `value_len` readable bytes of valid
+/// UTF-8, for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_string(
 	id: u64,
@@ -420,9 +610,22 @@ pub unsafe extern "C" fn quercus_ofx_param_set_string(
 	.unwrap_or(false)
 }
 
-/// Reads a parametric parameter as the curve-set JSON (the same
-/// payload node values carry), snprintf-style; -1 on unknown id/name
-/// or a type mismatch.
+/// Reads a parametric parameter as the curve-set JSON (the same payload node
+/// values carry), snprintf-style.
+///
+/// The JSON text is NUL-terminated in `buf` and the full byte length
+/// (excluding the NUL) is returned, so a null/zero-length buffer queries the
+/// required size and `ret >= buf_len` means the output was truncated. The
+/// counterpart setter is [`quercus_ofx_param_set_curves_json`].
+///
+/// # Returns
+///
+/// `-1` on an unknown `id` or `name`, or a parameter that is not parametric.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `buf` must be null or point to at least `buf_len` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_get_curves_json(
 	id: u64,
@@ -447,8 +650,23 @@ pub unsafe extern "C" fn quercus_ofx_param_get_curves_json(
 }
 
 /// Writes a parametric parameter from curve-set JSON (see
-/// [`crate::ofx::curve`]). False on unknown id/name, a type mismatch,
-/// or malformed JSON.
+/// [`crate::ofx::curve`]).
+///
+/// The JSON must be the same curve-set payload returned by
+/// [`quercus_ofx_param_get_curves_json`]; it is decoded before the instance is
+/// touched, so malformed input never mutates the parameter. Values are set
+/// with OFX `paramSetValue` semantics (current value only, no undo).
+///
+/// # Returns
+///
+/// `false` on an unknown `id` or `name`, a parameter that is not parametric,
+/// a null/non-UTF-8 `json`, or JSON that does not decode as a curve set.
+///
+/// # Safety
+///
+/// `name` must be null or point to `name_len` readable bytes of valid UTF-8,
+/// and `json` must be null or point to `json_len` readable bytes of valid
+/// UTF-8, for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_ofx_param_set_curves_json(
 	id: u64,

@@ -1,9 +1,8 @@
 //! Safe Rust SDK over the quercus-engine C ABI.
 //!
-//! The engine ships as a cdylib; the SDK links it dynamically
-//! (`#[link]`) and talks to it exclusively through its exported
-//! `extern "C"` symbols — the same surface a C consumer sees — wrapped
-//! in idiomatic Rust types and error handling.
+//! The engine ships as an rlib by default, with an optional cdylib linkage.
+//! Both modes use the same exported `extern "C"` symbols — the same surface
+//! a C consumer sees — wrapped in idiomatic Rust types and error handling.
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -18,6 +17,7 @@ pub mod core;
 pub mod effect;
 pub mod editor;
 pub mod edit;
+pub mod mediaio;
 pub mod node;
 pub mod ofx;
 pub mod otio;
@@ -35,6 +35,13 @@ pub mod types;
 pub mod utils;
 pub mod worker;
 pub mod vecs;
+
+#[cfg(feature = "engine-rlib")]
+#[used]
+static QUERCUS_ENGINE_RLIB: fn() = quercus_engine::force_link;
+
+#[cfg(all(feature = "engine-rlib", feature = "engine-cdylib"))]
+compile_error!("engine-rlib and engine-cdylib are mutually exclusive");
 
 #[cfg(test)]
 mod test_support;

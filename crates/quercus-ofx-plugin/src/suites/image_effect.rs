@@ -14,23 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxImageEffectSuite v1：clip/image 操作。
+//! OfxImageEffectSuite v1: clip/image operations.
 //!
-//! 语义对照 HS: ofxhImageEffect.cpp：
-//! - clipGetImage 返回图像 **属性集** handle（HS:2038 `getPropHandle`），
-//!   图像存活由宿主表托管（get → 插入强引用，clipReleaseImage → 摘除
-//!   释放；对应 HS 的引用计数配对，HS:2044）；
-//! - clipGetRegionOfDefinition：读 clip 实例属性里的
-//!   kOfxImageEffectPropRegionOfDefinition（协商时宿主写入）；非法
-//!   RoD → kOfxStatFailed（HS:2143-2147）；
-//! - abort：实例期 → 当前渲染的取消状态（HS:2154-2170；契约是
-//!   0 = 继续、非 0 = 中止——REPLY_YES/NO 会让 ofxs 的
-//!   `abort(...) != 0` 判断误判中止，像素循环一行不写 → 黑帧）；
-//! - imageMemory*：账本同 memory suite（HS 的 lock 是"锁住防重分配"
-//!   语义，第 1 期账本不需要 → OK no-op，见 memory.rs 文档）。
+//! Semantics mirror HS: ofxhImageEffect.cpp:
+//! - clipGetImage returns the image **property set** handle (HS:2038 `getPropHandle`);
+//!   image lifetime is managed by the host's table (get -> insert a strong reference, clipReleaseImage -> remove
+//!   and release; this mirrors HS's reference-count pairing, HS:2044);
+//! - clipGetRegionOfDefinition: reads the clip instance property
+//!   kOfxImageEffectPropRegionOfDefinition (written by the host during negotiation); an invalid
+//!   RoD -> kOfxStatFailed (HS:2143-2147);
+//! - abort: instance phase -> the cancellation state of the current render (HS:2154-2170; the contract is
+//!   0 = continue, non-zero = abort — REPLY_YES/NO makes ofxs's
+//!   `abort(...) != 0` check misread it as abort, so the pixel loop writes nothing -> black frame);
+//! - imageMemory*: the ledger is the same as the memory suite (HS's lock means "lock against reallocation";
+//!   the phase-1 ledger does not need it -> OK no-op, see the memory.rs docs).
 //!
-//! `// TODO(clip)`：clipGetImage 依赖 [`crate::clip::ClipInstance::fetch_image`]
-//! （quercusrender 帧访问随单库化改为本地桩，见 [`crate::render`]），代码已齐、运行时待 clip.rs。
+//! `// TODO(clip)`: clipGetImage depends on [`crate::clip::ClipInstance::fetch_image`]
+//! (quercusrender frame access became a local stub with the single-library change, see [`crate::render`]); the code is complete, runtime waits on clip.rs.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr};
@@ -44,17 +44,17 @@ use crate::instance::{Instance, OfxRectD, RenderScale};
 use crate::property::PropertySet;
 use crate::suites::{status, tag};
 
-/// 函数表布局（与 SDK `OfxImageEffectSuiteV1` 逐字段一致；常用子集
-/// 注释，完整字段以 SDK 为准）。
+/// Function-table layout (field-for-field identical to the SDK's `OfxImageEffectSuiteV1`; the commonly used subset is
+/// documented, the full field set follows the SDK).
 #[repr(C)]
 pub struct ImageEffectSuiteV1 {
-	/// getPropertySet：取 effect/clip/image 的属性集。
+	/// getPropertySet: gets the effect/clip/image property set.
 	pub get_property_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
-	/// getParamSet：取实例参数集。
+	/// getParamSet: gets the instance param set.
 	pub get_param_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
-	/// clipDefine（describe 期间）：定义 clip。
+	/// clipDefine (describe phase): defines a clip.
 	pub clip_define: unsafe extern "C" fn(*mut c_void, *const c_char, *mut *mut c_void) -> c_int,
-	/// clipGetHandle：按名取 clip。
+	/// clipGetHandle: gets a clip by name.
 	pub clip_get_handle: unsafe extern "C" fn(
 		*mut c_void,
 		*const c_char,
@@ -63,8 +63,8 @@ pub struct ImageEffectSuiteV1 {
 	) -> c_int,
 	/// clipGetPropertySet
 	pub clip_get_property_set: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> c_int,
-	/// clipGetImage：取图像（host 侧增加引用，必须与
-	/// clipReleaseImage 配对）。
+	/// clipGetImage: gets an image (the host side adds a reference, which must be
+	/// paired with clipReleaseImage).
 	pub clip_get_image:
 		unsafe extern "C" fn(*mut c_void, c_double, *const c_void, *mut *mut c_void) -> c_int,
 	/// clipReleaseImage
@@ -72,10 +72,10 @@ pub struct ImageEffectSuiteV1 {
 	/// clipGetRegionOfDefinition
 	pub clip_get_region_of_definition:
 		unsafe extern "C" fn(*mut c_void, c_double, *mut c_void) -> c_int,
-	/// abort：查询是否应中止（0 = 继续，非 0 = 中止；取消透传）。
+	/// abort: queries whether to abort (0 = continue, non-zero = abort; cancellation is passed through).
 	pub abort: unsafe extern "C" fn(*mut c_void) -> c_int,
 	/// imageMemoryAlloc / imageMemoryFree / imageMemoryLock /
-	/// imageMemoryUnlock：图像内存管理（账本同 memory suite）。
+	/// imageMemoryUnlock: image memory management (ledger same as the memory suite).
 	pub image_memory_alloc: unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_void) -> c_int,
 	/// imageMemoryFree
 	pub image_memory_free: unsafe extern "C" fn(*mut c_void) -> c_int,
@@ -85,12 +85,17 @@ pub struct ImageEffectSuiteV1 {
 	pub image_memory_unlock: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
 
-/// 存活图像表：clipGetImage 产出（props 地址 → 强引用；唯一持有者，
-/// clipReleaseImage 摘除即释放——对应 HS 的 get/release 配对）。
+/// Live image table: produced by clipGetImage (props address -> strong reference; the sole owner,
+/// clipReleaseImage removes it and thereby releases — mirroring HS's get/release pairing).
 static LIVE_IMAGES: std::sync::LazyLock<Mutex<HashMap<usize, std::sync::Arc<Image>>>> =
 	std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 公共入口模板：panic 兜底。
+/// Common entry template: wraps a possibly panicking closure into an OFX status code.
+///
+/// The closure returns `Ok(())` -> `status::OK`; returns `Err(code)` -> that status code
+/// is passed through unchanged; panic -> `status::FAILED` (a panic must not cross the C ABI boundary). Setting
+/// the `QUERCUS_OFX_TRACE` environment variable prints the error location and the result of every call to
+/// stderr; the location comes from the call site captured by `#[track_caller]`.
 #[track_caller]
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	let caller = std::panic::Location::caller();
@@ -107,7 +112,16 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	code
 }
 
-/// 属性名（空指针/非 UTF-8 → ErrValue）。
+/// Borrows a C property-name string as `&str`.
+///
+/// A null `name` or non-UTF-8 content -> `ERR_VALUE`. The returned `&str` directly
+/// borrows the caller's C string without copying; `'static` exists only so the borrow can span statements
+/// inside the `caught` closure — its real lifetime is the whole callback.
+///
+/// # Safety
+///
+/// `name` must be null or point to a valid NUL-terminated C string, and that memory must stay
+/// valid for the duration of the callback.
 unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 	if name.is_null() {
 		return Err(status::ERR_VALUE);
@@ -117,12 +131,19 @@ unsafe fn c_name<'a>(name: *const c_char) -> Result<&'a str, c_int> {
 		.map_err(|_| status::ERR_VALUE)
 }
 
-/// effect 句柄解析（describe 期 → 描述符；实例期 → 实例）。
+/// effect handle resolution (describe phase -> descriptor; instance phase -> instance).
 enum EffectRef<'a> {
 	Descriptor(&'a mut EffectDescriptor),
 	Instance(&'a Instance),
 }
 
+/// Resolves an effect handle into a borrow of the descriptor or the instance.
+///
+/// Handles are built by `tag::make` with a kind tag; here the tag dispatches to
+/// `EffectRef::Descriptor` (describe phase) or `EffectRef::Instance`
+/// (instance phase). Null pointer or unknown tag -> `ERR_BAD_HANDLE`. The returned borrow is declared
+/// `'static`: the handle's lifetime is guaranteed by the caller (for the duration of the C ABI callback), no
+/// ownership check is done here.
 fn resolve_effect(handle: *mut c_void) -> Result<EffectRef<'static>, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -141,8 +162,8 @@ fn resolve_effect(handle: *mut c_void) -> Result<EffectRef<'static>, c_int> {
 	}
 }
 
-/// clip 句柄解析（实例期；describe 期 ClipDescriptor 只在属性
-/// suite 里用，不走这里）。
+/// clip handle resolution (instance phase; during describe the ClipDescriptor is used only in the property
+/// suite and does not go through here).
 fn resolve_clip(handle: *mut c_void) -> Result<&'static ClipInstance, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -155,8 +176,16 @@ fn resolve_clip(handle: *mut c_void) -> Result<&'static ClipInstance, c_int> {
 	}
 }
 
-/// getPropertySet：effect 属性集 = handle 本体（props 在偏移 0；
-/// HS:1886-1898 返回 `getProps().getHandle()`，同址）。
+/// getPropertySet: gets the effect's property-set handle.
+///
+/// The effect's property set is the handle itself (props at offset 0; mirrors HS:1886-1898
+/// returning `getProps().getHandle()`, same address), so after validating the handle it is written back to `out` unchanged.
+/// Both descriptors and instances are supported; a null `out` or a wrong handle kind -> `ERR_BAD_HANDLE`.
+///
+/// # Safety
+///
+/// `effect` must be a descriptor or instance handle that stays alive for the callback; `out` must be
+/// writable.
 unsafe extern "C" fn get_property_set(effect: *mut c_void, out: *mut *mut c_void) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -168,8 +197,16 @@ unsafe extern "C" fn get_property_set(effect: *mut c_void, out: *mut *mut c_void
 	})
 }
 
-/// getParamSet：param-set 即 effect 本体（HS:1901-1931 描述符/实例
-/// 各自返回其 param set；本设计两者合一）。
+/// getParamSet: gets the effect's param-set handle.
+///
+/// In this design the param set is the effect itself (in HS:1901-1931 the descriptor and the instance
+/// each return their own param set; here the two are unified), so after validating the handle it is written back
+/// to `out` unchanged. A null `out` or a wrong handle kind -> `ERR_BAD_HANDLE`.
+///
+/// # Safety
+///
+/// `effect` must be a descriptor or instance handle that stays alive for the callback; `out` must be
+/// writable.
 unsafe extern "C" fn get_param_set(effect: *mut c_void, out: *mut *mut c_void) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -181,9 +218,18 @@ unsafe extern "C" fn get_param_set(effect: *mut c_void, out: *mut *mut c_void) -
 	})
 }
 
-/// clipDefine（describe 期）：定义 clip 并返回其属性集 handle。
-/// 重复名 → 整体替换（HS: `defineClip` 的 map 覆盖语义，
-/// ofxhImageEffect.cpp:265-271；旧句柄随之失效，与 HS 一致）。
+/// clipDefine (describe phase): defines a clip on the descriptor and returns its property-set handle.
+///
+/// `effect` must be a descriptor handle (an instance-phase call -> `ERR_BAD_HANDLE`); `name`
+/// is the clip name, and redefining replaces the old clip wholesale (HS `defineClip`'s map-overwrite
+/// semantics, ofxhImageEffect.cpp:265-271), so the old handle becomes invalid. On success `out`
+/// receives the new clip's property-set handle (props at offset 0); on failure it is cleared first. `name`
+/// being empty/non-UTF-8 -> `ERR_VALUE`; a null `out` -> `ERR_BAD_HANDLE`.
+///
+/// # Safety
+///
+/// `effect` must be a still-live descriptor handle; `name` must be a valid NUL-terminated
+/// C string; `out` must be writable.
 unsafe extern "C" fn clip_define(
 	effect: *mut c_void,
 	name: *const c_char,
@@ -221,8 +267,17 @@ unsafe extern "C" fn clip_define(
 	})
 }
 
-/// clipGetHandle（实例期）：按名取 clip 及其属性集。未找到 →
-/// BadHandle（HS:2067-2070）。
+/// clipGetHandle (instance phase): gets a clip and its property set by name.
+///
+/// `name` is the name used at `clipDefine` time (a NUL-terminated C string); the two outputs `clip` and
+/// `property_set` receive the same handle (the property set is at offset 0);
+/// `property_set` may be null, meaning it is not needed. A descriptor handle, an unknown name, an empty name,
+/// or non-UTF-8 -> `ERR_BAD_HANDLE` (HS:2067-2070).
+///
+/// # Safety
+///
+/// `effect` must be a still-live instance handle; `name` must be a valid NUL-terminated
+/// C string; `clip` must be writable.
 unsafe extern "C" fn clip_get_handle(
 	effect: *mut c_void,
 	name: *const c_char,
@@ -256,7 +311,15 @@ unsafe extern "C" fn clip_get_handle(
 	})
 }
 
-/// clipGetPropertySet：clip 属性集 = clip handle 本体。
+/// clipGetPropertySet: gets the clip's own property set.
+///
+/// The clip's property set is the clip handle itself (props at offset 0), so the tag is
+/// validated first and then the handle is written back to `out` unchanged; a non-CLIP handle or null `out` -> `ERR_BAD_HANDLE`.
+/// Consistent with the effect/param suite's "handle is the property set" convention.
+///
+/// # Safety
+///
+/// `clip` must be a still-live handle produced by the clip suite; `out` must be writable.
 unsafe extern "C" fn clip_get_property_set(clip: *mut c_void, out: *mut *mut c_void) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -268,11 +331,23 @@ unsafe extern "C" fn clip_get_property_set(clip: *mut c_void, out: *mut *mut c_v
 	})
 }
 
-/// clipGetImage：抓取输入图像并登记到存活表，返回图像属性集 handle
-/// （HS:2003-2049；`getImage` 失败 → Failed）。
+/// clipGetImage: fetches the input image at `time`, registers it in the live table and returns the image property
+/// set handle (HS:2003-2049).
 ///
-/// `// TODO(clip)`：fetch_image 待 clip 迁移到
-/// `quercus_core::texture::Texture` 值模型（当前帧访问为本地桩）。
+/// `clip` is the clip handle; `time` is the frame time (the project timeline; seconds/frames are interpreted
+/// by the render context); `region` is an optional pixel-coordinate rectangle, a null pointer meaning the whole frame. A clip named
+/// `Output` returns the output image of the current render (set by the render driver via TLS);
+/// with no output image -> `FAILED`; all other clips go through `fetch_image`, with the render scale taken from the current
+/// render context (1:1 by default); a fetch failure -> `FAILED`. The returned handle must be released by
+/// `clipReleaseImage`; the caller gets the property set, while the image itself is held by the live table.
+///
+/// `// TODO(clip)`: fetch_image awaits the clip migration to
+/// the `quercus_core::texture::Texture` value model (frame access is currently a local stub).
+///
+/// # Safety
+///
+/// `clip` must be a still-live clip handle; `region` is null or points to a readable
+/// `OfxRectD`; a null `out` -> `ERR_BAD_HANDLE`, otherwise it must be writable.
 unsafe extern "C" fn clip_get_image(
 	clip: *mut c_void,
 	time: c_double,
@@ -333,8 +408,16 @@ unsafe extern "C" fn clip_get_image(
 	})
 }
 
-/// clipReleaseImage：摘除存活表强引用（图像随之释放；HS:2053-2068
-/// 的 releaseReference 配对）。
+/// clipReleaseImage: releases the image handle returned by `clipGetImage`.
+///
+/// Removes the strong reference from the live table (that table is the sole owner, so removal releases the image), matching
+/// HS:2053-2068's releaseReference pairing. A null pointer, a non-IMAGE tag, and
+/// releasing the same handle twice -> `ERR_BAD_HANDLE`.
+///
+/// # Safety
+///
+/// `image` must be a handle returned by `clipGetImage` and not yet released (or a null pointer);
+/// after returning, the caller must not use that handle or the property set it points to.
 unsafe extern "C" fn clip_release_image(image: *mut c_void) -> c_int {
 	caught(|| {
 		if image.is_null() {
@@ -352,8 +435,19 @@ unsafe extern "C" fn clip_release_image(image: *mut c_void) -> c_int {
 	})
 }
 
-/// clipGetRegionOfDefinition：读 clip 实例属性的协商 RoD；缺失/非法
-/// → Failed（HS:2111-2150；非法判断 x2<x1 || y2<y1 → Failed）。
+/// clipGetRegionOfDefinition: reads the clip's negotiated RoD (region of
+/// definition, i.e. the clip's effective picture extent).
+///
+/// Reads four doubles from the clip instance property `OfxImageEffectPropRegionOfDefinition`
+/// (HS:2111-2150); a missing or mistyped property, or an invalid rectangle with `x2 < x1 ||
+/// y2 < y1`, -> `FAILED`. `_time` is unused: in phase 1 the RoD is independent of time
+/// (the property is written by the host during negotiation). On success the rectangle (pixel coordinates,
+/// `OfxRectD`) is written to `bounds`.
+///
+/// # Safety
+///
+/// `clip` must be a still-live handle produced by the clip suite; a null `bounds` ->
+/// `ERR_BAD_HANDLE`, otherwise it must point to a writable `OfxRectD`.
 unsafe extern "C" fn clip_get_region_of_definition(
 	clip: *mut c_void,
 	_time: c_double,
@@ -373,8 +467,8 @@ unsafe extern "C" fn clip_get_region_of_definition(
 	})
 }
 
-/// 从 clip 属性读协商 RoD（kOfxImageEffectPropRegionOfDefinition，
-/// Double×4；协商时宿主写入）。
+/// Reads the negotiated RoD from the clip properties (kOfxImageEffectPropRegionOfDefinition,
+/// Double x4; written by the host during negotiation).
 fn read_rod(props: &PropertySet) -> Option<OfxRectD> {
 	let v = props.get("OfxImageEffectPropRegionOfDefinition", 0)?;
 	let Value::Double(x1) = v else { return None };
@@ -390,11 +484,19 @@ fn read_rod(props: &PropertySet) -> Option<OfxRectD> {
 	Some(OfxRectD { x1, y1, x2, y2 })
 }
 
-/// abort：查询是否应中止渲染。OFX 契约（ofxImageEffect.h）与
-/// ofxs 实现（ofxsImageEffect.cpp `abort(...) != 0`）都是
-/// **0 = 继续、非 0 = 中止**——不能回 REPLY_YES/NO（13 会被
-/// openfx-misc 理解成"立即中止"，像素循环一行都不写 → 黑帧）。
-/// 取消状态是成功应答而非错误码，不能走 caught 的 Err 通道。
+/// abort: queries whether the current render should be cancelled (OFX's `abort` callback).
+///
+/// The contract (ofxImageEffect.h and ofxs's `abort(...) != 0`) is **0 = continue,
+/// non-zero = abort** — it must not return REPLY_YES/NO (13 would be read by openfx-misc as
+/// "abort immediately", and the pixel loop would write nothing -> black frame). The cancellation state is a successful answer rather than
+/// an error code, so it does not go through `caught`'s Err channel; it only passes through the instance's cancel atomic
+/// flag or `suites::progress`'s global cancellation: cancelled -> `1`, continue -> `0`.
+/// A descriptor handle -> `ERR_BAD_HANDLE`; panic -> `FAILED`.
+///
+/// # Safety
+///
+/// `effect` must be an instance-phase handle (or a null pointer -> `ERR_BAD_HANDLE`) and must
+/// stay alive for the callback — the plugin calls this repeatedly on the render thread.
 unsafe extern "C" fn abort(effect: *mut c_void) -> c_int {
 	catch_unwind(AssertUnwindSafe(|| {
 		let inst = match resolve_effect(effect)? {
@@ -416,8 +518,17 @@ unsafe extern "C" fn abort(effect: *mut c_void) -> c_int {
 	)
 }
 
-/// imageMemoryAlloc：账本同 memory suite（HS:2174-2212；失败 →
-/// ErrMemory）。`handle` 忽略。
+/// imageMemoryAlloc: allocates `byte_size` bytes for an image and writes them to `out`.
+///
+/// Uses the same ledger as the memory suite (HS:2174-2212), recording the pointer and length for
+/// `image_memory_free` to settle. `_handle` (the effect handle) is ignored: the ledger is
+/// global and does not account per "whoever allocates frees". A null `out` -> `ERR_VALUE`; an allocation
+/// failure -> `ERR_MEMORY`, in which case `out` is not written.
+///
+/// # Safety
+///
+/// `out` must be null or point to a writable `*mut c_void`; `_handle` is unused and
+/// may be any value.
 unsafe extern "C" fn image_memory_alloc(
 	_handle: *mut c_void,
 	byte_size: c_int,
@@ -437,7 +548,16 @@ unsafe extern "C" fn image_memory_alloc(
 	})
 }
 
-/// imageMemoryFree：账本销账；未知指针 → BadHandle（SDK 契约）。
+/// imageMemoryFree: returns memory allocated by `image_memory_alloc`.
+///
+/// Settles and frees it from the ledger (the ledger implementation is the same as the memory suite). An unknown or already freed
+/// pointer -> `ERR_BAD_HANDLE` (SDK contract: double free is an error code, not undefined
+/// behavior). Pairs with `image_memory_alloc`.
+///
+/// # Safety
+///
+/// `memory` must be null or a pointer returned by `image_memory_alloc` and not yet freed;
+/// after returning, the caller must not read or write that memory.
 unsafe extern "C" fn image_memory_free(memory: *mut c_void) -> c_int {
 	caught(|| {
 		if crate::suites::memory::free(memory as *mut u8) {
@@ -448,9 +568,20 @@ unsafe extern "C" fn image_memory_free(memory: *mut c_void) -> c_int {
 	})
 }
 
-/// imageMemoryLock/Unlock：HS 语义是"锁住防重分配"（ofxhMemory.cpp
-/// lock/unlock 计数），第 1 期账本不建模 → OK no-op（文档见
-/// memory.rs）。
+/// imageMemoryLock: stub implementation of image-memory locking.
+///
+/// The HS (openfx host) semantics are "lock to prevent reallocation" (`ofxhMemory.cpp`'s
+/// lock/unlock counting); the phase-1 ledger does not model lock counts, so this only writes the ledger's
+/// address to `out` unchanged and returns success (see `memory.rs`), without changing the pointer.
+/// Used in pairs with `image_memory_unlock`.
+///
+/// `out` receives the memory pointer; null -> `ERR_VALUE`. The address in the ledger is the data pointer
+/// (allocation is immediately ready; there is no HS deferred allocation).
+///
+/// # Safety
+///
+/// `out` must be null or point to a writable `*mut c_void`; `memory` should be
+/// a pointer returned by `image_memory_alloc`; this function neither validates nor dereferences it.
 unsafe extern "C" fn image_memory_lock(memory: *mut c_void, out: *mut *mut c_void) -> c_int {
 	caught(|| {
 		if out.is_null() {
@@ -462,13 +593,23 @@ unsafe extern "C" fn image_memory_lock(memory: *mut c_void, out: *mut *mut c_voi
 	})
 }
 
+/// imageMemoryUnlock: empty implementation of image-memory unlocking.
+///
+/// OFX image memory is two-stage "allocation + lock count"; the phase-1 ledger does not model lock counts
+/// (see `memory.rs`), so unlocking only does panic fallback and always returns `status::OK`.
+/// It must be called in pairs with `image_memory_lock`, but the call order does not affect the result.
+///
+/// # Safety
+///
+/// `_memory` is unused and may be any value (including a null pointer); this function does not dereference it
+/// or validate that it still belongs to the ledger.
 unsafe extern "C" fn image_memory_unlock(_memory: *mut c_void) -> c_int {
 	caught(|| Ok(()))
 }
 
 use crate::property::Value;
 
-/// 静态函数表实例。
+/// Static function-table instance.
 pub fn suite_v1() -> &'static ImageEffectSuiteV1 {
 	static SUITE: std::sync::OnceLock<ImageEffectSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| ImageEffectSuiteV1 {
@@ -504,8 +645,8 @@ mod tests {
 		tag::make(&d.props as *const PropertySet, tag::DESCRIPTOR)
 	}
 
-	/// describe 期：clipDefine 建 clip、属性 suite 读写其属性、
-	/// 重复定义整体替换（HS map 覆盖）。
+	/// describe phase: clipDefine creates a clip, the property suite reads and writes its properties,
+	/// and redefinition replaces it wholesale (HS map overwrite).
 	#[test]
 	fn describe_clip_define_and_props() {
 		let desc = EffectDescriptor::new();
@@ -568,7 +709,7 @@ mod tests {
 		}
 	}
 
-	/// abort：describe 期 → BadHandle；实例期 → 0（未取消）。
+	/// abort: describe phase -> BadHandle; instance phase -> 0 (not cancelled).
 	#[test]
 	fn abort_requires_instance() {
 		let desc = EffectDescriptor::new();
@@ -619,7 +760,7 @@ mod tests {
 		status::OK
 	}
 
-	/// imageMemoryAlloc/Free 走 memory 账本。
+	/// imageMemoryAlloc/Free go through the memory ledger.
 	#[test]
 	fn image_memory_ledger() {
 		let s = suite_v1();

@@ -14,49 +14,62 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxImageEffectOpenGLRenderSuiteV1（M11 第 2 期）：clipLoadTexture /
-//! clipFreeTexture / flushResources。
+//! OfxImageEffectOpenGLRenderSuiteV1 (M11 phase 2): clipLoadTexture /
+//! clipFreeTexture / flushResources.
 //!
-//! 语义对照 ofxGPURender.h（vendored，OpenGL Render Suite 一节）与
-//! HostSupport 插件侧实现（HS: ofxhImageEffect.cpp:2296-2367）：
+//! Semantics follow ofxGPURender.h (vendored, the OpenGL Render Suite
+//! section) and the HostSupport plugin-side implementation
+//! (HS: ofxhImageEffect.cpp:2296-2367):
 //!
-//! - `clipLoadTexture(clip, time, format, region, *texture)`：把 clip
-//!   在 `time` 的图像加载为 GL 纹理。纹理句柄是**属性集**（标签 0），
-//!   含 ofxGPURender.h 规定的 12 个属性（OpenGLTextureIndex/
+//! - `clipLoadTexture(clip, time, format, region, *texture)`: loads the clip's
+//!   image at `time` as a GL texture. The texture handle is a **property set**
+//!   (tag 0) holding the 12 properties prescribed by ofxGPURender.h
+//!   (OpenGLTextureIndex/
 //!   OpenGLTextureTarget/PixelDepth/Components/PreMultiplication/
 //!   RenderScale/PixelAspectRatio/Bounds/RegionOfDefinition/RowBytes/
-//!   Field/UniqueIdentifier）；宿主侧存强引用（[`LIVE_TEXTURES`]），
-//!   clipFreeTexture 摘除即释放（对应 HS 的 get/release 配对）。
-//!   **OpenGLTextureIndex 是真实 GL 纹理名**（GL 模式，见
-//!   [`crate::gl_bridge`] 方案 B）：Output clip 是宿主为输出帧建的
-//!   GL 纹理（经 GlCtx 注入，render 驱动负责建/FBO 挂载/回读/删除）；
-//!   输入 clip 是本 suite 在 GL 渲染期经桥上传图像得到的 GL 纹理
-//!   （clipFreeTexture 删除）。0 = CPU 回退（无 GL 名，插件按规范回退）。
-//! - Output clip：`format` 忽略，宿主返回已附着的输出纹理句柄——
-//!   绑定渲染目标的动作（ofxGPURender.h "the host must bind the
-//!   resulting texture as the current color buffer"）由调用方约定：
-//!   GL render 驱动在进入 render_gl 前已把输出 GL 纹理挂进 FBO 并
-//!   绑定（等价 C++ 的 `PluginRenderer::attach_output_texture`）。
-//!   clipFreeTexture 对 Output 只释放句柄、不删纹理（宿主还要回读它，
-//!   回读后由 render 驱动删除）。
-//! - 输入纹理在 GL 模式经 [`crate::gl_bridge::create_input_texture`]
-//!   上传（CPU 帧 → GL 纹理）；CPU 模式（无 GL 上下文）维持
-//!   [`crate::render`] 的 CPU 纹理。纹理格式：全链路 F32 约束下，
-//!   像素深度按 clip 协商结果（恒 F32）；`format` 参数
-//!   （kOfxImageEffectGLFormat*）若请求的分量与协商分量不符，Phase 2
-//!   不做转换 → Failed（规范要求 "host ensures it gives the requested
-//!   format"——宁可显式失败也不静默给错格式）。ofxGPURender.h 注明
-//!   "宿主无需按 Clip Preferences 把图像重映射到插件请求的位深"，
-//!   插件以纹理句柄的 PixelDepth/Components 为准。
-//! - `flushResources`：宿主在 render 之间不缓存 GPU 资源（纹理随
-//!   clipFreeTexture 立即释放）→ 无可释放 → kOfxStatReplyDefault
-//!   （规范："nothing the host could do"）。
-//! - GL 上下文规则（ofxGPURender.h "OpenGL Current Context"）：宿主
-//!   只在 Render/BeginSequenceRender/EndSequenceRender/Attach/Detach
-//!   期间要求上下文 current；本实现的约定是 render 驱动一次 acquire
-//!   整个 GL render action（[`crate::gl_bridge::acquire`]），本 suite
-//!   回调期间上下文恒 current，经 [`crate::suites::gl_ctx`] TLS 取
-//!   渲染器句柄。
+//!   Field/UniqueIdentifier); the host keeps a strong reference
+//!   ([`LIVE_TEXTURES`]) and clipFreeTexture removes it, releasing the
+//!   texture (matching HS's get/release pairing).
+//!   **OpenGLTextureIndex is the real GL texture name** (GL mode, see
+//!   [`crate::gl_bridge`] scheme B): for the Output clip it is the GL
+//!   texture the host created for the output frame (injected via GlCtx;
+//!   the render driver creates it, attaches it to an FBO, reads it back
+//!   and deletes it); for an input clip it is the GL texture obtained by
+//!   uploading the image through the bridge during GL rendering (deleted
+//!   by clipFreeTexture). 0 = CPU fallback (no GL name; the plugin falls
+//!   back as the spec allows).
+//! - Output clip: `format` is ignored and the host returns the handle of
+//!   the already-attached output texture — binding the render target
+//!   (ofxGPURender.h "the host must bind the resulting texture as the
+//!   current color buffer") is part of the caller's contract: the GL
+//!   render driver has already attached the output GL texture to an FBO
+//!   and bound it before entering render_gl (equivalent to C++'s
+//!   `PluginRenderer::attach_output_texture`). clipFreeTexture only
+//!   releases the Output handle without deleting the texture (the host
+//!   still has to read it back; the render driver deletes it afterwards).
+//! - Input textures in GL mode are uploaded through
+//!   [`crate::gl_bridge::create_input_texture`] (CPU frame → GL texture);
+//!   in CPU mode (no GL context) the CPU texture from [`crate::render`] is
+//!   kept. Texture format: under the end-to-end F32 constraint the pixel
+//!   depth follows the clip negotiation result (always F32); if the
+//!   `format` argument (kOfxImageEffectGLFormat*) requests components that
+//!   differ from the negotiated ones, phase 2 does not convert → Failed
+//!   (the spec requires "host ensures it gives the requested
+//!   format" — an explicit failure is better than silently returning the
+//!   wrong format). ofxGPURender.h notes that the host need not remap the
+//!   image to the plugin's requested bit depth per Clip Preferences, so
+//!   the plugin goes by the texture handle's PixelDepth/Components.
+//! - `flushResources`: the host does not cache GPU resources between
+//!   renders (textures are released immediately by clipFreeTexture) →
+//!   nothing to release → kOfxStatReplyDefault
+//!   (spec: "nothing the host could do").
+//! - GL context rule (ofxGPURender.h "OpenGL Current Context"): the host
+//!   only requires the context to be current during
+//!   Render/BeginSequenceRender/EndSequenceRender/Attach/Detach; this
+//!   implementation's convention is that the render driver acquires once
+//!   for the whole GL render action ([`crate::gl_bridge::acquire`]), so the
+//!   context is always current during this suite's callbacks, and the
+//!   renderer handle is taken from [`crate::suites::gl_ctx`] TLS.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr, CString};
@@ -71,39 +84,43 @@ use crate::suites::{status, tag};
 // ---- GL 常量（ofxGPURender.h；GLFormat 字符串为 ofxOpenGLRender.h
 // OpenFX 1.4 的规范名，vendored 头文件是 stub 未收录，按规范定义）----
 
-/// kOfxImageEffectPropOpenGLTextureIndex（ofxGPURender.h:135）。
+/// kOfxImageEffectPropOpenGLTextureIndex (ofxGPURender.h:135).
 pub(crate) const GL_TEXTURE_INDEX: &str = "OfxImageEffectPropOpenGLTextureIndex";
-/// kOfxImageEffectPropOpenGLTextureTarget（ofxGPURender.h:152）。
+/// kOfxImageEffectPropOpenGLTextureTarget (ofxGPURender.h:152).
 pub(crate) const GL_TEXTURE_TARGET: &str = "OfxImageEffectPropOpenGLTextureTarget";
 
-/// kOfxImageEffectGLFormatRGBA（ofxOpenGLRender.h 1.4）。
+/// kOfxImageEffectGLFormatRGBA (ofxOpenGLRender.h 1.4).
 pub(crate) const GL_FORMAT_RGBA: &str = "OfxImageEffectGLFormatRGBA";
-/// kOfxImageEffectGLFormatRGB。
+/// kOfxImageEffectGLFormatRGB.
 pub(crate) const GL_FORMAT_RGB: &str = "OfxImageEffectGLFormatRGB";
-/// kOfxImageEffectGLFormatAlpha。
+/// kOfxImageEffectGLFormatAlpha.
 pub(crate) const GL_FORMAT_ALPHA: &str = "OfxImageEffectGLFormatAlpha";
-/// kOfxImageEffectGLFormatLuminance。
+/// kOfxImageEffectGLFormatLuminance.
 pub(crate) const GL_FORMAT_LUMINANCE: &str = "OfxImageEffectGLFormatLuminance";
-/// kOfxImageEffectGLFormatLuminanceAlpha。
+/// kOfxImageEffectGLFormatLuminanceAlpha.
 pub(crate) const GL_FORMAT_LUMINANCE_ALPHA: &str = "OfxImageEffectGLFormatLuminanceAlpha";
 
-/// GL_TEXTURE_2D 的 GLenum 值（0x0DE1；纹理句柄的 OpenGLTextureTarget
-/// 属性。GL 规范值，非 OFX 宏）。
+/// GLenum value of GL_TEXTURE_2D (0x0DE1; the OpenGLTextureTarget
+/// property of a texture handle. A GL spec value, not an OFX macro).
 pub(crate) const GL_TEXTURE_2D: i32 = 0x0DE1;
 
-/// kOfxImageEffectPropPreMultiplication 的非预乘默认值。
+/// The non-premultiplied default value of
+/// kOfxImageEffectPropPreMultiplication.
 pub(crate) const PREMULT_NONE: &str = "OfxImagePreMultipliedNone";
 
-/// GL 像素深度协商（ofxGPURender.h:65-89 kOfxOpenGLPropPixelDepth）：
-/// 插件描述符声明的 GL 渲染支持位深列表（可选）。
+/// GL pixel-depth negotiation (ofxGPURender.h:65-89
+/// kOfxOpenGLPropPixelDepth): the list of GL-render bit depths the plugin
+/// descriptor declares as supported (optional).
 ///
-/// 返回 Some(实际位深) 表示 GL 模式可行，None 表示管线无法满足
-/// 插件声明 → 宿主应回退 CPU 渲染（ofxGPURender.h "the host will
-/// try to provide buffers/textures in one of the supported formats"；
-/// Phase 2 全链路 F32，无法提供其他位深）：
-/// - 列表缺失/为空 → Some(Float)（宿主自选，规范默认）；
-/// - 列表含 Float → Some(Float)；
-/// - 列表存在且不含 Float → None（管线约束；GL 模式不可行）。
+/// A `Some(actual depth)` means GL mode is feasible; `None` means the
+/// pipeline cannot satisfy the plugin's declaration → the host should fall
+/// back to CPU rendering (ofxGPURender.h "the host will
+/// try to provide buffers/textures in one of the supported formats";
+/// phase 2 is end-to-end F32 and cannot provide other bit depths):
+/// - list missing/empty → Some(Float) (host's choice, spec default);
+/// - list contains Float → Some(Float);
+/// - list present without Float → None (pipeline constraint; GL mode not
+///   feasible).
 pub(crate) fn pick_gl_pixel_depth(
 	plugin_props: &crate::property::PropertySet,
 ) -> Option<&'static str> {
@@ -124,25 +141,31 @@ pub(crate) fn pick_gl_pixel_depth(
 
 // ---- 存活纹理表 -----------------------------------------------------------
 
-/// 存活 GL 纹理表：clipLoadTexture 产出（props 地址 → 属性集 +
-/// 纹理值 + 是否输出 clip + 真实 GL 纹理名[可选]）；clipFreeTexture
-/// 摘除即释放——对应 HS 的 get/release 配对
-/// （HS: ofxhImageEffect.cpp:2336-2351）。纹理是 quercusrender 值（drop
-/// 自动释放后端 token；原 `texture_free` 调用面随值模型删除）。
+/// Live GL texture table: clipLoadTexture output (props address → property
+/// set + texture value + whether it is the output clip + real GL texture
+/// name [optional]); clipFreeTexture removes the entry and the texture is
+/// released — matching HS's get/release pairing
+/// (HS: ofxhImageEffect.cpp:2336-2351). A texture is a quercusrender value
+/// (drop releases the backend token automatically; the old `texture_free`
+/// call surface was removed with the value model).
 ///
-/// `gl_texture`：GL 模式下输入 clip 经 [`crate::gl_bridge`] 建的真实
-/// GL 纹理名（输出 clip 恒 None——宿主自建并负责生命周期，见
-/// [`crate::gl_bridge`] 模块文档）；摘除时经
-/// [`delete_gl_texture_if_gl`] 删除。
+/// `gl_texture`: in GL mode, the real GL texture name created for an input
+/// clip through [`crate::gl_bridge`] (always None for the output clip — the
+/// host creates it and owns its lifetime, see the [`crate::gl_bridge`]
+/// module docs); it is deleted via [`delete_gl_texture_if_gl`] when the
+/// entry is removed.
 ///
-/// 属性集必须**装箱**（Box 稳定堆地址）：纹理句柄指向它，函数返回后
-/// 必须仍存活；栈上临时变量会悬垂（phase-2 实现初版的 bug）。
+/// The property set must be **boxed** (Box gives a stable heap address):
+/// the texture handle points at it and it must still be alive after the
+/// function returns; a stack temporary would dangle (a bug in the initial
+/// phase-2 implementation).
 static LIVE_TEXTURES: std::sync::LazyLock<
 	Mutex<HashMap<usize, (Box<PropertySet>, crate::render::Texture, bool, Option<i32>)>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 登记纹理（clipLoadTexture 内部；`props` 装箱后取地址为句柄基址）。
-/// `gl_texture`：真实 GL 纹理名（输入 clip GL 模式；无则 None）。
+/// Registers a texture (inside clipLoadTexture; the boxed `props` address
+/// becomes the handle base). `gl_texture`: the real GL texture name (input
+/// clip in GL mode; None if absent).
 fn register(
 	props: Box<PropertySet>,
 	texture: crate::render::Texture,
@@ -157,18 +180,22 @@ fn register(
 	addr
 }
 
-/// 删除 GL 纹理（上下文 current 时；否则留给下次 GL 渲染前的兜底——
-/// 正常路径 clipFreeTexture/purge 都在 GL render 期，上下文必 current）。
+/// Deletes a GL texture (when the context is current; otherwise it is left
+/// for the fallback before the next GL render — the normal paths
+/// clipFreeTexture/purge all run during GL rendering, where the context is
+/// necessarily current).
 fn delete_gl_texture_if_gl(name: i32) {
 	if crate::suites::gl_ctx().is_some() {
 		crate::gl_bridge::delete_gl_texture(name);
 	}
 }
 
-/// 释放全部残留输入纹理（GL render action 返回后的安全网：规范要求
-/// 插件在 action 返回前 clipFreeTexture 全部句柄；遗漏的输入纹理在
-/// 此释放，输出纹理保留——宿主还要读它）。GL 输入纹理同步删除
-/// （上下文 current；render_gl 在清 GlCtx TLS 前调用本函数）。
+/// Releases all leftover input textures (the safety net after a GL render
+/// action returns: the spec requires the plugin to clipFreeTexture every
+/// handle before returning; missed input textures are released here, while
+/// output textures are kept — the host still needs them). GL input textures
+/// are deleted as well (context current; render_gl calls this before
+/// clearing the GlCtx TLS).
 pub(crate) fn purge_leftovers() {
 	let mut live = LIVE_TEXTURES.lock().unwrap_or_else(|e| e.into_inner());
 	let dropped: Vec<Option<i32>> = live
@@ -179,11 +206,17 @@ pub(crate) fn purge_leftovers() {
 	live.retain(|_, (_, _, is_output, _)| *is_output);
 	drop(live);
 	for gl in dropped.into_iter().flatten() {
- 			delete_gl_texture_if_gl(gl);
- 		}
+		delete_gl_texture_if_gl(gl);
+	}
 }
 
-/// 公共入口模板：panic 兜底。
+/// Shared entry template: panic fallback.
+///
+/// `f` is the body of a suite function; it is wrapped in `catch_unwind`
+/// (`AssertUnwindSafe`) so a panic returns `kOfxStatFailed` instead of
+/// unwinding across the C ABI, `Ok(())` returns `kOfxStatOK`, and
+/// `Err(code)` is returned to the plugin as-is. All `extern "C"` entry
+/// points return their status code through it.
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	catch_unwind(AssertUnwindSafe(f)).map_or_else(
 		|_| status::FAILED,
@@ -191,7 +224,16 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	)
 }
 
-/// clip 句柄解析（实例期）。
+/// clip handle resolution (instance phase).
+///
+/// `handle` is the opaque clip handle the plugin received; when it is NULL
+/// or its tag is not `tag::CLIP` it returns `Err(kOfxStatErrBadHandle)`,
+/// otherwise the tag is stripped to yield `&'static ClipInstance` (instances
+/// live for the session; the handle itself is a tagged pointer).
+///
+/// Precondition (the function is safe, but it dereferences a raw pointer
+/// internally): `handle` must be a live clip handle registered by this
+/// plugin, not a destroyed instance.
 fn resolve_clip(handle: *mut c_void) -> Result<&'static ClipInstance, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -208,13 +250,27 @@ fn cs(s: &str) -> CString {
 	CString::new(s).unwrap()
 }
 
-/// 把矩形写成 Int×4 属性（Bounds/ROD 用；OFX 图像属性是像素坐标）。
+/// Writes a rectangle as a 4-element Int property (used for Bounds/ROD; OFX
+/// image properties are in pixel coordinates).
+///
+/// `props` is the target property set; `name` is the property name
+/// (`OfxImagePropBounds` / `OfxImagePropRegionOfDefinition`); `rect` is an
+/// f64 `OfxRectD` whose coordinates are rounded to `Int` in
+/// `x1, y1, x2, y2` order and defined as a 4-element property. No bounds or
+/// empty-rectangle validation is done; the caller guarantees `rect` is
+/// already in pixel coordinates.
 fn rect_props(props: &PropertySet, name: &str, rect: crate::instance::OfxRectD) {
 	let b = |v: f64| Value::Int(v.round() as i32);
 	props.define(name, vec![b(rect.x1), b(rect.y1), b(rect.x2), b(rect.y2)]);
 }
 
-/// 从 clip 属性读字符串（缺失返回默认）。
+/// Reads a string from a clip property (missing ones return the default).
+///
+/// `clip` is an instance-phase clip; `name` is the property name (e.g.
+/// `OfxImageEffectPropPreMultiplication`); `default` is used when the
+/// property is missing or is not a `Value::String`. The string is converted
+/// lossily (invalid UTF-8 bytes are replaced, no error), so the returned
+/// text is an approximation of the property content.
 fn clip_string(clip: &ClipInstance, name: &str, default: &str) -> String {
 	clip.props
 		.get(name, 0)
@@ -225,10 +281,12 @@ fn clip_string(clip: &ClipInstance, name: &str, default: &str) -> String {
 		.unwrap_or_else(|| default.to_string())
 }
 
-/// 构造纹理属性集（ofxGPURender.h 规定的属性；输入与输出共用，
-/// 只是数据来源不同）。`OpenGLTextureIndex` 为真实 GL 纹理名
-/// （`texture_index`；0 = 无 GL 名——CPU 回退下插件按规范回退，纹理
-/// 内容仍可经 clipGetImage 取用）。
+/// Builds the texture property set (the properties prescribed by
+/// ofxGPURender.h; shared by input and output, only the data source
+/// differs). `OpenGLTextureIndex` is the real GL texture name
+/// (`texture_index`; 0 = no GL name — under CPU fallback the plugin falls
+/// back as the spec allows, and the texture content is still available via
+/// clipGetImage).
 #[allow(clippy::too_many_arguments)]
 fn make_texture_props(
 	width: f64,
@@ -278,7 +336,17 @@ fn make_texture_props(
 	props
 }
 
-/// 纹理请求格式 → 期望分量（NULL/未知 → None = 宿主自选）。
+/// Texture request format → expected components (NULL/unknown → None =
+/// host's choice).
+///
+/// `format` is the kOfxImageEffectGLFormat* name requested by the plugin
+/// (may be NULL). Both RGBA and NULL map to `Some(Rgba)` (phase 2 always
+/// provides RGBA), RGB / ALPHA map to the corresponding component; the
+/// Luminance family has no matching `Components`, so it returns `None` like
+/// unknown formats. The caller uses `None` to skip the format check (`None`
+/// means "host's choice", not "request failed"); when a different
+/// component count was explicitly requested [`clip_load_texture`] returns
+/// Failed.
 fn format_components(format: Option<&str>) -> Option<crate::image::Components> {
 	match format {
 		Some(GL_FORMAT_RGBA) | None => Some(crate::image::Components::Rgba),
@@ -291,12 +359,52 @@ fn format_components(format: Option<&str>) -> Option<crate::image::Components> {
 	}
 }
 
-/// clipLoadTexture：把 clip 在 `time` 的图像加载为 GL 纹理。
+/// clipLoadTexture: loads the clip's image at `time` as a GL texture.
 ///
-/// `format` 为请求的纹理格式（kOfxImageEffectGLFormat*；NULL = 宿主
-/// 按插件的 kOfxOpenGLPropPixelDepth 决定——Phase 2 全链路 F32）。
-/// `region`（规范坐标，可空）会裁剪到 clip 的 RoD——Phase 2 仅支持
-/// 整帧（NULL）；子区域请求返回 Failed（插件按规范继续，视作黑底）。
+/// `format` is the requested texture format (kOfxImageEffectGLFormat*;
+/// NULL = the host decides from the plugin's kOfxOpenGLPropPixelDepth —
+/// phase 2 is end-to-end F32). `region` (spec coordinates, nullable) is
+/// clipped to the clip's RoD — phase 2 supports only full frames (NULL); a
+/// sub-region request returns Failed (the plugin continues per the spec,
+/// treating it as black).
+///
+/// Parameters: `clip` is a clip handle registered in the instance phase
+/// (`Output` takes a special branch); `time` is the requested time in
+/// seconds on that clip's time base; `format` is a C string format name,
+/// possibly NULL; `region` must currently be NULL; `out` receives the
+/// property-set handle (`tag::PROPERTY_SET`, released by
+/// [`clip_free_texture`]) and is written as NULL at call start.
+///
+/// The `Output` clip returns the already-attached output texture (`format`
+/// is ignored; size comes from [`texture_size`]) with `OpenGLTextureIndex`
+/// set to the real GL texture name created by the host (0 = CPU fallback).
+/// Input clips prefer the zero-copy path on Linux/Windows: the render
+/// driver has already imported the same GPU memory into GL, so the real
+/// name is returned directly and download/upload is skipped (that entry
+/// does not delete the GL texture on release; the driver cleans it up);
+/// otherwise `fetch_image` fetches the image, uploads an RGBA32F GL texture
+/// and creates a CPU texture; if the GL upload fails the texture index is
+/// 0.
+///
+/// # Errors
+///
+/// `kOfxStatErrBadHandle`: `out` or `clip` is NULL, the handle is not CLIP,
+/// or the Output texture size is non-positive.
+/// `kOfxStatErrMissingHostFeature`: no GL context (not in GL rendering).
+/// `kOfxStatFailed`: `region` is non-NULL, image fetch failed, the requested
+/// format does not match the actual components (phase 2 does not convert),
+/// or image size is non-positive.
+/// `kOfxStatErrMemory`: CPU texture creation failed.
+///
+/// # Safety
+///
+/// `out` must be a writable `*mut *mut c_void`; `clip` must be a live clip
+/// handle received by this suite; `format` if non-NULL must be a valid
+/// NUL-terminated C string for the call duration; `region` if non-NULL must
+/// point to a valid `OfxRectD` (currently always returns Failed and never
+/// dereferences it). The GL context must be current at call time (acquired
+/// by the render driver) and the call may only happen on the render thread;
+/// the successfully written `*out` handle must be released exactly once.
 unsafe extern "C" fn clip_load_texture(
 	clip: *mut c_void,
 	time: c_double,
@@ -345,6 +453,34 @@ unsafe extern "C" fn clip_load_texture(
 			return Ok(());
 		}
 
+		// Linux GPU 零拷贝：该 clip 的输入已由渲染驱动从同一块 Vulkan
+		// 显存导入为 GL 纹理；直接返回真实名，跳过 fetch_image 下载
+		// 与 create_input_texture 上传。
+		#[cfg(any(target_os = "linux", target_os = "windows"))]
+		if let Some((gl_name, gl_w, gl_h)) = c.input_gl_texture_info() {
+			let tex = c
+				.input_texture_value()
+				.unwrap_or_else(crate::render::Texture::dummy);
+			let premult = clip_string(c, "OfxImageEffectPropPreMultiplication", PREMULT_NONE);
+			let row_bytes = gl_w.saturating_mul(16);
+			let props = make_texture_props(
+				gl_w as f64,
+				gl_h as f64,
+				crate::image::Components::Rgba,
+				gl.gl_pixel_depth,
+				&premult,
+				clip_par(c),
+				scale,
+				row_bytes,
+				gl_name,
+			);
+			// gl_texture=None：句柄释放时不删除 GL 纹理；渲染驱动统一
+			// 清理导入的零拷贝纹理（避免 glDeleteTextures 重复）。
+			let addr = register(Box::new(props), tex, false, None);
+			unsafe { *out = tag::make(addr as *const PropertySet, tag::PROPERTY_SET) };
+			return Ok(());
+		}
+
 		// 输入 clip：Phase 2 仅支持整帧（fetch_image 的 phase-1 约束）。
 		if !region.is_null() {
 			return Err(status::FAILED);
@@ -377,12 +513,8 @@ unsafe extern "C" fn clip_load_texture(
 		// 真实名；GL 上传失败 → 显式 Failed（插件按规范继续）。非 GL
 		// 上下文（本函数仅在 GL 渲染期可达，此分支是 CPU 纹理兜底）：
 		// 仍建 CPU 纹理、索引 0。
-		let gl_tex = crate::gl_bridge::create_input_texture(
-			w as i32,
-			h as i32,
-			image.pixels(),
-		)
-		.ok();
+		let gl_tex =
+			crate::gl_bridge::create_input_texture(w as i32, h as i32, image.pixels()).ok();
 		let params = crate::render::VideoParams {
 			width: w as i32,
 			height: h as i32,
@@ -408,7 +540,14 @@ unsafe extern "C" fn clip_load_texture(
 	})
 }
 
-/// 纹理尺寸（经 [`crate::render::texture_get_params`]；失败回退 0,0）。
+/// Texture size (via [`crate::render::texture_get_params`]; falls back to
+/// 0,0 on failure).
+///
+/// `tex` is a CPU-side texture value; returns `(width, height)` as f64
+/// pixels. Returns `(0.0, 0.0)` when the parameter query fails or the width
+/// is non-positive (the caller treats that as unusable, e.g.
+/// `clipLoadTexture` returns `kOfxStatErrBadHandle` when the Output texture
+/// is empty).
 fn texture_size(tex: &crate::render::Texture) -> (f64, f64) {
 	let p = crate::render::texture_get_params(tex);
 	if p.width > 0 {
@@ -426,7 +565,13 @@ fn image_height(image: &Image) -> f64 {
 	(image.bounds().y2 - image.bounds().y1).round()
 }
 
-/// clip 的协商像素比。
+/// The clip's negotiated pixel aspect ratio.
+///
+/// `c` is an instance-phase clip; reads the `OfxImagePropPixelAspectRatio`
+/// property (accepting only `Double`) and returns the OFX default 1.0 when
+/// it is missing or of the wrong type. This is the host/plugin-negotiated
+/// PAR and is written verbatim into `OfxImagePropPixelAspectRatio` by
+/// [`make_texture_props`].
 fn clip_par(c: &ClipInstance) -> f64 {
 	c.props
 		.get("OfxImagePropPixelAspectRatio", 0)
@@ -437,9 +582,27 @@ fn clip_par(c: &ClipInstance) -> f64 {
 		.unwrap_or(1.0)
 }
 
-/// clipFreeTexture：释放纹理（输入 clip 删除纹理值并释放真实 GL
-/// 纹理；Output 只释放句柄不删纹理——宿主还要读它）。纹理是值：
-/// 摘除表条目即 drop（原 `texture_free` 调用面随值模型删除）。
+/// clipFreeTexture: releases a texture (for an input clip it drops the
+/// texture value and releases the real GL texture; for Output it only
+/// releases the handle without deleting the texture — the host still has to
+/// read it). A texture is a value: removing the table entry drops it (the
+/// old `texture_free` call surface was removed with the value model).
+///
+/// `texture_handle` is the property-set handle returned by
+/// [`clip_load_texture`] through `out`. A NULL handle or one not in the live
+/// table → `kOfxStatErrBadHandle`; successfully removing the entry →
+/// `kOfxStatOK`, and the real GL texture name registered in that entry (the
+/// one uploaded/zero-copy imported for an input clip) is deleted with
+/// `glDeleteTextures`; Output entries are not deleted (the host render still
+/// reads it). The same handle must not be released twice.
+///
+/// # Safety
+///
+/// `texture_handle` must be a handle returned by this suite and not yet
+/// released (or NULL); it must not be dereferenced after release. If the
+/// entry carries a GL texture name, the GL context must be current at call
+/// time (guaranteed by the render driver during GL rendering) and the
+/// release may only happen on the render thread.
 unsafe extern "C" fn clip_free_texture(texture_handle: *mut c_void) -> c_int {
 	caught(|| {
 		if texture_handle.is_null() {
@@ -463,17 +626,30 @@ unsafe extern "C" fn clip_free_texture(texture_handle: *mut c_void) -> c_int {
 	})
 }
 
-/// flushResources：宿主不缓存 GPU 资源 → REPLY_DEFAULT（规范语义
-/// "nothing the host could do"）。
+/// flushResources: the host caches no GPU resources → REPLY_DEFAULT (the
+/// spec semantics "nothing the host could do").
+///
+/// No arguments and no state: the host has no cached textures/programs to
+/// flush, so per ofxGPURender.h it replies `kOfxStatReplyDefault` and the
+/// plugin should continue rendering normally. The function deletes no
+/// resources (cleanup goes through [`clip_free_texture`] / `purge_leftovers`
+/// at process exit).
+///
+/// # Safety
+///
+/// Only marked `unsafe` because of the C ABI function-pointer type: it
+/// reads and writes no pointers and has no GL context precondition, so it
+/// may be called on any thread.
 unsafe extern "C" fn flush_resources() -> c_int {
 	status::REPLY_DEFAULT
 }
 
-/// 函数表布局（与 SDK `OfxImageEffectOpenGLRenderSuiteV1` 逐字段
-/// 一致；ofxGPURender.h:181-310）。
+/// Function table layout (matches the SDK's
+/// `OfxImageEffectOpenGLRenderSuiteV1` field by field;
+/// ofxGPURender.h:181-310).
 #[repr(C)]
 pub struct GlRenderSuiteV1 {
-	/// clipLoadTexture。
+	/// clipLoadTexture.
 	pub clip_load_texture: unsafe extern "C" fn(
 		*mut c_void,
 		c_double,
@@ -481,13 +657,13 @@ pub struct GlRenderSuiteV1 {
 		*const c_void,
 		*mut *mut c_void,
 	) -> c_int,
-	/// clipFreeTexture。
+	/// clipFreeTexture.
 	pub clip_free_texture: unsafe extern "C" fn(*mut c_void) -> c_int,
-	/// flushResources。
+	/// flushResources.
 	pub flush_resources: unsafe extern "C" fn() -> c_int,
 }
 
-/// 函数表实例。
+/// Function table instance.
 pub fn suite_v1() -> &'static GlRenderSuiteV1 {
 	static SUITE: std::sync::OnceLock<GlRenderSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| GlRenderSuiteV1 {
@@ -506,8 +682,9 @@ mod tests {
 		CString::new(s).unwrap()
 	}
 
-	/// GL 渲染 suite 的存活表是进程全局状态：本模块所有触碰它的用例
-	/// 经此锁串行（否则 purge_leftovers 会踩其他用例的登记条目）。
+	/// The GL render suite's live table is process-global state: every test in
+	/// this module that touches it is serialized through this lock (otherwise
+	/// purge_leftovers would step on other tests' registered entries).
 	fn suite_lock() -> std::sync::MutexGuard<'static, ()> {
 		static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 		LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -555,7 +732,10 @@ mod tests {
 		) -> quercus_render::error::Result<()> {
 			Ok(())
 		}
-		fn download(&self, _token: u64) -> quercus_render::error::Result<quercus_core::texture::Frame> {
+		fn download(
+			&self,
+			_token: u64,
+		) -> quercus_render::error::Result<quercus_core::texture::Frame> {
 			Ok(quercus_core::texture::Frame::new())
 		}
 		fn blit(
@@ -577,7 +757,7 @@ mod tests {
 		}
 	}
 
-	/// 从 clipLoadTexture 写出的句柄读属性集。
+	/// Reads the property set from a handle written by clipLoadTexture.
 	fn handle_props(handle: *mut c_void) -> PropertySet {
 		assert_eq!(tag::kind(handle), tag::PROPERTY_SET, "纹理句柄标签 0");
 		unsafe { (*(tag::strip(handle))).clone() }
@@ -606,9 +786,10 @@ mod tests {
 		}
 	}
 
-	/// GL 像素深度协商矩阵（ofxGPURender.h kOfxOpenGLPropPixelDepth）：
-	/// 未声明/含 Float → 管线 F32 可行；声明且不含 Float → None
-	/// （GL 模式不可行，回退 CPU）。
+	/// GL pixel-depth negotiation matrix (ofxGPURender.h
+	/// kOfxOpenGLPropPixelDepth): undeclared/contains Float → pipeline F32
+	/// feasible; declared without Float → None (GL mode not feasible, fall back
+	/// to CPU).
 	#[test]
 	fn pick_gl_pixel_depth_matrix() {
 		let props = PropertySet::new();
@@ -647,20 +828,31 @@ mod tests {
 		assert_eq!(pick_gl_pixel_depth(&props5), None);
 	}
 
-	/// 纹理请求格式 → 期望分量矩阵（NULL/未知 → 宿主自选）。
+	/// Texture request format → expected components matrix (NULL/unknown →
+	/// host's choice).
 	#[test]
 	fn format_components_matrix() {
 		use crate::image::Components;
-		assert_eq!(format_components(Some(GL_FORMAT_RGBA)), Some(Components::Rgba));
+		assert_eq!(
+			format_components(Some(GL_FORMAT_RGBA)),
+			Some(Components::Rgba)
+		);
 		assert_eq!(format_components(None), Some(Components::Rgba));
-		assert_eq!(format_components(Some(GL_FORMAT_RGB)), Some(Components::Rgb));
-		assert_eq!(format_components(Some(GL_FORMAT_ALPHA)), Some(Components::Alpha));
+		assert_eq!(
+			format_components(Some(GL_FORMAT_RGB)),
+			Some(Components::Rgb)
+		);
+		assert_eq!(
+			format_components(Some(GL_FORMAT_ALPHA)),
+			Some(Components::Alpha)
+		);
 		assert_eq!(format_components(Some(GL_FORMAT_LUMINANCE)), None);
 		assert_eq!(format_components(Some(GL_FORMAT_LUMINANCE_ALPHA)), None);
 		assert_eq!(format_components(Some("bogus")), None);
 	}
 
-	/// make_texture_props：ofxGPURender.h 规定的 12 个属性齐全且值正确。
+	/// make_texture_props: all 12 properties prescribed by ofxGPURender.h are
+	/// present and have the right values.
 	#[test]
 	fn make_texture_props_fields() {
 		let props = make_texture_props(
@@ -690,10 +882,7 @@ mod tests {
 		);
 		assert_eq!(prop_double(&props, crate::host::PROP_RENDER_SCALE, 0), 2.0);
 		assert_eq!(prop_double(&props, crate::host::PROP_RENDER_SCALE, 1), 3.0);
-		assert_eq!(
-			prop_double(&props, "OfxImagePropPixelAspectRatio", 0),
-			1.5
-		);
+		assert_eq!(prop_double(&props, "OfxImagePropPixelAspectRatio", 0), 1.5);
 		for (i, want) in [0, 0, 4, 2].iter().enumerate() {
 			assert_eq!(
 				prop_int(&props, crate::image::K_IMAGE_PROP_BOUNDS, i),
@@ -706,18 +895,19 @@ mod tests {
 				"RoD[{i}]"
 			);
 		}
-		assert_eq!(prop_int(&props, crate::image::K_IMAGE_PROP_ROW_BYTES, 0), 48);
 		assert_eq!(
-			prop_string(&props, "OfxImagePropField", 0),
-			"OfxFieldNone"
+			prop_int(&props, crate::image::K_IMAGE_PROP_ROW_BYTES, 0),
+			48
 		);
+		assert_eq!(prop_string(&props, "OfxImagePropField", 0), "OfxFieldNone");
 		assert!(matches!(
 			props.get(crate::image::K_IMAGE_PROP_UNIQUE_ID, 0),
 			Some(Value::String(_))
 		));
 	}
 
-	/// rect_props：Double 矩形四舍五入为 Int×4（负半轴远离零）。
+	/// rect_props: a Double rectangle rounds to Int×4 (negative half away from
+	/// zero).
 	#[test]
 	fn rect_props_rounds_to_int() {
 		let props = PropertySet::new();
@@ -736,7 +926,8 @@ mod tests {
 		}
 	}
 
-	/// clip_string / clip_par：字符串与非字符串回退、PAR 缺失默认 1.0。
+	/// clip_string / clip_par: string and non-string fallbacks, PAR defaults to
+	/// 1.0 when missing.
 	#[test]
 	fn clip_string_and_par_fallbacks() {
 		let c = clip("Source");
@@ -756,7 +947,7 @@ mod tests {
 		assert_eq!(clip_par(&c), 1.0, "非 Double 回退 1.0");
 	}
 
-	/// texture_size / image_width / image_height。
+	/// texture_size / image_width / image_height.
 	#[test]
 	fn texture_size_and_image_dims() {
 		assert_eq!(texture_size(&crate::render::Texture::dummy()), (0.0, 0.0));
@@ -776,7 +967,8 @@ mod tests {
 		assert_eq!(image_height(&img), 4.0);
 	}
 
-	/// resolve_clip：空句柄/非 CLIP 标签 → BadHandle；CLIP 标签有效。
+	/// resolve_clip: null handle / non-CLIP tag → BadHandle; a CLIP tag is
+	/// valid.
 	#[test]
 	fn resolve_clip_handle_rules() {
 		assert!(matches!(
@@ -790,8 +982,8 @@ mod tests {
 		assert!(resolve_clip(clip_handle(&c)).is_ok());
 	}
 
-	/// clipLoadTexture：入口防御（空 out / 空 clip / 非 clip 句柄 /
-	/// 无 GL 上下文）。
+	/// clipLoadTexture: entry guards (null out / null clip / non-clip handle /
+	/// no GL context).
 	#[test]
 	fn clip_load_texture_entry_guards() {
 		let _lock = suite_lock();
@@ -845,8 +1037,9 @@ mod tests {
 		}
 	}
 
-	/// clipLoadTexture(Output)：忽略 format，返回已附着的输出纹理句柄
-	/// （真实 GL 名经 OpenGLTextureIndex 上报）；free 只摘句柄。
+	/// clipLoadTexture(Output): ignores format and returns the handle of the
+	/// attached output texture (the real GL name is reported through
+	/// OpenGLTextureIndex); free only removes the handle.
 	#[test]
 	fn clip_load_texture_output_clip() {
 		let _lock = suite_lock();
@@ -881,7 +1074,10 @@ mod tests {
 			prop_int(&props, crate::image::K_IMAGE_PROP_ROW_BYTES, 0),
 			4 * 4 * 4
 		);
-		assert!(LIVE_TEXTURES.lock().unwrap().contains_key(&(tag::strip(handle) as usize)));
+		assert!(LIVE_TEXTURES
+			.lock()
+			.unwrap()
+			.contains_key(&(tag::strip(handle) as usize)));
 
 		// free：输出 clip 只释放句柄、不删纹理（宿主还要回读）。
 		unsafe {
@@ -893,7 +1089,10 @@ mod tests {
 				status::ERR_BAD_HANDLE
 			);
 		}
-		assert!(!LIVE_TEXTURES.lock().unwrap().contains_key(&(tag::strip(handle) as usize)));
+		assert!(!LIVE_TEXTURES
+			.lock()
+			.unwrap()
+			.contains_key(&(tag::strip(handle) as usize)));
 
 		// output_gl_texture = None → 索引 0（CPU 回退语义）。
 		crate::suites::set_gl_ctx(Some(gl_ctx(f32_texture(2, 2, 0.0), None)));
@@ -917,7 +1116,7 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// clipLoadTexture(Output)：附着纹理为 dummy/0 尺寸 → BadHandle。
+	/// clipLoadTexture(Output): attached texture is dummy/0-sized → BadHandle.
 	#[test]
 	fn clip_load_texture_output_rejects_empty_texture() {
 		let _lock = suite_lock();
@@ -940,11 +1139,15 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// clipLoadTexture(输入 clip)：整帧限制、格式匹配、协商属性与
-	/// 释放；GL 不可用时 OpenGLTextureIndex=0（CPU 回退）。
+	/// clipLoadTexture(input clip): full-frame restriction, format matching,
+	/// negotiated properties and release; OpenGLTextureIndex=0 when GL is
+	/// unavailable (CPU fallback).
 	#[test]
 	fn clip_load_texture_input_clip() {
 		let _lock = suite_lock();
+		// Linux/macOS 真实 GL 桥：clipLoadTexture 的 GL 上传要求上下文
+		// current（生产路径由 render_driver 的 GlGuard 保证）。
+		let _gl = crate::gl_bridge::acquire().ok();
 		let s = suite_v1();
 		let c = clip("Source");
 		c.set_input_texture(Some(f32_texture(2, 2, 0.5)), 0.0);
@@ -987,13 +1190,7 @@ mod tests {
 		unsafe {
 			let mut h: *mut c_void = std::ptr::null_mut();
 			assert_eq!(
-				(s.clip_load_texture)(
-					clip_handle(&c),
-					0.0,
-					rgb.as_ptr(),
-					std::ptr::null(),
-					&mut h,
-				),
+				(s.clip_load_texture)(clip_handle(&c), 0.0, rgb.as_ptr(), std::ptr::null(), &mut h,),
 				status::FAILED
 			);
 		}
@@ -1046,15 +1243,33 @@ mod tests {
 		let mut h4: *mut c_void = std::ptr::null_mut();
 		unsafe {
 			assert_eq!(
-				(s.clip_load_texture)(clip_handle(&c), 0.0, rgba.as_ptr(), std::ptr::null(), &mut h2),
+				(s.clip_load_texture)(
+					clip_handle(&c),
+					0.0,
+					rgba.as_ptr(),
+					std::ptr::null(),
+					&mut h2
+				),
 				status::OK
 			);
 			assert_eq!(
-				(s.clip_load_texture)(clip_handle(&c), 0.0, lum.as_ptr(), std::ptr::null(), &mut h3),
+				(s.clip_load_texture)(
+					clip_handle(&c),
+					0.0,
+					lum.as_ptr(),
+					std::ptr::null(),
+					&mut h3
+				),
 				status::OK
 			);
 			assert_eq!(
-				(s.clip_load_texture)(clip_handle(&c), 0.0, lum_a.as_ptr(), std::ptr::null(), &mut h4),
+				(s.clip_load_texture)(
+					clip_handle(&c),
+					0.0,
+					lum_a.as_ptr(),
+					std::ptr::null(),
+					&mut h4
+				),
 				status::OK
 			);
 			// 非 UTF-8 format 串按 None 处理（宿主自选）→ OK。
@@ -1080,8 +1295,8 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// clipLoadTexture：渲染上下文的 scale 进入纹理属性；0 尺寸图像
-	/// → Failed。
+	/// clipLoadTexture: the render context's scale flows into the texture
+	/// properties; a 0-sized image → Failed.
 	#[test]
 	fn clip_load_texture_uses_render_scale_and_rejects_zero_image() {
 		let _lock = suite_lock();
@@ -1142,7 +1357,8 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// purge_leftovers：释放残留输入句柄、保留输出句柄（宿主还要回读）。
+	/// purge_leftovers: releases leftover input handles and keeps the output
+	/// handle (the host still has to read it back).
 	#[test]
 	fn purge_leftovers_keeps_outputs() {
 		let _lock = suite_lock();
@@ -1175,8 +1391,14 @@ mod tests {
 				status::OK
 			);
 		}
-		assert!(LIVE_TEXTURES.lock().unwrap().contains_key(&(tag::strip(input_handle) as usize)));
-		assert!(LIVE_TEXTURES.lock().unwrap().contains_key(&(tag::strip(out_handle) as usize)));
+		assert!(LIVE_TEXTURES
+			.lock()
+			.unwrap()
+			.contains_key(&(tag::strip(input_handle) as usize)));
+		assert!(LIVE_TEXTURES
+			.lock()
+			.unwrap()
+			.contains_key(&(tag::strip(out_handle) as usize)));
 
 		purge_leftovers();
 		let live = LIVE_TEXTURES.lock().unwrap();
@@ -1195,8 +1417,9 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// delete_gl_texture_if_gl：无 GL 上下文 no-op；有上下文时经桥删除
-	/// （GL 不可用环境下桥为 stub，仅验证不 panic）。
+	/// delete_gl_texture_if_gl: no-op without a GL context; with a context it
+	/// deletes through the bridge (the bridge is a stub when GL is unavailable,
+	/// so this only verifies it does not panic).
 	#[test]
 	fn delete_gl_texture_if_gl_branches() {
 		let _lock = suite_lock();
@@ -1207,7 +1430,7 @@ mod tests {
 		crate::suites::set_gl_ctx(None);
 	}
 
-	/// flushResources：宿主不缓存 GPU 资源 → ReplyDefault。
+	/// flushResources: the host caches no GPU resources → ReplyDefault.
 	#[test]
 	fn flush_resources_replies_default() {
 		unsafe {

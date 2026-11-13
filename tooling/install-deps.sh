@@ -81,7 +81,7 @@ fi
 case "$(uname -s)" in
 	Darwin)
 		# Homebrew's pkgconf installs a `pkg-config` symlink, which is the
-		# name crates/quercus-ffmpeg-link/build.rs invokes; nasm/meson/ninja
+		# name ffmpeg-sys-next invokes; nasm/meson/ninja
 		# are what the project FFmpeg build (tooling/ffmpeg/build-ffmpeg.sh
 		# + build-deps.sh) requires. librsvg is the app-icon renderer
 		# (rsvg-convert). The autotools cover any source tarball whose
@@ -113,7 +113,7 @@ case "$(uname -s)" in
 			mesa-vulkan-drivers libvulkan-dev
 			libxkbcommon-dev libxkbcommon-x11-dev
 			xvfb gdb file fonts-dejavu-core icc-profiles-free
-			dpkg-dev librsvg2-bin patchelf
+			dpkg-dev rpm librsvg2-bin patchelf
 			libva-dev libdrm-dev
 		)
 		# A single unavailable package (e.g. pkgconf on openKylin, which
@@ -189,4 +189,4 @@ case "$(uname -s)" in
 		;;
 esac
 
-echo "Done. Now run tooling/ffmpeg/build-ffmpeg.sh once, then 'cargo build'."
+echo "Done. Now run tooling/ffmpeg/build-ffmpeg.sh --shared once, then 'cargo build'."

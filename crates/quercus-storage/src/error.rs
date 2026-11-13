@@ -42,6 +42,8 @@ pub const QUERCUSSTORAGE_E_FORMAT: i32 = -100006;
 pub const QUERCUSSTORAGE_E_IO: i32 = -100007;
 /// Allocation failed.
 pub const QUERCUSSTORAGE_E_NOMEM: i32 = -100008;
+/// The backend does not implement the requested optional capability.
+pub const QUERCUSSTORAGE_E_UNSUPPORTED: i32 = -100009;
 
 /// Crate-internal result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,6 +63,14 @@ pub enum Error {
 	/// Operation failed (context string is log-only).
 	#[error("storage: operation failed: {0}")]
 	Failed(String),
+	/// A foreign (C ABI) transport reported its own error code.
+	#[error("storage: foreign backend error (code {code}): {message}")]
+	Foreign {
+		/// The backend's `QUERCUSSTORAGE_E_*` code, surfaced verbatim.
+		code: i32,
+		/// Best-effort diagnostic from the backend.
+		message: String,
+	},
 	/// No backend claimed the URI.
 	#[error("storage: no backend claimed the URI")]
 	NoBackend,
@@ -73,6 +83,9 @@ pub enum Error {
 	/// Out of memory.
 	#[error("storage: out of memory")]
 	NoMem,
+	/// The backend does not implement the requested optional capability.
+	#[error("storage: capability not supported by this backend")]
+	Unsupported,
 }
 
 impl Error {
@@ -83,10 +96,12 @@ impl Error {
 			Error::State => QUERCUSSTORAGE_E_STATE,
 			Error::NotFound => QUERCUSSTORAGE_E_NOT_FOUND,
 			Error::Failed(_) => QUERCUSSTORAGE_E_FAILED,
+			Error::Foreign { code, .. } => *code,
 			Error::NoBackend => QUERCUSSTORAGE_E_NO_BACKEND,
 			Error::Format(_) => QUERCUSSTORAGE_E_FORMAT,
 			Error::Io(_) => QUERCUSSTORAGE_E_IO,
 			Error::NoMem => QUERCUSSTORAGE_E_NOMEM,
+			Error::Unsupported => QUERCUSSTORAGE_E_UNSUPPORTED,
 		}
 	}
 }
@@ -103,10 +118,15 @@ mod tests {
 			Error::State,
 			Error::NotFound,
 			Error::Failed("boom".to_string()),
+			Error::Foreign {
+				code: QUERCUSSTORAGE_E_NOT_FOUND,
+				message: "missing project".to_string(),
+			},
 			Error::NoBackend,
 			Error::Format("bad xml".to_string()),
 			Error::Io("disk full".to_string()),
 			Error::NoMem,
+			Error::Unsupported,
 		]
 	}
 
@@ -138,6 +158,15 @@ mod tests {
 		assert_eq!(Error::State.code(), QUERCUSSTORAGE_E_STATE);
 		assert_eq!(Error::NotFound.code(), QUERCUSSTORAGE_E_NOT_FOUND);
 		assert_eq!(Error::Failed("boom".to_string()).code(), QUERCUSSTORAGE_E_FAILED);
+		assert_eq!(
+			Error::Foreign {
+				code: QUERCUSSTORAGE_E_NOT_FOUND,
+				message: "missing project".to_string(),
+			}
+			.code(),
+			QUERCUSSTORAGE_E_NOT_FOUND,
+			"foreign codes pass through verbatim"
+		);
 		assert_eq!(Error::NoBackend.code(), QUERCUSSTORAGE_E_NO_BACKEND);
 		assert_eq!(Error::Format("bad xml".to_string()).code(), QUERCUSSTORAGE_E_FORMAT);
 		assert_eq!(Error::Io("disk full".to_string()).code(), QUERCUSSTORAGE_E_IO);

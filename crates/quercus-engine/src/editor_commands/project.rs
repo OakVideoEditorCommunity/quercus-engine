@@ -16,7 +16,11 @@ pub fn lock(p: &ProjectRef) -> MutexGuard<'_, Project> {
 	p.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A timeline node reference (the quercustimeline command addressing).
+/// Wrap a node id in a [`NodeRef`] for the timeline command layer.
+///
+/// `p` is the project the node lives in (a shared handle, cheap to clone) and
+/// `id` the node id to address. This is the address form the quercustimeline
+/// commands take; resolving it later fails cleanly when the node is gone.
 pub fn node_ref(p: &ProjectRef, id: NodeId) -> NodeRef {
 	NodeRef::new(p.clone(), id)
 }
@@ -33,6 +37,10 @@ pub fn id_of(identity: u64) -> Option<NodeId> {
 // ---------------------------------------------------------------------------
 
 /// Borrow the sequence behavior at `id`.
+///
+/// `g` is the project graph, `id` a node id. Returns `None` when the id is stale
+/// or the node is not a sequence; [`sequence_ids`] uses exactly this test. The
+/// borrow is tied to `g`.
 pub fn sequence_behavior(g: &Graph, id: NodeId) -> Option<&SequenceBehavior> {
 	g.get(id)?
 		.behavior
@@ -41,6 +49,10 @@ pub fn sequence_behavior(g: &Graph, id: NodeId) -> Option<&SequenceBehavior> {
 }
 
 /// Borrow the track-list behavior at `id`.
+///
+/// `g` is the project graph, `id` a node id. Returns `None` when the id is stale
+/// or the node is not a track list, the container holding a sequence's tracks.
+/// The borrow is tied to `g`.
 pub fn track_list_behavior(g: &Graph, id: NodeId) -> Option<&TrackListBehavior> {
 	g.get(id)?
 		.behavior
@@ -49,6 +61,9 @@ pub fn track_list_behavior(g: &Graph, id: NodeId) -> Option<&TrackListBehavior> 
 }
 
 /// Borrow the track behavior at `id`.
+///
+/// `g` is the project graph, `id` a node id. Returns `None` when the id is stale
+/// or the node is not a track. The borrow is tied to `g`.
 pub fn track_behavior(g: &Graph, id: NodeId) -> Option<&TrackBehavior> {
 	g.get(id)?
 		.behavior
@@ -57,6 +72,10 @@ pub fn track_behavior(g: &Graph, id: NodeId) -> Option<&TrackBehavior> {
 }
 
 /// Borrow the clip behavior at `id`.
+///
+/// `g` is the project graph, `id` a node id. Returns `None` when the id is stale
+/// or the node is not a clip block. The clip commands reach a clip's params and
+/// block through this borrow, which is tied to `g`.
 pub fn clip_behavior(g: &Graph, id: NodeId) -> Option<&ClipBlockBehavior> {
 	g.get(id)?
 		.behavior
@@ -65,6 +84,10 @@ pub fn clip_behavior(g: &Graph, id: NodeId) -> Option<&ClipBlockBehavior> {
 }
 
 /// Borrow the footage behavior at `id`.
+///
+/// `g` is the project graph, `id` a node id. Returns `None` when the id is stale
+/// or the node is not footage (a sequence, track or folder); [`footage_ids`]
+/// classifies nodes with exactly this test. The borrow is tied to `g`.
 pub fn footage_behavior(g: &Graph, id: NodeId) -> Option<&FootageBehavior> {
 	g.get(id)?
 		.behavior
@@ -73,6 +96,10 @@ pub fn footage_behavior(g: &Graph, id: NodeId) -> Option<&FootageBehavior> {
 }
 
 /// Whether `id` is a folder node.
+///
+/// `g` is the project graph and `id` a node id; the test downcasts the node's
+/// behavior to the folder behavior. Returns `false` for a stale id and for every
+/// other node type.
 pub fn is_folder(g: &Graph, id: NodeId) -> bool {
 	g.get(id)
 		.and_then(|e| e.behavior.as_any())
@@ -141,6 +168,10 @@ pub fn project_name(p: &Project) -> String {
 // ---------------------------------------------------------------------------
 
 /// Every sequence node in the graph, in arena order.
+///
+/// `p` is the project whose graph is scanned; ids are filtered through
+/// [`sequence_behavior`], so tracks and clips are excluded. The project-open path
+/// reuses it to mount orphaned sequences (see `ensure_sequences_mounted`).
 pub fn sequence_ids(p: &Project) -> Vec<NodeId> {
 	p.graph
 		.node_ids()
@@ -150,6 +181,10 @@ pub fn sequence_ids(p: &Project) -> Vec<NodeId> {
 }
 
 /// Every footage node in the graph, in arena order.
+///
+/// `p` is the project whose graph is scanned; ids are filtered through
+/// [`footage_behavior`], so clips and sequences are excluded. Arena order is
+/// stable for a given graph but not sorted by name.
 pub fn footage_ids(p: &Project) -> Vec<NodeId> {
 	p.graph
 		.node_ids()
@@ -342,6 +377,10 @@ pub fn create_text_footage_node(project: &ProjectRef) -> Result<NodeId, String> 
 }
 
 /// Every folder node in the graph, in arena order.
+///
+/// `p` is the project whose graph is scanned; each candidate id is tested with
+/// [`is_folder`], so only nodes carrying a folder behavior are returned. Arena
+/// order is stable for a given graph but not sorted by name.
 pub fn folder_ids(p: &Project) -> Vec<NodeId> {
 	p.graph
 		.node_ids()
@@ -422,12 +461,22 @@ pub fn set_sequence_parameters(
 	Ok(())
 }
 
-/// The label of a node (`NodeCore::label`).
+/// The label of the node behind `id` (empty when the id is stale).
+///
+/// `g` is the project graph, `id` a node id. The label is `NodeCore::label`, the
+/// user-visible name (sequence name, footage file name, folder name). Returns an
+/// empty string for a stale id instead of panicking.
 pub fn node_label(g: &Graph, id: NodeId) -> String {
 	g.get(id).map(|e| e.core.label.clone()).unwrap_or_default()
 }
 
-/// The type id of a node (empty when the id is stale).
+/// The type id of the node behind `id` (empty when the id is stale).
+///
+/// `g` is the project graph and `id` a node id; the type id comes from the
+/// node's behavior (e.g. the sequence / footage / folder type) and is what the
+/// graph and command layers dispatch on. Returns an empty string when `id` is no
+/// longer in the arena, so callers can test emptiness instead of handling an
+/// `Option`.
 pub fn node_type_id(g: &Graph, id: NodeId) -> String {
 	g.get(id)
 		.map(|e| e.behavior.type_id().to_string())

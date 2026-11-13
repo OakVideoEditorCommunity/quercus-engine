@@ -14,34 +14,44 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! 参数化曲线模型（OfxParametricParameterSuite 的宿主侧数据与求值）。
+//! Parametric curve model (host-side data and evaluation for OfxParametricParameterSuite).
 //!
-//! 曲线 = 按 key 升序排列的控制点列表，每个控制点携带 Hermite 切线
-//! （slope）。suite（[`crate::suites::parametric`]）只暴露 key/value
-//! 编辑入口，slope 一律由 [`Curve::recompute_slopes`] 自动计算——
-//! 内部点用两侧差分（centered finite difference），端点用单侧差分；
-//! 字段保持 `pub`，便于测试/宿主显式编辑斜率。
+//! A curve = a list of control points sorted by ascending key, each carrying a
+//! Hermite tangent (slope). The suite ([`crate::suites::parametric`]) exposes only
+//! key/value edit entry points, and slopes are always computed by
+//! [`Curve::recompute_slopes`] — interior points use a centered finite
+//! difference, endpoints a one-sided difference; fields stay `pub` so tests and
+//! the host can edit slopes explicitly.
 //!
-//! 求值 = 分段三次 Hermite（见 [`Curve::evaluate`]）。这是 OFX 规范
-//! 建议宿主采用的"曲线编辑器式"表示（ofxParametricParam.h 的
-//! parametric 参数文档），与贝塞尔形式等价（Hermite 切线 × 段长即
-//! 贝塞尔控制臂）。
+//! Evaluation = piecewise cubic Hermite (see [`Curve::evaluate`]). This is the
+//! "curve-editor style" representation the OFX spec recommends hosts use (the
+//! parametric parameter documentation in ofxParametricParam.h); it is equivalent
+//! to the Bezier form (a Hermite tangent × segment length is the Bezier control
+//! arm).
 
-/// 曲线控制点：`key`（parametric 位置，定义域由
-/// `OfxParamPropParametricRange` 限定）、`value`（求值结果）、
-/// `slope`（该点处的一阶导数，三次 Hermite 的切线）。
+/// A curve control point: `key` (parametric position, its domain bounded by
+/// `OfxParamPropParametricRange`), `value` (the evaluation result), and
+/// `slope` (the first derivative at that point, the cubic Hermite tangent).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlPoint {
-	/// parametric 位置（x）。
+	/// Parametric position (x).
 	pub key: f64,
-	/// 求值结果（y）。
+	/// Evaluation result (y).
 	pub value: f64,
-	/// 一阶导数（自动差分 / 显式编辑）。
+	/// First derivative (auto-differentiated / explicitly edited).
 	pub slope: f64,
 }
 
 impl ControlPoint {
-	/// 按 key/value 构造（slope 由 [`Curve::recompute_slopes`] 填入）。
+	/// Builds a control point from key/value; `slope` is initialized to 0.0.
+	///
+	/// `key` is the parametric position (x, its domain bounded by
+	/// `OfxParamPropParametricRange`) and `value` is the evaluation result (y).
+	/// The slope is a placeholder only: after putting the point into a [`Curve`] you
+	/// must call [`Curve::recompute_slopes`] (or use [`Curve::upsert`] /
+	/// [`Curve::from_pairs`], which recompute internally), otherwise Hermite
+	/// evaluation treats the point as zero-tangent and the curve flattens at the
+	/// control point.
 	pub fn new(key: f64, value: f64) -> Self {
 		Self {
 			key,
@@ -51,27 +61,27 @@ impl ControlPoint {
 	}
 }
 
-/// 一条参数曲线：控制点按 key 升序（不变量；由本模块的修改接口
-/// 维护）。
+/// A parametric curve: control points sorted by ascending key (an invariant
+/// maintained by this module's mutation API).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Curve {
-	/// 控制点序列（key 升序，无重复 key）。
+	/// Control-point sequence (ascending keys, no duplicate keys).
 	pub points: Vec<ControlPoint>,
 }
 
 impl Curve {
-	/// 空曲线（`DeleteAllControlPoints` 后的状态；求值退化为恒等，
-	/// 见 [`Curve::evaluate`]）。
+	/// An empty curve (the state after `DeleteAllControlPoints`; evaluation
+	/// degenerates to identity, see [`Curve::evaluate`]).
 	pub fn empty() -> Self {
 		Self {
 			points: Vec::new(),
 		}
 	}
 
-	/// 恒等曲线：`{(lo, lo), (hi, hi)}` + 自动 slope —— parametric
-	/// 参数的默认 default（ofxParametricParam.h："The default default
-	/// value of a parametric curve is to be an identity lookup"）。
-	/// `lo`/`hi` 来自 `OfxParamPropParametricRange`（默认 (0,1)）。
+	/// Identity curve: `{(lo, lo), (hi, hi)}` + automatic slopes — the default
+	/// default of a parametric parameter (ofxParametricParam.h: "The default default
+	/// value of a parametric curve is to be an identity lookup").
+	/// `lo`/`hi` come from `OfxParamPropParametricRange` (default (0,1)).
 	pub fn identity(lo: f64, hi: f64) -> Self {
 		let mut c = Self {
 			points: vec![
@@ -83,8 +93,8 @@ impl Curve {
 		c
 	}
 
-	/// 由 key/value 对构造（slope 自动差分；按传入顺序——调用方
-	/// 保证升序，或经 [`Curve::upsert`] 逐点插入）。
+	/// Builds from key/value pairs (slopes auto-differentiated; in the given order —
+	/// the caller guarantees ascending, or inserts point by point via [`Curve::upsert`]).
 	pub fn from_pairs(pairs: &[(f64, f64)]) -> Self {
 		let mut c = Self {
 			points: pairs
@@ -96,24 +106,29 @@ impl Curve {
 		c
 	}
 
-	/// 控制点数。
+	/// Number of control points.
 	pub fn len(&self) -> usize {
 		self.points.len()
 	}
 
-	/// 是否为空（`DeleteAllControlPoints` 后）。
+	/// Whether the curve is empty (after `DeleteAllControlPoints`).
 	pub fn is_empty(&self) -> bool {
 		self.points.is_empty()
 	}
 
-	/// 第 `i` 个控制点（越界 → None）。
+	/// Returns a read-only reference to the `i`-th control point (0-based, ascending key).
+	///
+	/// `i` out of range returns `None`; shares the same index space as
+	/// [`Curve::set_nth`] / [`Curve::delete_nth`]. Read-only access leaves slopes
+	/// untouched; use [`Curve::upsert`] / [`Curve::set_nth`] to modify.
 	pub fn nth(&self, i: usize) -> Option<&ControlPoint> {
 		self.points.get(i)
 	}
 
-	/// 重算全部 slope：内部点中心差分（两侧跨距），端点单侧差分；
-	/// 单点/空曲线无差分 → slope 0。修改 key/value 后必须调用，
-	/// 否则 Hermite 切线滞后于控制点几何。
+	/// Recomputes all slopes: centered difference for interior points (span on both
+	/// sides), one-sided at the endpoints; single-point/empty curves have no
+	/// difference → slope 0. Call it after changing key/value, otherwise the
+	/// Hermite tangents lag behind the control-point geometry.
 	pub fn recompute_slopes(&mut self) {
 		let n = self.points.len();
 		for i in 0..n {
@@ -121,21 +136,21 @@ impl Curve {
 		}
 	}
 
-	/// 三次 Hermite 求值。
+	/// Cubic Hermite evaluation.
 	///
-	/// - 空曲线：恒等（f(x) = x）——与"默认 default 是恒等查找"
-	///   一致，`DeleteAllControlPoints` 后曲线退化为中性恒等，无端点
-	///   可钳制，直接返回 x；
-	/// - 单点曲线：常数（该点 value）；
-	/// - x 在首/末 key 之外：钳制到端点值（任务/规范：越界 key
-	///   钳制到端点值）。
+	/// - Empty curve: identity (f(x) = x) — consistent with "the default default is
+	///   an identity lookup"; after `DeleteAllControlPoints` the curve degenerates to
+	///   a neutral identity with no endpoint to clamp, so x is returned directly;
+	/// - Single-point curve: constant (that point's value);
+	/// - x outside the first/last key: clamped to the endpoint value (task/spec:
+	///   out-of-range keys clamp to the endpoint value).
 	///
-	/// 数学：段 [x0, x1] 上令 t = (x - x0)/(x1 - x0)，h = x1 - x0，
-	/// 三次 Hermite 基函数
+	/// Math: on the segment [x0, x1] let t = (x - x0)/(x1 - x0), h = x1 - x0, with
+	/// cubic Hermite basis functions
 	///   h00 = 2t³ - 3t² + 1,  h01 = -2t³ + 3t²
 	///   h10 = t³ - 2t² + t,   h11 = t³ - t²
-	/// f(x) = h00·y0 + h01·y1 + h·(h10·m0 + h11·m1)。
-	/// slope 为 1 的恒等曲线恰退化为 f(x) = x（端点钳制外）。
+	/// f(x) = h00·y0 + h01·y1 + h·(h10·m0 + h11·m1).
+	/// An identity curve with slope 1 degenerates exactly to f(x) = x (outside endpoint clamping).
 	pub fn evaluate(&self, x: f64) -> f64 {
 		let n = self.points.len();
 		if n == 0 {
@@ -168,9 +183,10 @@ impl Curve {
 		h00 * a.value + h01 * b.value + h * (h10 * a.slope + h11 * b.slope)
 	}
 
-	/// 放入 (key, value)：同 key 已存在 → 覆盖其值（返回 false）；
-	/// 否则按 key 升序插入（返回 true）。随后重算 slope。
-	/// 这是 Add 与 SetNth 的公共落点（SetNth 先移除再落点）。
+	/// Inserts (key, value): an existing key has its value overwritten (returns false);
+	/// otherwise the point is inserted in ascending key order (returns true). Slopes
+	/// are recomputed afterwards. This is the common landing point for Add and
+	/// SetNth (SetNth removes the point first, then lands here).
 	pub fn upsert(&mut self, key: f64, value: f64) -> bool {
 		if let Some(p) = self.points.iter_mut().find(|p| p.key == key) {
 			p.value = value;
@@ -183,10 +199,10 @@ impl Curve {
 		true
 	}
 
-	/// 改第 `nth` 个控制点为 (key, value)。key 变化可能破坏有序性
-	/// （ofxParametricParam.h：SetNthControlPoint 的 key 可前移/后移
-	/// 到其他点之前/之后）——先移除再按 key 插入；新 key 撞上其他
-	/// 点的 key 时按覆盖语义处理。nth 越界 → Err(())。
+	/// Changes the `nth` control point to (key, value). A key change can break the
+	/// ordering (ofxParametricParam.h: SetNthControlPoint's key may move before/after
+	/// other points) — remove first, then insert by key; when the new key collides
+	/// with another point's key, overwrite semantics apply. nth out of range → Err(()).
 	pub fn set_nth(&mut self, nth: usize, key: f64, value: f64) -> Result<(), ()> {
 		if nth >= self.points.len() {
 			return Err(());
@@ -196,7 +212,12 @@ impl Curve {
 		Ok(())
 	}
 
-	/// 删第 `nth` 个控制点（nth 越界 → Err(())）；随后重算 slope。
+	/// Deletes the `nth` control point, then recomputes all slopes.
+	///
+	/// `nth` is a 0-based index in ascending key order; out of range returns `Err(())`
+	/// and leaves the curve unchanged. Shares the same index space as
+	/// [`Curve::set_nth`] / [`Curve::upsert`]; use [`Curve::clear`] to drop every
+	/// control point (`DeleteAllControlPoints`). The deleted point is not returned.
 	pub fn delete_nth(&mut self, nth: usize) -> Result<(), ()> {
 		if nth >= self.points.len() {
 			return Err(());
@@ -206,7 +227,7 @@ impl Curve {
 		Ok(())
 	}
 
-	/// 删除全部控制点（`DeleteAllControlPoints`）。
+	/// Deletes every control point (`DeleteAllControlPoints`).
 	pub fn clear(&mut self) {
 		self.points.clear();
 	}
@@ -223,7 +244,14 @@ impl Curve {
 // 解析器容忍空白与字段乱序；结构不符 → None（调用方按字符串族静默
 // 路径处理）。手写实现，不引入 serde（crate 无该依赖）。
 
-/// 曲线集 → JSON（节点输入默认值 / 插件回写节点输入的载荷）。
+/// Serializes a curve set to compact JSON (no whitespace) as a node input default
+/// value and as the payload a plugin writes back to a node input.
+///
+/// The outer `{"curves":[...]}` holds one curve per slice entry, in slice order
+/// (i.e. dimension order); each control-point object has the fixed field order
+/// `key`/`value`/`slope` and numbers use the shortest round-trip format (see
+/// [`push_num`]; NaN/±Inf get dedicated tokens). The inverse of
+/// [`curves_from_json`]; the output contains no newlines or spaces.
 pub fn curves_to_json(curves: &[Curve]) -> String {
 	let mut out =
 		String::with_capacity(8 + 12 * curves.iter().map(|c| c.len()).sum::<usize>());
@@ -251,7 +279,15 @@ pub fn curves_to_json(curves: &[Curve]) -> String {
 	out
 }
 
-/// JSON → 曲线集（格式见 [`curves_to_json`]；结构不符 → None）。
+/// Parses the JSON produced by [`curves_to_json`] back into a curve set; returns
+/// `None` when the structure does not match.
+///
+/// The parser tolerates whitespace and out-of-order fields; a control point with no
+/// `slope` is filled with 0.0. Points keep the file's original order and slopes are
+/// preserved as-is (not recomputed), so the round trip with [`curves_to_json`] is
+/// bit-exact. A non-object root, a key other than `curves`, broken array/object
+/// syntax, unknown fields, a missing `key`/`value` or trailing bytes all return
+/// `None`, handled by the caller on the string family's silent-failure path.
 pub fn curves_from_json(text: &str) -> Option<Vec<Curve>> {
 	let mut p = JsonParser {
 		bytes: text.as_bytes(),
@@ -301,7 +337,12 @@ pub fn curves_from_json(text: &str) -> Option<Vec<Curve>> {
 	Some(curves)
 }
 
-/// 单个数值 → JSON token（有限值裸数字；NaN/±Inf 见模块文档）。
+/// Appends the JSON token of a single number to `out` (no commas or structural characters).
+///
+/// Finite values are written as the shortest round-trip decimal of `{}`; non-finite
+/// values use symmetric tokens JSON has no standard spelling for: NaN → `null`,
+/// +Inf → `"inf"`, -Inf → `"-inf"` (string literals), matching the parsing rules
+/// of [`JsonParser::parse_num`] one-to-one.
 fn push_num(out: &mut String, v: f64) {
 	if v.is_nan() {
 		out.push_str("null");
@@ -314,8 +355,8 @@ fn push_num(out: &mut String, v: f64) {
 	}
 }
 
-/// 手写 JSON 解析器（仅本格式的子集；字段名无转义引号，控制点字段
-/// 均为固定标识符）。
+/// Hand-written JSON parser (only the subset this format needs; field names carry
+/// no escaped quotes and control-point fields are fixed identifiers).
 struct JsonParser<'a> {
 	bytes: &'a [u8],
 	pos: usize,
@@ -337,7 +378,13 @@ impl<'a> JsonParser<'a> {
 		}
 	}
 
-	/// 原样匹配一段字节（字段名；不做字符串语义）。
+	/// If the current position starts with the byte sequence `want`, advances by
+	/// `want.len()` and returns `true`; otherwise leaves `pos` untouched and returns `false`.
+	///
+	/// Pure byte-prefix matching, with no string semantics (it neither requires `want`
+	/// to be valid UTF-8 nor skips whitespace); used for field names and fixed tokens
+	/// such as `null`. Callers must call [`JsonParser::skip_ws`] first and roll back
+	/// failed matches themselves.
 	fn eat_str(&mut self, want: &[u8]) -> bool {
 		if self.bytes[self.pos..].starts_with(want) {
 			self.pos += want.len();
@@ -347,7 +394,7 @@ impl<'a> JsonParser<'a> {
 		}
 	}
 
-	/// 引号字符串（无转义；字段名/`"inf"` token 用）。
+	/// Quoted string (no escapes; used for field names and the `"inf"` token).
 	fn parse_string(&mut self) -> Option<String> {
 		if !self.eat(b'"') {
 			return None;
@@ -363,8 +410,8 @@ impl<'a> JsonParser<'a> {
 		Some(s)
 	}
 
-	/// 数值 token：`null` → NaN；`"inf"`/`"-inf"` → ±∞；否则裸数字
-	/// （`f64::from_str`，上溢 → ±∞，与 `{}` 最短往返格式对称）。
+	/// Number token: `null` → NaN; `"inf"`/`"-inf"` → ±∞; otherwise a bare number
+	/// (`f64::from_str`, overflow → ±∞, symmetric with the shortest `{}` round trip).
 	fn parse_num(&mut self) -> Option<f64> {
 		if self.eat_str(b"null") {
 			return Some(f64::NAN);
@@ -394,7 +441,7 @@ impl<'a> JsonParser<'a> {
 			.ok()
 	}
 
-	/// 一条曲线：`[` 控制点* `]`（控制点按 key 升序存储，解析按原序）。
+	/// One curve: `[` control points* `]` (points stored in ascending key order; parsed in file order).
 	fn parse_curve(&mut self) -> Option<Curve> {
 		if !self.eat(b'[') {
 			return None;
@@ -418,8 +465,14 @@ impl<'a> JsonParser<'a> {
 		Some(Curve { points })
 	}
 
-	/// 一个控制点：`{` ("name" `:` 数值)* `}`（字段乱序可；未知字段
-	/// 拒绝）。
+	/// Parses one control-point object: `{"key":number,"value":number,"slope":number}`.
+	///
+	/// Fields may be out of order or repeated (later occurrences override earlier
+	/// ones); `slope` may be omitted (filled with 0.0). An unknown field name, a
+	/// missing `key` or `value`, or bad syntax returns `None`. Number tokens go
+	/// through [`JsonParser::parse_num`] (`null` → NaN, `"inf"`/`"-inf"` → ±∞,
+	/// otherwise a bare number). Points are not sorted here; the order is preserved
+	/// from the file by [`JsonParser::parse_curve`].
 	fn parse_point(&mut self) -> Option<ControlPoint> {
 		if !self.eat(b'{') {
 			return None;
@@ -462,9 +515,9 @@ impl<'a> JsonParser<'a> {
 	}
 }
 
-/// 第 `i` 点处的差分斜率（不重算，供 [`Curve::recompute_slopes`]）。
-/// 内部点：中心差分 (y_{i+1} - y_{i-1}) / (x_{i+1} - x_{i-1})；
-/// 端点：单侧差分；单点/空曲线：0。防御重复 key 时除零 → 0。
+/// The finite-difference slope at point `i` (no recompute; used by [`Curve::recompute_slopes`]).
+/// Interior points: centered difference (y_{i+1} - y_{i-1}) / (x_{i+1} - x_{i-1});
+/// endpoints: one-sided difference; single-point/empty curve: 0. Duplicate keys are guarded against division by zero → 0.
 fn slope_at(points: &[ControlPoint], i: usize) -> f64 {
 	let n = points.len();
 	if n < 2 {
@@ -492,9 +545,9 @@ mod tests {
 		(a - b).abs() <= eps
 	}
 
-	/// 恒等曲线：{(0,0),(1,1)} + 自动 slope（1,1）→ Hermite 恰为
-	/// f(x) = x（数学上精确，浮点逐位不保证——近似比较）；非默认
-	/// range 同样恒等。
+	/// Identity curve: {(0,0),(1,1)} + automatic slopes (1,1) → Hermite is exactly
+	/// f(x) = x (exact mathematically, not bit-exact in floating point — compared
+	/// approximately); a non-default range is equally identity.
 	#[test]
 	fn identity_curve_evaluates_to_x() {
 		let c = Curve::identity(0.0, 1.0);
@@ -524,10 +577,10 @@ mod tests {
 		assert!(close(c.evaluate(128.0), 128.0, 1e-12));
 	}
 
-	/// 单段抛物线形状：{(0,0),(0.5,0.25),(1,1)}（y = x² 采样）。
-	/// 自动 slope = (0.5, 1, 1.5)（端点单侧、中点中心差分）；
-	/// 求值精确等于分段三次 Hermite 的解析值（过控制点、两侧
-	/// 单调递增、中点手算值）。
+	/// Single-segment parabola shape: {(0,0),(0.5,0.25),(1,1)} (y = x² sampled).
+	/// Automatic slopes = (0.5, 1, 1.5) (one-sided at the endpoints, centered at the
+	/// middle); evaluation equals the analytic values of the piecewise cubic Hermite
+	/// (hits the control points, increasing monotonically on both sides, hand-computed midpoint).
 	#[test]
 	fn parabola_shape_honours_hermite() {
 		let c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)]);
@@ -552,7 +605,7 @@ mod tests {
 		assert!(c.evaluate(0.25) > 0.25 * 0.25); // 高于抛物线采样点
 	}
 
-	/// 越界钳制：x 在首/末 key 之外 → 端点值。
+	/// Out-of-range clamping: x outside the first/last key → endpoint value.
 	#[test]
 	fn out_of_range_clamps_to_endpoints() {
 		let c = Curve::from_pairs(&[(0.2, 0.3), (0.8, 0.9)]);
@@ -563,8 +616,9 @@ mod tests {
 		assert_eq!(c.evaluate(100.0), 0.9);
 	}
 
-	/// 增删点后求值正确：upsert 新点 → 该点命中、重排有序；删除后
-	/// 恢复；同 key 覆盖不增点。
+	/// Evaluation stays correct after insert/delete: upserting a new point hits at
+	/// that key and keeps the order; deleting restores the two-point shape; an
+	/// overwrite with the same key adds no point.
 	#[test]
 	fn upsert_and_delete_keep_evaluation_consistent() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)]);
@@ -587,7 +641,7 @@ mod tests {
 		assert!(c.delete_nth(2).is_err());
 	}
 
-	/// set_nth 改 key 后保持有序（点在序列中移动）。
+	/// set_nth keeps the order after a key change (the point moves within the sequence).
 	#[test]
 	fn set_nth_reorders_on_key_change() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)]);
@@ -604,9 +658,9 @@ mod tests {
 		assert!(c.set_nth(3, 0.9, 0.9).is_err());
 	}
 
-	/// slope 编辑生效：同为 {(0,0),(1,1)}，自动 slope (1,1) 时
-	/// 求值 = 恒等；把 slope 显式压平为 0 后曲线变 S 形缓起缓收
-	/// （中点值从 0.25 变 0.15625）。
+	/// Slope editing takes effect: for the same {(0,0),(1,1)}, automatic slopes (1,1)
+	/// make evaluation the identity; flattening both slopes to 0 turns the curve into
+	/// an S shape that eases in and out (the midpoint value moves from 0.25 to 0.15625).
 	#[test]
 	fn slope_editing_changes_evaluation() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)]);
@@ -620,7 +674,7 @@ mod tests {
 		assert!(close(c.evaluate(0.25), 0.15625, 1e-12));
 	}
 
-	/// 空曲线与单点曲线：恒等 / 常数退化。
+	/// Empty and single-point curves: identity / constant degeneration.
 	#[test]
 	fn degenerate_curves() {
 		let c = Curve::empty();
@@ -632,7 +686,7 @@ mod tests {
 		assert_eq!(c.evaluate(100.0), 0.25);
 	}
 
-	/// clear：DeleteAllControlPoints 的模型侧语义。
+	/// clear: the model-side semantics of DeleteAllControlPoints.
 	#[test]
 	fn clear_empties_curve() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)]);
@@ -641,7 +695,7 @@ mod tests {
 		assert_eq!(c.evaluate(0.5), 0.5);
 	}
 
-	/// JSON 往返：恒等曲线（默认值）序列化形状逐字 + 解析回等值模型。
+	/// JSON round trip: identity curve (default value) serialization shape verbatim + parse back to an equal model.
 	#[test]
 	fn json_roundtrip_identity() {
 		let curves = vec![Curve::identity(0.0, 1.0)];
@@ -654,8 +708,8 @@ mod tests {
 		assert_eq!(back, curves);
 	}
 
-	/// JSON 往返：多维 + 非平凡形状 + 显式编辑 slope（slope 也是载荷
-	/// 的一部分，逐位保留）。
+	/// JSON round trip: multiple dimensions + non-trivial shape + explicitly edited
+	/// slopes (the slope is part of the payload too and is preserved bit-exactly).
 	#[test]
 	fn json_roundtrip_multidim_and_slope() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)]);
@@ -671,7 +725,7 @@ mod tests {
 		assert_eq!(back[0].evaluate(0.5), 0.25);
 	}
 
-	/// JSON 往返：特殊值（NaN/±Inf，slope 与值均可）与空曲线/空集。
+	/// JSON round trip: special values (NaN/±Inf, in slopes and values) and empty curve/set.
 	#[test]
 	fn json_roundtrip_special_and_empty() {
 		let curves = vec![Curve {
@@ -706,7 +760,7 @@ mod tests {
 		assert_eq!(curves_from_json(r#"{"curves":[]}"#).unwrap(), Vec::<Curve>::new());
 	}
 
-	/// JSON 解析：容忍空白与字段乱序；结构不符 → None（静默路径）。
+	/// JSON parsing: tolerates whitespace and out-of-order fields; mismatch → None (silent path).
 	#[test]
 	fn json_parser_tolerances() {
 		let curves = vec![Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)])];

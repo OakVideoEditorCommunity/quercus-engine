@@ -14,32 +14,38 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! OfxParametricParameterSuite v1：参数化曲线参数（调色插件的
-//! 曲线/LUT 类参数）。
+//! OfxParametricParameterSuite v1: parametric-curve parameters (curve/LUT
+//! parameters of color-grading plugins).
 //!
-//! 语义对照 ofxParametricParam.h（属性表另见 HS ofxhParam.cpp:285-330）：
-//! - 曲线 = 每维一条 [`crate::param_curve::Curve`]，存于参数值
-//!   [`crate::param::ParamValue::Parametric`]（def 默认 / instance 当前
-//!   值，`ParamInstance::from_def` 复制默认）；
-//! - 维度与定义域取参数属性 [`crate::param::P_PARAMETRIC_DIMENSION`]
-//!   （int，默认 1）与 [`crate::param::P_PARAMETRIC_RANGE`]
-//!   （double×2，默认 (0,1)）——paramDefine 预置，插件 describe 期可改；
-//! - 求值 = 三次 Hermite（slope 自动差分），越界 parametricPosition
-//!   钳制到端点值，见 [`crate::param_curve::Curve::evaluate`]；
-//! - describe 期（Def）的 Set/Add/Delete 改**默认值**（HS："If a
-//!   plugin wishes to set a different default value for a curve, it can
-//!   use the suite to set key/value pairs on the descriptor. When a new
-//!   instance is made, it will have these curve values as a default"）；
-//! - 第 1 期无参数动画（宿主
-//!   `kOfxParamHostPropSupportsParametricAnimation = 0`）：`time` 恒
-//!   忽略（曲线是实例级静态的），`addAnimationKey` 同理忽略；
-//! - 未配置的曲线（维度内但从未写入）按恒等默认求值/读数——与
-//!   "default default 是恒等查找" 一致；任何写入路径先把缺失曲线
-//!   补成恒等默认再落库；
-//! - 错误码：坏句柄 → BadHandle，非 parametric 参数 → BadHandle，
-//!   curveIndex / nth 越界 → BadIndex（头文件 GetNth/Set/Add 文档
-//!   里写的 Unknown 是类型未知的泛指，本实现按任务约定统一
-//!   BadHandle/BadIndex）。
+//! Semantics follow ofxParametricParam.h (the property table is also in HS
+//! ofxhParam.cpp:285-330):
+//! - curve = one [`crate::param_curve::Curve`] per dimension, stored in the
+//!   parameter value [`crate::param::ParamValue::Parametric`] (def default /
+//!   instance current value; `ParamInstance::from_def` copies the default);
+//! - dimension and range come from the parameter properties
+//!   [`crate::param::P_PARAMETRIC_DIMENSION`] (int, default 1) and
+//!   [`crate::param::P_PARAMETRIC_RANGE`] (double×2, default (0,1)) —
+//!   pre-set by paramDefine, changeable by the plugin during describe;
+//! - evaluation = cubic Hermite (slope auto-differentiated); out-of-range
+//!   parametricPosition values are clamped to the endpoint values, see
+//!   [`crate::param_curve::Curve::evaluate`];
+//! - Set/Add/Delete during describe (Def) change the **default value**
+//!   (HS: "If a plugin wishes to set a different default value for a curve,
+//!   it can use the suite to set key/value pairs on the descriptor. When a
+//!   new instance is made, it will have these curve values as a default");
+//! - phase 1 has no parameter animation (host
+//!   `kOfxParamHostPropSupportsParametricAnimation = 0`): `time` is always
+//!   ignored (curves are instance-level static), and `addAnimationKey` is
+//!   ignored likewise;
+//! - an unconfigured curve (inside the dimension but never written) evaluates
+//!   and reads as the identity default — consistent with "the default default
+//!   is an identity lookup"; every write path first fills in missing curves
+//!   with the identity default before storing;
+//! - error codes: bad handle → BadHandle, non-parametric parameter →
+//!   BadHandle, curveIndex / nth out of range → BadIndex (the "Unknown"
+//!   written in the header's GetNth/Set/Add docs is a generic term for
+//!   unknown types; this implementation follows the task convention and
+//!   normalizes to BadHandle/BadIndex).
 
 use std::borrow::Cow;
 use std::ffi::{c_double, c_int, c_void};
@@ -49,11 +55,13 @@ use crate::param_curve::Curve;
 use crate::property::{PropertySet, Value};
 use crate::suites::{status, tag};
 
-/// 函数表布局（与 SDK `OfxParametricParameterSuiteV1` 一致；字段序
-/// 以 ofxParametricParam.h 为准）。
+/// Function-table layout (matches the SDK
+/// `OfxParametricParameterSuiteV1`; field order follows
+/// ofxParametricParam.h).
 #[repr(C)]
 pub struct ParametricParameterSuiteV1 {
-	/// parametricParamGetValue：求值曲线（越界位置钳制到端点值）。
+	/// parametricParamGetValue: evaluate the curve (out-of-range position
+	/// clamped to the endpoint values).
 	pub parametric_param_get_value: unsafe extern "C" fn(
 		*mut c_void,
 		c_int,
@@ -61,10 +69,10 @@ pub struct ParametricParameterSuiteV1 {
 		c_double,
 		*mut c_double,
 	) -> c_int,
-	/// parametricParamGetNControlPoints：控制点数。
+	/// parametricParamGetNControlPoints: number of control points.
 	pub parametric_param_get_n_control_points:
 		unsafe extern "C" fn(*mut c_void, c_int, c_double, *mut c_int) -> c_int,
-	/// parametricParamGetNthControlPoint：第 nth 个控制点的 key/value。
+	/// parametricParamGetNthControlPoint: key/value of the nth control point.
 	pub parametric_param_get_nth_control_point: unsafe extern "C" fn(
 		*mut c_void,
 		c_int,
@@ -73,8 +81,8 @@ pub struct ParametricParameterSuiteV1 {
 		*mut c_double,
 		*mut c_double,
 	) -> c_int,
-	/// parametricParamSetNthControlPoint：改第 nth 个控制点
-	/// （key 变化后保持有序，slope 重算）。
+	/// parametricParamSetNthControlPoint: replace the nth control point
+	/// (re-sorted after a key change, slopes recomputed).
 	pub parametric_param_set_nth_control_point: unsafe extern "C" fn(
 		*mut c_void,
 		c_int,
@@ -84,7 +92,8 @@ pub struct ParametricParameterSuiteV1 {
 		c_double,
 		c_int,
 	) -> c_int,
-	/// parametricParamAddControlPoint：加入/覆盖控制点（保持有序）。
+	/// parametricParamAddControlPoint: add/overwrite a control point (kept
+	/// sorted).
 	pub parametric_param_add_control_point: unsafe extern "C" fn(
 		*mut c_void,
 		c_int,
@@ -93,25 +102,38 @@ pub struct ParametricParameterSuiteV1 {
 		c_double,
 		c_int,
 	) -> c_int,
-	/// parametricParamDeleteControlPoint：删第 nth 个控制点。
+	/// parametricParamDeleteControlPoint: delete the nth control point.
 	pub parametric_param_delete_control_point:
 		unsafe extern "C" fn(*mut c_void, c_int, c_int) -> c_int,
-	/// parametricParamDeleteAllControlPoints：清空某维曲线。
+	/// parametricParamDeleteAllControlPoints: clear one dimension's curve.
 	pub parametric_param_delete_all_control_points:
 		unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
 }
 
 // ---- 句柄解析 -----------------------------------------------------------
 
-/// param 句柄：describe 期是定义（值=默认值），实例期是实例。
-/// Def 持 `&mut`（Set/Add/Delete 直改默认值）；Instance 持 `&`
-/// （经 [`ParamInstance::set_ofx`] 的内部 Mutex 改当前值）。
+/// param handle: a definition during describe (value = default), an instance
+/// during instance phase. `Def` holds `&mut` (Set/Add/Delete edit the default
+/// directly); `Instance` holds `&` (the current value is changed through the
+/// internal Mutex of [`ParamInstance::set_ofx`]).
 enum ParamRef<'a> {
 	Def(&'a mut ParamDef),
 	Instance(&'a ParamInstance),
 }
 
-/// 解析 param 句柄。空指针/标签不符 → BadHandle。
+/// Resolve a param handle passed in by the plugin into a usable parameter
+/// reference.
+///
+/// The handle is the address of a tagged property set (see
+/// [`crate::suites::tag`]): tag [`tag::PARAM_DEF`] resolves to a
+/// describe-phase [`ParamDef`] (whose default can be edited directly), and
+/// [`tag::PARAM_INSTANCE`] to an instance-phase [`ParamInstance`] (writes go
+/// through its internal Mutex). This is the first step of every parametric
+/// suite entry point.
+///
+/// Failure: when `handle` is a null pointer, or its tag is neither of the two
+/// above (for example an effect / clip handle), returns
+/// `kOfxStatErrBadHandle` and never yields a reference of the wrong type.
 fn resolve_param(handle: *mut c_void) -> Result<ParamRef<'static>, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
@@ -127,7 +149,17 @@ fn resolve_param(handle: *mut c_void) -> Result<ParamRef<'static>, c_int> {
 	}
 }
 
-/// 公共入口模板：panic 兜底。
+/// Common template for all suite entries: wrap the closure in
+/// `catch_unwind` and map the result to an OFX status code.
+///
+/// `f` returning `Ok(())` → `kOfxStatOK`; returning `Err(code)` → that code
+/// passes through unchanged; a closure panic → `kOfxStatFailed`, so unwinding
+/// never crosses the C ABI. When the `QUERCUS_OFX_TRACE` environment variable
+/// is set, non-OK results are printed to stderr together with the call site
+/// recorded by `#[track_caller]`, to locate the failing suite entry.
+///
+/// Each suite function wraps only one `caught` layer; error codes propagate
+/// upward through the inner `?` operators.
 #[track_caller]
 fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	let caller = std::panic::Location::caller();
@@ -143,9 +175,10 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 
 // ---- 模型存取 -----------------------------------------------------------
 
-/// 取参数曲线（Def=默认值，Instance=当前值）。值不是 parametric 曲线
-/// → BadHandle（非 parametric 参数的 suite 语义；先于索引检查，保证
-/// 非 parametric 恒为 BadHandle）。
+/// Fetch the parameter curves (Def = default value, Instance = current
+/// value). A value that is not a parametric curve → BadHandle (the suite
+/// semantics for a non-parametric parameter; checked before the index so a
+/// non-parametric parameter always reports BadHandle).
 fn curves_of(r: &ParamRef) -> Result<Vec<Curve>, c_int> {
 	match r {
 		ParamRef::Def(d) => match &d.default {
@@ -159,11 +192,21 @@ fn curves_of(r: &ParamRef) -> Result<Vec<Curve>, c_int> {
 	}
 }
 
-/// 写回曲线：Def → 默认值；Instance → 当前值 + instanceChanged 通知
-/// （复用 param suite 的 [`crate::suites::param::notify_changed`]——
-/// 曲线经 [`crate::param::notify_instance_changed`] 序列化为 JSON
-/// 文本写回节点输入（undoable，同标量路径），保持宿主侧变更感知的
-/// 纪律一致）。
+/// Write the whole curve set back to the parameter and let the host observe
+/// the change.
+///
+/// `r` is the reference resolved by [`resolve_param`]; `curves` covers all
+/// dimensions of the parameter (the caller first pads missing dimensions with
+/// [`ensure_curve`]).
+///
+/// - Def (describe phase): replaces `ParamDef::default` directly, leaving
+///   existing instances untouched;
+/// - Instance (instance phase): writes the current value through
+///   [`ParamInstance::set_ofx`] (undoable, the same path as scalar
+///   parameters), then calls [`crate::suites::param::notify_changed`] to
+///   notify the host `instanceChanged` — the curves are serialized to JSON
+///   text by [`crate::param::notify_instance_changed`] and written back to the
+///   node input.
 fn write_curves(r: &mut ParamRef, curves: Vec<Curve>) {
 	match r {
 		ParamRef::Def(d) => d.default = ParamValue::Parametric(curves),
@@ -176,13 +219,20 @@ fn write_curves(r: &mut ParamRef, curves: Vec<Curve>) {
 	}
 }
 
-/// param 的属性集（句柄即 props 地址，偏移 0 句柄约定）。
+/// Fetch the property set behind the handle.
+///
+/// By the handle convention the object stores `props: PropertySet` at offset
+/// 0, and [`tag::strip`] removes the low 3 tag bits to yield the property-set
+/// address, so no type lookup is needed. The returned reference is modeled
+/// with a `&'static` lifetime. `handle` must be non-null and come from an
+/// object tagged by this crate; this function cannot verify that, so the
+/// caller must guarantee it.
 fn props_of(handle: *mut c_void) -> &'static PropertySet {
 	unsafe { &*tag::strip(handle) }
 }
 
-/// 维度：`OfxParamPropParametricDimension`（int，默认 1；≤0 防御性
-/// 按 1 处理——头文件要求"greater than 0"）。
+/// Dimension: `OfxParamPropParametricDimension` (int, default 1; a value ≤ 0
+/// is defensively treated as 1 — the header requires "greater than 0").
 fn dimension_of(handle: *mut c_void) -> usize {
 	match props_of(handle).get(crate::param::P_PARAMETRIC_DIMENSION, 0) {
 		Some(Value::Int(d)) => d.max(1) as usize,
@@ -190,8 +240,9 @@ fn dimension_of(handle: *mut c_void) -> usize {
 	}
 }
 
-/// 定义域：`OfxParamPropParametricRange`（double×2，默认 (0,1)）——
-/// 未配置曲线补恒等默认时的端点。
+/// Range: `OfxParamPropParametricRange` (double×2, default (0,1)) — the
+/// endpoints used when filling in the identity default for unconfigured
+/// curves.
 fn range_of(handle: *mut c_void) -> (f64, f64) {
 	let props = props_of(handle);
 	let lo = match props.get(crate::param::P_PARAMETRIC_RANGE, 0) {
@@ -205,7 +256,13 @@ fn range_of(handle: *mut c_void) -> (f64, f64) {
 	(lo, hi)
 }
 
-/// curveIndex 越界（相对 dimension 属性）→ BadIndex。
+/// Validate and normalize the `curve_index` passed by the plugin.
+///
+/// The valid range is `0..dimension_of(handle)`, with the dimension taken
+/// from the parameter property [`crate::param::P_PARAMETRIC_DIMENSION`]
+/// (default 1). A negative value or one ≥ the dimension returns
+/// `kOfxStatErrBadIndex`; on success it returns a usable `usize` index that
+/// can directly index the curve set.
 fn check_curve_index(handle: *mut c_void, curve_index: c_int) -> Result<usize, c_int> {
 	let ci = usize::try_from(curve_index).map_err(|_| status::ERR_BAD_INDEX)?;
 	if ci >= dimension_of(handle) {
@@ -214,8 +271,14 @@ fn check_curve_index(handle: *mut c_void, curve_index: c_int) -> Result<usize, c
 	Ok(ci)
 }
 
-/// 取第 `ci` 条曲线；缺失（维内但从未写入）→ 恒等默认（只读路径
-/// 不落库：未配置曲线 = 恒等查找）。
+/// Read the `ci`-th curve.
+///
+/// `curves` is the parameter's current curve set and `range` its range (see
+/// [`crate::param::P_PARAMETRIC_RANGE`], default (0, 1)). A curve inside the
+/// dimension but never written is not stored, so an identity curve
+/// ([`Curve::identity`]) is constructed on the fly to maintain
+/// "unconfigured curve = identity lookup"; the returned [`Cow`] distinguishes
+/// a borrow from a temporary and never modifies the parameter.
 fn curve_at<'a>(curves: &'a [Curve], ci: usize, range: (f64, f64)) -> Cow<'a, Curve> {
 	match curves.get(ci) {
 		Some(c) => Cow::Borrowed(c),
@@ -223,7 +286,13 @@ fn curve_at<'a>(curves: &'a [Curve], ci: usize, range: (f64, f64)) -> Cow<'a, Cu
 	}
 }
 
-/// 确保第 `ci` 条曲线存在（写入路径：缺失时补恒等默认再落库）。
+/// Ensure the `ci`-th curve exists and return a writable reference.
+///
+/// Write-path only: when `curves` is shorter than `ci`, pads with identity
+/// defaults using `range` (the range) one by one until the index is
+/// reachable; existing curves are preserved. Unlike the read-only
+/// [`curve_at`], the padded result is stored together with this
+/// [`write_curves`] call.
 fn ensure_curve(curves: &mut Vec<Curve>, ci: usize, range: (f64, f64)) -> &mut Curve {
 	while curves.len() <= ci {
 		curves.push(Curve::identity(range.0, range.1));
@@ -233,8 +302,25 @@ fn ensure_curve(curves: &mut Vec<Curve>, ci: usize, range: (f64, f64)) -> &mut C
 
 // ---- suite 函数 ---------------------------------------------------------
 
-/// parametricParamGetValue：求值曲线。`time` 忽略（无参数动画）；
-/// 越界 parametricPosition 钳制到端点值（[`Curve::evaluate`]）。
+/// `parametricParamGetValue`: evaluate the `curve_index`-th curve at
+/// `parametric_position`.
+///
+/// `parametric_position` is the curve's independent variable, in the same
+/// unit as the range [`crate::param::P_PARAMETRIC_RANGE`]; out-of-range
+/// values are clamped to the endpoint values instead of reporting an error.
+/// `time` is ignored (the host declares no parameter animation support, so
+/// curves are instance-level static). On success the result is written to
+/// `out`, in the same unit as the curve value.
+///
+/// Failure: null `out` → `kOfxStatErrValue`; bad handle / non-parametric
+/// parameter → `kOfxStatErrBadHandle`; out-of-range `curve_index` →
+/// `kOfxStatErrBadIndex`. Before any failure `out` is set to 0.0, so the
+/// caller never reads a stale value.
+///
+/// # Safety
+///
+/// `out` must be a writable pointer to one `c_double`; `param` must be a
+/// live param handle passed by the host to this suite.
 unsafe extern "C" fn parametric_param_get_value(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -257,8 +343,21 @@ unsafe extern "C" fn parametric_param_get_value(
 	})
 }
 
-/// parametricParamGetNControlPoints：控制点数（未配置曲线 = 恒等默认
-/// 的 2 点）。
+/// `parametricParamGetNControlPoints`: read the control-point count of the
+/// `curve_index`-th curve.
+///
+/// An unconfigured curve counts as the identity default, hence at least 2
+/// points. `time` is ignored (no parameter animation). On success the count
+/// is written to `out`.
+///
+/// Failure: null `out` → `kOfxStatErrValue`; bad handle / non-parametric
+/// parameter → `kOfxStatErrBadHandle`; out-of-range `curve_index` →
+/// `kOfxStatErrBadIndex`; `out` is set to 0 before failing.
+///
+/// # Safety
+///
+/// `out` must be a writable pointer to one `c_int`; `param` must be a live
+/// param handle passed by the host.
 unsafe extern "C" fn parametric_param_get_n_control_points(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -279,8 +378,23 @@ unsafe extern "C" fn parametric_param_get_n_control_points(
 	})
 }
 
-/// parametricParamGetNthControlPoint：第 nth 个控制点的 key/value
-/// （nth 越界 → BadIndex；未配置曲线按恒等默认读数）。
+/// `parametricParamGetNthControlPoint`: read the (key, value) of the `nth`
+/// control point on the `curve_index`-th curve.
+///
+/// Control points are stored in ascending key order; `nth` is their ordinal,
+/// not the key. An unconfigured curve reads as the identity default. `time`
+/// is ignored (no parameter animation). On success writes `key` and `value`
+/// separately.
+///
+/// Failure: a null `key` or `value` → `kOfxStatErrValue`; bad handle /
+/// non-parametric parameter → `kOfxStatErrBadHandle`; out-of-range
+/// `curve_index` or `nth` → `kOfxStatErrBadIndex`; both outs are set to 0.0
+/// before failing.
+///
+/// # Safety
+///
+/// `key` and `value` must each point to one `c_double`; `param` must be a
+/// live param handle passed by the host.
 unsafe extern "C" fn parametric_param_get_nth_control_point(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -311,10 +425,24 @@ unsafe extern "C" fn parametric_param_get_nth_control_point(
 	})
 }
 
-/// parametricParamSetNthControlPoint：改第 nth 个控制点为 (key,
-/// value)。key 变化可能破坏有序性（头文件明确提醒）——模型侧先移除
-/// 再按 key 插入、撞 key 按覆盖处理、slope 重算（[`Curve::set_nth`]）。
-/// `addAnimationKey` 忽略（宿主不支持参数动画）。
+/// `parametricParamSetNthControlPoint`: replace the `nth` control point of
+/// the `curve_index`-th curve with (key, value).
+///
+/// Changing the key may break ascending key order (the SDK header warns about
+/// this explicitly): the model removes the point first, re-inserts it ordered
+/// by the new key (a colliding key overwrites), and recomputes the adjacent
+/// slopes ([`Curve::set_nth`]). Writes go through [`write_curves`], and on
+/// success the host receives `instanceChanged`. Both `time` and
+/// `addAnimationKey` are ignored (no parameter animation).
+///
+/// Failure: bad handle / non-parametric parameter → `kOfxStatErrBadHandle`;
+/// out-of-range `curve_index` or `nth` → `kOfxStatErrBadIndex`; the parameter
+/// is unchanged in that case.
+///
+/// # Safety
+///
+/// `param` must be a live param handle passed by the host; all other
+/// parameters are passed by value with no additional pointer preconditions.
 unsafe extern "C" fn parametric_param_set_nth_control_point(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -337,10 +465,24 @@ unsafe extern "C" fn parametric_param_set_nth_control_point(
 	})
 }
 
-/// parametricParamAddControlPoint：加入控制点；同 key 已存在 → 覆盖
-/// （头文件 "If a key exists sufficiently close to 'key', then it will
-/// be set to the indicated control point"；本实现取精确同 key）。
-/// `addAnimationKey` 忽略（无参数动画）。
+/// `parametricParamAddControlPoint`: add the control point (key, value) to
+/// the `curve_index`-th curve.
+///
+/// An existing identical key is overwritten — the SDK header says "close
+/// enough keys are overwritten", but this implementation only recognizes an
+/// exact-equal key; otherwise the point is inserted in ascending key order.
+/// Writes go through [`write_curves`], and on success the host receives
+/// `instanceChanged`. Both `time` and `addAnimationKey` are ignored (no
+/// parameter animation).
+///
+/// Failure: bad handle / non-parametric parameter → `kOfxStatErrBadHandle`;
+/// out-of-range `curve_index` → `kOfxStatErrBadIndex`; the parameter is
+/// unchanged in that case.
+///
+/// # Safety
+///
+/// `param` must be a live param handle passed by the host; the remaining
+/// parameters are passed by value.
 unsafe extern "C" fn parametric_param_add_control_point(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -359,8 +501,22 @@ unsafe extern "C" fn parametric_param_add_control_point(
 	})
 }
 
-/// parametricParamDeleteControlPoint：删第 nth 个控制点（越界 →
-/// BadIndex）。
+/// `parametricParamDeleteControlPoint`: delete the `nth` control point of the
+/// `curve_index`-th curve.
+///
+/// `nth` is the ordinal in ascending key order. After the deletion the
+/// adjacent slopes are recomputed ([`Curve::delete_nth`]), writes go through
+/// [`write_curves`], and on success the host receives `instanceChanged`. Both
+/// `time` and `addAnimationKey` are ignored (no parameter animation).
+///
+/// Failure: bad handle / non-parametric parameter → `kOfxStatErrBadHandle`;
+/// out-of-range `curve_index` or `nth` → `kOfxStatErrBadIndex`; the curve is
+/// unchanged in that case.
+///
+/// # Safety
+///
+/// `param` must be a live param handle passed by the host; the remaining
+/// parameters are passed by value.
 unsafe extern "C" fn parametric_param_delete_control_point(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -379,8 +535,23 @@ unsafe extern "C" fn parametric_param_delete_control_point(
 	})
 }
 
-/// parametricParamDeleteAllControlPoints：清空某维曲线（清空后求值
-/// 退化为恒等，[`Curve::evaluate`] 的空曲线分支）。
+/// `parametricParamDeleteAllControlPoints`: clear all control points of the
+/// `curve_index`-th curve.
+///
+/// After clearing, evaluation of that curve degrades to the identity (the
+/// empty-curve branch of [`Curve::evaluate`]) instead of reporting an error;
+/// written back, the state matches "never written". Writes go through
+/// [`write_curves`], and on success the host receives `instanceChanged`. Both
+/// `time` and `addAnimationKey` are ignored (no parameter animation).
+///
+/// Failure: bad handle / non-parametric parameter → `kOfxStatErrBadHandle`;
+/// out-of-range `curve_index` → `kOfxStatErrBadIndex`; the curve is unchanged
+/// in that case.
+///
+/// # Safety
+///
+/// `param` must be a live param handle passed by the host; the remaining
+/// parameters are passed by value.
 unsafe extern "C" fn parametric_param_delete_all_control_points(
 	param: *mut c_void,
 	curve_index: c_int,
@@ -395,7 +566,7 @@ unsafe extern "C" fn parametric_param_delete_all_control_points(
 	})
 }
 
-/// 静态函数表实例。
+/// Static suite instance.
 pub fn suite_v1() -> &'static ParametricParameterSuiteV1 {
 	static SUITE: std::sync::OnceLock<ParametricParameterSuiteV1> = std::sync::OnceLock::new();
 	SUITE.get_or_init(|| ParametricParameterSuiteV1 {
@@ -429,8 +600,8 @@ mod tests {
 		tag::make(&d.props as *const PropertySet, tag::DESCRIPTOR)
 	}
 
-	/// 假插件（host::Plugin 的构造只为拿 Arc 喂给 Instance；describe
-	/// 之外的字段不被本测试触碰）。
+	/// Fake plugin (a host::Plugin is constructed only to feed an Arc to
+	/// Instance; fields other than describe are not touched by this test).
 	fn dummy_plugin(descriptor: EffectDescriptor) -> Arc<Plugin> {
 		unsafe extern "C" fn dummy_entry(
 			_: *const c_char,
@@ -457,8 +628,8 @@ mod tests {
 		tag::make(&i.props as *const PropertySet, tag::INSTANCE)
 	}
 
-	/// describe 期建一个 parametric 参数 "curve"（默认维度 1），返回
-	/// 描述符与其 param 句柄。
+	/// Define a parametric parameter "curve" during describe (default
+	/// dimension 1); returns the descriptor and its param handle.
 	fn define_parametric() -> (EffectDescriptor, *mut c_void) {
 		let desc = EffectDescriptor::new();
 		let s = crate::suites::param::suite_v1();
@@ -473,8 +644,8 @@ mod tests {
 		(desc, ph)
 	}
 
-	/// 把 describe 产物实例化（default → 实例值复制），返回
-	/// (实例 Arc, 实例 handle, 实例 param 句柄)。
+	/// Instantiate the describe product (copy default → instance value);
+	/// returns (instance Arc, instance handle, instance param handle).
 	fn instantiate(desc: EffectDescriptor) -> (Arc<Instance>, *mut c_void, *mut c_void) {
 		let params = ParamSetInstance {
 			params: desc
@@ -510,7 +681,8 @@ mod tests {
 		(inst, ih, ph)
 	}
 
-	/// describe 定义 + 实例化一步到位（默认维度 1）。
+	/// Define during describe and instantiate in one step (default dimension
+	/// 1).
 	fn make_instance() -> (Arc<Instance>, *mut c_void, *mut c_void) {
 		let (desc, _dph) = define_parametric();
 		instantiate(desc)
@@ -520,7 +692,8 @@ mod tests {
 		suite_v1()
 	}
 
-	/// describe 期默认值：2 个恒等控制点 (0,0)/(1,1)，求值 = 恒等。
+	/// Describe-phase defaults: 2 identity control points (0,0)/(1,1);
+	/// evaluation = identity.
 	#[test]
 	fn describe_defaults_are_identity() {
 		let (_desc, ph) = define_parametric();
@@ -553,7 +726,8 @@ mod tests {
 		}
 	}
 
-	/// describe 期 Set/Add/Delete 改**默认值**，实例化时复制到实例。
+	/// Set/Add/Delete during describe change the **default value**, copied to
+	/// the instance at instantiation.
 	#[test]
 	fn descriptor_edits_become_instance_defaults() {
 		let (desc, ph) = define_parametric();
@@ -583,7 +757,8 @@ mod tests {
 		assert_eq!(n, 4); // (0,0) (0.25,0.6) (0.75,0.9) (1,1)
 	}
 
-	/// 实例期全链路：Add → Set → Delete → DeleteAll，求值随模型变化。
+	/// Full instance-phase chain: Add → Set → Delete → DeleteAll, with
+	/// evaluation following the model.
 	#[test]
 	fn instance_add_set_delete_eval_chain() {
 		let (_inst, _ih, ph) = make_instance();
@@ -637,7 +812,8 @@ mod tests {
 		assert_eq!(out, 0.5);
 	}
 
-	/// SetNth 改 key 破坏有序性 → 自动重排（头文件提醒的语义）。
+	/// SetNth with a changed key breaks ordering → automatic re-sort (the
+	/// semantics the header warns about).
 	#[test]
 	fn set_nth_reorders_on_key_change() {
 		let (_inst, _ih, ph) = make_instance();
@@ -656,7 +832,7 @@ mod tests {
 		}
 	}
 
-	/// 同 key Add → 覆盖（不增点）。
+	/// Add with the same key → overwrite (no new point).
 	#[test]
 	fn add_overwrites_same_key() {
 		let (_inst, _ih, ph) = make_instance();
@@ -677,8 +853,8 @@ mod tests {
 		assert_eq!((k, v), (0.5, 0.9));
 	}
 
-	/// 错误码：坏句柄 / 非 parametric / curveIndex 越界 / nth 越界 /
-	/// 空 out。
+	/// Error codes: bad handle / non-parametric / out-of-range curveIndex /
+	/// out-of-range nth / null out.
 	#[test]
 	fn error_codes() {
 		let s = ps();
@@ -765,8 +941,9 @@ mod tests {
 		}
 	}
 
-	/// 维度属性驱动：插件设 dimension=2 后第二维可用、第三维 BadIndex；
-	/// 未配置曲线按恒等默认读数。
+	/// Driven by the dimension property: with dimension=2 the second
+	/// dimension works and the third is BadIndex; unconfigured curves read as
+	/// the identity default.
 	#[test]
 	fn dimension_prop_drives_curves() {
 		let (desc, ph) = define_parametric();
@@ -816,7 +993,8 @@ mod tests {
 		assert_eq!(n, 3); // (0,0) (0.25,0.5) (1,1)
 	}
 
-	/// range 属性参与未配置曲线的恒等默认（端点 = range 值）。
+	/// The range property feeds the identity default of unconfigured curves
+	/// (endpoints = range values).
 	#[test]
 	fn range_prop_shapes_implicit_identity() {
 		let (_desc, ph) = define_parametric();
@@ -838,8 +1016,9 @@ mod tests {
 		assert_eq!((k, v), (255.0, 255.0));
 	}
 
-	/// UI 属性（UIColour double×3N / InteractBackground 指针）经通用
-	/// 属性 suite set/get，并随 from_def 复制到实例。
+	/// UI properties (UIColour double×3N / InteractBackground pointer) go
+	/// through the generic property suite set/get and are copied to the
+	/// instance by from_def.
 	#[test]
 	fn ui_props_set_get_and_copy() {
 		let (desc, ph) = define_parametric();
@@ -881,8 +1060,10 @@ mod tests {
 		assert_eq!(gotp2, sentinel);
 	}
 
-	/// 实例编辑走 instance-changed 通知路径（未绑定节点 → no-op，
-	/// 不 panic 即通过；登记路径的节流语义由 param suite 测试覆盖）。
+	/// Instance edits go through the instance-changed notify path (with no
+	/// node bound it is a no-op; passing means it does not panic; the
+	/// throttling semantics of the registration path are covered by the param
+	/// suite tests).
 	#[test]
 	fn instance_edits_go_through_notify_path() {
 		let (_inst, _ih, ph) = make_instance();

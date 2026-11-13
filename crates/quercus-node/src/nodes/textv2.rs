@@ -186,15 +186,29 @@ impl TextGeneratorV2 {
 		}
 	}
 
-	/// The layout/measure control flow of the C++ `generate_frame()` with
-	/// the backend hooks: build the request, measure via the installed
-	/// measure backend (zero size when none is installed — the documented
-	/// no-backend fallback), and compute the base/draw offsets for the
-	/// given frame size.
+	/// Compute the text layout the render path would use, without rasterizing.
 	///
-	/// The render step and the alpha transplant need the frame's pixel
-	/// buffer, which the Rust frame handle does not expose; they are not
-	/// representable here (`// CPP-PARITY: textv2.cpp` `generate_frame`).
+	/// `row` is the node's evaluated input row: it supplies `text_in`/`html_in`
+	/// (and font/size) for the layout request, and `pos_in`/`size_in`/
+	/// `valign_in` for the offsets. `frame_width`/`frame_height` are the output
+	/// frame dimensions in pixels; their integer halves are used to centre the
+	/// shape in frame space. The request is measured through the installed text
+	/// backend; when no backend is installed the measured size is `(0, 0)` (the
+	/// documented no-backend fallback), which also makes the vertical-alignment
+	/// delta align against zero height.
+	///
+	/// # Returns
+	///
+	/// A four-tuple: the `TextLayoutRequest` (text, plain/HTML mode, font, 72 DPI,
+	/// wrap width = shape X), the measured `TextLayoutSize` in pixels, the base
+	/// offset `(x, y)` = `pos_in - size_in/2 + frame/2`, and the draw offset
+	/// `(x, y)` = base plus the vertical-alignment delta for `valign_in`
+	/// (0 = top, 1 = centre, 2 = bottom; other values behave like top).
+	///
+	/// Rasterization and the alpha transplant are deliberately absent: they need
+	/// the frame's pixel buffer, which the Rust frame handle does not expose, so
+	/// `generate_frame` is a no-op and this helper (like the other offset helpers)
+	/// is the parity/test surface for the C++ `generate_frame` control flow.
 	#[allow(dead_code)]
 	pub fn measure_and_layout(
 		row: &NodeValueRow,
@@ -425,8 +439,18 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(TextGeneratorV2))
 }
 
-/// Register this node type (C++ `k_text_generator_v2` in
-/// `factory.cpp::create_from_factory_index`).
+/// Add the legacy text generator (type id
+/// `org.olivevideoeditor.Olive.text2`) to the factory meta list.
+///
+/// Called from `nodes::register_all` in the same position as the C++ factory
+/// table, so registration order (and therefore the create-menu order) matches
+/// the C++ build. The entry registers the display name "Text (Legacy)", the
+/// `Generator` category and this module's `create` constructor; the id string
+/// is what project files store and what lookups resolve, so it must not change
+/// without a migration.
+///
+/// `meta` is the accumulating registry (one `NodeMeta` per node type); the entry
+/// is appended, never deduplicated.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.text2",

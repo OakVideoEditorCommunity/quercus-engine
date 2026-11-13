@@ -41,8 +41,9 @@ set -euo pipefail
 DEPS_STAMP="3"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PREFIX="$ROOT/.cache/ffmpeg"
-DEPS_SRC="$ROOT/.cache/ffmpeg-deps-src"
+CACHE="${QUERCUS_FFMPEG_CACHE:-$ROOT/.cache}"
+PREFIX="$CACHE/ffmpeg"
+DEPS_SRC="$CACHE/ffmpeg-deps-src"
 JOBS="$( (nproc 2>/dev/null) || sysctl -n hw.ncpu)"
 OS="$(uname -s)"
 
@@ -219,6 +220,12 @@ meson_build() {
 }
 
 # --- Subtitle / text stack -----------------------------------------------------
+
+# xz/liblzma is part of FFmpeg's static closure. In particular, openKylin's
+# system liblzma.a is not PIC and cannot be linked into libquercus_engine.so;
+# the shared configure_build flags above compile this private copy with -fPIC.
+configure_build xz \
+	https://github.com/tukaani-project/xz/releases/download/v5.8.2/xz-5.8.2.tar.gz
 
 # freetype WITHOUT its optional integrations: each of zlib/bzip2/png/
 # brotli/harfbuzz would leak into freetype2.pc's Libs.private and onto

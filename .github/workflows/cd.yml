@@ -1,0 +1,242 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish crates after every native job succeeds
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+            platform: linux
+          - name: macOS
+            runner: macos-26
+            platform: macos
+          - name: Windows
+            runner: windows-2022
+            platform: windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC (Windows)
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure MSVC linker (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "MSVC link.exe not found: $linker" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.platform == 'windows' && 'stable-x86_64-pc-windows-msvc' || 'stable' }}
+
+      - name: Install dependencies (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: tooling/install-deps.sh
+
+      - name: Install pkg-config (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-pkgconf
+          "PKG_CONFIG=C:\msys64\ucrt64\bin\pkgconf.exe" >> $env:GITHUB_ENV
+          "CC=cl" >> $env:GITHUB_ENV
+          "CXX=cl" >> $env:GITHUB_ENV
+
+      - name: Configure OCIO (Linux/macOS)
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          echo "QUERCUS_FFMPEG_CACHE=$GITHUB_WORKSPACE/.cache" >> "$GITHUB_ENV"
+          bash tooling/ocio-env.sh >> "$GITHUB_ENV"
+
+      - name: Configure OCIO (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          "QUERCUS_FFMPEG_CACHE=$env:GITHUB_WORKSPACE\.cache" >> $env:GITHUB_ENV
+          "OCIO_RS_ENABLE_REAL=1" >> $env:GITHUB_ENV
+          "OCIO_RS_LINK=static" >> $env:GITHUB_ENV
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quercus-cd-${{ matrix.platform }}
+          cache-on-failure: true
+
+      - name: Download BtbN FFmpeg (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: tooling/ffmpeg/download-btbn.sh linux64
+
+      - name: Build shared FFmpeg (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: tooling/ffmpeg/build-ffmpeg.sh --shared
+
+      - name: Install prebuilt FFmpeg (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $asset = "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg-prebuilt"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri "$base/checksums.sha256" -OutFile "$dir\checksums.sha256"
+          $line = Select-String -Path "$dir\checksums.sha256" -Pattern ([regex]::Escape($asset) + "\s*$") | Select-Object -First 1
+          if (-not $line) { throw "no checksum for $asset" }
+          $expected = $line.Line.Split()[0].ToLowerInvariant()
+          Invoke-WebRequest -Uri "$base/$asset" -OutFile "$dir\$asset"
+          $actual = (Get-FileHash "$dir\$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "FFmpeg checksum mismatch" }
+          $root = "$env:GITHUB_WORKSPACE\.cache"
+          Remove-Item "$root\ffmpeg", "$root\ffmpeg-extract" -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path "$dir\$asset" -DestinationPath "$root\ffmpeg-extract" -Force
+          $inner = Get-ChildItem "$root\ffmpeg-extract" -Directory | Select-Object -First 1
+          Move-Item $inner.FullName "$root\ffmpeg"
+
+      - name: Configure FFmpeg environment
+        shell: bash
+        run: |
+          ffmpeg="$GITHUB_WORKSPACE/.cache/ffmpeg"
+          echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "$ffmpeg/bin" >> "$GITHUB_PATH"
+          if [[ "${{ matrix.platform }}" == "linux" ]]; then
+            echo "LD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+          elif [[ "${{ matrix.platform }}" == "macos" ]]; then
+            echo "DYLD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install ffmpeg CLI (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg CLI (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: brew install ffmpeg
+
+      - name: Test (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --workspace --locked -- --test-threads=1
+
+      - name: Test (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: cargo test --workspace --locked -- --test-threads=1
+
+      - name: Compile tests (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: cargo test --workspace --locked --no-run
+
+      - name: Build release
+        shell: bash
+        run: cargo build --release --locked -p quercus-engine
+
+      - name: Check native dependencies (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          ldd target/release/libquercus_engine.so
+          mkdir -p dist/lib
+          cp -a "$FFMPEG_DIR/lib/"*.so* dist/lib/
+
+      - name: Package native library (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: tooling/package-native.sh
+
+      - name: Package native library (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p dist/include dist/lib
+          cp target/release/libquercus_engine.dylib dist/lib/
+          cp target/release/libquercus_engine.a dist/lib/
+          cp -a "$FFMPEG_DIR/lib/"*.dylib dist/lib/
+          cp crates/quercus-engine/include/quercus_engine.h dist/include/
+          tar -czf quercus-engine-native-macos-arm64.tar.gz -C dist include lib
+
+      - name: Package native library (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/include, dist/lib | Out-Null
+          Copy-Item target/release/quercus_engine.dll dist/lib/
+          Copy-Item target/release/quercus_engine.dll.lib dist/lib/
+          Copy-Item target/release/quercus_engine.lib dist/lib/
+          Copy-Item "$env:FFMPEG_DIR/bin/*.dll" dist/lib/
+          Copy-Item crates/quercus-engine/include/quercus_engine.h dist/include/
+          Compress-Archive -Path dist/* -DestinationPath quercus-engine-native-windows-x64.zip
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quercus-native-${{ matrix.name }}
+          path: |
+            dist/*
+            quercus-engine-native-*.tar.gz
+            quercus-engine-native-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish crates
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    needs: native
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: tooling/install-deps.sh
+      - name: Download BtbN FFmpeg
+        run: tooling/ffmpeg/download-btbn.sh linux64
+      - name: Configure FFmpeg
+        run: |
+          echo "FFMPEG_DIR=$GITHUB_WORKSPACE/.cache/ffmpeg" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$GITHUB_WORKSPACE/.cache/ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/.cache/ffmpeg/lib" >> "$GITHUB_ENV"
+      - name: Configure OCIO
+        run: bash tooling/ocio-env.sh >> "$GITHUB_ENV"
+      - name: Publish workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: tooling/publish_workspace.sh

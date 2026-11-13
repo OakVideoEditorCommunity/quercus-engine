@@ -199,8 +199,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(FlipDistortNode))
 }
 
-/// Register this node type (C++ factory entry for
-/// `org.olivevideoeditor.Olive.flip`).
+/// Adds the flip (horizontal/vertical mirror) effect to the node factory table.
+///
+/// `meta` is the vector `register_all` collects and hands to the factory; the new
+/// entry registers type id `org.olivevideoeditor.Olive.flip`, display name
+/// "Flip", the Distort category, and the `create` constructor (C++
+/// `FlipDistortNode` factory entry). The id must match
+/// `FlipDistortNode::type_id`, which is how serialized nodes find this
+/// constructor.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.flip",

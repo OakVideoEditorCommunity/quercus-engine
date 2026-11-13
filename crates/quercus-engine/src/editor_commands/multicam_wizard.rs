@@ -21,11 +21,69 @@ pub struct MulticamCreateResult {
 	pub host_clip: NodeId,
 }
 
+/// Converts seconds to a frame timestamp on the `(num, den)` frame-duration
+/// timebase, rounding to the nearest frame. A degenerate pair keeps the
+/// historical 25 fps fallback.
+fn ts_for_seconds(seconds: f64, time_base: (i64, i64)) -> i64 {
+	let fps = if time_base.0 > 0 && time_base.1 > 0 {
+		time_base.1 as f64 / time_base.0 as f64
+	} else {
+		25.0
+	};
+	(seconds.max(0.0) * fps).round() as i64
+}
+
+/// Builds a non-negative range from a second-based offset/duration, snapped
+/// to the sequence timebase and at least one frame long.
+fn range_for_seconds(offset: f64, duration: f64, time_base: (i64, i64)) -> TimeRange {
+	let (num, den) = if time_base.0 > 0 && time_base.1 > 0 {
+		time_base
+	} else {
+		(1, 25)
+	};
+	let in_ts = ts_for_seconds(offset, time_base).max(0);
+	let length_ts = ts_for_seconds(duration, time_base).max(1);
+	TimeRange::new(
+		Rational::new(in_ts * num, den),
+		Rational::new((in_ts + length_ts) * num, den),
+	)
+}
+
+/// Builds a multicam source sequence from the selected angle footages.
+///
+/// Creates a sequence labelled `name` with one video track per angle, each
+/// holding one clip of that angle's footage, and — when at least one angle
+/// has audio — one audio track per angle. A clip's range starts at that
+/// angle's offset and lasts the footage duration (non-finite/zero durations
+/// fall back to 10 s), snapped to `time_base` and at least one frame long.
+/// The footage texture feeds each clip, the sequence feeds a multicam node,
+/// and the angle clips are connected as the multicam's source inputs in
+/// array order.
+///
+/// # Arguments
+///
+/// * `project` - Project whose graph is edited (locked for the edit).
+/// * `angles` - Footage node ids in angle order; must not be empty.
+/// * `offsets` - Per-angle start offsets in seconds; same length as `angles`.
+/// * `name` - Label for the new sequence.
+/// * `time_base` - Frame duration as `(num, den)`; degenerate values use a
+///   25 fps fallback.
+///
+/// # Returns
+///
+/// `(source_sequence, multicam_node)` on success.
+///
+/// # Errors
+///
+/// Returns a message when no angles are given, the angle/offset lengths
+/// differ, an angle id is not a footage node, or the graph rejects a
+/// connection or source-input insertion.
 fn build_multicam_sequence(
 	project: &ProjectRef,
 	angles: &[NodeId],
 	offsets: &[f64],
 	name: &str,
+	time_base: (i64, i64),
 ) -> Result<(NodeId, NodeId), String> {
 	if angles.is_empty() {
 		return Err("no angles selected".into());
@@ -97,9 +155,16 @@ fn build_multicam_sequence(
 	let audio_tracks = if has_audio {
 		let (audio_list, _) = make_list(graph, TrackType::Audio);
 		let mut tracks = Vec::new();
-		for _ in angles {
+		for index in 0..angles.len() {
 			let (core, behavior) = TrackBehavior::create();
 			let track = graph.add_node(core, behavior);
+			if let Some(track_behavior) = graph
+				.get_mut(track)
+				.and_then(|entry| entry.behavior.as_any_mut())
+				.and_then(|behavior| behavior.downcast_mut::<TrackBehavior>())
+			{
+				track_behavior.index = index as i32;
+			}
 			if let Some(list) = graph
 				.get_mut(audio_list)
 				.and_then(|entry| entry.behavior.as_any_mut())
@@ -130,12 +195,7 @@ fn build_multicam_sequence(
 			10.0
 		};
 		let audio = footage_behavior.audio_stream_count() > 0;
-		let offset_ticks = (offsets[index].max(0.0) * 25.0).round() as i64;
-		let length_ticks = (duration * 25.0).round().max(1.0) as i64;
-		let range = TimeRange::new(
-			Rational::new(offset_ticks, 25),
-			Rational::new(offset_ticks + length_ticks, 25),
-		);
+		let range = range_for_seconds(offsets[index], duration, time_base);
 		let (core, behavior) = quercus_node::block::clip_create();
 		let clip = graph.add_node(core, behavior);
 		if let Some(clip_behavior) = graph
@@ -202,6 +262,15 @@ fn build_multicam_sequence(
 	Ok((sequence, multicam))
 }
 
+/// Returns whether a footage node carries at least one audio stream.
+///
+/// Returns `false` for unknown nodes and for nodes that are not a
+/// [`FootageBehavior`]; otherwise reads the footage's audio stream count.
+///
+/// # Arguments
+///
+/// * `graph` - Project graph to read (not mutated).
+/// * `footage` - Candidate footage node id.
 fn project_footage_has_audio(graph: &Graph, footage: NodeId) -> bool {
 	graph
 		.get(footage)
@@ -210,6 +279,23 @@ fn project_footage_has_audio(graph: &Graph, footage: NodeId) -> bool {
 		.is_some_and(|footage| footage.audio_stream_count() > 0)
 }
 
+/// Finds the host clip under the playhead, or a fallback clip.
+///
+/// Scans the sequence's video tracks from last to first and returns the
+/// first block whose range contains `playhead` (later tracks win, matching
+/// the topmost visible clip). When no block contains the playhead, returns
+/// the first block of the first non-empty video track.
+///
+/// # Arguments
+///
+/// * `graph` - Project graph to read (not mutated).
+/// * `sequence` - Host sequence whose video tracks are scanned.
+/// * `playhead` - Playhead position as seconds ([`Rational`]).
+///
+/// # Returns
+///
+/// The matching block node id, or `None` when the sequence has no video
+/// blocks.
 fn host_clip_at_or_first(graph: &Graph, sequence: NodeId, playhead: Rational) -> Option<NodeId> {
 	let tracks = track_ids(graph, sequence, TrackType::Video);
 	for track in tracks.iter().rev() {
@@ -226,8 +312,35 @@ fn host_clip_at_or_first(graph: &Graph, sequence: NodeId, playhead: Rational) ->
 	})
 }
 
-/// Builds the source sequence, mounts it, resolves/places a host clip, rewires
-/// it to the multicam node, and places linked AFV audio when angle 0 has audio.
+/// Creates a multicam sequence and rewires the host clip to it.
+///
+/// Validates the host sequence, trims `name` (empty becomes "Multi-Cam") and
+/// uses the host sequence's timebase (25 fps fallback). Builds the source
+/// sequence (one video track per angle plus optional audio tracks), adds it
+/// to the project root as
+/// an undoable folder command, then finds the host clip under the playhead
+/// (or places one from angle 0 at the playhead, adding a video track when
+/// the sequence has none). The host clip's texture input is disconnected and
+/// reconnected to the multicam node; when angle 0 has audio, an audio track
+/// is ensured and a linked AFV (audio-follows-video) audio clip is placed
+/// under the host clip.
+///
+/// # Arguments
+///
+/// * `project` - Project whose graph is edited.
+/// * `host_sequence` - Sequence that receives the multicam clip.
+/// * `angles` - Footage node ids in angle order; angle 0 is the default.
+/// * `offsets` - Per-angle start offsets in seconds.
+/// * `name` - Source-sequence label; trimmed, empty means "Multi-Cam".
+///
+/// # Returns
+///
+/// The new source-sequence id and the host clip id.
+///
+/// # Errors
+///
+/// Returns a message when the host sequence is not in the project, the
+/// source-sequence build fails, or a track/place/link edit is rejected.
 pub fn create_multicam_sequence(
 	project: &ProjectRef,
 	host_sequence: NodeId,
@@ -243,7 +356,9 @@ pub fn create_multicam_sequence(
 	} else {
 		name.trim()
 	};
-	let (source_sequence, multicam) = build_multicam_sequence(project, angles, offsets, name)?;
+	let time_base = sequence_time_base(&lock(project).graph, host_sequence).unwrap_or((1, 25));
+	let (source_sequence, multicam) =
+		build_multicam_sequence(project, angles, offsets, name, time_base)?;
 	let root = lock(project).root;
 	quercus_task::nodeops::folder_add_child_command(
 		(project.clone(), root),
@@ -260,19 +375,12 @@ pub fn create_multicam_sequence(
 		Some(clip) => clip,
 		None => {
 			let footage = angles[0];
-			let (time_base, duration) = {
-				let guard = lock(project);
-				(
-					sequence_time_base(&guard.graph, host_sequence).unwrap_or((1, 25)),
-					footage_duration_seconds(&guard.graph, footage).unwrap_or(10.0),
-				)
-			};
+			let duration = footage_duration_seconds(&lock(project).graph, footage).unwrap_or(10.0);
 			if track_ids(&lock(project).graph, host_sequence, TrackType::Video).is_empty() {
 				add_track(project, host_sequence, TrackType::Video)?;
 			}
 			let in_ts = rational_to_ts(playhead, time_base).max(0);
-			let fps = time_base.1 as f64 / time_base.0.max(1) as f64;
-			let length = (duration * fps).round().max(1.0) as i64;
+			let length = ts_for_seconds(duration, time_base).max(1);
 			place_footage_clip(
 				project,
 				host_sequence,
@@ -327,4 +435,29 @@ pub fn create_multicam_sequence(
 		source_sequence,
 		host_clip,
 	})
+}
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The timebase helpers clamp invalid frame durations and negative
+	/// offsets, and always produce a non-empty range.
+	#[test]
+	fn timebase_helpers_are_total() {
+		let tb = (1, 30);
+		assert_eq!(ts_for_seconds(0.5, tb), 15);
+		assert_eq!(ts_for_seconds(-3.0, tb), 0);
+		assert_eq!(ts_for_seconds(f64::NAN, tb), 0);
+		assert_eq!(ts_for_seconds(1.0, (0, 0)), 25);
+		assert_eq!(ts_for_seconds(1.0, (-1, 30)), 25);
+
+		let range = range_for_seconds(0.5, 0.0, tb);
+		assert_eq!(range.in_(), Rational::new(1, 2));
+		assert_eq!(range.out(), Rational::new(8, 15));
+		let fallback = range_for_seconds(0.0, 1.0, (0, 0));
+		assert_eq!(fallback.in_(), Rational::new(0, 1));
+		assert_eq!(fallback.out(), Rational::new(1, 1));
+	}
 }

@@ -25,8 +25,19 @@ pub(crate) fn copy_str_out(s: &str, buf: *mut u8, buf_len: usize) -> i32 {
 	bytes.len() as i32
 }
 
-/// Borrows a `(ptr, len)` string argument from C: null or invalid UTF-8
-/// maps to `None` (the caller turns that into the ABI's error value).
+/// Borrow a `(ptr, len)` byte-string argument from C without copying.
+///
+/// Returns `None` when `ptr` is null (whatever `len` is) or the `len` bytes are
+/// not valid UTF-8; callers turn that into the ABI's error value (usually
+/// `false` or a null pointer). Exactly `len` bytes are borrowed, so the buffer
+/// need not be NUL-terminated and an embedded NUL is just another byte.
+///
+/// # Safety
+///
+/// When `ptr` is non-null it must point to at least `len` readable bytes that
+/// stay valid for the whole borrow: `'a` is chosen by the caller, not tied to
+/// the pointer, so the caller must not let the result outlive the source
+/// buffer.
 pub(crate) unsafe fn str_arg<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
 	if ptr.is_null() {
 		return None;

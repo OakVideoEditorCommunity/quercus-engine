@@ -186,7 +186,13 @@ impl<P: Clone> PreviewScheduler<P> {
 		}
 	}
 
-	/// The configured batch size.
+	/// The scheduler's current per-worker claim batch size.
+	///
+	/// [`PreviewScheduler::new`] derives it as `max(1, 120 / workers)` when 0 is
+	/// passed; [`PreviewScheduler::set_worker_count`] lowers it to that figure on
+	/// a pool resize (it never raises a smaller configured value). The batch
+	/// actually claimed is further capped by the worker's credit and by
+	/// `max_bytes` (see [`PreviewScheduler::claim_batch`]).
 	pub fn batch_size(&self) -> usize {
 		self.batch_size
 	}
@@ -220,6 +226,10 @@ impl<P: Clone> PreviewScheduler<P> {
 	}
 
 	/// Whether `key` is currently claimed (in flight).
+	///
+	/// A claimed request belongs to one worker until it reports completion or the
+	/// dispatcher cancels and re-versions it. Use
+	/// [`PreviewScheduler::claimed_worker`] for the owning worker index.
 	pub fn is_claimed(&self, key: &FrameKey) -> bool {
 		self.claimed.contains_key(key)
 	}
@@ -460,7 +470,10 @@ impl<P: Clone> PreviewScheduler<P> {
 		self.claimed.len()
 	}
 
-	/// The worker currently holding `key` (None when not claimed).
+	/// The worker currently holding `key`, or `None` when it is not claimed.
+	///
+	/// The returned index is both the worker that claimed the batch and the shard
+	/// the frame belongs to. Counterpart of [`PreviewScheduler::is_claimed`].
 	pub fn claimed_worker(&self, key: &FrameKey) -> Option<usize> {
 		self.claimed.get(key).map(|c| c.worker)
 	}

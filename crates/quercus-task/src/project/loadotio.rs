@@ -73,7 +73,11 @@ pub struct LoadOTIOTask {
 }
 
 impl LoadOTIOTask {
-	/// Create an OTIO loader for the given base load task.
+	/// Create an OTIO/FCPXML loader around an already-configured base task.
+	///
+	/// `base` owns the source filename and receives the finished project; the
+	/// loader adds no state of its own, so construction cannot fail. All work
+	/// happens in [`TaskBehavior::run`].
 	pub fn new(base: ProjectLoadBaseTask) -> LoadOTIOTask {
 		LoadOTIOTask { base }
 	}
@@ -453,7 +457,15 @@ impl TaskBehavior for LoadOTIOTask {
 	}
 }
 
-/// Create a node from the factory registry (`quercusnode_factory_create_from_id`).
+/// Instantiate node type `type_id` into `project`'s graph.
+///
+/// Looks the type up in the global factory registry, runs its constructor to
+/// get the core node plus behavior and appends it to the graph, returning the
+/// new node id. The node starts unconnected and without a context position;
+/// the loader wires and positions it afterwards (see
+/// [`set_own_context_position`]).
+///
+/// Returns `None` when the registry has no type with that id.
 fn factory_create(project: &ProjectRef, type_id: &str) -> Option<NodeId> {
 	let meta = quercus_node::factory::Factory::global().find(type_id)?;
 	let (core, behavior) = (meta.create)();

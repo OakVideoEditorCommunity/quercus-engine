@@ -54,6 +54,28 @@ use crate::error::{Error, Result};
 /// the hwaccel really engaged rather than silently staying software.
 pub static HW_TRANSFERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Decoder sessions opened with a hardware device attached.
+pub static HW_DECODER_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Decoder sessions opened in software mode.
+pub static SW_DECODER_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware device/decoder creation attempts that failed.
+pub static HW_OPEN_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware sessions that failed at the first frame and were reopened as software.
+pub static HW_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Video decoder sessions opened with a hardware device.
+pub static HW_VIDEO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Video decoder sessions opened in software.
+pub static SW_VIDEO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Audio decoder sessions (always software).
+pub static SW_AUDIO_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Frames delivered as hardware surfaces (before transfer/import).
+pub static HW_SURFACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Hardware frames successfully imported without a CPU transfer.
+pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `get_format` chose a software format even though a hardware device was attached.
+pub static HW_FORMAT_FALLBACKS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+
 /// The config key of the hardware-decode switch (1 = prefer hardware,
 /// 0 = force software). Default ON by user mandate.
 pub const CONFIG_KEY_HARDWARE_DECODING: &str = "HardwareDecoding";
@@ -143,6 +165,25 @@ pub fn hardware_decoding_enabled() -> bool {
 /// The hardware device types to try, most preferred first. On a machine
 /// without the device/driver the candidate fails creation and the next
 /// one is tried; the software decoder is the final fallback.
+/// Hardware candidates in preference order for this stream. VAAPI on the
+/// NVIDIA driver does not implement 10-bit 4:2:2 H.264; trying it first makes
+/// libavcodec decode corrupted software frames (green bars, DC/AC concealment
+/// errors) before the next candidate is reached. Prefer NVDEC/CUDA for that
+/// profile.
+pub fn candidates_for(params: &ffmpeg::codec::Parameters) -> Vec<sys::AVHWDeviceType> {
+	let mut candidates = device_type_candidates().to_vec();
+	let format = unsafe { (*params.as_ptr()).format };
+	let ten_bit_422 = format == sys::AVPixelFormat::AV_PIX_FMT_YUV422P10LE as i32
+		|| format == sys::AVPixelFormat::AV_PIX_FMT_YUV422P10BE as i32;
+	if ten_bit_422 {
+		candidates.sort_by_key(|candidate| {
+			(*candidate != sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA) as u8
+		});
+	}
+	candidates
+}
+
+/// Platform hardware decoder candidates, in default preference order.
 pub fn device_type_candidates() -> &'static [sys::AVHWDeviceType] {
 	#[cfg(target_os = "macos")]
 	{
@@ -157,17 +198,14 @@ pub fn device_type_candidates() -> &'static [sys::AVHWDeviceType] {
 	}
 	#[cfg(all(unix, not(target_os = "macos")))]
 	{
-		// VAAPI first: it is the DMA-BUF path the M5 zero-copy import
-		// consumes (`VK_EXT_external_memory_dma_buf`), and on NVIDIA boxes
-		// with the VA-API driver it is just as reachable as NVDEC — while
-		// a CUDA (NVDEC) surface has no public handle export, so frames
-		// decoded through it can only take the staging fallback. CUDA
-		// stays as the fallback for machines without libva; it also
-		// sidesteps VAAPI's default render node pointing at a device with
-		// no VA driver (CUDA device creation fails fast without libcuda).
+		// CUDA/NVDEC first: the VMM export path (`cuMemExportToShareableHandle`
+		// -> Vulkan OPAQUE_FD) is the import that is continuously verified on
+		// NVIDIA. VAAPI import is opt-in because some drivers block inside
+		// `vkCreateImage`/`vkAllocateMemory` for DMA-BUF; it stays as the
+		// fallback on machines without libcuda.
 		&[
-			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
 			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
 		]
 	}
 }
@@ -186,9 +224,153 @@ pub fn device_type_name(device_type: sys::AVHWDeviceType) -> &'static str {
 /// Try to open the software codec with a hardware device context of
 /// `device_type` attached — FFmpeg then engages the matching hwaccel
 /// (e.g. `h264_videotoolbox_hwaccel`) on open. Returns the opened codec
-/// context plus the device type in use, or `None` when the device is
-/// unavailable (the caller tries the next candidate, then pure
-/// software).
+/// The hardware pixel format paired with `device_type`.
+fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::AVPixelFormat> {
+	use sys::AVHWDeviceType;
+	use sys::AVPixelFormat;
+	match device_type {
+		AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX => Some(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI => Some(AVPixelFormat::AV_PIX_FMT_VAAPI),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA => Some(AVPixelFormat::AV_PIX_FMT_CUDA),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA => Some(AVPixelFormat::AV_PIX_FMT_D3D11),
+		_ => None,
+	}
+}
+
+/// First non-hardware format in an offered list; `AV_PIX_FMT_NONE` when the
+/// list contains only hardware formats.
+fn first_software_format(formats: *const sys::AVPixelFormat) -> sys::AVPixelFormat {
+	use sys::AVPixelFormat;
+	unsafe {
+		let mut cursor = formats;
+		while !cursor.is_null() && *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
+			if matches!(
+				*cursor,
+				AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX
+					| AVPixelFormat::AV_PIX_FMT_VAAPI
+					| AVPixelFormat::AV_PIX_FMT_CUDA
+					| AVPixelFormat::AV_PIX_FMT_D3D11VA_VLD
+					| AVPixelFormat::AV_PIX_FMT_D3D11
+					| AVPixelFormat::AV_PIX_FMT_VDPAU
+			) {
+				cursor = cursor.add(1);
+				continue;
+			}
+			return *cursor;
+		}
+		AVPixelFormat::AV_PIX_FMT_NONE
+	}
+}
+
+/// `get_format` callback for a decoder opened with `hw_device_ctx`.
+///
+/// `avctx` is the decoder context (non-null; its `hw_device_ctx` may be null);
+/// `formats` is FFmpeg's `AV_PIX_FMT_NONE`-terminated list of offered pixel
+/// formats, borrowed for the call. Returns the hardware pixel format when the
+/// device type has one, it is offered, and its frames context initializes;
+/// otherwise returns `AV_PIX_FMT_NONE` to force FFmpeg's first-frame hardware
+/// fallback. The first software format is returned only when no hardware device
+/// is attached or the device type maps to no known hardware pixel format.
+/// Setting `hw_device_ctx` alone is not enough on all
+/// FFmpeg/libavcodec combinations: the default callback may pick a software
+/// format and decode on the CPU.
+///
+/// # Safety
+///
+/// `avctx` must be null or point to a valid `AVCodecContext`; `formats` must be
+/// null or point to a valid `AV_PIX_FMT_NONE`-terminated array of
+/// `AVPixelFormat`. Both are only read during the call.
+unsafe extern "C" fn select_hw_format(
+	avctx: *mut sys::AVCodecContext,
+	formats: *const sys::AVPixelFormat,
+) -> sys::AVPixelFormat {
+	unsafe {
+	use sys::AVPixelFormat;
+	if avctx.is_null() || formats.is_null() {
+		return AVPixelFormat::AV_PIX_FMT_NONE;
+	}
+	let mut first = AVPixelFormat::AV_PIX_FMT_NONE;
+	let mut cursor = formats;
+	while *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
+		if first == AVPixelFormat::AV_PIX_FMT_NONE {
+			first = *cursor;
+		}
+		cursor = cursor.add(1);
+	}
+	let device = (*avctx).hw_device_ctx;
+	if device.is_null() || (*device).data.is_null() {
+		return first_software_format(formats);
+	}
+	let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
+	let ctx_type = (*device_ctx).type_;
+	let Some(hw_fmt) = hw_pixel_format(ctx_type) else {
+		return first_software_format(formats);
+	};
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!("[hwfmt] ctx_type={ctx_type:?} hw_fmt={hw_fmt:?} first={first:?}");
+	}
+	let mut offered = formats;
+	while *offered != AVPixelFormat::AV_PIX_FMT_NONE {
+		if *offered == hw_fmt {
+			let mut frames: *mut sys::AVBufferRef = std::ptr::null_mut();
+			let rc = sys::avcodec_get_hw_frames_parameters(avctx, device, hw_fmt, &mut frames);
+			if rc >= 0 && !frames.is_null() {
+				let frames_started = std::time::Instant::now();
+				let init = sys::av_hwframe_ctx_init(frames);
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!(
+						"[hwfmt] frames init {hw_fmt:?} took {}ms rc={init}",
+						frames_started.elapsed().as_millis()
+					);
+				}
+				if init >= 0 {
+					// Ownership transfers to the codec context; libavcodec
+					// unrefs it after decoding / on close.
+					(*avctx).hw_frames_ctx = frames;
+					if std::env::var_os("OAK_DEBUG_HW").is_some() {
+						eprintln!("[hwfmt] selected {hw_fmt:?}");
+					}
+					return hw_fmt;
+				}
+				if std::env::var_os("OAK_DEBUG_HW").is_some() {
+					eprintln!("[hwfmt] frames init failed rc={init} for {hw_fmt:?}");
+				}
+				sys::av_buffer_unref(&mut frames);
+			}
+			HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+			// Do NOT return `first`: it may be another hardware format
+			// (commonly CUDA offered before VAAPI) while `hw_device_ctx`
+			// is VAAPI. Returning it makes libavcodec abort with
+			// "format cuda does not match the device context". Returning
+			// NONE forces the first-frame hardware fallback, which can
+			// retry the next device type before settling on software.
+			return AVPixelFormat::AV_PIX_FMT_NONE;
+		}
+		offered = offered.add(1);
+	}
+	// The device is attached but the decoder does not offer its hardware
+	// pixel format for this stream (e.g. VAAPI has no 10-bit 4:2:2 H.264
+	// config. Returning software here would silently keep the hardware
+	// session but decode on the CPU. Force the first-frame fallback instead;
+	// it marks this device unavailable and retries the next candidate
+	// (NVDEC/CUDA), finally settling on software only if none works.
+	HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	AVPixelFormat::AV_PIX_FMT_NONE
+	}
+
+}
+
+fn attach_hw_get_format(avctx: *mut sys::AVCodecContext) {
+	unsafe {
+		(*avctx).get_format = Some(select_hw_format);
+	}
+}
+
+/// Try to open `codec` with a hardware device of `device_type`.
+///
+/// Returns the opened decoder context plus the device type in use, or `None`
+/// when the device is unavailable (the caller tries the next candidate, then
+/// pure software).
 pub fn open_hw_accel(
 	params: &ffmpeg::codec::Parameters,
 	codec: ffmpeg::Codec,
@@ -206,45 +388,89 @@ pub fn open_hw_accel(
 	note_creation_attempt();
 	let mut context = ffmpeg::codec::Context::from_parameters(params.clone()).ok()?;
 	let mut device: *mut sys::AVBufferRef = std::ptr::null_mut();
-	// SAFETY: `device` is a valid out-pointer; on success it owns the
-	// device reference, which is handed to the codec context below.
-	let rc = unsafe {
-		sys::av_hwdevice_ctx_create(
-			&mut device,
-			device_type,
-			std::ptr::null(),
-			std::ptr::null_mut(),
-			0,
-		)
+	let device_started = std::time::Instant::now();
+	let rc = if device_type == sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA {
+		device = shared_cuda_device().unwrap_or(std::ptr::null_mut());
+		if device.is_null() { -1 } else { 0 }
+	} else {
+		// SAFETY: `device` is a valid out-pointer; on success it owns the
+		// device reference, which is handed to the codec context below.
+		unsafe {
+			sys::av_hwdevice_ctx_create(
+				&mut device,
+				device_type,
+				std::ptr::null(),
+				std::ptr::null_mut(),
+				0,
+			)
+		}
 	};
 	if rc < 0 || device.is_null() {
 		// The device is unavailable (missing driver / no hardware): mark
 		// it so later opens skip the attempt and its log noise.
+		HW_OPEN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		mark_device_unavailable(device_type);
 		return None;
+	}
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!(
+			"[hwfmt] device create {device_type:?} took {}ms",
+			device_started.elapsed().as_millis()
+		);
 	}
 	// SAFETY: `hw_device_ctx` takes ownership of the reference; the codec
 	// context frees it with the context.
 	unsafe { (*context.as_mut_ptr()).hw_device_ctx = device };
+	unsafe { attach_hw_get_format(context.as_mut_ptr()); }
 	let mut opts = Dictionary::new();
 	opts.set("threads", &crate::ffmpeg::decoder_threads());
+	let decoder_started = std::time::Instant::now();
 	let opened = match context.decoder().open_as_with(codec, opts) {
 		Ok(opened) => opened,
 		Err(_) => {
-			// The device context was created but the hardware DECODER
-			// could not be created for this stream (e.g. NVDEC
-			// `cuvidCreateDecoder` out-of-memory at 4K — 4K surface pools
-			// need tens of MB of video memory, and a full/too-small GPU
-			// would otherwise spam its error on EVERY decoder open for
-			// the life of the process). Same treatment as a failed
-			// device-context creation: mark the type so later opens skip
-			// the attempt and its log noise; the caller falls back to the
-			// next candidate / software decode.
-			mark_device_unavailable(device_type);
+			HW_OPEN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+			// Decoder creation is codec-specific. Do not poison the whole
+			// device type: VideoToolbox may reject MPEG-2 and still decode
+			// H.264 perfectly well on the next session.
 			return None;
 		}
 	};
+	if std::env::var_os("OAK_DEBUG_HW").is_some() {
+		eprintln!(
+			"[hwfmt] decoder open {device_type:?} took {}ms",
+			decoder_started.elapsed().as_millis()
+		);
+	}
+	HW_DECODER_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	Some((opened, device_type))
+}
+
+fn shared_cuda_device() -> Option<*mut sys::AVBufferRef> {
+	static DEVICE: std::sync::OnceLock<std::sync::Mutex<Option<usize>>> =
+		std::sync::OnceLock::new();
+	let mut cached = DEVICE
+		.get_or_init(|| std::sync::Mutex::new(None))
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	if cached.is_none() {
+		let mut device: *mut sys::AVBufferRef = std::ptr::null_mut();
+		let rc = unsafe {
+			sys::av_hwdevice_ctx_create(
+				&mut device,
+				sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+				std::ptr::null(),
+				std::ptr::null_mut(),
+				0,
+			)
+		};
+		if rc < 0 || device.is_null() {
+			return None;
+		}
+		*cached = Some(device as usize);
+	}
+	let device = cached.unwrap() as *mut sys::AVBufferRef;
+	let reference = unsafe { sys::av_buffer_ref(device) };
+	(!reference.is_null()).then_some(reference)
 }
 
 /// Whether a decoded frame's pixel format is a hardware surface that
@@ -342,7 +568,11 @@ mod tests {
 			codec,
 			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
 		);
-		assert!(opened.is_some(), "VideoToolbox hwaccel must open for H.264");
+		let Some((_opened, _device)) = opened else {
+			// Headless runners and FFmpeg builds without VideoToolbox support
+			// use the mandated software fallback; there is no device to assert.
+			return;
+		};
 	}
 
 	/// A device type marked unavailable is short-circuited before any
@@ -390,5 +620,24 @@ mod tests {
 	fn unmarked_device_type_is_not_unavailable() {
 		let dev = sys::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2;
 		assert!(!device_unavailable(dev));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn cuda_device_context_is_shared_by_reference() {
+		let Some(mut first) = shared_cuda_device() else {
+			eprintln!("no CUDA device; skipping shared-context test");
+			return;
+		};
+		let Some(mut second) = shared_cuda_device() else {
+			panic!("second CUDA device reference failed");
+		};
+		unsafe {
+			assert_eq!((*first).buffer, (*second).buffer);
+		}
+		unsafe {
+			sys::av_buffer_unref(&mut first);
+			sys::av_buffer_unref(&mut second);
+		}
 	}
 }

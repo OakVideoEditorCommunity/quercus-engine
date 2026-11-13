@@ -393,7 +393,11 @@ impl ValueType {
 }
 
 impl NodeValue {
-	/// The value's type tag.
+	/// The value's [`ValueType`] tag.
+	///
+	/// [`NodeValue::Vec4Array`] reports `ValueType::Vec4` (it has no separate
+	/// tag); the result drives [`NodeValue::can_interpolate`] and
+	/// [`NodeValueTable::get`] lookups.
 	pub fn value_type(&self) -> ValueType {
 		match self {
 			NodeValue::None => ValueType::None,
@@ -483,9 +487,13 @@ impl NodeValue {
 		vals
 	}
 
-	/// Recombine per-track components into a whole value (C++
-	/// `NodeValue::combine_track_values_into_normal_value`). An empty
-	/// slice yields [`NodeValue::None`].
+	/// Recombines per-track components into a whole value (C++
+	/// `NodeValue::combine_track_values_into_normal_value`).
+	///
+	/// `tracks` holds the per-track values in component order and `declared` is
+	/// the whole value's type. Vector and color types read one numeric component
+	/// per element (missing elements read as 0.0); every other type clones the
+	/// first element. An empty slice yields [`NodeValue::None`].
 	pub fn combine_tracks(tracks: &[NodeValue], declared: ValueType) -> NodeValue {
 		if tracks.is_empty() {
 			return NodeValue::None;
@@ -539,15 +547,23 @@ impl NodeValue {
 	}
 }
 
-/// `lerp` from the C++ `lerp.h` template: `a*(1.0 - t) + b*t`.
+/// Linear interpolation between `a` and `b` at `t`, following the C++ `lerp.h`
+/// template: `a*(1.0 - t) + b*t`.
+///
+/// The helper behind [`NodeValue::lerp`] and the array variants; no clamping is
+/// applied, so `t` outside `[0, 1]` extrapolates.
 fn lerp_f(a: &f64, b: &f64, t: f64) -> f64 {
 	(a * (1.0 - t)) + (b * t)
 }
 
+/// Component-wise [`lerp_f`] over two 2-element arrays (used for `Vec2`
+/// interpolation); `t` is the blend factor, normally in `[0, 1]`.
 fn lerp_arr2(a: &[f64; 2], b: &[f64; 2], t: f64) -> [f64; 2] {
 	[lerp_f(&a[0], &b[0], t), lerp_f(&a[1], &b[1], t)]
 }
 
+/// Component-wise [`lerp_f`] over two 3-element arrays (used for `Vec3`
+/// interpolation); `t` is the blend factor, normally in `[0, 1]`.
 fn lerp_arr3(a: &[f64; 3], b: &[f64; 3], t: f64) -> [f64; 3] {
 	[
 		lerp_f(&a[0], &b[0], t),
@@ -556,6 +572,10 @@ fn lerp_arr3(a: &[f64; 3], b: &[f64; 3], t: f64) -> [f64; 3] {
 	]
 }
 
+/// Component-wise [`lerp_f`] over two 4-element arrays.
+///
+/// Used for `Color` and `Vec4` interpolation; `t` is the blend factor, normally
+/// in `[0, 1]` (values outside extrapolate).
 fn lerp_arr4(a: &[f64; 4], b: &[f64; 4], t: f64) -> [f64; 4] {
 	[
 		lerp_f(&a[0], &b[0], t),
@@ -605,12 +625,20 @@ pub struct NodeValueTable {
 }
 
 impl NodeValueTable {
-	/// Push a value with an optional tag (C++ `push`).
+	/// Appends a value of type `ty` with an optional source tag.
+	///
+	/// `tag` names the input that produced the value (usually an input id) and
+	/// is kept for later row inspection; rows are read back with
+	/// [`NodeValueTable::get`] or [`NodeValueTable::rows`].
 	pub fn push(&mut self, ty: ValueType, value: NodeValue, tag: Option<String>) {
 		self.rows.push((ty, value, tag));
 	}
 
-	/// Last pushed value of `ty` (C++ `get` semantics).
+	/// The last pushed value of `ty` (C++ `get` semantics).
+	///
+	/// Scans rows newest-first and matches on the stored [`ValueType`] only, so
+	/// a later push shadows earlier ones and tags are ignored. Returns `None`
+	/// when no row has type `ty`.
 	pub fn get(&self, ty: ValueType) -> Option<&NodeValue> {
 		self.rows
 			.iter()
@@ -619,7 +647,10 @@ impl NodeValueTable {
 			.map(|(_, v, _)| v)
 	}
 
-	/// Number of pushed rows (C++ `count()`).
+	/// The number of rows currently in the table.
+	///
+	/// Counts every push since the last [`NodeValueTable::clear`], including
+	/// rows of different [`ValueType`]s and duplicate types.
 	pub fn count(&self) -> usize {
 		self.rows.len()
 	}
@@ -629,7 +660,10 @@ impl NodeValueTable {
 		self.rows.is_empty()
 	}
 
-	/// Clear all rows (C++ `clear()`).
+	/// Removes every row from the table, leaving it empty (C++ `clear()`).
+	///
+	/// Rows are dropped and the table is immediately reusable; see
+	/// [`NodeValueTable::count`] for the inverse query.
 	pub fn clear(&mut self) {
 		self.rows.clear();
 	}

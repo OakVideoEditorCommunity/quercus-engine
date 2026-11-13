@@ -219,7 +219,13 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(KeyMixNode))
 }
 
-/// Register this node type.
+/// Appends the KeyMix node type to the built-in factory list.
+///
+/// `meta` is the table [`crate::nodes::register_all`] is building; the pushed
+/// [`NodeMeta`] declares type id
+/// `org.olivevideoeditor.Olive.keymix`, display name `"KeyMix"`, the
+/// [`Category::Math`] category and the [`create`] constructor, which wires the
+/// `tex_in`/`blend_in`/`mask_in` texture inputs.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.keymix",

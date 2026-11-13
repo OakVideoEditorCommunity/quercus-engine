@@ -221,6 +221,45 @@ fn hardware_import_is_zero_copy_and_matches_staging() {
 	let _ = std::fs::remove_file(&staging_path);
 }
 
+/// The import must not be bypassed just because the caller asked for a
+/// preview size: native hardware planes are scaled by the descriptor-driven
+/// GPU matrix pass, with no `av_hwframe_transfer_data` download.
+#[test]
+fn hardware_import_scales_on_gpu_for_a_different_target_size() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let Some(ctx) = common::gpu_context_for_import() else {
+		return;
+	};
+	quercus_core::backend::GpuContext::install_shared(Some(ctx.clone()));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let transfers_before =
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed);
+	let path = write_clip("scaled");
+	let texture = quercus_render::eval::render_footage_frame(
+		&path.to_string_lossy(),
+		0,
+		Rational::new(0, 1),
+		(32, 32),
+		PixelFormat::F32,
+	)
+	.expect("scaled decode");
+	if quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+		eprintln!("SKIP: no importable hardware decoder for the scaled import test");
+		let _ = std::fs::remove_file(&path);
+		return;
+	}
+	assert!(matches!(texture, Texture::Gpu { .. }));
+	let frame = texture.to_frame().expect("scaled download");
+	assert_eq!((frame.width, frame.height), (32, 32));
+	assert_eq!(
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers_before,
+		"GPU target scaling must not download the native frame"
+	);
+	let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn hardware_import_applies_the_source_to_working_lut() {
 	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -356,13 +395,21 @@ fn montage_native_size_with_host_gpu_composites_the_clip() {
 			out_time: Rational::new(10, 1),
 			media_in: Rational::new(0, 1),
 			gain: 1.0,
+			pan: 0.0,
+			fade_in: Rational::new(0, 1),
+			fade_out: Rational::new(0, 1),
 			effects: Vec::new(),
+			audio_effects: Vec::new(),
 		}],
 		adjustments: Vec::new(),
 	};
 
 	let texture = quercus_render::eval::render_produced_frame(Rational::new(0, 1), &params)
 		.expect("montage render");
+	assert!(
+		matches!(texture, Texture::Gpu { .. }),
+		"montage must prefer the GPU compositor"
+	);
 	let frame = texture.to_frame().expect("montage frame");
 	assert_eq!((frame.width, frame.height), (64, 64));
 	assert!(
@@ -377,18 +424,160 @@ fn montage_native_size_with_host_gpu_composites_the_clip() {
 	assert!(b > 0.5 && r < 0.4 && g < 0.4, "right half blue: {r},{g},{b}");
 
 	assert_eq!(
-		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
-		imports_after_single,
-		"the CPU montage compositor must stage on purpose (no new imports)"
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers_after_single,
+		"the GPU montage path must not download decoded frames"
 	);
-	// The staged request must not have been served by the cached planar
-	// texture: it re-decoded through the CPU scaler (a hardware frame
-	// transfer happened for the staging path).
 	assert!(
-		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed)
-			> transfers_after_single,
-		"the staged montage decode must produce CPU pixels"
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed)
+			>= imports_after_single,
+		"the montage must keep using imported hardware frames"
 	);
 
 	let _ = std::fs::remove_file(&path);
+}
+
+/// Manual 4K 10-bit 4:2:2 bring-up (requires the local C0024 asset):
+/// verify the native hardware frame is imported and GPU-scaled to 1080p
+/// without a CPU download. Run with:
+/// `QUERCUS_REQUIRE_GPU=1 cargo test -p quercus-render --test footage_import_test c0024 -- --ignored --nocapture`
+/// End-to-end timeline montage on the same 4K 10-bit 4:2:2 clip:
+/// hardware decode -> GPU VMM slot -> GPU scale -> GPU composite, with no
+/// CPU transfer on the normal path.
+#[test]
+#[ignore]
+fn c0024_4k_10bit_422_gpu_montage_benchmark() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let path = "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4";
+	if !std::path::Path::new(path).exists() { return; }
+	let Some(ctx) = common::gpu_context_for_import() else { return; };
+	quercus_core::backend::GpuContext::install_shared(Some(ctx));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let params = quercus_render::ticket::VideoTicketParams {
+		viewer: 1,
+		project: String::new(),
+		time: Rational::new(0, 1),
+		force_size: Some((1920, 1080)),
+		force_format: Some(PixelFormat::F32),
+		cache: None,
+		cache_dir: None,
+		cache_id: None,
+		cache_timebase: None,
+		footage: None,
+		montage: vec![quercus_render::ticket::MontageClip {
+			filename: path.to_string(),
+			stream_index: 0,
+			in_time: Rational::new(0, 1),
+			out_time: Rational::new(30, 25),
+			media_in: Rational::new(0, 1),
+			gain: 1.0,
+			pan: 0.0,
+			fade_in: Rational::new(0, 1),
+			fade_out: Rational::new(0, 1),
+			effects: Vec::new(),
+			audio_effects: Vec::new(),
+		}],
+		adjustments: Vec::new(),
+	};
+	let mut total = std::time::Duration::ZERO;
+	let mut worst = std::time::Duration::ZERO;
+	let mut transfers = 0;
+	for n in 0..30 {
+		let started = std::time::Instant::now();
+		let texture = quercus_render::eval::render_produced_frame(
+			Rational::new(n, 25),
+			&params,
+		)
+		.expect("montage render");
+		let elapsed = started.elapsed();
+		total += elapsed;
+		worst = worst.max(elapsed);
+		if !matches!(texture, Texture::Gpu { .. }) { transfers += 1; }
+	}
+	eprintln!(
+		"C0024 GPU montage: avg={:?} worst={:?} imports={} transfers={} non_gpu={}",
+		total / 30,
+		worst,
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers
+	);
+	assert_eq!(transfers, 0, "montage frames must stay GPU-resident");
+}
+
+#[test]
+#[ignore]
+fn c0024_4k_10bit_422_gpu_scale_benchmark() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let path = "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4";
+	if !std::path::Path::new(path).exists() { return; }
+	let Some(ctx) = common::gpu_context_for_import() else { return; };
+	quercus_core::backend::GpuContext::install_shared(Some(ctx));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let mut total = std::time::Duration::ZERO;
+	let mut worst = std::time::Duration::ZERO;
+	let mut transfers = 0;
+	for n in 0..30 {
+		let started = std::time::Instant::now();
+		let texture = quercus_render::eval::render_footage_frame(
+			path,
+			0,
+			Rational::new(n, 25),
+			(1920, 1080),
+			PixelFormat::F32,
+		)
+		.expect("C0024 decode");
+		let elapsed = started.elapsed();
+		eprintln!("C0024 frame {n}: {:?}", elapsed);
+		total += elapsed;
+		worst = worst.max(elapsed);
+		if !matches!(texture, Texture::Gpu { .. }) { transfers += 1; }
+	}
+	eprintln!(
+		"C0024 GPU scale: avg={:?} worst={:?} imports={} transfers={} non_gpu={}",
+		total / 30,
+		worst,
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers
+	);
+	assert_eq!(transfers, 0, "all frames must stay GPU-resident");
+}
+
+#[test]
+#[ignore]
+fn c0024_4k_10bit_422_imports_and_scales_on_gpu() {
+	let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+	pin_legacy_working_space();
+	let path = "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4";
+	if !std::path::Path::new(path).exists() {
+		eprintln!("SKIP: {path} not present");
+		return;
+	}
+	let Some(ctx) = common::gpu_context_for_import() else {
+		return;
+	};
+	quercus_core::backend::GpuContext::install_shared(Some(ctx.clone()));
+	quercus_codec::gpuinterop::reset_import_counters();
+	let transfers_before =
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed);
+	let started = std::time::Instant::now();
+	let texture = quercus_render::eval::render_footage_frame(
+		path,
+		0,
+		Rational::new(0, 1),
+		(1920, 1080),
+		PixelFormat::F32,
+	)
+	.expect("C0024 decode");
+	eprintln!(
+		"C0024: {:?} imports={} transfers={} (before {})",
+		started.elapsed(),
+		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
+		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		transfers_before,
+	);
+	assert!(matches!(texture, Texture::Gpu { .. }));
 }

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use quercus_node::id::NodeId;
 
-use crate::codec::copy_str_out;
+use crate::codec::{copy_str_out, str_arg};
 use crate::coretypes::QuercusRational;
 use crate::handle::NativeMirror;
 use crate::node::ProjectHandle;
@@ -83,6 +83,12 @@ pub extern "C" fn quercus_render_manager_poll() {
 /// (the per-worker VRAM budget grows with the pixel count). No-op for
 /// non-positive sizes or without a manager.
 #[unsafe(no_mangle)]
+/// Sizes the worker pool's per-frame workspace for the current sequence.
+///
+/// `width`/`height` are the output dimensions in pixels (both must be positive) and
+/// `fps` is the sequence frame rate (must be non-zero); the per-worker VRAM budget
+/// grows with the pixel count. No-op for non-positive sizes, zero `fps`, or when no
+/// render manager is initialized.
 pub extern "C" fn quercus_render_manager_set_workspace_size(width: i32, height: i32, fps: u32) {
 	if width <= 0 || height <= 0 || fps == 0 {
 		return;
@@ -154,19 +160,80 @@ pub extern "C" fn quercus_render_textengine_install() {
 	quercus_render::textengine::install();
 }
 
+/// Adds a font file's bytes to the shared text backend.
+///
+/// Callable before or after [`quercus_render_textengine_install`]; the next
+/// [`quercus_render_textengine_font_family_count`] sees the new families.
+/// Empty data and non-UTF-8 paths are rejected.
+#[unsafe(no_mangle)]
+/// Adds a font file's raw bytes (TTF/OTF blob) to the shared text backend, which
+/// copies them.
+///
+/// Callable before or after [`quercus_render_textengine_install`]; the next
+/// [`quercus_render_textengine_font_family_count`] sees the new families. Returns
+/// false for a null pointer or empty data.
+///
+/// # Safety
+///
+/// `bytes` must be null or point to `len` readable bytes valid for the call.
+pub unsafe extern "C" fn quercus_render_textengine_add_font_data(
+	bytes: *const u8,
+	len: usize,
+) -> bool {
+	if bytes.is_null() || len == 0 {
+		return false;
+	}
+	let data = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+	quercus_render::textengine::add_font_data(data)
+}
+
+/// Adds every font file under `path` (recursively) to the shared text
+/// backend. False for a null/non-UTF-8/missing/non-directory path.
+#[unsafe(no_mangle)]
+/// Adds every font file under the directory `path` (recursively) to the shared text
+/// backend so text nodes can use those families.
+///
+/// `path` is a UTF-8, length-delimited byte slice (not NUL-terminated). Returns
+/// false for a null, non-UTF-8, missing, or non-directory path. Registration is
+/// additive and visible to the next
+/// [`quercus_render_textengine_font_family_count`].
+///
+/// # Safety
+///
+/// `path` must be null or point to `path_len` readable bytes valid for the call.
+pub unsafe extern "C" fn quercus_render_textengine_add_font_dir(
+	path: *const u8,
+	path_len: usize,
+) -> bool {
+	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
+		return false;
+	};
+	quercus_render::textengine::add_font_dir(std::path::Path::new(path))
+}
+
 /// Number of font families exposed by the shared text backend.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_render_textengine_font_family_count() -> i32 {
 	font_families().len() as i32
 }
 
-fn font_families() -> &'static [String] {
-	static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-	FAMILIES.get_or_init(quercus_render::textengine::font_families)
+fn font_families() -> Vec<String> {
+	// No extra cache here: the backend's own cache is invalidated by
+	// add_font_data/add_font_dir, so a caller that registers fonts after
+	// the first query still sees them.
+	quercus_render::textengine::font_families()
 }
 
 /// A font family name, snprintf-style; -1 when out of range.
 #[unsafe(no_mangle)]
+/// Copies the name of font family `index` (0-based, in the order the shared text
+/// backend exposes them) into `buf`, `snprintf`-style. Returns the name length in
+/// bytes; -1 when `index` is negative or out of range.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes valid for the
+/// call.
 pub unsafe extern "C" fn quercus_render_textengine_font_family_at(
 	index: i32,
 	buf: *mut u8,
@@ -184,6 +251,16 @@ pub unsafe extern "C" fn quercus_render_textengine_font_family_at(
 /// Swizzles BGRA8 pixels to RGBA8 (`src` and `dst` may not overlap);
 /// both buffers are `pixel_count*4` bytes. False on invalid input.
 #[unsafe(no_mangle)]
+/// Swizzles `pixel_count` BGRA8 pixels into RGBA8 (channel order B/G/R/A ->
+/// R/G/B/A; alpha is copied through).
+///
+/// `src` and `dst` must not overlap and each cover `pixel_count*4` bytes. Returns
+/// false when either pointer is null; `pixel_count == 0` is a successful no-op.
+///
+/// # Safety
+///
+/// `src` must point to `pixel_count*4` readable bytes and `dst` to
+/// `pixel_count*4` writable bytes, non-overlapping, both valid for the call.
 pub unsafe extern "C" fn quercus_render_swizzle_bgra8_to_rgba8(
 	src: *const u8,
 	dst: *mut u8,
@@ -208,6 +285,19 @@ pub unsafe extern "C" fn quercus_render_swizzle_bgra8_to_rgba8(
 /// written, -1 on a null handle, an unknown viewer, invalid sizes, an
 /// undersized buffer, or a render failure.
 #[unsafe(no_mangle)]
+/// Renders a sequence or video-footage viewer at `time` into `dst` as tight F32
+/// RGBA and returns the number of floats written (`width*height*4`).
+///
+/// `viewer` is a node identity; `time` is canonicalized through
+/// [`QuercusRational`]. `dst` must be a non-null, non-overlapping buffer of at
+/// least `width*height*4` floats (`dst_capacity` in floats). Returns -1 on a null
+/// project/buffer, unknown viewer, non-positive size, undersized buffer, or a
+/// render failure; `dst` is left untouched in that case.
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; `dst` must be null or
+/// point to `dst_capacity` writable `f32` values valid for the call.
 pub unsafe extern "C" fn quercus_render_frame_f32(
 	project: *const ProjectHandle,
 	viewer: u64,
@@ -326,6 +416,16 @@ pub(crate) fn render_frame_f32_data(
 
 /// The disk cache directory, snprintf-style.
 #[unsafe(no_mangle)]
+/// Copies the disk cache directory (the configured override, or the default
+/// location) into `buf`, `snprintf`-style. Returns the path length in bytes; the
+/// output is NUL-terminated and truncated to `buf_len - 1` bytes, with the full
+/// length still returned on truncation. A null `buf` or `buf_len == 0` queries the
+/// length.
+///
+/// # Safety
+///
+/// `buf` must be null or point to at least `buf_len` writable bytes valid for the
+/// call.
 pub unsafe extern "C" fn quercus_render_disk_cache_path(buf: *mut u8, buf_len: usize) -> i32 {
 	copy_str_out(&quercus_render::manager::disk_cache_path(), buf, buf_len)
 }
@@ -338,8 +438,55 @@ pub extern "C" fn quercus_render_disk_cache_size() -> i64 {
 
 /// Clears the disk cache. False on failure.
 #[unsafe(no_mangle)]
+/// Clears the disk cache, deleting every cached file rather than only entries over
+/// budget. Returns false when the backend reports a failure, including an
+/// uninitialized cache manager.
 pub extern "C" fn quercus_render_disk_cache_clear() -> bool {
 	quercus_render::manager::disk_cache_clear().is_ok()
+}
+
+/// The configured disk-cache byte budget (`0` = unlimited).
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_max_bytes() -> i64 {
+	quercus_render::manager::disk_cache_max_bytes()
+}
+
+/// Sets the disk-cache byte budget (`0` = unlimited, negative clamps to 0)
+/// and prunes immediately. False on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_set_max_bytes(max_bytes: i64) -> bool {
+	quercus_render::manager::set_disk_cache_max_bytes(max_bytes).is_ok()
+}
+
+/// Points the disk cache at `path` (must be absolute; created when missing).
+/// New caches use it; already-constructed caches keep their old directory.
+/// False on a null/non-UTF-8/invalid path.
+#[unsafe(no_mangle)]
+/// Points the disk cache at `path` (a UTF-8, length-delimited byte slice, not
+/// NUL-terminated). The path must be absolute; a missing directory is created.
+///
+/// New caches use the path; already-constructed caches keep their old directory.
+/// Returns false on a null/non-UTF-8/invalid path or when the move fails.
+///
+/// # Safety
+///
+/// `path` must be null or point to `path_len` readable bytes valid for the call.
+pub unsafe extern "C" fn quercus_render_disk_cache_set_path(
+	path: *const u8,
+	path_len: usize,
+) -> bool {
+	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
+		return false;
+	};
+	quercus_render::manager::set_disk_cache_path(path).is_ok()
+}
+
+/// Prunes the disk cache down to the configured budget; returns the bytes
+/// freed, or -1 on failure. A no-op when the budget is unlimited.
+#[unsafe(no_mangle)]
+pub extern "C" fn quercus_render_disk_cache_prune() -> i64 {
+	quercus_render::manager::prune_disk_cache_to(quercus_render::manager::disk_cache_max_bytes())
+		.unwrap_or(-1)
 }
 
 #[cfg(test)]

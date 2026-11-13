@@ -234,7 +234,16 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(core, Box::new(CheckerBoardNode))
 }
 
-/// Register this node type.
+/// Appends the Checkerboard generator to the node registry.
+///
+/// The descriptor uses type id
+/// `org.olivevideoeditor.Olive.checkerboard`, the display name
+/// "Checkerboard", and [`Category::Generator`]; `create` is the factory used
+/// to instantiate the node.
+///
+/// # Arguments
+///
+/// * `meta` - Mutable node registry the descriptor is appended to.
 pub fn register(meta: &mut Vec<NodeMeta>) {
 	meta.push(NodeMeta {
 		type_id: "org.olivevideoeditor.Olive.checkerboard",

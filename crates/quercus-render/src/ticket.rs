@@ -60,6 +60,126 @@ pub struct MontageEffect {
 	pub params: Vec<(String, quercus_node::value::NodeValue)>,
 }
 
+/// One effect of a clip's audio effect chain (Phase 1 audio-post wiring:
+/// the mixer applies these after the clip's gain, pan and fades).
+///
+/// The chain is stored on the clip as
+/// [`quercus_node::block::ClipAudioEffect`] so preview, export and the
+/// render worker read the same ordered list. The built-in `Volume`, `Pan`,
+/// `EQ`, `Compressor`, `Limiter`, `Gate` and `Ducking` kernels are
+/// evaluated; an unknown `type_id` is bypassed with a one-shot warning
+/// instead of failing the render.
+///
+/// `Ducking` is a sidechain effect against the already-mixed sequence
+/// accumulator at the clip's position (montage order; future clips are
+/// never read). The same type on a master-bus chain has no detector and
+/// is bypassed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MontageAudioEffect {
+	/// Built-in node type id (e.g.
+	/// `org.olivevideoeditor.Olive.volume`).
+	pub type_id: String,
+	/// Disabled effects are bypassed by the mixer.
+	pub enabled: bool,
+	/// Static parameter values (input id -> value).
+	pub params: Vec<(String, quercus_node::value::NodeValue)>,
+}
+
+impl MontageAudioEffect {
+	/// The static value of the input named `input`, if this effect carries
+	/// one.
+	///
+	/// `input` is a node input id such as `volume_in` or `threshold_db`
+	/// (exact, case-sensitive match). Only parameters stored as static values
+	/// in `params` are found — an animated or absent parameter yields `None`,
+	/// and when the same id appears twice the first entry wins. The caller
+	/// interprets the [`quercus_node::value::NodeValue`] (normally a float);
+	/// this lookup does no conversion or clamping. Pairs with the mixer's
+	/// per-effect parameter reads and with the facade-side
+	/// `set_audio_bus_effect_param`.
+	pub fn param(&self, input: &str) -> Option<&quercus_node::value::NodeValue> {
+		self.params
+			.iter()
+			.find(|(id, _)| id == input)
+			.map(|(_, value)| value)
+	}
+}
+
+/// The audio parameters shared by every montage builder.
+///
+/// [`MontageClip`] carries these as individual fields for the mixer, but
+/// preview and export must read them from the clip the same way: this
+/// helper is the single conversion point from the node-side
+/// [`quercus_node::block::BlockCore`] to the render-side values.
+#[derive(Clone, Debug)]
+pub struct MontageAudio {
+	/// Playback gain (1.0 = unity).
+	pub gain: f32,
+	/// Constant-power stereo pan (-1..1).
+	pub pan: f32,
+	/// Linear fade-in duration.
+	pub fade_in: Rational,
+	/// Linear fade-out duration.
+	pub fade_out: Rational,
+	/// Ordered effect chain.
+	pub effects: Vec<MontageAudioEffect>,
+}
+
+impl Default for MontageAudio {
+	fn default() -> Self {
+		MontageAudio {
+			gain: 1.0,
+			pan: 0.0,
+			fade_in: Rational::new(0, 1),
+			fade_out: Rational::new(0, 1),
+			effects: Vec::new(),
+		}
+	}
+}
+
+impl MontageAudio {
+	/// Read the audio fields a clip persists in its [`BlockCore`]
+	/// (gain/pan/fade clamped to their documented ranges).
+	///
+	/// [`BlockCore`]: quercus_node::block::BlockCore
+	pub fn from_block_core(core: &quercus_node::block::BlockCore) -> Self {
+		MontageAudio {
+			gain: if core.audio_gain.is_finite() {
+				core.audio_gain.clamp(0.0, 4.0) as f32
+			} else {
+				1.0
+			},
+			pan: if core.audio_pan.is_finite() {
+				core.audio_pan.clamp(-1.0, 1.0) as f32
+			} else {
+				0.0
+			},
+			fade_in: normalize_duration(core.audio_fade_in),
+			fade_out: normalize_duration(core.audio_fade_out),
+			effects: core
+				.audio_effects
+				.iter()
+				.map(|effect| MontageAudioEffect {
+					type_id: effect.type_id.clone(),
+					enabled: effect.enabled,
+					params: effect.params.clone(),
+				})
+				.collect(),
+		}
+	}
+}
+
+/// A negative/NaN duration in a hand-edited file becomes "no fade" rather
+/// than an inverted ramp.
+fn normalize_duration(value: Rational) -> Rational {
+	let seconds = value.to_f64();
+	if !seconds.is_finite() || seconds < 0.0 {
+		Rational::new(0, 1)
+	} else {
+		value
+	}
+}
+
 /// One clip of a sequence montage (M12 P0): the facade resolves the
 /// timeline into an ordered list of clips; the producer decodes each and
 /// composites them topmost-last.
@@ -77,9 +197,20 @@ pub struct MontageClip {
 	pub media_in: Rational,
 	/// Playback gain (1.0 = unity).
 	pub gain: f32,
-	/// The clip's effect stack (source-first; empty for audio clips and
-	/// for montage builders that do not resolve effect chains).
+	/// Constant-power stereo pan (-1 = hard left, 0 = centre, 1 = hard
+	/// right). Applied to the first two output channels; mono output and
+	/// extra channels are unaffected.
+	pub pan: f32,
+	/// Linear fade-in duration, anchored at [`Self::in_time`].
+	pub fade_in: Rational,
+	/// Linear fade-out duration, anchored at [`Self::out_time`].
+	pub fade_out: Rational,
+	/// The clip's video effect stack (source-first; empty for audio clips
+	/// and for montage builders that do not resolve effect chains).
 	pub effects: Vec<MontageEffect>,
+	/// The clip's audio effect chain (source-first; applied after
+	/// gain/pan/fades). Empty for video montage clips.
+	pub audio_effects: Vec<MontageAudioEffect>,
 }
 
 /// One adjustment layer of a sequence montage (M14 W3): a time range
@@ -123,8 +254,13 @@ pub struct AudioTicketParams {
 	/// Output channel layout mask.
 	pub channel_layout: u64,
 	/// Clips to mix (ordered arbitrarily; gains applied, silence
-	/// elsewhere).
+	/// elsewhere). Clips are mixed in list order; a clip's ducking
+	/// effects see this accumulator as their sidechain.
 	pub montage: Vec<MontageClip>,
+	/// Sequence master-bus effect chain, applied to the mixed accumulator
+	/// after every clip and before the final full-scale clamp. Additive
+	/// field: older callers leave it empty (no bus processing).
+	pub bus_effects: Vec<MontageAudioEffect>,
 }
 
 /// Ticket parameters (Rust view of `quercusrender_video_ticket_params`).
@@ -278,6 +414,21 @@ struct TicketSlot {
 }
 
 impl TicketSlot {
+	/// Publish the ticket's outcome and deliver its completion exactly once.
+	///
+	/// Called by the worker job's `done` (or inline by the submit path when
+	/// the backend is gone). If the slot's cancel flag is set, payloads that
+	/// still own a worker shm slot are recycled through the dispatch
+	/// (`release_frame`/`release_audio_frame`) before the result is replaced
+	/// with `Error::State`, so a cancelled ticket cannot leak a slot that the
+	/// consumer will never see.
+	///
+	/// The result is stored before the state flips to `Finished` under the
+	/// same state lock, so a [`TicketArena::wait`] caller can never observe
+	/// `Finished` with an unreadable result. A second `finish` for the same
+	/// slot returns early (the `Finished` check) and the completion is taken
+	/// under an atomic swap, so `done` runs at most once even if finish is
+	/// entered again. Waiters are woken only after the result is published.
 	fn finish(&self, mut result: TicketResult) {
 		if self.cancel.load(Ordering::Acquire) {
 			// A cancelled ticket still holds its shm slot when the render
@@ -346,7 +497,16 @@ pub struct TicketArena {
 }
 
 impl TicketArena {
-	/// Arena dispatching video and audio through the same backend.
+	/// Create an arena that dispatches video and audio through the same
+	/// backend.
+	///
+	/// `dispatch` is cloned: one clone becomes the video dispatcher and the
+	/// other the audio dispatcher, so a single threading backend serves both
+	/// kinds. `producer` renders video frames ([`Producer`]); audio goes
+	/// through `eval::render_audio_samples` instead. No inline audio fallback
+	/// is installed (see [`TicketArena::new_with_audio_fallback`] for the
+	/// teardown-safe variant). Ticket ids start at 1 and the arena starts
+	/// without shutdown requested.
 	pub fn new(dispatch: Arc<dyn JobDispatch>, producer: Producer) -> Self {
 		Self::new_with_audio(dispatch.clone(), dispatch, producer)
 	}
@@ -533,8 +693,17 @@ impl TicketArena {
 		)
 	}
 
-	/// Submit a Background-priority frame (M15 S2 exports/precache): the
-	/// scheduler renders it whenever no Seek/Playback work is pending.
+	/// Submit a frame at Background priority so exports and pre-caches do not
+	/// compete with interactive rendering.
+	///
+	/// The job joins the scheduler with [`JobSchedule::background`]: it is
+	/// rendered whenever no Seek/Playback work is pending, which is how M15
+	/// S2 export/precache runs stay responsive. The id comes from
+	/// [`TicketArena::next_id`] and the ticket is completion-only
+	/// (`poll_after == false`), so a finished slot is reaped at the next
+	/// `allocate()`; the export loop instead reserves ids itself and calls
+	/// [`TicketArena::submit_video_background_with_id`]. `done` fires exactly
+	/// once, with `Error::State` on cancellation or a dead backend.
 	pub fn submit_video_background(&self, params: VideoTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_video_background_with_id(id, params, done)
@@ -551,8 +720,22 @@ impl TicketArena {
 		self.submit_video_impl(id, params, done, JobSchedule::background(), false)
 	}
 
-	/// Submit a video ticket; completion fires exactly once, including
-	/// on cancellation (with `Error::State`).
+	/// Submit one video frame at [`JobSchedule::seek`] priority and return
+	/// its freshly allocated id.
+	///
+	/// `params` describes the viewer, project, frame time, force size/format
+	/// and the footage or montage to render; `done` is consumed by the ticket
+	/// and called exactly once — with `TicketPayload::Video`/`ShmFrame` on
+	/// success, and with `Error::State` on cancellation or when the backend is
+	/// already gone (a shutdown race finishes the slot inline instead of
+	/// posting). The frame is delivered from the dispatcher's poll loop, so a
+	/// caller that blocks must pump/wait through [`TicketArena::wait`].
+	///
+	/// This is the completion-only variant (`poll_after == false`): once
+	/// finished, the slot is reaped at the next `allocate()`. Use
+	/// [`TicketArena::submit_video_with_id`] when the caller reserves the id
+	/// and polls [`TicketArena::wait`]/[`TicketArena::result`], or
+	/// [`TicketArena::submit_video_background`] for export/precache priority.
 	pub fn submit_video(&self, params: VideoTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_video_impl(id, params, done, JobSchedule::seek(), false)
@@ -572,8 +755,27 @@ impl TicketArena {
 		self.submit_audio_impl(id, params, done, true)
 	}
 
-	/// The shared audio-ticket submit path (`poll_after` 语义同
-	/// [`TicketArena::submit_video_impl`]).
+	/// The shared audio-ticket submit path behind
+	/// [`TicketArena::submit_audio`] and [`TicketArena::submit_audio_with_id`].
+	///
+	/// Registers a slot for `id` with kind [`ticket_kind::AUDIO`], the
+	/// range's in-point as its time and the full `range`, then builds the
+	/// worker job: the producer ignores the video params and calls
+	/// `eval::render_audio_samples` with a clone of `params`, the schedule is
+	/// [`JobSchedule::seek`], and the cancellation closure reads the slot's
+	/// cancel flag. `done` is moved into the slot and taken (so called at
+	/// most once) when the job finishes. Posting goes to `audio_dispatch`;
+	/// when it refuses (shutting down) the job is rebuilt and posted to
+	/// `audio_fallback`, and if that also refuses, `slot.finish` is called
+	/// directly on the caller thread so the completion still fires exactly
+	/// once — with `Error::State`.
+	///
+	/// `poll_after` selects the reaping policy, mirroring
+	/// [`TicketArena::submit_video_impl`]: `true` keeps the slot after
+	/// finishing until [`TicketArena::result`] reaps it (sync wheel: the
+	/// caller polls `wait`/`result`), `false` lets the next `allocate()`
+	/// reap it (fire-and-forget). Always returns `id`; submission failures
+	/// are delivered through `done`, not returned.
 	fn submit_audio_impl(
 		&self,
 		id: TicketId,
@@ -659,14 +861,36 @@ impl TicketArena {
 		id
 	}
 
-	/// Submit an audio ticket (range pull; C++ render_audio). The
-	/// completion fires exactly once.
+	/// Submit an audio range pull and return its freshly allocated ticket id.
+	///
+	/// `params` carries the sequence identity, the half-open range, the
+	/// sample rate/channel layout, the montage and the master-bus chain;
+	/// `done` is consumed by the ticket and called exactly once. The job is
+	/// posted at [`JobSchedule::seek`] priority to the arena's audio backend,
+	/// falling back to the inline main-process dispatcher when that backend
+	/// is gone, and finishing immediately with `Error::State` if neither
+	/// accepts it (shutdown). Cancellation also delivers `Error::State`
+	/// rather than nothing.
+	///
+	/// Ids come from [`TicketArena::next_id`]. This variant is
+	/// completion-only (`poll_after == false`): once finished, the slot is
+	/// reaped at the next `allocate()`. A caller that later needs
+	/// [`TicketArena::wait`]/[`TicketArena::result`] must use
+	/// [`TicketArena::submit_audio_with_id`], which keeps the slot until
+	/// `result()` reaps it.
 	pub fn submit_audio(&self, params: AudioTicketParams, done: Completion) -> TicketId {
 		let id = self.next_id();
 		self.submit_audio_impl(id, params, done, false)
 	}
 
-	/// True when the ticket has finished.
+	/// Whether the ticket's slot is in the finished state.
+	///
+	/// `true` once [`TicketSlot::finish`] has published its result — including
+	/// the cancelled case, which finishes with `Error::State`. Returns
+	/// `false` both for a running ticket and for an unknown or already reaped
+	/// id, so it cannot distinguish "still rendering" from "no such ticket";
+	/// callers that must tell those apart use [`TicketArena::result`] or keep
+	/// the id alive by polling (`submit_*_with_id`).
 	pub fn is_finished(&self, id: TicketId) -> bool {
 		match lock(&self.slots).get(&id) {
 			Some(slot) => slot.is_finished(),
@@ -708,22 +932,47 @@ impl TicketArena {
 		lock(&self.slots).remove(&id).and_then(|s| s.result())
 	}
 
-	/// Ticket metadata query (C++ property()).
+	/// The ticket's metadata record (the C++ `property()` query).
+	///
+	/// Returns a clone of the [`TicketMeta`] captured at submit time: `kind`
+	/// (`Some(0)`/`Some(1)`) and `time` are set for both kinds; the
+	/// `cache_dir`/`cache_id`/`cache_timebase` fields are filled only for
+	/// video tickets that were submitted with cache parameters, and stay
+	/// `None` otherwise. The record is a fixed struct, not a general property
+	/// bag, so no other keys exist. Returns `None` for an unknown or reaped
+	/// id.
 	pub fn meta(&self, id: TicketId) -> Option<TicketMeta> {
 		lock(&self.slots).get(&id).map(|s| lock(&s.meta).clone())
 	}
 
-	/// The ticket's kind.
+	/// The ticket's kind as one of the [`ticket_kind`] constants:
+	/// `0` for a video ticket, `1` for an audio ticket.
+	///
+	/// The kind is fixed when the ticket is submitted, so it stays readable
+	/// after the ticket finishes (until the slot is reaped). Returns `None`
+	/// for an unknown or reaped id — distinct from a valid ticket, because
+	/// both constants are non-negative.
 	pub fn kind(&self, id: TicketId) -> Option<i32> {
 		lock(&self.slots).get(&id).map(|s| s.kind)
 	}
 
-	/// The ticket's time (video tickets).
+	/// The ticket's timestamp.
+	///
+	/// For video tickets this is the frame's time passed to the submit; for
+	/// audio tickets it is the range's in-point (the range itself is
+	/// [`TicketArena::range`]). Both are in the sequence timebase. Returns
+	/// `None` when the id is unknown or already reaped.
 	pub fn time(&self, id: TicketId) -> Option<Rational> {
 		lock(&self.slots).get(&id).map(|s| s.time)
 	}
 
-	/// The ticket's range (audio tickets).
+	/// The time range this ticket represents.
+	///
+	/// Audio tickets store the pulled range (`params.range`, half-open), while
+	/// video tickets have no range of their own and store the degenerate
+	/// `time..time`; use [`TicketArena::time`] to get the frame time for
+	/// either kind. Returns `None` when the id is unknown or has already been
+	/// reaped (see [`TicketArena::result`]).
 	pub fn range(&self, id: TicketId) -> Option<TimeRange> {
 		lock(&self.slots).get(&id).map(|s| s.range)
 	}
@@ -911,6 +1160,7 @@ mod tests {
 				sample_rate: 48000,
 				channel_layout: 0x3,
 				montage: Vec::new(),
+				bus_effects: Vec::new(),
 			},
 			Box::new(move |r: TicketResult| {
 				let _ = tx.send(r.is_err());
@@ -968,5 +1218,60 @@ mod tests {
 		assert!(b.0 > a.0);
 		assert_ne!(a, b);
 		video.shutdown();
+	}
+
+	/// The montage audio view of a clip is read from the block core in one
+	/// place (preview/export both use it), with the persisted ranges
+	/// clamped and the effect chain copied in source-first order.
+	#[test]
+	fn montage_audio_reads_and_clamps_clip_fields() {
+		let mut core = quercus_node::block::BlockCore::default();
+		let defaults = MontageAudio::from_block_core(&core);
+		assert_eq!(defaults.gain, 1.0);
+		assert_eq!(defaults.pan, 0.0);
+		assert_eq!(defaults.fade_in, Rational::new(0, 1));
+		assert_eq!(defaults.fade_out, Rational::new(0, 1));
+		assert!(defaults.effects.is_empty());
+
+		core.audio_gain = 9.0;
+		core.audio_pan = -3.0;
+		core.audio_fade_in = Rational::new(-1, 1);
+		core.audio_fade_out = Rational::new(1, 2);
+		let mut volume =
+			quercus_node::block::ClipAudioEffect::new(quercus_node::block::AUDIO_EFFECT_VOLUME_TYPE_ID);
+		volume.set_param(
+			quercus_node::block::AUDIO_VOLUME_INPUT,
+			quercus_node::value::NodeValue::Float(0.5),
+		);
+		let pan = quercus_node::block::ClipAudioEffect::new(
+			quercus_node::block::AUDIO_EFFECT_PAN_TYPE_ID,
+		);
+		core.audio_effects = vec![volume, pan];
+		let audio = MontageAudio::from_block_core(&core);
+		assert_eq!(audio.gain, 4.0, "gain is clamped to the persisted range");
+		assert_eq!(audio.pan, -1.0, "pan is clamped to -1..1");
+		assert_eq!(audio.fade_in, Rational::new(0, 1), "negative fade -> none");
+		assert_eq!(audio.fade_out, Rational::new(1, 2));
+		assert_eq!(audio.effects.len(), 2);
+		assert_eq!(
+			audio.effects[0].type_id,
+			quercus_node::block::AUDIO_EFFECT_VOLUME_TYPE_ID
+		);
+		assert_eq!(
+			audio.effects[0].param(quercus_node::block::AUDIO_VOLUME_INPUT),
+			Some(&quercus_node::value::NodeValue::Float(0.5))
+		);
+		assert_eq!(
+			audio.effects[1].type_id,
+			quercus_node::block::AUDIO_EFFECT_PAN_TYPE_ID
+		);
+
+		// Hand-edited NaN values fall back to unity/centre instead of
+		// poisoning the whole mix.
+		core.audio_gain = f64::NAN;
+		core.audio_pan = f64::NAN;
+		let audio = MontageAudio::from_block_core(&core);
+		assert_eq!(audio.gain, 1.0);
+		assert_eq!(audio.pan, 0.0);
 	}
 }

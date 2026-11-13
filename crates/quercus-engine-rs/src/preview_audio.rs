@@ -5,11 +5,11 @@ use std::ffi::c_void;
 use crate::audio::LevelStats;
 use crate::types::TimeRange;
 
-#[cfg_attr(
+#[cfg_attr(all(windows, feature = "engine-cdylib"),
 	windows,
 	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
 )]
-#[cfg_attr(not(windows), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
 unsafe extern "C" {
 	fn quercus_audio_buffer_add_ref(audio: *const c_void);
 	fn quercus_audio_buffer_release(audio: *const c_void);
@@ -45,6 +45,17 @@ unsafe impl Send for AudioBlock {}
 unsafe impl Sync for AudioBlock {}
 
 impl AudioBlock {
+	/// Wraps a raw engine audio-buffer pointer, or `None` when it is null.
+	///
+	/// Takes ownership of the reference the C call returned: the block releases
+	/// it on `Drop` and clones add a reference. Only pointers produced by the
+	/// engine's preview-audio path (e.g. from `quercus_task_take_audio`) may be
+	/// passed here; constructing a block from any other pointer would release
+	/// memory the engine does not own.
+	///
+	/// # Arguments
+	///
+	/// * `ptr` - pointer returned by the engine; null means no buffer.
 	pub(crate) fn from_raw(ptr: *const c_void) -> Option<Self> {
 		(!ptr.is_null()).then_some(Self { ptr })
 	}

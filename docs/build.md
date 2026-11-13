@@ -13,20 +13,20 @@ workspace through the SDK.
   OpenColorIO and the FFmpeg dependency builds)
 - **System libraries** used by the engine: ALSA/PulseAudio/PipeWire/JACK,
   Vulkan/GL drivers and XKB on Linux
-- **FFmpeg 8.1**, built by the project script (distro FFmpeg is too old for
-  `ffmpeg-next` 9)
+- **FFmpeg 8.1 development files**, supplied through `FFMPEG_DIR`
 
 ## One-time setup
 
 ```sh
 tooling/install-deps.sh         # Homebrew / apt / dnf / pacman / MSYS2
-tooling/ffmpeg/build-ffmpeg.sh  # builds every codec dependency + FFmpeg 8.1
+tooling/ffmpeg/build-ffmpeg.sh --shared  # shared development build
 ```
 
 `tooling/ffmpeg/build-ffmpeg.sh` installs into `.cache/ffmpeg`. The
 committed `.cargo/config.toml` sets `FFMPEG_DIR` relative to the workspace
-root, so no environment variable needs exporting. CI uses the same two
-scripts (the Windows job uses a prebuilt FFmpeg archive instead).
+root, so no environment variable needs exporting. CI downloads BtbN's
+`gpl-shared` development package on Linux/Windows and uses this shared build
+on macOS.
 
 ## Build and test
 

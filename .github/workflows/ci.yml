@@ -85,19 +85,22 @@ jobs:
           $inner = Get-ChildItem "$root\ffmpeg-extract" -Directory | Select-Object -First 1
           Move-Item $inner.FullName "$root\ffmpeg"
 
-      - name: Restore FFmpeg build (Linux/macOS)
-        if: matrix.platform != 'windows'
-        id: ffmpeg-cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/ffmpeg
-          key: ffmpeg-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('tooling/ffmpeg/build-ffmpeg.sh', 'tooling/ffmpeg/build-deps.sh', 'tooling/install-deps.sh') }}
-          restore-keys: ffmpeg-${{ runner.os }}-${{ matrix.arch }}-
+      - name: Install pkg-config (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-pkgconf
+          "PKG_CONFIG=C:\msys64\ucrt64\bin\pkgconf.exe" >> $env:GITHUB_ENV
 
-      - name: Build FFmpeg (Linux/macOS)
-        if: matrix.platform != 'windows' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      - name: Download BtbN FFmpeg (Linux)
+        if: matrix.platform == 'linux'
         shell: bash
-        run: tooling/ffmpeg/build-ffmpeg.sh
+        run: tooling/ffmpeg/download-btbn.sh linux64
+
+      - name: Build shared FFmpeg (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: tooling/ffmpeg/build-ffmpeg.sh --shared
 
       - name: Configure build environment
         shell: bash
@@ -116,6 +119,11 @@ jobs:
             echo "FFMPEG_DIR=$ffmpeg" >> "$GITHUB_ENV"
             echo "PKG_CONFIG_PATH=$ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
             echo "$ffmpeg/bin" >> "$GITHUB_PATH"
+            if [[ "${{ matrix.platform }}" == "linux" ]]; then
+              echo "LD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+            else
+              echo "DYLD_LIBRARY_PATH=$ffmpeg/lib" >> "$GITHUB_ENV"
+            fi
             bash tooling/ocio-env.sh >> "$GITHUB_ENV"
           fi
 
