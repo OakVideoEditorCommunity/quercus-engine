@@ -39,7 +39,7 @@ OUTPUT = ROOT / "docs" / "c-api" / "reference.md"
 # Counts asserted by the header's own provenance line and by the task that
 # introduced this reference. Any drift means either the header or this parser
 # is wrong; fail loudly instead of publishing an incomplete reference.
-EXPECTED_FUNCTIONS = 743
+EXPECTED_FUNCTIONS = 744
 EXPECTED_NAMED_STRUCTS = 60
 EXPECTED_ENUMS = 14
 EXPECTED_CALLBACKS = 10
@@ -631,7 +631,7 @@ def validate(header_text, functions, named_structs, inline_structs, forwards, en
             errors.append("missing required alias {}".format(required))
     if not inline_structs:
         errors.append("expected the inline QuercusMat3 struct definition")
-    if not re.search(r"\b743\s+functions\b", header_text):
+    if not re.search(r"\b744\s+functions\b", header_text):
         errors.append("header provenance line no longer advertises 743 functions")
     if errors:
         print("error: C header no longer matches the reference generator:", file=sys.stderr)
@@ -901,7 +901,7 @@ def render(facts: dict) -> str:
             )
             # Symbol and one-line summary share the heading line; the exact C
             # prototype follows in its own fenced block. This keeps the full
-            # 743-function reference compact and scannable.
+            # 744-function reference compact and scannable.
             out.append("### `{}` — {}".format(symbol, summary))
             out.extend(fenced("c", function["prototype"]))
 

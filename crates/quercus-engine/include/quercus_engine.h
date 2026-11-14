@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 60 POD structs, 14 enums, 743 functions. */
+/* 60 POD structs, 14 enums, 744 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -1414,6 +1414,7 @@ bool quercus_render_disk_cache_set_max_bytes(int64_t max_bytes);
 bool quercus_render_disk_cache_set_path(const uint8_t* path, size_t path_len);
 int64_t quercus_render_disk_cache_size(void);
 int32_t quercus_render_frame_f32(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, float* dst, size_t dst_capacity);
+int32_t quercus_render_frame_rgba8_display(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, const uint8_t* gamut, size_t gamut_len, const uint8_t* transfer, size_t transfer_len, uint8_t* dst, size_t dst_capacity);
 bool quercus_render_gpu_host_installed(void);
 bool quercus_render_gpu_init(int32_t backend_kind);
 bool quercus_render_gpu_install(const void* wgpu_device, const void* wgpu_queue, int32_t backend_kind);

@@ -28,6 +28,19 @@ unsafe extern "C" {
 		dst: *mut f32,
 		dst_capacity: usize,
 	) -> i32;
+	fn quercus_render_frame_rgba8_display(
+		project: *const c_void,
+		viewer: u64,
+		time: Rational,
+		width: i32,
+		height: i32,
+		gamut: *const u8,
+		gamut_len: usize,
+		transfer: *const u8,
+		transfer_len: usize,
+		dst: *mut u8,
+		dst_capacity: usize,
+	) -> i32;
 	fn quercus_render_disk_cache_path(buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_render_disk_cache_size() -> i64;
 	fn quercus_render_disk_cache_clear() -> bool;
@@ -104,6 +117,50 @@ pub fn render_frame_f32(
 		)
 	};
 	if written < 0 {
+		return None;
+	}
+	dst.truncate(written as usize);
+	Some(dst)
+}
+
+/// Renders a viewer frame with the project's working → display transform
+/// applied on the GPU, returning tight 8-bit RGBA (`width*height*4` bytes).
+///
+/// `gamut` and `transfer` are the project's display settings (`"srgb"`,
+/// `"displayp3"`, `"bt2020"` / `"srgb"`, `"gamma22"`, `"pq"`, `"hlg"`). This
+/// replaces [`crate::utils::working_to_display_target`] for display output:
+/// the ACEScg → display matrix and transfer run inside the render's GPU pack
+/// pass, so no per-pixel CPU transform is needed. `None` on failure (unknown
+/// viewer, invalid size, or a render error).
+pub fn render_frame_rgba8_display(
+	project: &Project,
+	viewer: NodeId,
+	time: Rational,
+	size: (u32, u32),
+	gamut: &str,
+	transfer: &str,
+) -> Option<Vec<u8>> {
+	let (w, h) = size;
+	if w == 0 || h == 0 {
+		return None;
+	}
+	let mut dst = vec![0u8; (w * h * 4) as usize];
+	let written = unsafe {
+		quercus_render_frame_rgba8_display(
+			project.as_raw(),
+			viewer.raw(),
+			time,
+			w as i32,
+			h as i32,
+			gamut.as_ptr(),
+			gamut.len(),
+			transfer.as_ptr(),
+			transfer.len(),
+			dst.as_mut_ptr(),
+			dst.len(),
+		)
+	};
+	if written <= 0 || written as usize > dst.len() {
 		return None;
 	}
 	dst.truncate(written as usize);

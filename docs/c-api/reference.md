@@ -5,9 +5,9 @@
 | Property | Value |
 | --- | --- |
 | Source header | `crates/quercus-engine/include/quercus_engine.h` |
-| Header SHA-256 | `7f47c303b1892ab5bd771342a08649b1c259cbd1c082f71bc7bdd4a74a2dbcf7` |
-| Header lines | 1567 |
-| Functions | 743 |
+| Header SHA-256 | `a413e89ed3c7bb0d581268749dbd271b8ea27117f9c88a20867aa55f9298f3c4` |
+| Header lines | 1568 |
+| Functions | 744 |
 | Modules | 26 |
 | Named POD structs | 60 |
 | Additional inline structs | 1 (`QuercusMat3`) |
@@ -56,7 +56,7 @@ python3 tooling/gen_c_header.py --check     # verify the source header
 | [`otio`](#module-otio) | 56 |
 | [`ofx`](#module-ofx) | 91 |
 | [`plugin`](#module-plugin) | 10 |
-| [`render`](#module-render) | 31 |
+| [`render`](#module-render) | 32 |
 | [`storage`](#module-storage) | 27 |
 | [`task`](#module-task) | 22 |
 | [`thumbnail`](#module-thumbnail) | 4 |
@@ -65,7 +65,7 @@ python3 tooling/gen_c_header.py --check     # verify the source header
 | [`generator`](#module-generator) | 1 |
 | [`folder`](#module-folder) | 3 |
 | [`video`](#module-video) | 5 |
-| **Total** | **743** |
+| **Total** | **744** |
 
 ## Enums (14)
 
@@ -4072,7 +4072,7 @@ int32_t quercus_plugin_register(const QuercusPluginDescriptor* descriptor, Comma
 bool quercus_plugin_unregister(int32_t index);
 ```
 <a id="module-render"></a>
-## Module: `render` (31 functions)
+## Module: `render` (32 functions)
 
 ### `quercus_render_disk_cache_clear` — Clears the disk cache, deleting every cached file rather than only entries over the configured budget.
 ```c
@@ -4105,6 +4105,10 @@ int64_t quercus_render_disk_cache_size(void);
 ### `quercus_render_frame_f32` — Renders a sequence or video-footage viewer at `time`, returning tight F32 RGBA pixels (`width*height*4` floats). None on failure (unknown viewer, invalid size, render error).
 ```c
 int32_t quercus_render_frame_f32(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, float* dst, size_t dst_capacity);
+```
+### `quercus_render_frame_rgba8_display` — Renders a viewer frame with the project's working → display transform applied on the GPU, returning tight 8-bit RGBA (`width*height*4` bytes).
+```c
+int32_t quercus_render_frame_rgba8_display(const void* project, uint64_t viewer, Rational time, int32_t width, int32_t height, const uint8_t* gamut, size_t gamut_len, const uint8_t* transfer, size_t transfer_len, uint8_t* dst, size_t dst_capacity);
 ```
 ### `quercus_render_gpu_host_installed` — True when the host installed or marked the shared render device.
 ```c
@@ -4500,6 +4504,6 @@ Summaries are harvested from contiguous `///` blocks in the Rust SDK by matching
 
 | Item | Documented | Total |
 | --- | ---: | ---: |
-| Functions (Rust SDK summary) | 676 | 743 |
-| Functions (neutral fallback) | 67 | 743 |
+| Functions (Rust SDK summary) | 677 | 744 |
+| Functions (neutral fallback) | 67 | 744 |
 | Types and callbacks (Rust SDK summary) | 65 | 85 |

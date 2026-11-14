@@ -331,19 +331,16 @@ pub unsafe extern "C" fn quercus_render_frame_f32(
 	needed as i32
 }
 
-/// Renders and tightly packs an owned F32 RGBA frame for synchronous callers
-/// and asynchronous thumbnail tasks. Keeping stride handling here prevents the
-/// C ABI and task DTO from disagreeing about padded GPU readbacks.
-pub(crate) fn render_frame_f32_data(
-	project: Arc<Mutex<quercus_node::project::Project>>,
+/// Render a sequence or video-footage viewer to an F32 RGBA texture.
+///
+/// Shared by the F32 frame grab and the GPU display-transform frame grab.
+fn render_viewer_texture(
+	project: &Arc<Mutex<quercus_node::project::Project>>,
 	viewer: NodeId,
 	time: quercus_core::Rational,
 	width: i32,
 	height: i32,
-) -> Result<Vec<f32>, String> {
-	if width <= 0 || height <= 0 {
-		return Err("invalid frame dimensions".into());
-	}
+) -> Result<quercus_core::texture::Texture, String> {
 	enum Viewer {
 		Sequence,
 		Footage(String, i32),
@@ -374,9 +371,9 @@ pub(crate) fn render_frame_f32_data(
 			return Err("viewer is neither a sequence nor video footage".into());
 		}
 	};
-	let texture = match viewer_kind {
+	match viewer_kind {
 		Viewer::Sequence => quercus_render::eval::render_graph_frame(
-			&project,
+			project,
 			viewer,
 			time,
 			(width, height),
@@ -390,10 +387,35 @@ pub(crate) fn render_frame_f32_data(
 			PixelFormat::F32,
 		),
 	}
-	.map_err(|e| e.to_string())?;
+	.map_err(|e| e.to_string())
+}
+
+/// Renders and tightly packs an owned F32 RGBA frame for synchronous callers
+/// and asynchronous thumbnail tasks. Keeping stride handling here prevents the
+/// C ABI and task DTO from disagreeing about padded GPU readbacks.
+pub(crate) fn render_frame_f32_data(
+	project: Arc<Mutex<quercus_node::project::Project>>,
+	viewer: NodeId,
+	time: quercus_core::Rational,
+	width: i32,
+	height: i32,
+) -> Result<Vec<f32>, String> {
+	if width <= 0 || height <= 0 {
+		return Err("invalid frame dimensions".into());
+	}
+	let texture = render_viewer_texture(&project, viewer, time, width, height)?;
 	let Ok(frame) = texture.to_frame() else {
 		return Err("failed to read back the rendered frame".into());
 	};
+	frame_to_f32_samples(&frame, width, height)
+}
+
+/// Copy a core CPU frame into tight F32 RGBA samples.
+fn frame_to_f32_samples(
+	frame: &quercus_core::texture::Frame,
+	width: i32,
+	height: i32,
+) -> Result<Vec<f32>, String> {
 	let params = frame.video_params();
 	if params.width != width || params.height != height || params.format != PixelFormat::F32 as i32
 	{
@@ -412,6 +434,131 @@ pub(crate) fn render_frame_f32_data(
 		out[y * tight..(y + 1) * tight].copy_from_slice(&frame.data[y * row..y * row + tight]);
 	}
 	Ok(pixels)
+}
+
+/// Renders a sequence or video-footage viewer at `time`, applies the
+/// project's working → display transform, and writes tight 8-bit RGBA to
+/// `dst` (`width*height*4` bytes). Returns the byte count, -1 on failure.
+///
+/// The transform (ACEScg working space → the requested display gamut and
+/// transfer) runs on the GPU through the same pack pass the export uses; the
+/// CPU path is the fallback when the render produced no GPU texture. `gamut`
+/// and `transfer` are the project's display settings (`"srgb"`, `"displayp3"`,
+/// `"bt2020"` / `"srgb"`, `"gamma22"`, `"pq"`, `"hlg"`).
+///
+/// # Safety
+///
+/// `project` must be null or point to a live `ProjectHandle`; `gamut`/`transfer`
+/// must be null or point to `*_len` readable bytes; `dst` must be null or point
+/// to `dst_capacity` writable bytes valid for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn quercus_render_frame_rgba8_display(
+	project: *const ProjectHandle,
+	viewer: u64,
+	time: QuercusRational,
+	width: i32,
+	height: i32,
+	gamut: *const u8,
+	gamut_len: usize,
+	transfer: *const u8,
+	transfer_len: usize,
+	dst: *mut u8,
+	dst_capacity: usize,
+) -> i32 {
+	if project.is_null() || dst.is_null() || width <= 0 || height <= 0 {
+		return -1;
+	}
+	let needed = width as usize * height as usize * 4;
+	if dst_capacity < needed {
+		return -1;
+	}
+	let (Some(gamut), Some(transfer)) = (
+		unsafe { str_arg(gamut, gamut_len) },
+		unsafe { str_arg(transfer, transfer_len) },
+	) else {
+		return -1;
+	};
+	let Some(viewer) = NodeId::from_identity(viewer) else {
+		return -1;
+	};
+	let project = unsafe { &*project }.project();
+	let working = {
+		let guard = project.lock().unwrap_or_else(|e| e.into_inner());
+		guard.working_color_space()
+	};
+	let spec = quercus_core::colormath::OutputColorSpec::from_settings(gamut, transfer);
+	let Ok(texture) = render_viewer_texture(&project, viewer, time.to_native(), width, height)
+	else {
+		return -1;
+	};
+
+	// Preferred path: the render produced an F32 GPU texture. Apply the
+	// working→display matrix + transfer on the GPU and read back 8-bit RGBA.
+	if working != quercus_core::colormath::WorkingColorSpace::SrgbLegacy {
+		if let quercus_core::texture::Texture::Gpu {
+			token,
+			ctx,
+			width: tw,
+			height: th,
+			..
+		} = &texture
+		{
+			if *tw == width && *th == height {
+				if let Some(gpu) = ctx
+					.as_any()
+					.and_then(|any| any.downcast_ref::<quercus_core::backend::GpuContext>())
+				{
+					use quercus_core::backend::{
+						PackParams, PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ,
+						PACK_TRANSFER_SRGB,
+					};
+					let params = PackParams {
+						matrix: quercus_core::colormath::rgb_to_rgb_matrix(
+							quercus_core::colormath::PRIMARIES_AP1,
+							spec.gamut.primaries(),
+						),
+						transfer: match spec.transfer {
+							quercus_core::colormath::OutputTransfer::Srgb => PACK_TRANSFER_SRGB,
+							quercus_core::colormath::OutputTransfer::Gamma22 => {
+								PACK_TRANSFER_GAMMA22
+							}
+							quercus_core::colormath::OutputTransfer::Pq => PACK_TRANSFER_PQ,
+							quercus_core::colormath::OutputTransfer::Hlg => PACK_TRANSFER_HLG,
+						},
+					};
+					if let Ok(frame) = gpu.pack_output_cpu(*token, width, height, 8, &params) {
+						let tight = width as usize * 4;
+						let row = frame.linesize_bytes().max(tight);
+						if frame.data.len() >= row * (height as usize - 1) + tight {
+							let out =
+								unsafe { std::slice::from_raw_parts_mut(dst, needed) };
+							for y in 0..height as usize {
+								out[y * tight..(y + 1) * tight]
+									.copy_from_slice(&frame.data[y * row..y * row + tight]);
+							}
+							return needed as i32;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: CPU readback + the reference row-wise display transform.
+	let Ok(frame) = texture.to_frame() else {
+		return -1;
+	};
+	let Ok(mut samples) = frame_to_f32_samples(&frame, width, height) else {
+		return -1;
+	};
+	quercus_core::colormath::working_to_display_target(&mut samples, working, spec);
+	let out = unsafe { std::slice::from_raw_parts_mut(dst, needed) };
+	for (dst_px, px) in out.chunks_exact_mut(4).zip(samples.chunks_exact(4)) {
+		for c in 0..4 {
+			dst_px[c] = (px[c].clamp(0.0, 1.0) * 255.0).round() as u8;
+		}
+	}
+	needed as i32
 }
 
 /// The disk cache directory, snprintf-style.
