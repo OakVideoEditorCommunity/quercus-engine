@@ -214,7 +214,7 @@ jobs:
           cp target/release/libquercus_engine.a dist/lib/
           cp -a "$FFMPEG_DIR/lib/"*.dylib dist/lib/
           cp crates/quercus-engine/include/quercus_engine.h dist/include/
-          zip -qr quercus-engine-native-macos-arm64.zip -C dist include lib
+          cd dist && zip -qr ../quercus-engine-native-macos-arm64.zip include lib
 
       - name: Package native library (Windows)
         if: matrix.platform == 'windows'

@@ -58,3 +58,7 @@ cp "$RPMROOT"/RPMS/*/*.rpm "$OUT/" 2>/dev/null || cp "$RPMROOT"/RPMS/*.rpm "$OUT
 GLIBC_VERSION="$(ldd --version | sed -n '1s/.* //p')"
 printf 'glibc %s\n' "$GLIBC_VERSION" > "$STAGE/GLIBC_VERSION"
 tar -czf "$OUT/quercus-engine-native-linux-${ARCH}-glibc${GLIBC_VERSION}.tar.gz" -C "$STAGE" .
+(
+	cd "$STAGE"
+	zip -qr "$OUT/quercus-engine-native-linux-${ARCH}-glibc${GLIBC_VERSION}.zip" .
+)
