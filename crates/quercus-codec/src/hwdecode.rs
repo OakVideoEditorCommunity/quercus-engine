@@ -42,6 +42,10 @@
 //! (`crate::gpuinterop`) or are transferred to system memory with
 //! `av_hwframe_transfer_data` before the swscale conversion.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use ffmpeg::ffi as sys;
 use ffmpeg::Dictionary;
 use ffmpeg_next as ffmpeg;
@@ -74,6 +78,23 @@ pub static HW_SURFACES: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// `get_format` chose a software format even though a hardware device was attached.
 pub static HW_FORMAT_FALLBACKS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+/// Hardware decode errors observed on a session (frame-level; the L1 policy's
+/// input). Distinct from [`HW_OPEN_FAILURES`] (device/session creation).
+pub static HW_DECODE_FAILURES: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+/// Hardware session restarts performed by the L1 retry policy.
+pub static HW_SESSION_RESTARTS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+/// Frames decoded through the per-frame software fallback while the hardware
+/// session stayed alive (L1).
+pub static HW_FRAME_FALLBACKS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+/// Streams pinned to software by the L2 policy.
+pub static HW_STREAM_PINS: std::sync::atomic::AtomicU64 =
+	std::sync::atomic::AtomicU64::new(0);
+/// Formats degraded by the L3 ratio breaker.
+pub static HW_FORMAT_DEGRADES: std::sync::atomic::AtomicU64 =
 	std::sync::atomic::AtomicU64::new(0);
 
 /// The config key of the hardware-decode switch (1 = prefer hardware,
@@ -137,10 +158,407 @@ pub fn device_unavailable(device_type: sys::AVHWDeviceType) -> bool {
 
 /// Record that `device_type`'s device context failed to create (sticky
 /// for the process; the caller falls back to the next candidate).
+///
+/// This is the *device* half of the negative cache: it must only be
+/// written when `av_hwdevice_ctx_create` fails (no driver / no hardware).
+/// A frame-level decode error is a property of the (device, format) pair —
+/// see [`HwFormatKey`] and [`note_format_attempt`].
 pub fn mark_device_unavailable(device_type: sys::AVHWDeviceType) {
     if let Some(f) = UNAVAILABLE_DEVICES.get(device_type as usize) {
         f.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Decode-failure policy (L0 / L1 / L2 / L3)
+// ---------------------------------------------------------------------------
+//
+// One bad frame must not disable hardware decoding for the whole process, and
+// a file that genuinely cannot be hardware-decoded must not be retried on
+// every frame. The policy is layered:
+//
+// * **L0** — two negative caches with different scopes: [`device_unavailable`]
+//   (device-context creation failed; process-wide, sticky) and
+//   [`format_degraded`] (a device+format combination whose decode attempts
+//   mostly fail; process-wide, TTL-bounded).
+// * **L1** — per stream: a hardware decode error restarts the same device and
+//   retries the request. The request path re-seeks to the preceding keyframe,
+//   so the retry is inherently keyframe-aligned. The restart budget bounds
+//   how often that may happen.
+// * **L2** — per stream: consecutive failures or an exhausted restart budget
+//   pin the stream to software for its remaining frames.
+// * **L3** — process-wide: a sliding window of attempts per [`HwFormatKey`]
+//   degrades the format when its hardware success rate stays below
+//   [`FORMAT_DEGRADE_SUCCESS_PERCENT`]; the entry expires after
+//   [`FORMAT_DEGRADED_TTL`] and is probed again.
+
+/// L1: hardware session restarts allowed inside one rolling window of
+/// [`HW_RESTART_WINDOW_FRAMES`] decoded frames before the stream is pinned.
+///
+/// A 4K 4:2:2 10-bit H.264 stream that VideoToolbox can decode needs a
+/// session restart on roughly 4 % of its frames (scene changes / reconfigs),
+/// so a clip-level budget of 32 restarts is enough; the window keeps a long
+/// healthy session from accumulating restarts forever.
+pub const MAX_HW_SESSION_RESTARTS: u32 = 32;
+
+/// L1: decoded frames after which the restart counter is reset (the rolling
+/// window for [`MAX_HW_SESSION_RESTARTS`]).
+pub const HW_RESTART_WINDOW_FRAMES: u32 = 300;
+
+/// L2: consecutive hardware decode failures after which the stream stops
+/// being retried (a frame fallback is still allowed until its own budget is
+/// spent).
+///
+/// Measured on the 4K 4:2:2 10-bit H.264 sample: failures arrive in bursts of
+/// 3-4 at specific timestamps, and restarting the session re-seeks to the same
+/// frame, which fails again. The frame-level software fallback therefore does
+/// the real recovery; this budget only bounds a stream that fails *every*
+/// frame (a truly broken configuration).
+pub const MAX_CONSECUTIVE_DECODE_FAILURES: u32 = 8;
+
+/// L1: per-frame software fallbacks allowed per stream before the stream is
+/// pinned. Reserved for the frame-level path (decode one frame in software and
+/// keep hardware for the rest); the current implementation pins the stream
+/// instead of carrying two sessions.
+pub const MAX_FRAME_FALLBACKS_PER_STREAM: u32 = 10;
+
+/// L3: attempts in the sliding window before the success ratio is judged.
+pub const FORMAT_WINDOW_ATTEMPTS: u32 = 20;
+
+/// L3: hardware success rate (percent) below which the format is degraded.
+pub const FORMAT_DEGRADE_SUCCESS_PERCENT: u32 = 20;
+
+/// L3: how long a degraded format stays degraded before it is probed again.
+pub const FORMAT_DEGRADED_TTL: Duration = Duration::from_secs(600);
+
+/// Whether the bounded hardware-retry policy is active. `QUERCUS_HW_RETRY=0`
+/// restores the historical behaviour (the first decode error pins the stream
+/// to software) — the field escape hatch for a machine where retrying costs
+/// more than falling back.
+pub fn hw_retry_enabled() -> bool {
+	std::env::var("QUERCUS_HW_RETRY").map(|value| value != "0").unwrap_or(true)
+}
+
+/// Identity of one hardware decode configuration: the device plus the codec
+/// profile and source pixel format it is asked to decode.
+///
+/// The format-level negative cache is keyed on this rather than on the device
+/// alone: a device can reject one profile (e.g. H.264 High 4:2:2 10-bit) and
+/// still decode another (High 4:2:0 8-bit) perfectly well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HwFormatKey {
+	/// `AVHWDeviceType` as its raw integer value.
+	pub device: i32,
+	/// `AVCodecID` of the source stream.
+	pub codec_id: i32,
+	/// `AVProfile` of the source stream.
+	pub profile: i32,
+	/// `AVPixelFormat` of the source stream.
+	pub pixel_format: i32,
+}
+
+impl HwFormatKey {
+	/// Build the key for `device` decoding `codec_id` / `profile` from
+	/// `pixel_format`.
+	pub fn new(
+		device: sys::AVHWDeviceType,
+		codec_id: i32,
+		profile: i32,
+		pixel_format: i32,
+	) -> Self {
+		Self { device: device as i32, codec_id, profile, pixel_format }
+	}
+}
+
+/// Per-format hardware health: a sliding success window plus the degradation
+/// deadline.
+#[derive(Debug)]
+struct FormatHealth {
+	attempts: u32,
+	successes: u32,
+	degraded_until: Option<Instant>,
+}
+
+impl Default for FormatHealth {
+	fn default() -> Self {
+		Self { attempts: 0, successes: 0, degraded_until: None }
+	}
+}
+
+/// The process-wide format-level negative cache (L0/L3).
+static FORMAT_HEALTH: OnceLock<Mutex<HashMap<HwFormatKey, FormatHealth>>> = OnceLock::new();
+
+fn format_health() -> &'static Mutex<HashMap<HwFormatKey, FormatHealth>> {
+	FORMAT_HEALTH.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether `key`'s hardware decode is currently degraded — the candidate scan
+/// skips it. An expired entry clears itself and is probed again.
+pub fn format_degraded(key: &HwFormatKey) -> bool {
+	let mut table = format_health().lock().unwrap_or_else(|e| e.into_inner());
+	match table.get_mut(key) {
+		Some(entry) => match entry.degraded_until {
+			Some(until) if Instant::now() < until => true,
+			Some(_) => {
+				entry.degraded_until = None;
+				entry.attempts = 0;
+				entry.successes = 0;
+				false
+			}
+			None => false,
+		},
+		None => false,
+	}
+}
+
+/// Record one hardware decode attempt (`success` = a hardware frame was
+/// produced) for `key`. Once the window is full, a success rate below
+/// [`FORMAT_DEGRADE_SUCCESS_PERCENT`] degrades the format for
+/// [`FORMAT_DEGRADED_TTL`] and resets the window.
+pub fn note_format_attempt(key: &HwFormatKey, success: bool) {
+	let mut table = format_health().lock().unwrap_or_else(|e| e.into_inner());
+	let entry = table.entry(*key).or_default();
+	entry.attempts = entry.attempts.saturating_add(1);
+	if success {
+		entry.successes = entry.successes.saturating_add(1);
+	}
+	if entry.attempts < FORMAT_WINDOW_ATTEMPTS {
+		return;
+	}
+	let percent = entry.successes.saturating_mul(100) / entry.attempts;
+	if percent < FORMAT_DEGRADE_SUCCESS_PERCENT {
+		entry.degraded_until = Some(Instant::now() + FORMAT_DEGRADED_TTL);
+		HW_FORMAT_DEGRADES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		eprintln!(
+			"[hwdecode] format {:?} degraded for {}s (hardware success {}% over {} attempts)",
+			key,
+			FORMAT_DEGRADED_TTL.as_secs(),
+			percent,
+			entry.attempts
+		);
+	}
+	entry.attempts = 0;
+	entry.successes = 0;
+}
+
+/// Hardware formats whose decoded frames cannot be imported into the render
+/// GPU. Every frame then pays an `av_hwframe_transfer_data` download, which
+/// on 4K 4:2:2 10-bit costs more than software decoding the stream (measured
+/// on the 4K 4:2:2 sample: hardware was ~5 % slower end to end). The
+/// heuristic below flips those formats to software after a couple of failed
+/// imports.
+fn hw_frame_download_is_pessimization(pixel_format: i32) -> bool {
+	pixel_format == sys::AVPixelFormat::AV_PIX_FMT_YUV422P10LE as i32
+		|| pixel_format == sys::AVPixelFormat::AV_PIX_FMT_YUV422P10BE as i32
+}
+
+/// Consecutive import failures after which the format prefers software.
+pub const IMPORT_UNSUPPORTED_LIMIT: u32 = 2;
+
+/// Per-format consecutive unsupported-import counts (L0 heuristic input).
+static IMPORT_UNSUPPORTED: OnceLock<Mutex<HashMap<HwFormatKey, u32>>> = OnceLock::new();
+/// Formats currently preferring software decode, with the deadline at which
+/// the heuristic is re-probed.
+static PREFER_SOFTWARE: OnceLock<Mutex<HashMap<HwFormatKey, Instant>>> = OnceLock::new();
+
+fn import_unsupported_counts() -> &'static Mutex<HashMap<HwFormatKey, u32>> {
+	IMPORT_UNSUPPORTED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prefer_software_table() -> &'static Mutex<HashMap<HwFormatKey, Instant>> {
+	PREFER_SOFTWARE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record that a hardware frame for `key` could not be imported into the GPU
+/// (zero-copy unavailable). Formats with a known-expensive download switch to
+/// software after [`IMPORT_UNSUPPORTED_LIMIT`] consecutive failures.
+pub fn note_hw_import_unsupported(key: &HwFormatKey) {
+	if !hw_frame_download_is_pessimization(key.pixel_format) {
+		return;
+	}
+	let mut counts = import_unsupported_counts()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	let count = counts.entry(*key).or_insert(0);
+	*count = count.saturating_add(1);
+	if *count < IMPORT_UNSUPPORTED_LIMIT {
+		return;
+	}
+	prefer_software_table()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.insert(*key, Instant::now() + FORMAT_DEGRADED_TTL);
+	eprintln!(
+		"[hwdecode] format {:?} prefers software decode: hardware frames cannot be imported \
+		 (4:2:2 10-bit download costs more than decoding)",
+		key
+	);
+}
+
+/// Whether `key` currently prefers software decode because its hardware
+/// frames cannot be imported (auto-expires, then hardware is probed again).
+pub fn prefer_software_for(key: &HwFormatKey) -> bool {
+	let mut table = prefer_software_table()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	match table.get(key).copied() {
+		Some(until) if Instant::now() < until => true,
+		Some(_) => {
+			table.remove(key);
+			false
+		}
+		None => false,
+	}
+}
+
+/// Per-stream hardware decode health (L1/L2).
+///
+/// Owned by one `(filename, stream)` decode session and preserved across
+/// hardware session restarts, so reopening the same device does not reset the
+/// retry budget.
+#[derive(Clone, Debug, Default)]
+pub struct HwStreamHealth {
+	consecutive_failures: u32,
+	session_restarts: u32,
+	frame_fallbacks: u32,
+	frames_since_restart_window: u32,
+	pinned: bool,
+}
+
+impl HwStreamHealth {
+	/// A fresh, unpinned stream.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Whether hardware decoding may still be attempted for this stream.
+	pub fn hardware_allowed(&self) -> bool {
+		!self.pinned
+	}
+
+	/// Whether the stream has been pinned to software.
+	pub fn pinned(&self) -> bool {
+		self.pinned
+	}
+
+	/// Consecutive hardware decode failures (resets on the next success).
+	pub fn consecutive_failures(&self) -> u32 {
+		self.consecutive_failures
+	}
+
+	/// Session restarts spent in the current rolling window.
+	pub fn session_restarts(&self) -> u32 {
+		self.session_restarts
+	}
+
+	/// Frame-level software fallbacks spent on this stream (reserved, L1).
+	pub fn frame_fallbacks(&self) -> u32 {
+		self.frame_fallbacks
+	}
+
+	/// A hardware frame decoded: the failure streak is over.
+	pub fn on_decode_success(&mut self) {
+		self.consecutive_failures = 0;
+		self.frames_since_restart_window = self.frames_since_restart_window.saturating_add(1);
+		if self.frames_since_restart_window >= HW_RESTART_WINDOW_FRAMES {
+			self.frames_since_restart_window = 0;
+			self.session_restarts = 0;
+		}
+	}
+
+	/// Record a hardware decode failure (the failure streak grows).
+	pub fn note_decode_failure(&mut self) {
+		self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+	}
+
+	/// Ask to restart the hardware session for the failed request. Returns
+	/// `false` when the L1 retry budgets are exhausted — the caller then tries
+	/// a per-frame software decode, and finally pins the stream.
+	pub fn admit_restart(&mut self) -> bool {
+		if self.pinned
+			|| !hw_retry_enabled()
+			|| self.consecutive_failures >= MAX_CONSECUTIVE_DECODE_FAILURES
+			|| self.session_restarts >= MAX_HW_SESSION_RESTARTS
+		{
+			return false;
+		}
+		self.session_restarts = self.session_restarts.saturating_add(1);
+		true
+	}
+
+	/// Ask to decode one frame in software while the hardware session stays
+	/// alive for the following frames (the L1 frame-level fallback). Returns
+	/// `false` when the per-stream budget is exhausted.
+	pub fn admit_frame_fallback(&mut self) -> bool {
+		if self.pinned || self.frame_fallbacks >= MAX_FRAME_FALLBACKS_PER_STREAM {
+			return false;
+		}
+		self.frame_fallbacks = self.frame_fallbacks.saturating_add(1);
+		true
+	}
+
+	/// Pin this stream to software without a retry.
+	pub fn pin(&mut self) {
+		self.pinned = true;
+	}
+}
+
+/// Snapshot of the decode-failure counters (observability: field reports,
+/// `--check`-style diagnostics and the benchmark harness).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HwDecodeStats {
+	/// Hardware decode errors observed on a session (frame-level).
+	pub decode_failures: u64,
+	/// Hardware session restarts performed by the L1 policy.
+	pub session_restarts: u64,
+	/// Frames decoded through the L1 per-frame software fallback.
+	pub frame_fallbacks: u64,
+	/// Streams pinned to software by the L2 policy.
+	pub stream_pins: u64,
+	/// Formats degraded by the L3 ratio breaker.
+	pub format_degrades: u64,
+	/// Hardware sessions abandoned for non-hardware output frames.
+	pub hw_fallbacks: u64,
+}
+
+/// Read the decode-failure counters.
+pub fn stats_snapshot() -> HwDecodeStats {
+	use std::sync::atomic::Ordering;
+	HwDecodeStats {
+		decode_failures: HW_DECODE_FAILURES.load(Ordering::Relaxed),
+		session_restarts: HW_SESSION_RESTARTS.load(Ordering::Relaxed),
+		frame_fallbacks: HW_FRAME_FALLBACKS.load(Ordering::Relaxed),
+		stream_pins: HW_STREAM_PINS.load(Ordering::Relaxed),
+		format_degrades: HW_FORMAT_DEGRADES.load(Ordering::Relaxed),
+		hw_fallbacks: HW_FALLBACKS.load(Ordering::Relaxed),
+	}
+}
+
+#[cfg(test)]
+fn reset_format_health() {
+	format_health().lock().unwrap_or_else(|e| e.into_inner()).clear();
+	import_unsupported_counts()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.clear();
+	prefer_software_table()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.clear();
+}
+
+/// Test helper: move `key`'s degradation deadline into the past so the TTL
+/// expiry path can be exercised without sleeping.
+#[cfg(test)]
+fn expire_format(key: &HwFormatKey) {
+	if let Some(entry) =
+		format_health().lock().unwrap_or_else(|e| e.into_inner()).get_mut(key)
+	{
+		let past = Instant::now()
+			.checked_sub(Duration::from_secs(1))
+			.unwrap_or_else(Instant::now);
+		entry.degraded_until = Some(past);
+	}
 }
 
 /// Whether hardware decoding is preferred (the config switch). Default
@@ -644,5 +1062,134 @@ mod tests {
 			sys::av_buffer_unref(&mut first);
 			sys::av_buffer_unref(&mut second);
 		}
+	}
+
+	/// L1: restarts are admitted inside the failure-streak budget; once the
+	/// streak is exhausted the per-frame fallback takes over instead of
+	/// pinning the whole stream.
+	#[test]
+	fn restart_budget_then_frame_fallback() {
+		let mut health = HwStreamHealth::new();
+		for _ in 0..(MAX_CONSECUTIVE_DECODE_FAILURES - 1) {
+			health.note_decode_failure();
+			assert!(health.admit_restart(), "a restart is admitted inside the budget");
+		}
+		health.note_decode_failure();
+		assert!(!health.admit_restart(), "the failure streak stops restarts");
+		assert!(health.admit_frame_fallback(), "the frame fallback still applies");
+		assert!(!health.pinned(), "a burst of failures alone must not pin the stream");
+	}
+
+	/// L1: the per-frame fallback budget is bounded; once spent, the caller
+	/// pins the stream.
+	#[test]
+	fn frame_fallback_budget_is_bounded() {
+		let mut health = HwStreamHealth::new();
+		for _ in 0..MAX_FRAME_FALLBACKS_PER_STREAM {
+			assert!(health.admit_frame_fallback());
+		}
+		assert_eq!(health.frame_fallbacks(), MAX_FRAME_FALLBACKS_PER_STREAM);
+		assert!(!health.admit_frame_fallback());
+		health.pin();
+		assert!(!health.admit_frame_fallback());
+		assert!(!health.admit_restart());
+		assert!(!health.hardware_allowed());
+	}
+
+	/// A decoded hardware frame clears the failure streak, so an isolated
+	/// reconfig (the VideoToolbox 4:2:2 10-bit case) does not exhaust the
+	/// retry budget.
+	#[test]
+	fn stream_health_success_resets_the_streak() {
+		let mut health = HwStreamHealth::new();
+		health.note_decode_failure();
+		health.on_decode_success();
+		assert_eq!(health.consecutive_failures(), 0);
+		health.note_decode_failure();
+		assert!(health.admit_restart());
+		assert!(!health.pinned());
+	}
+
+	/// The restart budget rolls over after a healthy window, so a long healthy
+	/// session cannot accumulate restarts until it stops retrying.
+	#[test]
+	fn stream_health_restart_budget_rolls_over() {
+		let mut health = HwStreamHealth::new();
+		health.note_decode_failure();
+		assert!(health.admit_restart());
+		assert_eq!(health.session_restarts(), 1);
+		for _ in 0..HW_RESTART_WINDOW_FRAMES {
+			health.on_decode_success();
+		}
+		assert_eq!(health.session_restarts(), 0, "the window resets the restart counter");
+		health.note_decode_failure();
+		assert!(health.admit_restart());
+	}
+
+	/// L3: a format whose hardware attempts mostly fail is degraded, and the
+	/// degradation expires so the format is probed again.
+	#[test]
+	fn format_health_degrades_and_expires() {
+		let _lock = crate::lock_tests();
+		reset_format_health();
+		// VDPAU is not a platform candidate, so this key cannot disturb the
+		// real decode tests in this process.
+		let key =
+			HwFormatKey::new(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU, 27, 122, 0);
+		for _ in 0..FORMAT_WINDOW_ATTEMPTS {
+			note_format_attempt(&key, false);
+		}
+		assert!(format_degraded(&key));
+		expire_format(&key);
+		assert!(!format_degraded(&key), "an expired degradation must be probed again");
+		reset_format_health();
+	}
+
+	/// 4:2:2 10-bit heuristic: a stream whose hardware frames keep failing
+	/// the GPU import switches to software; other formats are unaffected.
+	#[test]
+	fn unimportable_hw_frames_prefer_software() {
+		let _lock = crate::lock_tests();
+		reset_format_health();
+		let key = HwFormatKey::new(
+			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
+			27,
+			122,
+			sys::AVPixelFormat::AV_PIX_FMT_YUV422P10LE as i32,
+		);
+		assert!(!prefer_software_for(&key));
+		note_hw_import_unsupported(&key);
+		assert!(!prefer_software_for(&key), "one failure is not enough");
+		note_hw_import_unsupported(&key);
+		assert!(prefer_software_for(&key), "repeated import failures flip the format");
+
+		// 4:2:0 8-bit hardware frames are not flipped by the heuristic.
+		let other = HwFormatKey::new(
+			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
+			27,
+			100,
+			sys::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+		);
+		note_hw_import_unsupported(&other);
+		note_hw_import_unsupported(&other);
+		assert!(!prefer_software_for(&other));
+		reset_format_health();
+	}
+
+	/// L3: a format whose hardware attempts mostly succeed is never degraded.
+	#[test]
+	fn format_health_keeps_healthy_format() {
+		let _lock = crate::lock_tests();
+		reset_format_health();
+		let key = HwFormatKey::new(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2, 27, 100, 0);
+		let half = FORMAT_WINDOW_ATTEMPTS / 2;
+		for _ in 0..half {
+			note_format_attempt(&key, false);
+		}
+		for _ in 0..(FORMAT_WINDOW_ATTEMPTS - half) {
+			note_format_attempt(&key, true);
+		}
+		assert!(!format_degraded(&key));
+		reset_format_health();
 	}
 }

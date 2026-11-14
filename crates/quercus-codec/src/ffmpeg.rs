@@ -68,6 +68,7 @@ use crate::encoder::Encoder;
 use crate::encodingparams::EncodingParams;
 use crate::footagedescription::{FootageDescription, StreamEntry};
 use crate::frame::Frame;
+use crate::hwdecode::{HwFormatKey, HwStreamHealth};
 
 /// `quercus_core_COLOR_RANGE_FULL`.
 ///
@@ -408,6 +409,15 @@ impl Decoder for FFmpegDecoder {
 						decoded = state.retrieve_frame(&p.time, any_timecode, None);
 						continue;
 					}
+					// A hardware surface on the CPU path is downloaded with
+					// `av_hwframe_transfer_data`; for 4:2:2 10-bit that costs
+					// more than decoding in software (measured), so count it
+					// for the heuristic.
+					if state.hw_device.is_some() && crate::hwdecode::is_hw_format(raw_format) {
+						if let Some(key) = state.hw_key {
+							crate::hwdecode::note_hw_import_unsupported(&key);
+						}
+					}
 					break frame;
 				}
 			}
@@ -439,6 +449,16 @@ impl Decoder for FFmpegDecoder {
 		let state = state.as_mut().ok_or(crate::error::Error::State)?;
 		if !matches!(state.inner, DecoderInner::Video(_)) {
 			return Err(fail("decoder is not open on a video stream"));
+		}
+		// A format whose hardware frames could not be imported (4:2:2 10-bit)
+		// prefers software: switch this stream over instead of paying a 4K
+		// download per frame.
+		if state.hw_device.is_some()
+			&& state
+				.hw_key
+				.is_some_and(|key| crate::hwdecode::prefer_software_for(&key))
+		{
+			state.pin_software_session()?;
 		}
 		// Only hardware sessions can produce importable surfaces, and the
 		// whole path is switch-gated (`QUERCUS_GPU_IMPORT=0` / config).
@@ -483,6 +503,12 @@ impl Decoder for FFmpegDecoder {
 			color_trc: trc,
 		};
 		let Some(imported) = crate::gpuinterop::try_import_hw_frame(&req) else {
+			// Zero-copy import unavailable for this frame (an unsupported
+			// surface layout). Count it: a 4:2:2 10-bit stream that keeps
+			// failing here is cheaper to decode in software.
+			if let Some(key) = state.hw_key {
+				crate::hwdecode::note_hw_import_unsupported(&key);
+			}
 			return Ok(None);
 		};
 		crate::hwdecode::HW_IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -736,6 +762,23 @@ struct DecoderState {
 	eof: bool,
 	video: Option<VideoDecodeState>,
 	audio: Option<AudioDecodeState>,
+	/// Per-stream hardware decode health (L1/L2). Preserved across hardware
+	/// session restarts so the retry budget is not reset by a reopen.
+	hw_health: HwStreamHealth,
+	/// The hardware format key this session opened with (`None` = software;
+	/// the format-level negative cache and the L3 ratio breaker use it).
+	hw_key: Option<HwFormatKey>,
+	/// Hardware devices this stream already gave up on (per stream, not
+	/// process-wide: the stream excludes them from its candidate scan).
+	failed_hw_devices: Vec<sys::AVHWDeviceType>,
+	/// Lazily opened software session used to decode a single frame when the
+	/// hardware session fails on it (L1 frame-level fallback). Kept alive so a
+	/// later failing frame does not pay a fresh open.
+	software_escape: Option<Box<DecoderState>>,
+	/// The last timestamp a hardware decode failed on; a restart is attempted
+	/// once per timestamp (restarting and re-requesting the same frame fails
+	/// deterministically, so the fallback takes over instead).
+	last_failed_time: Option<Rational>,
 	/// Test-only counter of `seek()` calls (proves contiguous audio chunks
 	/// skip the seek).
 	#[cfg(test)]
@@ -853,6 +896,22 @@ impl DecoderState {
 		allow_hw: bool,
 		probe: bool,
 	) -> crate::error::Result<DecoderState> {
+		Self::open_impl_ex(stream, allow_hw, probe, None, &[])
+	}
+
+	/// [`DecoderState::open_impl`] with an explicit device preference and a
+	/// per-stream device exclusion list.
+	///
+	/// `preferred` restricts the hardware candidate scan to one device (used by
+	/// the L1 restart policy, which retries the same device instead of marking
+	/// it unavailable); `exclude` lists devices this stream already gave up on.
+	fn open_impl_ex(
+		stream: &CodecStream,
+		allow_hw: bool,
+		probe: bool,
+		preferred: Option<sys::AVHWDeviceType>,
+		exclude: &[sys::AVHWDeviceType],
+	) -> crate::error::Result<DecoderState> {
 		let mut dict = Dictionary::new();
 		if probe {
 			dict.set("analyzeduration", "5000000");
@@ -884,21 +943,51 @@ impl DecoderState {
 		// NVDEC / D3D11VA, config-gated); pure software is the fallback
 		// when no hardware device is available.
 		let mut hw_device: Option<sys::AVHWDeviceType> = None;
+		let source_codec_id = unsafe { (*params.as_ptr()).codec_id } as i32;
+		let source_profile = unsafe { (*params.as_ptr()).profile };
+		let source_pixel_format = unsafe { (*params.as_ptr()).format };
 		let hw_opened = if allow_hw
 			&& matches!(medium, MediaType::Video)
 			&& crate::hwdecode::hardware_decoding_enabled()
 		{
 			ffmpeg::decoder::find(codec_id).and_then(|codec| {
-				crate::hwdecode::candidates_for(&params)
-					.iter()
-					.find_map(|device_type| {
-						crate::hwdecode::open_hw_accel(&params, codec, *device_type).map(
-							|(opened, device_type)| {
-								hw_device = Some(device_type);
-								opened
-							},
-						)
-					})
+				let candidates: Vec<sys::AVHWDeviceType> = match preferred {
+					Some(device) => vec![device],
+					None => crate::hwdecode::candidates_for(&params),
+				};
+				candidates.iter().find_map(|device_type| {
+					// L0: a device whose context creation failed is skipped
+					// process-wide; `exclude` is the per-stream list.
+					if crate::hwdecode::device_unavailable(*device_type)
+						|| exclude.contains(device_type)
+					{
+						return None;
+					}
+					let key = HwFormatKey::new(
+						*device_type,
+						source_codec_id,
+						source_profile,
+						source_pixel_format,
+					);
+					// L3: a device+format combination whose hardware attempts
+					// mostly failed stays skipped until its TTL expires.
+					if crate::hwdecode::format_degraded(&key) {
+						return None;
+					}
+					// 4:2:2 10-bit heuristic: hardware frames the GPU cannot
+					// import pay a 4K download per frame — software decode is
+					// cheaper, so the format is skipped while it prefers
+					// software.
+					if crate::hwdecode::prefer_software_for(&key) {
+						return None;
+					}
+					crate::hwdecode::open_hw_accel(&params, codec, *device_type).map(
+						|(opened, device_type)| {
+							hw_device = Some(device_type);
+							opened
+						},
+					)
+				})
 			})
 		} else {
 			None
@@ -986,12 +1075,21 @@ impl DecoderState {
 			None
 		};
 
+		let hw_key = hw_device.map(|device| {
+			HwFormatKey::new(device, source_codec_id, source_profile, source_pixel_format)
+		});
+
 		Ok(DecoderState {
 			input,
 			filename: stream.filename().to_string(),
 			stream_index,
 			inner,
 			hw_device,
+			hw_health: HwStreamHealth::new(),
+			hw_key,
+			failed_hw_devices: Vec::new(),
+			software_escape: None,
+			last_failed_time: None,
 			stream_time_base,
 			stream_start_time,
 			format_start_time,
@@ -1006,20 +1104,33 @@ impl DecoderState {
 		})
 	}
 
-	/// Reopen after a hardware decoder failed on this stream. Retry the
-	/// remaining hardware candidates first (a 10-bit 4:2:2 H.264 can fail on
-	/// VAAPI while NVDEC/CUDA decodes it), then fall back to software. The
-	/// failed device type is marked unavailable so the candidate scan does
-	/// not select it again.
+	/// Reopen after a hardware session produced software frames (the device
+	/// accepted the session but silently decoded on the CPU). The current
+	/// device is excluded for this stream — never marked unavailable
+	/// process-wide — the remaining candidates are tried (a 10-bit 4:2:2 H.264
+	/// can fail on VAAPI while NVDEC/CUDA decodes it), and software is the
+	/// final fallback. The stream's format key is recorded as a failure for
+	/// the L3 ratio breaker.
 	fn reopen_after_hw_failure(&mut self) -> crate::error::Result<()> {
 		crate::hwdecode::HW_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		// Per-stream exclusion, not the process-wide device cache: a frame
+		// this device could not produce says nothing about the device type as
+		// a whole (VideoToolbox decodes other profiles of the same codec).
 		if let Some(failed) = self.hw_device {
-			crate::hwdecode::mark_device_unavailable(failed);
+			if !self.failed_hw_devices.contains(&failed) {
+				self.failed_hw_devices.push(failed);
+			}
 		}
+		if let Some(key) = self.hw_key {
+			crate::hwdecode::note_format_attempt(&key, false);
+		}
+		self.hw_health.pin();
+		crate::hwdecode::HW_STREAM_PINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
-		let mut fresh = Self::open_impl(&stream, true, false)
-			.or_else(|_| Self::open_impl(&stream, false, false))?;
-		std::mem::swap(self, &mut fresh);
+		let exclude = self.failed_hw_devices.clone();
+		let fresh = Self::open_impl_ex(&stream, true, false, None, &exclude)
+			.or_else(|_| Self::open_impl_ex(&stream, false, false, None, &[]))?;
+		self.adopt_reopened(fresh);
 		Ok(())
 	}
 
@@ -1027,10 +1138,52 @@ impl DecoderState {
 	/// software escape hatch (tests and callers that already decided).
 	#[allow(dead_code)]
 	fn reopen_software(&mut self) -> crate::error::Result<()> {
+		self.hw_health.pin();
 		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
-		let mut fresh = Self::open_impl(&stream, false, false)?;
-		std::mem::swap(self, &mut fresh);
+		let fresh = Self::open_impl_ex(&stream, false, false, None, &[])?;
+		self.adopt_reopened(fresh);
 		Ok(())
+	}
+
+	/// Restart the hardware session on the same device — the FFmpeg
+	/// "needs reconfig, restarting" equivalent — without touching the device
+	/// negative cache or the per-stream health budget.
+	fn restart_hardware_session(&mut self) -> crate::error::Result<()> {
+		let Some(device) = self.hw_device else {
+			return Err(fail("no hardware device to restart"));
+		};
+		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
+		let fresh = Self::open_impl_ex(&stream, true, false, Some(device), &[])?;
+		if fresh.hw_device != Some(device) {
+			return Err(fail("hardware session could not be restarted"));
+		}
+		self.adopt_reopened(fresh);
+		Ok(())
+	}
+
+	/// Pin this stream to software (L2) and reopen it on the CPU.
+	fn pin_software_session(&mut self) -> crate::error::Result<()> {
+		self.hw_health.pin();
+		let stream = CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
+		let fresh = Self::open_impl_ex(&stream, false, false, None, &[])?;
+		self.adopt_reopened(fresh);
+		Ok(())
+	}
+
+	/// Install a reopened session while preserving the per-stream hardware
+	/// health (the retry budget must survive a reopen) and clearing the
+	/// hardware key when the fresh session is software.
+	fn adopt_reopened(&mut self, mut fresh: DecoderState) {
+		fresh.hw_health = self.hw_health.clone();
+		fresh.failed_hw_devices = self.failed_hw_devices.clone();
+		// The escape session belongs to the old stream position; drop it and
+		// reopen lazily if another frame needs it.
+		fresh.software_escape = None;
+		fresh.last_failed_time = None;
+		if fresh.hw_device.is_none() {
+			fresh.hw_key = None;
+		}
+		std::mem::swap(self, &mut fresh);
 	}
 
 	fn send_packet(&mut self, packet: &ffmpeg::packet::Packet) -> crate::error::Result<()> {
@@ -1209,13 +1362,138 @@ impl DecoderState {
 		any_timecode: bool,
 		cancelled: Option<&CancelAtom>,
 	) -> crate::error::Result<Option<RefFrame>> {
-		match self.retrieve_frame_impl(time, any_timecode, cancelled) {
-			Err(_) if self.hw_device.is_some() => {
-				self.reopen_software()?;
-				self.retrieve_frame_impl(time, any_timecode, cancelled)
-			}
-			result => result,
+		// `any_timecode` is the drain / EOF-fallback request (last-frame
+		// probing, truncated-file recovery), not a normal seek-to-time decode.
+		// A fresh session returns EINVAL on the first pull of this form — an
+		// FFmpeg receive-without-packet quirk, not a hardware failure — and the
+		// historical behaviour reopens software and retries. Keep it: the L1
+		// policy below applies to explicit-timestamp decodes only.
+		if any_timecode {
+			return match self.retrieve_frame_impl(time, any_timecode, cancelled) {
+				Err(_) if self.hw_device.is_some() => {
+					self.reopen_software()?;
+					self.retrieve_frame_impl(time, any_timecode, cancelled)
+				}
+				result => result,
+			};
 		}
+
+		// 4:2:2 10-bit heuristic: once the format prefers software (its
+		// hardware frames must be downloaded per frame), switch before the
+		// next decode so no frame is in flight during the reopen.
+		if self.hw_device.is_some()
+			&& self
+				.hw_key
+				.is_some_and(|key| crate::hwdecode::prefer_software_for(&key))
+		{
+			self.pin_software_session()?;
+		}
+
+		// L1/L2 policy. A hardware decode error does not disable hardware for
+		// the stream. The order is:
+		//   1. restart the same device and retry (once per failing timestamp;
+		//      `retrieve_frame_impl` re-seeks, so the retry is keyframe-aligned),
+		//   2. decode just that frame through the software escape session and
+		//      keep hardware for the following frames,
+		//   3. pin the stream to software once both budgets are spent.
+		loop {
+			match self.retrieve_frame_impl(time, any_timecode, cancelled) {
+				Ok(Some(frame)) => {
+					if self.hw_device.is_some() {
+						self.hw_health.on_decode_success();
+						self.last_failed_time = None;
+						if let Some(key) = self.hw_key {
+							crate::hwdecode::note_format_attempt(&key, true);
+						}
+					}
+					return Ok(Some(frame));
+				}
+				Ok(None) => return Ok(None),
+				Err(error) => {
+					// A software session (pinned or the escape itself) has no
+					// hardware left to retry: surface the error.
+					let (Some(key), Some(_device)) = (self.hw_key, self.hw_device) else {
+						return Err(error);
+					};
+					crate::hwdecode::HW_DECODE_FAILURES
+						.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					self.hw_health.note_decode_failure();
+					let debug = std::env::var_os("OAK_DEBUG_HW").is_some();
+
+					// L1a: retry the same device once per failing timestamp.
+					let retried_this_frame = self.last_failed_time == Some(*time);
+					if !retried_this_frame && self.hw_health.admit_restart() {
+						if debug {
+							eprintln!(
+								"[hwpoll] hardware decode failed; restarting the session \
+								 (consecutive {}, restarts {})",
+								self.hw_health.consecutive_failures(),
+								self.hw_health.session_restarts()
+							);
+						}
+						crate::hwdecode::HW_SESSION_RESTARTS
+							.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+						if self.restart_hardware_session().is_ok() {
+							self.last_failed_time = Some(*time);
+							continue;
+						}
+					}
+
+					// L1b: decode this frame in software; hardware stays alive
+					// for the rest of the stream.
+					if self.hw_health.admit_frame_fallback() {
+						if debug {
+							eprintln!(
+								"[hwpoll] frame {time:?} decoded through the software escape \
+								 (frame fallbacks {})",
+								self.hw_health.frame_fallbacks()
+							);
+						}
+						if let Ok(Some(frame)) =
+							self.decode_with_software_escape(time, any_timecode, cancelled)
+						{
+							crate::hwdecode::HW_FRAME_FALLBACKS
+								.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+							return Ok(Some(frame));
+						}
+					}
+
+					// L2: pin the stream to software.
+					if debug {
+						eprintln!(
+							"[hwpoll] pinning the stream to software \
+							 (consecutive {}, restarts {}, frame fallbacks {})",
+							self.hw_health.consecutive_failures(),
+							self.hw_health.session_restarts(),
+							self.hw_health.frame_fallbacks()
+						);
+					}
+					crate::hwdecode::HW_STREAM_PINS
+						.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					crate::hwdecode::note_format_attempt(&key, false);
+					self.pin_software_session()?;
+				}
+			}
+		}
+	}
+
+	/// Decode one frame through the lazily opened software session (L1
+	/// frame-level fallback) while the hardware session is kept for the
+	/// following frames.
+	fn decode_with_software_escape(
+		&mut self,
+		time: &Rational,
+		any_timecode: bool,
+		cancelled: Option<&CancelAtom>,
+	) -> crate::error::Result<Option<RefFrame>> {
+		if self.software_escape.is_none() {
+			let stream =
+				CodecStream::with_block(self.filename.clone(), self.stream_index as i32, None);
+			self.software_escape =
+				Some(Box::new(Self::open_impl_ex(&stream, false, false, None, &[])?));
+		}
+		let escape = self.software_escape.as_mut().expect("opened above");
+		escape.retrieve_frame_impl(time, any_timecode, cancelled)
 	}
 
 	fn retrieve_frame_impl(
@@ -2706,8 +2984,12 @@ unsafe impl Sync for EncoderState {}
 struct VideoEncoderState {
 	encoder: ffmpeg::codec::encoder::video::Encoder,
 	stream_index: usize,
-	/// swscale from the incoming F32-RGBA bytes to the encoder pixel format.
-	scaler: scaling::Context,
+	/// swscale from the incoming frame format (F32 RGBA, the GPU pack's
+	/// packed RGBA, or RGBA64 for 10-bit delivery) to the encoder pixel
+	/// format. Recreated when the incoming format changes.
+	scaler: Option<ScalingCache>,
+	/// The encoder's destination pixel format.
+	pix_fmt: Pixel,
 	width: u32,
 	height: u32,
 	/// The encoder's time base after `open` (the frame PTS are expressed
@@ -3129,24 +3411,14 @@ impl EncoderState {
 			let frame_duration = (time_base.1 as i64 * i64::from(frame_rate.1))
 				/ (i64::from(time_base.0) * i64::from(frame_rate.0)).max(1);
 
-			let mut scaler = scaling::Context::get(
-				Pixel::RGBA,
-				width,
-				height,
-				pix_fmt,
-				width,
-				height,
-				scaling::Flags::BILINEAR,
-			)
-			.map_err(ffmpeg_err)?;
-			// Match the RGB→YUV conversion to the delivery color tag so
-			// players decode with the matrix/range the container declares.
-			apply_sws_output_colorspace(&mut scaler, params);
-
+			// The conversion scaler is created lazily in `write_video` from
+			// the incoming frame format (F32, packed 8-bit, or RGBA64 for
+			// 10-bit delivery).
 			video = Some(VideoEncoderState {
 				encoder: opened,
 				stream_index,
-				scaler,
+				scaler: None,
+				pix_fmt,
 				width,
 				height,
 				time_base,
@@ -3268,40 +3540,118 @@ impl EncoderState {
 			)));
 		}
 
-		// Convert the F32 RGBA buffer to 8-bit RGBA (swscale cannot take
-		// float input on every build) and scale into the encoder format.
-		let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
+		// Build the swscale source frame. The GPU export pack pass hands us
+		// delivery-encoded packed RGBA (U8 for 8-bit delivery, U16 for the
+		// 10/12-bit container); the legacy path still gets F32 RGBA from the
+		// render pipeline and converts it here.
 		let linesize = frame.linesize_bytes() as usize;
-		let dst_stride = (w as usize) * 4;
-		quercus_core::cpuparallel::for_each_row(
-			&mut rgba,
-			dst_stride,
-			h as usize,
-			w as usize,
-			|y, dst| {
-			let row = &data[y * linesize..y * linesize + (w as usize) * PIXEL_F32_BYTES];
-			for (out_px, in_px) in dst
-				.chunks_exact_mut(4)
-				.zip(row.chunks_exact(PIXEL_F32_BYTES))
-			{
-			for c in 0..4 {
-				let v = f32::from_le_bytes([
-					in_px[c * 4],
-					in_px[c * 4 + 1],
-					in_px[c * 4 + 2],
-					in_px[c * 4 + 3],
-				]);
-				out_px[c] = (v * 255.0).clamp(0.0, 255.0) as u8;
+		let mut src = match frame.format() {
+			quercus_core::PixelFormat::U8 => {
+				let dst_stride = (w as usize) * 4;
+				let mut src = ffmpeg::frame::Video::new(Pixel::RGBA, w, h);
+				let out = src.data_mut(0);
+				for y in 0..h as usize {
+					let start = y * linesize;
+					let n = dst_stride.min(data.len().saturating_sub(start));
+					out[y * dst_stride..y * dst_stride + n]
+						.copy_from_slice(&data[start..start + n]);
+				}
+				src
 			}
+			quercus_core::PixelFormat::U16 => {
+				let dst_stride = (w as usize) * 8;
+				let mut src = ffmpeg::frame::Video::new(Pixel::RGBA64LE, w, h);
+				let out = src.data_mut(0);
+				for y in 0..h as usize {
+					let start = y * linesize;
+					let n = dst_stride.min(data.len().saturating_sub(start));
+					out[y * dst_stride..y * dst_stride + n]
+						.copy_from_slice(&data[start..start + n]);
+				}
+				src
 			}
-			},
-		);
-
-		let mut src = ffmpeg::frame::Video::new(Pixel::RGBA, w, h);
-		src.data_mut(0).copy_from_slice(&rgba);
+			_ if encoder_output_is_high_depth(_params) => {
+				// 10/12-bit delivery: keep the float precision, hand swscale
+				// 16-bit RGBA (RGBA64LE) and let it scale to P010/YUV420P10.
+				let mut rgba = vec![0u8; (w as usize) * (h as usize) * 8];
+				let dst_stride = (w as usize) * 8;
+				quercus_core::cpuparallel::for_each_row(
+					&mut rgba,
+					dst_stride,
+					h as usize,
+					w as usize,
+					|y, dst| {
+					let row = &data[y * linesize..y * linesize + (w as usize) * PIXEL_F32_BYTES];
+					for (out_px, in_px) in dst
+						.chunks_exact_mut(8)
+						.zip(row.chunks_exact(PIXEL_F32_BYTES))
+					{
+					for c in 0..4 {
+						let v = f32::from_le_bytes([
+							in_px[c * 4],
+							in_px[c * 4 + 1],
+							in_px[c * 4 + 2],
+							in_px[c * 4 + 3],
+						]);
+						let q = (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+						out_px[c * 2..c * 2 + 2].copy_from_slice(&q.to_le_bytes());
+					}
+					}
+					},
+				);
+				let mut src = ffmpeg::frame::Video::new(Pixel::RGBA64LE, w, h);
+				src.data_mut(0).copy_from_slice(&rgba);
+				src
+			}
+			_ => {
+				// Legacy F32 path: convert to 8-bit RGBA (swscale cannot take
+				// float input on every build).
+				let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
+				let dst_stride = (w as usize) * 4;
+				quercus_core::cpuparallel::for_each_row(
+					&mut rgba,
+					dst_stride,
+					h as usize,
+					w as usize,
+					|y, dst| {
+					let row = &data[y * linesize..y * linesize + (w as usize) * PIXEL_F32_BYTES];
+					for (out_px, in_px) in dst
+						.chunks_exact_mut(4)
+						.zip(row.chunks_exact(PIXEL_F32_BYTES))
+					{
+					for c in 0..4 {
+						let v = f32::from_le_bytes([
+							in_px[c * 4],
+							in_px[c * 4 + 1],
+							in_px[c * 4 + 2],
+							in_px[c * 4 + 3],
+						]);
+						out_px[c] = (v * 255.0).clamp(0.0, 255.0) as u8;
+					}
+					}
+					},
+				);
+				let mut src = ffmpeg::frame::Video::new(Pixel::RGBA, w, h);
+				src.data_mut(0).copy_from_slice(&rgba);
+				src
+			}
+		};
 
 		let mut scaled = ffmpeg::frame::Video::empty();
-		video.scaler.run(&src, &mut scaled).map_err(ffmpeg_err)?;
+		let src_format = src.format();
+		let scaler = get_or_create_scaler(
+			&mut video.scaler,
+			src_format,
+			w,
+			h,
+			video.pix_fmt,
+			w,
+			h,
+		)?;
+		// Match the RGB→YUV conversion to the delivery color tag so players
+		// decode with the matrix/range the container declares.
+		apply_sws_output_colorspace(scaler, _params);
+		scaler.run(&src, &mut scaled).map_err(ffmpeg_err)?;
 
 		// # CPP-PARITY
 		// `FFmpegEncoder::write_frame` passes the frame time in seconds; the
@@ -3668,6 +4018,19 @@ fn default_sample_format_for_codec(codec: ffmpeg::codec::Id) -> Sample {
 /// at the first NUL. Returns `None` when the name is empty, is not valid
 /// UTF-8, or is not a pixel-format name FFmpeg recognizes — the caller then
 /// falls back to [`default_pixel_format_for_codec`].
+/// Whether the encoder's delivery pixel format is deeper than 8 bits, so the
+/// F32 render frames must be handed to swscale as 16-bit RGBA (10/12-bit
+/// delivery) instead of being quantized to 8-bit first.
+fn encoder_output_is_high_depth(params: &EncodingParams) -> bool {
+	let end = params
+		.video_pix_fmt
+		.iter()
+		.position(|&b| b == 0)
+		.unwrap_or(params.video_pix_fmt.len());
+	let name = std::str::from_utf8(&params.video_pix_fmt[..end]).unwrap_or("");
+	name.contains("10") || name.contains("12") || name.contains("16") || name.starts_with("p010")
+}
+
 fn pixel_format_from_name(buf: &[u8; 64]) -> Option<Pixel> {
 	let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
 	let name = std::str::from_utf8(&buf[..end]).ok()?;
