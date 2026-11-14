@@ -739,9 +739,16 @@ fn download_texture(
 	height: u32,
 ) -> Result<Frame> {
 	GPU_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
-	let (bpp, convert_half) = match format {
-		wgpu::TextureFormat::Rgba32Float => (16usize, false),
-		wgpu::TextureFormat::Rgba16Float => (8usize, true),
+	// The packed formats are the export boundary's readback: the GPU has
+	// already applied the delivery color transform, so the frame carries
+	// 8-bit or 16-bit (10-bit-capable) RGBA instead of float RGBA.
+	let (bpp, convert_half, frame_format) = match format {
+		wgpu::TextureFormat::Rgba32Float => (16usize, false, PixelFormat::F32),
+		wgpu::TextureFormat::Rgba16Float => (8usize, true, PixelFormat::F32),
+		wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
+			(4usize, false, PixelFormat::U8)
+		}
+		wgpu::TextureFormat::Rgba16Unorm => (8usize, false, PixelFormat::U16),
 		other => {
 			return Err(Error::Failed(format!(
 				"texture download: unsupported format {other:?}"
@@ -845,7 +852,7 @@ fn download_texture(
 	let mut pod = VideoParamsPod::default();
 	pod.width = w as i32;
 	pod.height = h as i32;
-	pod.format = PixelFormat::F32 as i32;
+	pod.format = frame_format as i32;
 	frame.set_video_params(pod);
 	frame.data = data;
 	Ok(frame)
@@ -3317,8 +3324,32 @@ impl GpuContext {
 		has_uniforms: bool,
 		filtering: bool,
 	) -> Result<Arc<ShaderProgram>> {
+		self.compile_shader_pass_format(
+			key,
+			wgsl,
+			texture_count,
+			has_uniforms,
+			filtering,
+			wgpu::TextureFormat::Rgba32Float,
+		)
+	}
+
+	/// [`GpuContext::compile_shader_pass`] with an explicit render-target
+	/// format. Effect passes target `Rgba32Float`; the export pack pass targets
+	/// `Rgba8Unorm` / `Rgba16Unorm` so the GPU can hand the encoder a packed
+	/// buffer instead of float RGBA.
+	pub fn compile_shader_pass_format(
+		&self,
+		key: &str,
+		wgsl: &str,
+		texture_count: u32,
+		has_uniforms: bool,
+		filtering: bool,
+		target_format: wgpu::TextureFormat,
+	) -> Result<Arc<ShaderProgram>> {
 		self.used.store(true, Ordering::Release);
-		if let Some(p) = lock(&self.programs).get(key) {
+		let key = format!("{key}|{target_format:?}");
+		if let Some(p) = lock(&self.programs).get(&key) {
 			return Ok(p.clone());
 		}
 
@@ -3410,7 +3441,7 @@ impl GpuContext {
 					entry_point: Some("main"),
 					compilation_options: Default::default(),
 					targets: &[Some(wgpu::ColorTargetState {
-						format: wgpu::TextureFormat::Rgba32Float,
+						format: target_format,
 						blend: None,
 						write_mask: wgpu::ColorWrites::ALL,
 					})],
@@ -3553,7 +3584,178 @@ impl GpuContext {
 		self.queue.submit(Some(encoder.finish()));
 		Ok(())
 	}
+
+	/// Run the export output-pack pass: sample `src` (working-space F32
+	/// RGBA), apply the working→delivery gamut matrix and the delivery
+	/// transfer, and write packed RGBA to `dst`.
+	///
+	/// `dst` must be `Rgba8Unorm` (8-bit delivery) or `Rgba16Unorm`
+	/// (10/12/16-bit delivery). The engine's internal pipeline stays F32 +
+	/// ACEScg: this is the export boundary's GPU packing step, replacing the
+	/// CPU row-wise color transform plus the F32→u8 conversion.
+	pub fn pack_output(&self, src: u64, dst: u64, params: &PackParams) -> Result<()> {
+		let format = {
+			let reg = lock(&self.textures);
+			reg.get(&dst).ok_or(Error::NotFound)?.format
+		};
+		if format != wgpu::TextureFormat::Rgba8Unorm
+			&& format != wgpu::TextureFormat::Rgba16Unorm
+			&& format != wgpu::TextureFormat::Rgba16Float
+			&& format != wgpu::TextureFormat::Rgba32Float
+		{
+			return Err(Error::Failed(format!(
+				"pack_output: unsupported destination format {format:?}"
+			)));
+		}
+		let program = self.compile_shader_pass_format(
+			"quercus-export-pack",
+			PACK_WGSL,
+			1,
+			true,
+			false,
+			format,
+		)?;
+		let m = params.matrix;
+		let mut uniforms: Vec<u8> = Vec::with_capacity(64);
+		for row in &m {
+			for col in row {
+				uniforms.extend_from_slice(&col.to_le_bytes());
+			}
+			uniforms.extend_from_slice(&0.0f32.to_le_bytes());
+		}
+		uniforms.extend_from_slice(&(params.transfer as f32).to_le_bytes());
+		uniforms.extend_from_slice(&[0u8; 12]);
+		self.run_shader_pass(&program, &uniforms, &[src], dst)
+	}
+
+	/// Pack `src` (F32 working-space RGBA) into an 8-bit or 16-bit
+	/// (10/12-bit delivery) RGBA frame and read it back.
+	///
+	/// The destination texture is transient: created, packed, downloaded and
+	/// destroyed. `bit_depth` <= 8 selects `Rgba8Unorm`; anything above
+	/// selects `Rgba16Unorm`, which carries 10-bit delivery values without
+	/// the float readback.
+	pub fn pack_output_cpu(
+		&self,
+		src: u64,
+		width: i32,
+		height: i32,
+		bit_depth: u8,
+		params: &PackParams,
+	) -> Result<Frame> {
+		// 8-bit delivery packs into `Rgba8Unorm` (4 bytes/px).
+		//
+		// Higher bit depths pack into `Rgba32Float`, NOT a half/normalized
+		// 16-bit container: `Rgba16Unorm` is not a render target on backends
+		// without TEXTURE_FORMAT_16BIT_NORM (Apple Metal) and `Rgba16Float`
+		// only has ~11 mantissa bits — measured at 0.47 of a 10-bit code, and
+		// outright lossy for 12/16-bit delivery. Float keeps the packed values
+		// exact; the encoder converts them to 16-bit for swscale, so the only
+		// quantization left is the final N-bit one.
+		let format = if bit_depth > 8 {
+			wgpu::TextureFormat::Rgba32Float
+		} else {
+			wgpu::TextureFormat::Rgba8Unorm
+		};
+		let dst = self.create_texture_format(
+			width,
+			height,
+			1,
+			format,
+			wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+		)?;
+		let result = self
+			.pack_output(src, dst, params)
+			.and_then(|()| self.download(dst));
+		self.destroy_texture(dst);
+		result
+	}
 }
+
+/// Parameters of the export output-pack pass
+/// ([`GpuContext::pack_output`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PackParams {
+	/// Row-major 3×3 matrix: working-space primaries → delivery primaries.
+	pub matrix: [[f32; 3]; 3],
+	/// Delivery transfer id (see [`PACK_TRANSFER_SRGB`] & co).
+	pub transfer: u32,
+}
+
+/// sRGB piecewise transfer (matches `colormath::OutputTransfer::Srgb`).
+pub const PACK_TRANSFER_SRGB: u32 = 0;
+/// Pure gamma 2.2 transfer (`colormath::OutputTransfer::Gamma22`).
+pub const PACK_TRANSFER_GAMMA22: u32 = 1;
+/// SMPTE ST 2084 PQ (`colormath::OutputTransfer::Pq`).
+pub const PACK_TRANSFER_PQ: u32 = 2;
+/// ARIB STD-B67 HLG (`colormath::OutputTransfer::Hlg`).
+pub const PACK_TRANSFER_HLG: u32 = 3;
+
+/// The export pack pass: F32 RGBA in, delivery-encoded packed RGBA out.
+///
+/// The transfer constants mirror `quercus_core::colormath` (PQ_M1..C3, HLG
+/// constants); the output is clamped to [0, 1] and scaled by the unorm target,
+/// exactly like the CPU path's normalized float output.
+const PACK_WGSL: &str = r#"
+struct Params {
+    m0: vec4<f32>,
+    m1: vec4<f32>,
+    m2: vec4<f32>,
+    // x = transfer id (0 sRGB, 1 gamma 2.2, 2 PQ, 3 HLG).
+    info: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: Params;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+fn srgb_oetf(x: f32) -> f32 {
+    if (x <= 0.0031308) { return 12.92 * x; }
+    return 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+
+fn pq_oetf(x: f32) -> f32 {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = (2523.0 / 4096.0) * 128.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = (2413.0 / 4096.0) * 32.0;
+    let c3 = (2392.0 / 4096.0) * 32.0;
+    let y = pow(x, m1);
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), m2);
+}
+
+fn hlg_oetf(x: f32) -> f32 {
+    let a = 0.17883277;
+    let b = 1.0 - 4.0 * a;
+    let c = 0.5 - a * log(4.0 * a);
+    if (x <= 1.0 / 12.0) { return sqrt(3.0 * x); }
+    return a * log(12.0 * x - b) + c;
+}
+
+fn encode(x: f32, id: i32) -> f32 {
+    let v = clamp(x, 0.0, 1.0);
+    if (id == 1) { return pow(v, 1.0 / 2.2); }
+    if (id == 2) { return pq_oetf(v); }
+    if (id == 3) { return hlg_oetf(v); }
+    return srgb_oetf(v);
+}
+
+@fragment
+fn main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = textureLoad(src, vec2<i32>(frag.xy), 0);
+    let lin = vec3<f32>(
+        u.m0.x * c.r + u.m0.y * c.g + u.m0.z * c.b,
+        u.m1.x * c.r + u.m1.y * c.g + u.m1.z * c.b,
+        u.m2.x * c.r + u.m2.y * c.g + u.m2.z * c.b
+    );
+    let id = i32(u.info.x + 0.5);
+    return vec4<f32>(
+        encode(lin.r, id),
+        encode(lin.g, id),
+        encode(lin.b, id),
+        clamp(c.a, 0.0, 1.0)
+    );
+}
+"#;
 
 /// A compiled effect pass: the translated fragment WGSL paired with the
 /// fixed fullscreen-triangle vertex stage, plus its bind group layout.
@@ -5458,6 +5660,67 @@ mod tests {
 			err.to_string().contains("unsupported format"),
 			"the format error is named: {err}"
 		);
+	}
+
+	/// The export pack pass quantizes into the delivery container. For 10-bit
+	/// delivery the half-float container must stay well inside one 10-bit
+	/// code (the F32→RGBA64 step in the encoder is exact relative to it).
+	#[test]
+	fn pack_output_precision_for_10_bit_delivery() {
+		let _guard = GPU_COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		let Some(ctx) = any_gpu() else {
+			return;
+		};
+		fn srgb_reference(x: f32) -> f32 {
+			let v = x.clamp(0.0, 1.0);
+			if v <= 0.003_130_8 {
+				12.92 * v
+			} else {
+				1.055 * v.powf(1.0 / 2.4) - 0.055
+			}
+		}
+		let w = 16usize;
+		let src = ctx.create_texture(w as i32, 1).unwrap();
+		let mut frame = Frame::new();
+		let mut pod = VideoParamsPod::default();
+		pod.width = w as i32;
+		pod.height = 1;
+		pod.format = PixelFormat::F32 as i32;
+		frame.set_video_params(pod);
+		frame.allocate();
+		let input: Vec<f32> = (0..w).map(|i| 0.30 + 0.02 * i as f32).collect();
+		for (i, v) in input.iter().enumerate() {
+			let off = i * 16;
+			for c in 0..3 {
+				frame.data[off + c * 4..off + c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+			}
+			frame.data[off + 12..off + 16].copy_from_slice(&1.0f32.to_le_bytes());
+		}
+		ctx.upload(src, &frame).unwrap();
+		let params = PackParams {
+			matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+			transfer: PACK_TRANSFER_SRGB,
+		};
+		let out = ctx.pack_output_cpu(src, w as i32, 1, 16, &params).unwrap();
+		assert_eq!(out.format, PixelFormat::F32, "16-bit container reads back as F32");
+		let mut worst = 0.0f32;
+		for (i, v) in input.iter().enumerate() {
+			let got = f32::from_le_bytes(out.data[i * 16..i * 16 + 4].try_into().unwrap());
+			let want = srgb_reference(*v);
+			worst = worst.max((got - want).abs());
+		}
+		eprintln!(
+			"pack 10-bit container worst error {worst:.7} ({:.3} of a 10-bit code)",
+			worst * 1023.0
+		);
+		// Float packing must be effectively exact; the only remaining
+		// quantization is the encoder's F32→16-bit handoff (~1e-5) and the
+		// final N-bit swscale output.
+		assert!(
+			worst <= 1e-5,
+			"pack error {worst} is above the float container's rounding"
+		);
+		ctx.destroy_texture(src);
 	}
 
 	#[test]
