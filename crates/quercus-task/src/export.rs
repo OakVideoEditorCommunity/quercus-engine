@@ -42,6 +42,8 @@ use std::sync::Arc;
 
 use quercus_codec::encoder::{create_from_params, Encoder};
 use quercus_codec::encodingparams::EncodingParams as CodecEncodingParams;
+use quercus_core::backend::{GpuContext, PackParams, PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ, PACK_TRANSFER_SRGB};
+use quercus_core::colormath::PRIMARIES_AP1;
 use quercus_core::texture::Texture;
 use quercus_core::videoparams::VideoParams as CommonVideoParams;
 
@@ -62,6 +64,22 @@ pub struct ExportTask {
 	pub encoding_params: EncodingParams,
 	/// The opened encoder (direct quercuscodec trait object).
 	encoder: Option<Arc<dyn Encoder>>,
+	/// GPU output packing (working F32 ACEScg → delivery RGB, 8/10-bit).
+	/// `None` falls back to the legacy CPU color transform path.
+	output_pack: Option<OutputPack>,
+	/// Frames packed on the GPU so far (diagnostics: logs the active path
+	/// once per export under `QUERCUS_PERF`).
+	pack_frames: u64,
+}
+
+/// The export boundary's GPU packing configuration: the working→delivery
+/// gamut matrix plus the delivery transfer, and the delivery bit depth.
+#[derive(Clone, Copy)]
+struct OutputPack {
+	params: PackParams,
+	/// 8 for 8-bit delivery; anything above selects the 16-bit container
+	/// (10/12-bit delivery).
+	bit_depth: u8,
 }
 
 /// Mirror of the codec encoding params, kept as plain fields so the export
@@ -158,6 +176,8 @@ impl ExportTask {
 			viewer_node: viewer,
 			encoding_params: params,
 			encoder: None,
+			output_pack: None,
+			pack_frames: 0,
 		}
 	}
 
@@ -186,6 +206,25 @@ impl ExportTask {
 		params.export_length_den = self.encoding_params.export_length_den;
 		params.video_bit_rate = self.encoding_params.video_bit_rate;
 		params.audio_bit_rate = self.encoding_params.audio_bit_rate;
+		// 10-bit delivery: ask the codec for a 10-bit pixel format when the
+		// export dialog requested a 10/16-bit delivery format. HEVC's
+		// VideoToolbox encoder takes P010; AV1 (software) takes yuv420p10le.
+		// H.264 has no 10-bit hardware path here, so it keeps 8-bit.
+		if params.video_pix_fmt.iter().all(|&b| b == 0) {
+			use quercus_core::ocioutils::PixelFormat as DeliveryFormat;
+			let depth10 = matches!(
+				DeliveryFormat::from_code(self.encoding_params.video_pixel_format),
+				DeliveryFormat::U10 | DeliveryFormat::U16
+			);
+			if depth10 {
+				let name: &[u8] = match self.encoding_params.video_codec {
+					3 => b"p010le",       // HEVC
+					18 => b"yuv420p10le", // AV1
+					_ => b"",
+				};
+				params.video_pix_fmt[..name.len()].copy_from_slice(name);
+			}
+		}
 		// Delivery colorimetry: the EXPORT DIALOG's choice (SDR 709 8-bit /
 		// HDR 2020 10-bit) wins when enabled; otherwise the project's
 		// output colorspace (H.273 code points → mov `colr` atom / VUI).
@@ -258,6 +297,37 @@ impl ExportTask {
 		(guard.working_color_space(), guard.output_color_spec())
 	}
 
+	/// Decide the GPU output pack configuration for this export.
+	///
+	/// `None` keeps the legacy CPU path: the working space is the legacy
+	/// sRGB (the CPU transform is a no-op) or the delivery pixel format is
+	/// not an integer depth the pack pass covers.
+	fn build_output_pack(&self) -> Option<OutputPack> {
+		if !self.encoding_params.video_enabled {
+			return None;
+		}
+		let (working, spec) = self.delivery_color();
+		if working == quercus_core::colormath::WorkingColorSpace::SrgbLegacy {
+			return None;
+		}
+		use quercus_core::ocioutils::PixelFormat as DeliveryFormat;
+		let bit_depth = match DeliveryFormat::from_code(self.encoding_params.video_pixel_format) {
+			DeliveryFormat::U8 => 8u8,
+			// 10-bit delivery rides the 16-bit container (no float readback).
+			DeliveryFormat::U10 | DeliveryFormat::U16 => 16u8,
+			_ => return None,
+		};
+		let matrix =
+			quercus_core::colormath::rgb_to_rgb_matrix(PRIMARIES_AP1, spec.gamut.primaries());
+		let transfer = match spec.transfer {
+			quercus_core::colormath::OutputTransfer::Srgb => PACK_TRANSFER_SRGB,
+			quercus_core::colormath::OutputTransfer::Gamma22 => PACK_TRANSFER_GAMMA22,
+			quercus_core::colormath::OutputTransfer::Pq => PACK_TRANSFER_PQ,
+			quercus_core::colormath::OutputTransfer::Hlg => PACK_TRANSFER_HLG,
+		};
+		Some(OutputPack { params: PackParams { matrix, transfer }, bit_depth })
+	}
+
 	/// Convert an F32 codec frame from the pipeline working space to the
 	/// project's delivery colorspace (row-wise — the codec frame rows are
 	/// 32-byte aligned, so each row is handled through the byte-based
@@ -300,22 +370,27 @@ impl ExportTask {
 	/// back here: the encoder input is one of the three explicit CPU
 	/// boundaries (M2).
 	fn to_codec_frame(texture: &Texture) -> Result<quercus_codec::frame::Frame> {
-		let frame = match texture {
-			Texture::Cpu(frame) => frame.clone(),
-			Texture::Gpu { .. } => texture.to_frame().map_err(|e| {
-				Error::Failed(format!(
-					"Render frame readback for the encoder failed: {e:?}"
-				))
-			})?,
-			// Unresolved planar frames never reach an encoder; the
-			// decode path resolves them before delivery.
-			Texture::Planar(_) => {
-				return Err(Error::Failed(
-					"unresolved planar texture for the encoder".into(),
-				))
+		match texture {
+			Texture::Cpu(frame) => Self::codec_frame_from_cpu(frame),
+			Texture::Gpu { .. } => {
+				let frame = texture.to_frame().map_err(|e| {
+					Error::Failed(format!(
+						"Render frame readback for the encoder failed: {e:?}"
+					))
+				})?;
+				Self::codec_frame_from_cpu(&frame)
 			}
-		};
-		let frame = &frame;
+			// Unresolved planar frames never reach an encoder; the decode
+			// path resolves them before delivery.
+			Texture::Planar(_) => Err(Error::Failed(
+				"unresolved planar texture for the encoder".into(),
+			)),
+		}
+	}
+
+	/// Wrap a CPU frame (F32 working-space, or the GPU pack pass's
+	/// delivery-encoded U8/U16 RGBA) into a codec frame.
+	fn codec_frame_from_cpu(frame: &quercus_core::texture::Frame) -> Result<quercus_codec::frame::Frame> {
 		let params = CommonVideoParams::new_basic(
 			frame.width,
 			frame.height,
@@ -331,11 +406,9 @@ impl ExportTask {
 		out.allocate()
 			.map_err(|e| Error::Failed(format!("Failed to allocate encoder frame: {e:?}")))?;
 		let dst_stride = out.linesize_bytes() as usize;
-		let Some(dst) = out.data_mut() else {
-			return Err(Error::Failed(
-				"Encoder frame allocation produced no buffer".to_string(),
-			));
-		};
+		let dst = out.data_mut().ok_or_else(|| {
+			Error::Failed("Encoder frame allocation produced no buffer".to_string())
+		})?;
 		let src = frame.data.as_slice();
 		let src_stride = frame.linesize_bytes();
 		let row_bytes = std::cmp::min(src_stride, dst_stride)
@@ -378,6 +451,9 @@ impl TaskBehavior for ExportTask {
 		}
 
 		let export_range = self.export_range();
+		// Decided once per export: the GPU pack pass replaces the CPU color
+		// transform (and the F32→u8 conversion) at the encoder boundary.
+		self.output_pack = self.build_output_pack();
 		self.render
 			.set_video_enabled(self.encoding_params.video_enabled);
 		if self.encoding_params.video_enabled {
@@ -437,16 +513,61 @@ impl RenderTaskBehavior for ExportTask {
 		let Some(encoder) = &self.encoder else {
 			return Ok(());
 		};
-		let mut codec_frame = Self::to_codec_frame(frame)?;
-		// Output node: the rendered frame is in the pipeline working space
-		// (ACEScg linear by default); the export converts it to the
-		// project's delivery colorspace before encoding. (No-op in the
-		// legacy sRGB working space.)
-		self.apply_output_node(&mut codec_frame);
-		if encoder.write_video(&codec_frame).is_err() {
-			let err = encoder.get_error();
-			task.set_error(&err);
-			return Err(Error::Failed("Failed to write frame".to_string()));
+		// Export boundary: the render frame is F32 working-space (ACEScg by
+		// default). With a GPU context the pack pass applies the delivery
+		// gamut matrix + transfer on the GPU and reads back packed 8-bit or
+		// 16-bit RGBA; otherwise the CPU row-wise transform runs as before.
+		let mut codec_frame = match (self.output_pack, frame) {
+			(Some(pack), Texture::Gpu { token, ctx, width, height, .. }) => {
+				let packed = ctx
+					.as_any()
+					.and_then(|any| any.downcast_ref::<GpuContext>())
+					.and_then(|gpu| {
+						gpu.pack_output_cpu(*token, *width, *height, pack.bit_depth, &pack.params)
+							.ok()
+					});
+				match packed {
+					Some(mut cpu) => {
+						// The pack target texture is transient: carry the
+						// source frame's presentation timestamp across the
+						// GPU pack + readback.
+						if let Texture::Gpu { timestamp, .. } = frame {
+							cpu.timestamp = *timestamp;
+						}
+						self.pack_frames = self.pack_frames.saturating_add(1);
+						if self.pack_frames == 1 && std::env::var_os("QUERCUS_PERF").is_some() {
+							eprintln!(
+								"[pack] GPU output pack active ({} bit, {}x{})",
+								if pack.bit_depth > 8 { 10 } else { 8 },
+								cpu.width,
+								cpu.height
+							);
+						}
+						Self::codec_frame_from_cpu(&cpu)?
+					}
+					None => {
+						let mut cpu_frame = Self::to_codec_frame(frame)?;
+						self.apply_output_node(&mut cpu_frame);
+						cpu_frame
+					}
+				}
+			}
+			_ => {
+				let mut cpu_frame = Self::to_codec_frame(frame)?;
+				// No-op in the legacy sRGB working space.
+				self.apply_output_node(&mut cpu_frame);
+				cpu_frame
+			}
+		};
+		if let Err(error) = encoder.write_video(&codec_frame) {
+			let detail = encoder.get_error();
+			let message = if detail.is_empty() {
+				format!("Failed to write frame: {error}")
+			} else {
+				format!("Failed to write frame: {detail}")
+			};
+			task.set_error(&message);
+			return Err(Error::Failed(message));
 		}
 		// Progress is reported by the render loop itself (native signalling).
 		Ok(())
