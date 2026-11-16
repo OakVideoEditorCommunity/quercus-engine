@@ -18,6 +18,7 @@
 //! `olive::VolumeNode`).
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 use crate::value::{NodeValue, ValueType};
 
@@ -159,12 +160,11 @@ impl NodeBehavior for VolumeNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut samples = crate::input::Input::new(SAMPLES_INPUT, ValueType::Samples, NodeValue::None);
-	samples.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	let mut samples = input::Input::new(SAMPLES_INPUT, ValueType::Samples, NodeValue::None);
+	samples.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(samples);
 
-	let mut volume =
-		crate::input::Input::new(VOLUME_INPUT, ValueType::Float, NodeValue::Float(1.0));
+	let mut volume = input::Input::new(VOLUME_INPUT, ValueType::Float, NodeValue::Float(1.0));
 	volume.properties = vec![
 		("min".to_string(), NodeValue::Float(0.0)),
 		("view".to_string(), NodeValue::Text("decibel".into())),

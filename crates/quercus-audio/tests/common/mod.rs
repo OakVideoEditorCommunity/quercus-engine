@@ -27,6 +27,8 @@
 // still part of the shared fixture API.
 #![allow(dead_code)]
 
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -56,7 +58,7 @@ pub fn silence_planar(channel_count: usize, frame_count: usize) -> Vec<Vec<f32>>
 
 /// Write a 16-bit PCM WAV file (`fmt` chunk + `data` chunk, standard 44-byte
 /// header). Decoded by quercuscodec's FFmpeg decoder in `waveform::extract`.
-pub fn write_wav(path: &Path, channels: u16, rate: u32, samples: &[i16]) -> std::io::Result<()> {
+pub fn write_wav(path: &Path, channels: u16, rate: u32, samples: &[i16]) -> io::Result<()> {
 	let block_align = channels * 2;
 	let byte_rate = rate * u32::from(block_align);
 	let data_size = (samples.len() * 2) as u32;
@@ -78,13 +80,13 @@ pub fn write_wav(path: &Path, channels: u16, rate: u32, samples: &[i16]) -> std:
 	for s in samples {
 		out.extend_from_slice(&s.to_le_bytes());
 	}
-	std::fs::write(path, out)
+	fs::write(path, out)
 }
 
 /// Write a WAV header only (no `data` payload) with arbitrary channel and
 /// rate claims — used to exercise extraction validation (e.g. the channel
 /// cap) without decoding real audio.
-pub fn write_wav_header_only(path: &Path, channels: u16, rate: u32) -> std::io::Result<()> {
+pub fn write_wav_header_only(path: &Path, channels: u16, rate: u32) -> io::Result<()> {
 	let block_align = channels * 2;
 	let byte_rate = rate * u32::from(block_align);
 
@@ -102,5 +104,5 @@ pub fn write_wav_header_only(path: &Path, channels: u16, rate: u32) -> std::io::
 	out.extend_from_slice(&16u16.to_le_bytes());
 	out.extend_from_slice(b"data");
 	out.extend_from_slice(&0u32.to_le_bytes());
-	std::fs::write(path, out)
+	fs::write(path, out)
 }

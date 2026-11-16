@@ -283,9 +283,9 @@ fn type_default(ofx_type: &str) -> ParamValue {
 			TYPE_PUSHBUTTON => ParamValue::PushButton,
 			TYPE_GROUP | TYPE_PAGE => ParamValue::Container,
 			// parametric 默认 = 1 条恒等曲线（range 默认 (0,1)）。
-			TYPE_PARAMETRIC => ParamValue::Parametric(vec![crate::param_curve::Curve::identity(
-				0.0, 1.0,
-			)]),
+			TYPE_PARAMETRIC => {
+				ParamValue::Parametric(vec![crate::param_curve::Curve::identity(0.0, 1.0)])
+			}
 			_ => ParamValue::Container, // 未知类型占位（paramDefine 已拒绝）
 		},
 	}
@@ -508,7 +508,10 @@ impl ParamDef {
 				// 隐式创建并允许逐位追加；预定义空数组会让 index >= 1
 				// 的写入炸 BadIndex——ColorLookup/HueCorrect 的
 				// describeInContext 失败根因）。
-				props.set_one(P_PARAMETRIC_INTERACT_BG, Value::Pointer(std::ptr::null_mut()));
+				props.set_one(
+					P_PARAMETRIC_INTERACT_BG,
+					Value::Pointer(std::ptr::null_mut()),
+				);
 				props.define(
 					P_PARAMETRIC_RANGE,
 					vec![Value::Double(0.0), Value::Double(1.0)],
@@ -653,14 +656,13 @@ impl ParamInstance {
 /// Node value → ParamValue (interpreted by parameter type; the string family takes a dedicated path).
 /// Mirrors `set_from_node`'s mapping table; the render driver's parameter overrides
 /// (apply_param_overrides) reuse the same conversion.
-pub(crate) fn param_value_from_node(
-	v: &crate::node::Value,
-	ofx_type: &str,
-) -> Option<ParamValue> {
+pub(crate) fn param_value_from_node(v: &crate::node::Value, ofx_type: &str) -> Option<ParamValue> {
 	use crate::node::node_value_type as T;
 	match ofx_type {
 		TYPE_DOUBLE => (v.r#type == T::FLOAT).then(|| ParamValue::Double([v.f[0], 0.0, 0.0], 1)),
-		TYPE_DOUBLE2D => (v.r#type == T::VEC2).then(|| ParamValue::Double([v.f[0], v.f[1], 0.0], 2)),
+		TYPE_DOUBLE2D => {
+			(v.r#type == T::VEC2).then(|| ParamValue::Double([v.f[0], v.f[1], 0.0], 2))
+		}
 		TYPE_DOUBLE3D => {
 			(v.r#type == T::VEC3).then(|| ParamValue::Double([v.f[0], v.f[1], v.f[2]], 3))
 		}
@@ -677,8 +679,9 @@ pub(crate) fn param_value_from_node(
 		TYPE_RGB => {
 			(v.r#type == T::COLOR).then(|| ParamValue::Color([v.f[0], v.f[1], v.f[2], 0.0], 3))
 		}
-		TYPE_RGBA => (v.r#type == T::COLOR)
-			.then(|| ParamValue::Color([v.f[0], v.f[1], v.f[2], v.f[3]], 4)),
+		TYPE_RGBA => {
+			(v.r#type == T::COLOR).then(|| ParamValue::Color([v.f[0], v.f[1], v.f[2], v.f[3]], 4))
+		}
 		_ => None, // 字符串/无值类：POD 无数据，不改值
 	}
 }

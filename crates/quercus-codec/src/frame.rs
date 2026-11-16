@@ -22,6 +22,7 @@
 //! itself is a plain `Vec<u8>`. Line-size and pixel-format math lives
 //! here.
 
+use crate::error;
 use quercus_core::videoparams::VideoParams;
 use quercus_core::{PixelFormat, Rational};
 
@@ -145,14 +146,14 @@ impl Frame {
 	}
 
 	/// Allocate the pixel buffer from the current params.
-	pub fn allocate(&mut self) -> crate::error::Result<()> {
+	pub fn allocate(&mut self) -> error::Result<()> {
 		let params = match &self.params {
 			Some(p) => p,
-			None => return Err(crate::error::Error::State),
+			None => return Err(error::Error::State),
 		};
 
 		if !params.is_valid() {
-			return Err(crate::error::Error::State);
+			return Err(error::Error::State);
 		}
 
 		if self.is_allocated() {
@@ -300,16 +301,16 @@ impl Frame {
 	/// conversion requires the OIIO bridge (`convert_to_olive_format`), which
 	/// is not yet ported to the pure-Rust crate; until then a mismatched
 	/// conversion is rejected with [`crate::error::Error::State`].
-	pub fn convert(&mut self) -> crate::error::Result<()> {
+	pub fn convert(&mut self) -> error::Result<()> {
 		if !self.is_allocated() {
-			return Err(crate::error::Error::State);
+			return Err(error::Error::State);
 		}
 		let fmt = self.format();
 		if self.allocated_format == fmt {
 			self.recompute_linesize();
 			return Ok(());
 		}
-		Err(crate::error::Error::State)
+		Err(error::Error::State)
 	}
 
 	/// Returns whether `(x, y)` names a pixel inside the allocated buffer.
@@ -434,7 +435,8 @@ mod tests {
 
 	#[test]
 	fn set_params_recomputes_linesize_without_realloc() {
-		let params = VideoParams::new_basic(10, 10, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
+		let params =
+			VideoParams::new_basic(10, 10, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
 		let mut f = Frame::with_params(params);
 		f.allocate().unwrap();
 		let before = f.allocated_size();

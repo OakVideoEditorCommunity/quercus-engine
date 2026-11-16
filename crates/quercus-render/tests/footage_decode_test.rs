@@ -22,12 +22,20 @@
 //! the known pattern. The decode bridge calls into the quercuscodec crate
 //! directly, so this runs the same real path the engine uses.
 
+use quercus_codec::testmedia;
+use quercus_core::color;
+use quercus_core::colormath;
 use quercus_core::{PixelFormat, Rational};
+use quercus_render::eval;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 
 mod common;
 
-fn test_clip_path() -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercusrender_footage_{}.mp4", std::process::id()))
+fn test_clip_path() -> path::PathBuf {
+	env::temp_dir().join(format!("quercusrender_footage_{}.mp4", process::id()))
 }
 
 #[test]
@@ -36,18 +44,18 @@ fn footage_decode_renders_known_content() {
 	// the color pipeline. Pin the working space to the legacy sRGB
 	// pass-through so the decoded pixels stay display-referred and the
 	// assertions below hold regardless of the ACEScg default.
-	quercus_core::color::set_pipeline_color_settings(
-		quercus_core::colormath::WorkingColorSpace::SrgbLegacy,
-		quercus_core::colormath::OutputColorSpec::default(),
+	color::set_pipeline_color_settings(
+		colormath::WorkingColorSpace::SrgbLegacy,
+		colormath::OutputColorSpec::default(),
 	);
 
 	// Program-generated media: 10 frames at 10fps, 64x64, known pattern
 	// (left half red, right half blue on frame 0).
 	let path = test_clip_path();
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
 
 	// Decode frame 0 at native size through the eval decode path.
-	let tex = quercus_render::eval::render_footage_frame(
+	let tex = eval::render_footage_frame(
 		&path.to_string_lossy(),
 		0,
 		Rational::new(0, 1),
@@ -96,7 +104,7 @@ fn footage_decode_renders_known_content() {
 	}
 
 	// Scaling: decode to a smaller proxy size keeps the known content.
-	let proxy = quercus_render::eval::render_footage_frame(
+	let proxy = eval::render_footage_frame(
 		&path.to_string_lossy(),
 		0,
 		Rational::new(0, 1),
@@ -116,12 +124,12 @@ fn footage_decode_renders_known_content() {
 	];
 	assert!(r > 0.5, "proxy left half stays red: {r}");
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 #[test]
 fn footage_decode_fails_explainably_for_missing_file() {
-	let err = quercus_render::eval::render_footage_frame(
+	let err = eval::render_footage_frame(
 		"/definitely/not/here.mp4",
 		0,
 		Rational::new(0, 1),

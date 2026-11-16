@@ -4,6 +4,8 @@ use super::EditorSessionHandle;
 use crate::codec::str_arg;
 use crate::editor_commands as ops;
 use quercus_node::id::NodeId;
+use std::path;
+use std::str;
 
 /// One subtitle style, matching the text3 generator's styling inputs.
 ///
@@ -98,7 +100,7 @@ impl QuercusSubtitleStyle {
 			.iter()
 			.position(|&byte| byte == 0)
 			.ok_or_else(|| "subtitle style: font_family is not NUL-terminated".to_string())?;
-		let font_family = std::str::from_utf8(&self.font_family[..end])
+		let font_family = str::from_utf8(&self.font_family[..end])
 			.map_err(|_| "subtitle style: font_family is not valid UTF-8".to_string())?
 			.to_string();
 		Ok(ops::SubtitleStyle {
@@ -182,7 +184,12 @@ pub unsafe extern "C" fn quercus_editor_import_subtitles(
 		let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
 		(state.project.clone(), state.current_sequence)
 	};
-	match ops::import_srt(&project, sequence, track_index as usize, std::path::Path::new(path)) {
+	match ops::import_srt(
+		&project,
+		sequence,
+		track_index as usize,
+		path::Path::new(path),
+	) {
 		Ok(count) => count as i32,
 		Err(_) => -1,
 	}
@@ -226,7 +233,7 @@ pub unsafe extern "C" fn quercus_editor_import_subtitles_styled(
 		&project,
 		sequence,
 		track_index as usize,
-		std::path::Path::new(path),
+		path::Path::new(path),
 		&style,
 	) {
 		Ok(count) => count as i32,
@@ -260,7 +267,7 @@ pub unsafe extern "C" fn quercus_editor_export_subtitles(
 		let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
 		(state.project.clone(), state.current_sequence)
 	};
-	match ops::export_srt(&project, sequence, std::path::Path::new(path)) {
+	match ops::export_srt(&project, sequence, path::Path::new(path)) {
 		Ok(count) => count as i32,
 		Err(_) => -1,
 	}
@@ -283,8 +290,7 @@ pub unsafe extern "C" fn quercus_editor_set_clip_gain(
 	clip: u64,
 	gain: f64,
 ) -> bool {
-	let (Some(session), Some(clip)) =
-		(unsafe { session.as_ref() }, NodeId::from_identity(clip))
+	let (Some(session), Some(clip)) = (unsafe { session.as_ref() }, NodeId::from_identity(clip))
 	else {
 		return false;
 	};

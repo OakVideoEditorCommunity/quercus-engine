@@ -27,16 +27,20 @@
 //!
 //! Reference: HS: ofxhImageEffect.cpp gMultiThreadSuite.
 
+use std::cell;
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{c_int, c_uint, c_void};
+use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use crate::suites::status;
 
 thread_local! {
 	/// This thread's OFX thread index (host thread = None).
-	static THREAD_INDEX: std::cell::Cell<Option<c_uint>> = const { std::cell::Cell::new(None) };
+	static THREAD_INDEX: cell::Cell<Option<c_uint>> = const { cell::Cell::new(None) };
 }
 
 /// Function-table layout (OfxMultiThreadSuiteV1).
@@ -73,7 +77,7 @@ pub struct MultiThreadSuiteV1 {
 /// (panics must not cross the C ABI boundary). The closure has no separate error
 /// channel; failures are always expressed by the return code.
 fn caught(f: impl FnOnce() -> c_int) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
+	panic::catch_unwind(panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
 }
 
 /// multiThread: synchronously start `n_threads` worker threads and wait for all of them.
@@ -98,13 +102,16 @@ unsafe extern "C" fn multi_thread(
 	thread_arg: *mut c_void,
 ) -> c_int {
 	caught(|| {
-		if std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
-			eprintln!("[ofx] multiThread: n_threads={n_threads} func={:#x} arg={thread_arg:p}", func as usize);
+		if env::var_os("QUERCUS_OFX_TRACE").is_some() {
+			eprintln!(
+				"[ofx] multiThread: n_threads={n_threads} func={:#x} arg={thread_arg:p}",
+				func as usize
+			);
 		}
 		// 裸指针不可 Send：以 usize 搬运，线程内还原（C 侧本即
 		// 整数传递语义）。
 		let arg = thread_arg as usize;
-		std::thread::scope(|scope| {
+		thread::scope(|scope| {
 			for i in 0..n_threads {
 				scope.spawn(move || {
 					THREAD_INDEX.with(|t| t.set(Some(i)));
@@ -135,7 +142,7 @@ unsafe extern "C" fn multi_thread_num_cpus(out: *mut c_int) -> c_int {
 			return status::ERR_VALUE;
 		}
 		// 物理核数（HS 同：系统 CPU 数）。
-		let n = std::thread::available_parallelism()
+		let n = thread::available_parallelism()
 			.map(|n| n.get() as c_int)
 			.unwrap_or(1);
 		unsafe { *out = n };
@@ -232,13 +239,13 @@ unsafe extern "C" fn mutex_create(out: *mut *mut c_void, count: c_int) -> c_int 
 			return status::ERR_VALUE;
 		}
 		let id = NEXT_MUTEX.fetch_add(1, Ordering::Relaxed);
-		MUTEXES
-			.lock()
-			.unwrap_or_else(|e| e.into_inner())
-			.insert(id, Arc::new(OfxMutex {
+		MUTEXES.lock().unwrap_or_else(|e| e.into_inner()).insert(
+			id,
+			Arc::new(OfxMutex {
 				permits: std::sync::Mutex::new(count.max(1)),
 				released: std::sync::Condvar::new(),
-			}));
+			}),
+		);
 		unsafe { *out = id as *mut c_void };
 		status::OK
 	})

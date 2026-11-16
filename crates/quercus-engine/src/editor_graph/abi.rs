@@ -1,6 +1,7 @@
 //! C ABI for reference-counted graph snapshots and live connection checks.
 
 use quercus_node::id::NodeId;
+use std::ptr;
 
 use crate::codec::{copy_str_out, str_arg};
 use crate::editor::EditorSessionHandle;
@@ -13,7 +14,11 @@ pub struct EditorGraphHandle {
 	snapshot: GraphSnapshot,
 }
 
-crate::export_handle!(EditorGraphHandle, quercus_editor_graph_add_ref, quercus_editor_graph_release);
+crate::export_handle!(
+	EditorGraphHandle,
+	quercus_editor_graph_add_ref,
+	quercus_editor_graph_release
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -177,10 +182,10 @@ pub unsafe extern "C" fn quercus_editor_graph_snapshot(
 	clip: u64,
 ) -> *mut EditorGraphHandle {
 	if session.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let Some(sequence) = NodeId::from_identity(sequence) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let clip = if clip == QUERCUS_NODE_ID_INVALID {
 		None
@@ -194,20 +199,26 @@ pub unsafe extern "C" fn quercus_editor_graph_snapshot(
 		.project
 		.clone();
 	build(&project, sequence, clip)
-		.map(|snapshot| crate::handle::into_ffi(EditorGraphHandle { snapshot }) as *mut EditorGraphHandle)
-		.unwrap_or(std::ptr::null_mut())
+		.map(|snapshot| {
+			crate::handle::into_ffi(EditorGraphHandle { snapshot }) as *mut EditorGraphHandle
+		})
+		.unwrap_or(ptr::null_mut())
 }
 
 /// Returns the undo revision captured by the snapshot, or zero for a null graph.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_editor_graph_revision(graph: *const EditorGraphHandle) -> i64 {
-	unsafe { graph.as_ref() }.map(|g| g.snapshot.revision).unwrap_or(0)
+	unsafe { graph.as_ref() }
+		.map(|g| g.snapshot.revision)
+		.unwrap_or(0)
 }
 
 /// Returns the number of nodes in the immutable snapshot, or zero for null.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_editor_graph_node_count(graph: *const EditorGraphHandle) -> i32 {
-	unsafe { graph.as_ref() }.map(|g| g.snapshot.nodes.len() as i32).unwrap_or(0)
+	unsafe { graph.as_ref() }
+		.map(|g| g.snapshot.nodes.len() as i32)
+		.unwrap_or(0)
 }
 
 /// Copies scalar node data at `index` into `out`.
@@ -367,7 +378,9 @@ pub unsafe extern "C" fn quercus_editor_graph_port_label_at(
 /// Returns the number of real and synthetic edges, or zero for a null graph.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_editor_graph_edge_count(graph: *const EditorGraphHandle) -> i32 {
-	unsafe { graph.as_ref() }.map(|g| g.snapshot.edges.len() as i32).unwrap_or(0)
+	unsafe { graph.as_ref() }
+		.map(|g| g.snapshot.edges.len() as i32)
+		.unwrap_or(0)
 }
 
 /// Copies scalar edge data at `index` into `out`.

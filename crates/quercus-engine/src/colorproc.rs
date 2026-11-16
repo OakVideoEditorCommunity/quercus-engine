@@ -8,6 +8,8 @@
 //! loaded (see `quercus_core_color_set_up_default_config`).
 
 use quercus_core::color::{ColorProcessor, Direction};
+use std::ptr;
+use std::slice;
 
 use crate::codec::{copy_str_out, str_arg};
 use crate::handle::into_ffi;
@@ -19,7 +21,11 @@ crate::export_handle!(
 );
 
 fn direction(inverse: bool) -> Direction {
-	if inverse { Direction::Inverse } else { Direction::Normal }
+	if inverse {
+		Direction::Inverse
+	} else {
+		Direction::Normal
+	}
 }
 
 /// A processor from two colorspace names on the default config.
@@ -47,15 +53,14 @@ pub unsafe extern "C" fn quercus_core_colorproc_create(
 	dst_transform_len: usize,
 	inverse: bool,
 ) -> *mut ColorProcessor {
-	let (Some(src), Some(dst)) = (
-		unsafe { str_arg(src_space, src_space_len) },
-		unsafe { str_arg(dst_transform, dst_transform_len) },
-	) else {
-		return std::ptr::null_mut();
+	let (Some(src), Some(dst)) = (unsafe { str_arg(src_space, src_space_len) }, unsafe {
+		str_arg(dst_transform, dst_transform_len)
+	}) else {
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create(src, dst, direction(inverse)) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -83,11 +88,11 @@ pub unsafe extern "C" fn quercus_core_colorproc_create_lut(
 	inverse: bool,
 ) -> *mut ColorProcessor {
 	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create_lut(path, direction(inverse)) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -114,15 +119,14 @@ pub unsafe extern "C" fn quercus_core_colorproc_create_display_icc(
 	icc_path: *const u8,
 	icc_path_len: usize,
 ) -> *mut ColorProcessor {
-	let (Some(src), Some(icc)) = (
-		unsafe { str_arg(src_space, src_space_len) },
-		unsafe { str_arg(icc_path, icc_path_len) },
-	) else {
-		return std::ptr::null_mut();
+	let (Some(src), Some(icc)) = (unsafe { str_arg(src_space, src_space_len) }, unsafe {
+		str_arg(icc_path, icc_path_len)
+	}) else {
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create_display_icc(src, icc) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -150,15 +154,14 @@ pub unsafe extern "C" fn quercus_core_colorproc_create_display_icc_bgra8(
 	icc_path: *const u8,
 	icc_path_len: usize,
 ) -> *mut ColorProcessor {
-	let (Some(src), Some(icc)) = (
-		unsafe { str_arg(src_space, src_space_len) },
-		unsafe { str_arg(icc_path, icc_path_len) },
-	) else {
-		return std::ptr::null_mut();
+	let (Some(src), Some(icc)) = (unsafe { str_arg(src_space, src_space_len) }, unsafe {
+		str_arg(icc_path, icc_path_len)
+	}) else {
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create_display_icc_bgra8(src, icc) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -185,11 +188,11 @@ pub unsafe extern "C" fn quercus_core_colorproc_create_display_icc_xyz(
 	icc_path_len: usize,
 ) -> *mut ColorProcessor {
 	let Some(icc) = (unsafe { str_arg(icc_path, icc_path_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create_display_icc_xyz(icc) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -215,11 +218,11 @@ pub unsafe extern "C" fn quercus_core_colorproc_create_display_icc_xyz_bgra8(
 	icc_path_len: usize,
 ) -> *mut ColorProcessor {
 	let Some(icc) = (unsafe { str_arg(icc_path, icc_path_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match ColorProcessor::create_display_icc_xyz_bgra8(icc) {
 		Some(p) => into_ffi(p) as *mut ColorProcessor,
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -291,9 +294,9 @@ pub unsafe extern "C" fn quercus_core_colorproc_convert_color(
 	if this.is_null() || rgba.is_null() {
 		return false;
 	}
-	let mut color: [f64; 4] = unsafe { std::ptr::read(rgba.cast()) };
+	let mut color: [f64; 4] = unsafe { ptr::read(rgba.cast()) };
 	color = unsafe { &*this }.convert_color(color);
-	unsafe { std::ptr::write(rgba.cast(), color) };
+	unsafe { ptr::write(rgba.cast(), color) };
 	true
 }
 
@@ -322,7 +325,7 @@ pub unsafe extern "C" fn quercus_core_colorproc_convert_f32_rgba(
 	let samples = if data.is_null() {
 		&mut []
 	} else {
-		unsafe { std::slice::from_raw_parts_mut(data, pixels.max(0) as usize * 4) }
+		unsafe { slice::from_raw_parts_mut(data, pixels.max(0) as usize * 4) }
 	};
 	unsafe { &*this }.convert_f32_rgba(samples, pixels).is_ok()
 }
@@ -353,75 +356,13 @@ pub unsafe extern "C" fn quercus_core_colorproc_convert_bgra8(
 	let buf = if data.is_null() {
 		&mut []
 	} else {
-		unsafe { std::slice::from_raw_parts_mut(data, pixels.max(0) as usize * 4) }
+		unsafe { slice::from_raw_parts_mut(data, pixels.max(0) as usize * 4) }
 	};
 	unsafe { &*this }.convert_bgra8(buf, pixels).is_ok()
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn arg(s: &str) -> (*const u8, usize) {
-		(s.as_ptr(), s.len())
-	}
-
-	#[test]
-	fn pass_through_is_identity() {
-		unsafe {
-			let proc = quercus_core_colorproc_pass_through();
-			assert!(!proc.is_null());
-
-			let mut rgba = [0.1f64, 0.5, 0.9, 1.0];
-			assert!(quercus_core_colorproc_convert_color(proc, rgba.as_mut_ptr()));
-			assert_eq!(rgba, [0.1, 0.5, 0.9, 1.0]);
-
-			let mut px = [0.25f32, 0.5, 0.75, 1.0];
-			assert!(quercus_core_colorproc_convert_f32_rgba(proc, px.as_mut_ptr(), 1));
-			assert_eq!(px, [0.25, 0.5, 0.75, 1.0]);
-
-			let mut bgra = [64u8, 128, 192, 255];
-			assert!(quercus_core_colorproc_convert_bgra8(proc, bgra.as_mut_ptr(), 1));
-			assert_eq!(bgra, [64, 128, 192, 255]);
-
-			quercus_core_colorproc_release(proc);
-		}
-	}
-
-	#[test]
-	fn create_with_default_config() {
-		// Loads the bundled OCIO config (idempotent, headless-safe).
-		assert!(crate::corestate::quercus_core_color_set_up_default_config());
-		unsafe {
-			let (src, dst) = ("acescg", "srgb");
-			let proc =
-				quercus_core_colorproc_create(arg(src).0, src.len(), arg(dst).0, dst.len(), false);
-			assert!(!proc.is_null(), "create after config load");
-
-			if quercus_core_colorproc_is_valid(proc) {
-				// A real transform changes mid gray.
-				let mut rgba = [0.18f64, 0.18, 0.18, 1.0];
-				assert!(quercus_core_colorproc_convert_color(proc, rgba.as_mut_ptr()));
-				assert_ne!(rgba[0], 0.18);
-			}
-			quercus_core_colorproc_release(proc);
-		}
-	}
-
-	#[test]
-	fn null_and_invalid_input_is_safe() {
-		unsafe {
-			assert!(quercus_core_colorproc_create(std::ptr::null(), 0, arg("x").0, 1, false).is_null());
-			assert!(!quercus_core_colorproc_is_valid(std::ptr::null()));
-			assert_eq!(quercus_core_colorproc_cache_id(std::ptr::null(), std::ptr::null_mut(), 0), -1);
-			assert!(!quercus_core_colorproc_convert_color(std::ptr::null(), std::ptr::null_mut()));
-			assert!(!quercus_core_colorproc_convert_f32_rgba(std::ptr::null(), std::ptr::null_mut(), 1));
-			assert!(!quercus_core_colorproc_convert_bgra8(std::ptr::null(), std::ptr::null_mut(), 1));
-			quercus_core_colorproc_add_ref(std::ptr::null());
-			quercus_core_colorproc_release(std::ptr::null());
-		}
-	}
-}
+mod tests;
 
 // ---------------------------------------------------------------------------
 // ColorTransform (the plain-data display/output transform descriptor)
@@ -455,7 +396,7 @@ pub unsafe extern "C" fn quercus_core_colortransform_new_output(
 	output_len: usize,
 ) -> *mut ColorTransform {
 	let Some(output) = (unsafe { str_arg(output, output_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	into_ffi(ColorTransform::new_output(output)) as *mut ColorTransform
 }
@@ -489,7 +430,7 @@ pub unsafe extern "C" fn quercus_core_colortransform_new_display(
 		unsafe { str_arg(view, view_len) },
 		unsafe { str_arg(look, look_len) },
 	) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	into_ffi(ColorTransform::new_display(display, view, look)) as *mut ColorTransform
 }

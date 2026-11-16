@@ -298,7 +298,10 @@ fn take_node_clears_partner_links() {
 	let entry = g.take_node(a).expect("take the node");
 	assert!(!g.links_of(b).contains(&a), "b dropped the stale reference");
 	assert!(!g.links_of(c).contains(&a), "c dropped the stale reference");
-	assert!(entry.core.links.contains(&b), "the entry keeps its own links");
+	assert!(
+		entry.core.links.contains(&b),
+		"the entry keeps its own links"
+	);
 
 	// Re-inserting restores the node's own links but not the partners'
 	// back-references (the documented undo trade-off); `are_linked` still
@@ -306,7 +309,10 @@ fn take_node_clears_partner_links() {
 	let readded = g.add_entry(entry, a);
 	assert_eq!(readded, a);
 	assert!(g.are_linked(a, b));
-	assert!(!g.links_of(b).contains(&a), "add_entry does not restore the back-reference");
+	assert!(
+		!g.links_of(b).contains(&a),
+		"add_entry does not restore the back-reference"
+	);
 	assert!(g.link(b, a), "link() re-establishes symmetry");
 	assert!(g.links_of(b).contains(&a) && g.links_of(a).contains(&b));
 }

@@ -1,5 +1,14 @@
 //! Owned video frames with explicit source and pixel-format metadata.
 
+use crate::render;
+use quercus_core::backend;
+use quercus_core::texture;
+use quercus_core::wgpu;
+use quercus_render::eval;
+use quercus_render::procpool;
+use std::env;
+use std::ffi;
+use std::ptr;
 pub(crate) mod montage;
 
 use quercus_core::{PixelFormat, Rational};
@@ -60,8 +69,8 @@ pub struct VideoBufferData {
 	/// Optional zero-copy presentation texture. When present the bytes are
 	/// empty and the host should sample this texture directly instead of
 	/// copying pixels.
-	pub gpu_texture: Option<std::sync::Arc<quercus_core::wgpu::Texture>>,
-	gpu_context: Option<std::sync::Arc<quercus_core::backend::GpuContext>>,
+	pub gpu_texture: Option<std::sync::Arc<wgpu::Texture>>,
+	gpu_context: Option<std::sync::Arc<backend::GpuContext>>,
 	cpu_bytes: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
@@ -269,7 +278,7 @@ pub unsafe extern "C" fn quercus_video_buffer_copy_bytes(
 	frame
 		.data
 		.with_cpu_bytes(|bytes| unsafe {
-			std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+			ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
 			bytes.len()
 		})
 		.unwrap_or(0)
@@ -295,12 +304,12 @@ pub unsafe extern "C" fn quercus_video_buffer_take_texture(
 	frame: *mut VideoBufferHandle,
 	width: *mut i32,
 	height: *mut i32,
-) -> *const std::ffi::c_void {
+) -> *const ffi::c_void {
 	let Some(frame) = (unsafe { frame.as_mut() }) else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	let Some(texture) = frame.data.gpu_texture.clone() else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	if !width.is_null() {
 		unsafe { *width = frame.data.width };
@@ -308,7 +317,7 @@ pub unsafe extern "C" fn quercus_video_buffer_take_texture(
 	if !height.is_null() {
 		unsafe { *height = frame.data.height };
 	}
-	std::sync::Arc::into_raw(texture) as *const std::ffi::c_void
+	std::sync::Arc::into_raw(texture) as *const ffi::c_void
 }
 
 /// Convert packed F32 RGBA samples to 8-bit BGRA bytes.
@@ -403,7 +412,7 @@ fn pack_f32_bytes(
 /// Propagates [`pack_f32_bytes`]'s message for invalid geometry or truncated
 /// data.
 fn frame_from_cpu(
-	frame: quercus_core::texture::Frame,
+	frame: texture::Frame,
 	origin: FrameOrigin,
 	pixel_format: VideoPixelFormat,
 ) -> Result<VideoBufferData, String> {
@@ -430,21 +439,21 @@ fn frame_from_cpu(
 /// ([`quercus_core::backend::GpuContext::take_texture_handle`]), so the caller
 /// owns the only reference along with the shared context.
 fn adopted_texture(
-	ctx: &std::sync::Arc<dyn quercus_core::backend::GpuContextLike>,
+	ctx: &std::sync::Arc<dyn backend::GpuContextLike>,
 	token: u64,
 ) -> Option<(
-	std::sync::Arc<quercus_core::backend::GpuContext>,
-	std::sync::Arc<quercus_core::wgpu::Texture>,
+	std::sync::Arc<backend::GpuContext>,
+	std::sync::Arc<wgpu::Texture>,
 )> {
 	let gpu = ctx
 		.as_any()
-		.and_then(|a| a.downcast_ref::<quercus_core::backend::GpuContext>())?;
+		.and_then(|a| a.downcast_ref::<backend::GpuContext>())?;
 	if !gpu.is_adopted() {
 		return None;
 	}
 	let converted = gpu.present_texture(token).ok()?;
 	let texture = gpu.take_texture_handle(converted)?;
-	let shared = quercus_core::backend::GpuContext::shared()?;
+	let shared = backend::GpuContext::shared()?;
 	(std::sync::Arc::as_ptr(&shared) == gpu).then_some((shared, texture))
 }
 
@@ -461,8 +470,8 @@ fn adopted_texture(
 fn frame_from_gpu_texture(
 	width: i32,
 	height: i32,
-	texture: std::sync::Arc<quercus_core::wgpu::Texture>,
-	gpu_context: std::sync::Arc<quercus_core::backend::GpuContext>,
+	texture: std::sync::Arc<wgpu::Texture>,
+	gpu_context: std::sync::Arc<backend::GpuContext>,
 ) -> Result<VideoBufferData, String> {
 	if width <= 0 || height <= 0 {
 		return Err("GPU frame has invalid geometry".into());
@@ -498,7 +507,7 @@ fn frame_from_gpu_texture(
 /// Returns a message when the slot is shorter than `data_size` or the pixels
 /// are truncated relative to `width`/`height`/`linesize`.
 fn frame_from_shared(
-	frame: &quercus_render::procpool::ShmFrameRef,
+	frame: &procpool::ShmFrameRef,
 	pixel_format: VideoPixelFormat,
 ) -> Result<VideoBufferData, String> {
 	let meta = &frame.meta;
@@ -658,17 +667,22 @@ pub(crate) fn render_video(
 			.result(id)
 			.ok_or("video ticket produced no result")?;
 		return match result {
-			Ok(TicketPayload::Video(quercus_core::texture::Texture::Cpu(frame))) => {
+			Ok(TicketPayload::Video(texture::Texture::Cpu(frame))) => {
 				frame_from_cpu(frame, FrameOrigin::Cpu, pixel_format)
 			}
 			Ok(TicketPayload::Video(texture)) => {
 				if !HOST_DISPLAY_TRANSFORM_REQUIRED.load(Ordering::Acquire) {
-					if let quercus_core::texture::Texture::Gpu {
-						token, width, height, ctx, ..
+					if let texture::Texture::Gpu {
+						token,
+						width,
+						height,
+						ctx,
+						..
 					} = &texture
 					{
 						if let Some((gpu, handle)) = adopted_texture(ctx, *token) {
-							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle, gpu) {
+							if let Ok(frame) = frame_from_gpu_texture(*width, *height, handle, gpu)
+							{
 								return Ok(frame);
 							}
 						}
@@ -676,9 +690,9 @@ pub(crate) fn render_video(
 				}
 				// Async readback is opt-in until the shared-queue/CUDA
 				// serialization is validated for project-open/OFX clips.
-				let frame = if std::env::var_os("QUERCUS_ASYNC_READBACK").is_some() {
+				let frame = if env::var_os("QUERCUS_ASYNC_READBACK").is_some() {
 					match &texture {
-						quercus_core::texture::Texture::Gpu { .. } => texture
+						texture::Texture::Gpu { .. } => texture
 							.to_frame_async()
 							.map_err(|e| e.to_string())?
 							.wait()
@@ -720,16 +734,15 @@ pub(crate) fn render_video(
 		// GPU montage compositor: the normal F32 path keeps decode, scale
 		// and composition on the GPU; the owned-buffer ABI below is a CPU
 		// boundary, so only this final handoff reads back.
-		let rendered = quercus_render::eval::render_montage_frame(
-			time,
-			&params,
-			(width, height),
-			PixelFormat::F32,
-		)
-		.map_err(|error| error.to_string())?;
+		let rendered = eval::render_montage_frame(time, &params, (width, height), PixelFormat::F32)
+			.map_err(|error| error.to_string())?;
 		if !HOST_DISPLAY_TRANSFORM_REQUIRED.load(Ordering::Acquire) {
-			if let quercus_core::texture::Texture::Gpu {
-				token, width: tw, height: th, ctx, ..
+			if let texture::Texture::Gpu {
+				token,
+				width: tw,
+				height: th,
+				ctx,
+				..
 			} = &rendered
 			{
 				if let Some((gpu, handle)) = adopted_texture(ctx, *token) {
@@ -740,11 +753,11 @@ pub(crate) fn render_video(
 			}
 		}
 		let frame = match rendered {
-			quercus_core::texture::Texture::Cpu(frame) => frame,
-			texture @ quercus_core::texture::Texture::Gpu { .. } => {
-				if std::env::var_os("QUERCUS_ASYNC_READBACK").is_some() {
+			texture::Texture::Cpu(frame) => frame,
+			texture @ texture::Texture::Gpu { .. } => {
+				if env::var_os("QUERCUS_ASYNC_READBACK").is_some() {
 					match &texture {
-						quercus_core::texture::Texture::Gpu { .. } => texture
+						texture::Texture::Gpu { .. } => texture
 							.to_frame_async()
 							.map_err(|error| error.to_string())?
 							.wait()
@@ -755,13 +768,13 @@ pub(crate) fn render_video(
 					texture.to_frame().map_err(|error| error.to_string())?
 				}
 			}
-			quercus_core::texture::Texture::Planar(_) => {
-				return Err("unresolved planar montage texture".to_string())
+			texture::Texture::Planar(_) => {
+				return Err("unresolved planar montage texture".to_string());
 			}
 		};
 		return frame_from_cpu(frame, FrameOrigin::Gpu, pixel_format);
 	}
-	let samples = crate::render::render_frame_f32_data(project, viewer, time, width, height)?;
+	let samples = render::render_frame_f32_data(project, viewer, time, width, height)?;
 	let bytes: Vec<u8> = samples
 		.iter()
 		.flat_map(|sample| sample.to_ne_bytes())

@@ -19,6 +19,7 @@
 /// Maximum workers spawned by one CPU operation. Render jobs and codec
 /// instances can themselves run concurrently, so unbounded per-frame
 /// fan-out would oversubscribe the machine.
+use std::thread;
 const MAX_WORKERS: usize = 8;
 
 /// Minimum logical units (usually pixels) before spawning is worthwhile.
@@ -26,7 +27,7 @@ const MIN_PARALLEL_UNITS: usize = 1 << 19;
 
 /// CPU worker budget for codecs and large pixel operations.
 pub fn thread_count() -> usize {
-	std::thread::available_parallelism()
+	thread::available_parallelism()
 		.map(|n| n.get())
 		.unwrap_or(1)
 		.min(MAX_WORKERS)
@@ -54,7 +55,7 @@ pub fn for_each_band<T: Send>(buf: &mut [T], align: usize, f: impl Fn(&mut [T]) 
 	}
 	let band_len = (buf.len() / workers).div_ceil(align) * align;
 	let f = &f;
-	std::thread::scope(|scope| {
+	thread::scope(|scope| {
 		for band in buf.chunks_mut(band_len) {
 			scope.spawn(move || f(band));
 		}
@@ -87,7 +88,7 @@ pub fn for_each_row<T: Send>(
 	}
 	let rows_per_band = rows.div_ceil(workers);
 	let band_stride = row_stride.saturating_mul(rows_per_band);
-	std::thread::scope(|scope| {
+	thread::scope(|scope| {
 		for (band_index, band) in buf.chunks_mut(band_stride).enumerate() {
 			scope.spawn(move || {
 				for (local_index, row) in band.chunks_mut(row_stride).enumerate() {

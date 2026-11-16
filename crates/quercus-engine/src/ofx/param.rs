@@ -9,6 +9,9 @@
 
 use quercus_ofx_plugin::node_factory;
 use quercus_ofx_plugin::param::{ParamInstance, ParamValue};
+use quercus_ofx_plugin::param_curve;
+use quercus_ofx_plugin::property;
+use std::ffi;
 
 use crate::codec::{copy_str_out, str_arg};
 
@@ -123,7 +126,7 @@ pub unsafe extern "C" fn quercus_ofx_param_label_at(
 	buf_len: usize,
 ) -> i32 {
 	let label = with_param_at(id, index, |p| match p.def.props.get(PROP_LABEL, 0) {
-		Some(quercus_ofx_plugin::property::Value::String(s)) => s.to_string_lossy().into_owned(),
+		Some(property::Value::String(s)) => s.to_string_lossy().into_owned(),
 		_ => String::new(),
 	});
 	match label {
@@ -334,7 +337,11 @@ pub unsafe extern "C" fn quercus_ofx_param_set_double(
 /// `name` must be null or point to `name_len` readable bytes of valid UTF-8
 /// for the duration of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_param_get_bool(id: u64, name: *const u8, name_len: usize) -> i32 {
+pub unsafe extern "C" fn quercus_ofx_param_get_bool(
+	id: u64,
+	name: *const u8,
+	name_len: usize,
+) -> i32 {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
 		return -1;
 	};
@@ -596,7 +603,7 @@ pub unsafe extern "C" fn quercus_ofx_param_set_string(
 	let Some(value) = (unsafe { str_arg(value, value_len) }) else {
 		return false;
 	};
-	let Ok(value) = std::ffi::CString::new(value) else {
+	let Ok(value) = ffi::CString::new(value) else {
 		return false;
 	};
 	with_param(id, name, |p| {
@@ -638,9 +645,7 @@ pub unsafe extern "C" fn quercus_ofx_param_get_curves_json(
 		return -1;
 	};
 	let json = with_param(id, name, |p| match p.get() {
-		ParamValue::Parametric(curves) => {
-			Some(quercus_ofx_plugin::param_curve::curves_to_json(&curves))
-		}
+		ParamValue::Parametric(curves) => Some(param_curve::curves_to_json(&curves)),
 		_ => None,
 	});
 	match json.flatten() {
@@ -681,7 +686,7 @@ pub unsafe extern "C" fn quercus_ofx_param_set_curves_json(
 	let Some(json) = (unsafe { str_arg(json, json_len) }) else {
 		return false;
 	};
-	let Some(curves) = quercus_ofx_plugin::param_curve::curves_from_json(json) else {
+	let Some(curves) = param_curve::curves_from_json(json) else {
 		return false;
 	};
 	with_param(id, name, |p| {
@@ -708,12 +713,16 @@ mod tests {
 		);
 		let mut d = [0.0f64; 3];
 		assert_eq!(
-			unsafe { quercus_ofx_param_get_double(u64::MAX, "gain".as_ptr(), 4, d.as_mut_ptr(), 3) },
+			unsafe {
+				quercus_ofx_param_get_double(u64::MAX, "gain".as_ptr(), 4, d.as_mut_ptr(), 3)
+			},
 			-1
 		);
 		assert!(!unsafe { quercus_ofx_param_set_bool(u64::MAX, "b".as_ptr(), 1, true) });
 		assert_eq!(
-			unsafe { quercus_ofx_param_get_string(u64::MAX, "s".as_ptr(), 1, buf.as_mut_ptr(), 16) },
+			unsafe {
+				quercus_ofx_param_get_string(u64::MAX, "s".as_ptr(), 1, buf.as_mut_ptr(), 16)
+			},
 			-1
 		);
 		assert!(!unsafe {

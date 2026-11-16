@@ -8,14 +8,18 @@
 use quercus_core::{Rational, TimeRange};
 use quercus_render::eval::render_audio_samples;
 use quercus_render::ticket::{AudioTicketParams, MontageClip, TicketPayload};
+use std::env;
+use std::fs;
+use std::iter;
+use std::process;
 
 fn main() {
-	let args: Vec<String> = std::env::args().collect();
+	let args: Vec<String> = env::args().collect();
 	if args.len() < 6 {
 		eprintln!(
 			"usage: render_audio_wav <media> <stream_index> <start_sec> <end_sec> <out.wav> [fps]"
 		);
-		std::process::exit(64);
+		process::exit(64);
 	}
 	let media = &args[1];
 	let stream_index: i32 = args[2].parse().unwrap();
@@ -69,7 +73,7 @@ fn main() {
 			other => {
 				eprintln!("frame {f}: render failed: {:?}", other.is_err());
 				let frames = ((sample_rate as f64) / fps as f64).round() as usize;
-				pcm.extend(std::iter::repeat_n(0i16, frames * channels));
+				pcm.extend(iter::repeat_n(0i16, frames * channels));
 			}
 		}
 	}
@@ -92,7 +96,7 @@ fn main() {
 	for s in &pcm {
 		w.extend_from_slice(&s.to_le_bytes());
 	}
-	std::fs::write(out_path, &w).expect("write wav");
+	fs::write(out_path, &w).expect("write wav");
 	println!(
 		"wrote {} samples ({} ch @ {} Hz) to {}",
 		pcm.len() / channels,

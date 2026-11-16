@@ -19,6 +19,10 @@
 //! makes the arena's exactly-once / cancel / shutdown semantics
 //! deterministic without any worker threads).
 
+use quercus_core::PixelFormat;
+use quercus_node::project;
+use std::collections;
+use std::path;
 mod common;
 
 use std::sync::{mpsc, Arc};
@@ -26,9 +30,9 @@ use std::time::Duration;
 
 use quercus_core::Rational;
 
-use quercus_render::error::Error;
 use quercus_core::frame::VideoParamsPod;
 use quercus_core::texture::{Frame, Texture};
+use quercus_render::error::Error;
 use quercus_render::ticket::{TicketArena, VideoTicketParams};
 use quercus_render::worker::{GraphSnapshotStore, InlineDispatcher, JobDispatch};
 
@@ -51,7 +55,11 @@ fn small_frame() -> Frame {
 }
 
 fn ok_producer() -> quercus_render::ticket::Producer {
-	Arc::new(|_, _| Ok(quercus_render::ticket::TicketPayload::Video(Texture::wrap_frame(small_frame()))))
+	Arc::new(|_, _| {
+		Ok(quercus_render::ticket::TicketPayload::Video(
+			Texture::wrap_frame(small_frame()),
+		))
+	})
 }
 
 fn params(time: Rational) -> VideoTicketParams {
@@ -105,7 +113,7 @@ fn ticket_completion_once_success() {
 	assert!(arena.is_finished(id));
 	let res = arena.result(id).unwrap().unwrap();
 	assert_eq!(res_video(&res).size(), (8, 4));
-	assert_eq!(res_video(&res).format(), quercus_core::PixelFormat::F32);
+	assert_eq!(res_video(&res).format(), PixelFormat::F32);
 	d.shutdown();
 }
 
@@ -196,7 +204,7 @@ fn pool_saturation() {
 	}
 	assert_eq!(ok, 64, "all 64 jobs completed successfully");
 	ids.sort_by_key(|i| i.0);
-	let unique: std::collections::HashSet<_> = ids.iter().collect();
+	let unique: collections::HashSet<_> = ids.iter().collect();
 	assert_eq!(unique.len(), 64, "unique arena ids");
 	d.shutdown();
 }
@@ -220,26 +228,26 @@ fn ticket_id_monotonic() {
 #[test]
 fn snapshot_store_refcount() {
 	let store = GraphSnapshotStore::new();
-	let project = quercus_node::project::Project::new();
+	let project = project::Project::new();
 	let p1 = store.acquire(&project, 1).unwrap();
 	let p2 = store.acquire(&project, 1).unwrap();
 	assert_eq!(p1, p2);
-	assert!(std::path::Path::new(&p1).exists());
+	assert!(path::Path::new(&p1).exists());
 	assert_eq!(store.refs(&p1), 2);
 	store.release(&p1);
-	assert!(std::path::Path::new(&p1).exists());
+	assert!(path::Path::new(&p1).exists());
 	store.mark_cached(&p1, true);
 	assert!(store.is_cached(&p1));
 	store.release(&p1);
 	// Zero refs: file intentionally kept (late worker loads), entry dropped.
 	assert_eq!(store.refs(&p1), 0);
 	assert!(
-		std::path::Path::new(&p1).exists(),
+		path::Path::new(&p1).exists(),
 		"file kept after release at refcount 0"
 	);
 	store.cleanup();
 	assert!(
-		!std::path::Path::new(&p1).exists(),
+		!path::Path::new(&p1).exists(),
 		"store directory removed by cleanup"
 	);
 }

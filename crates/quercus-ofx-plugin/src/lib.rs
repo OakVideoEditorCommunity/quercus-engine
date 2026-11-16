@@ -67,6 +67,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+use std::path;
 pub mod clip;
 pub mod descriptor;
 pub mod error;
@@ -91,8 +92,8 @@ pub mod suites;
 /// process (M3) — without a system plugin. The build script always
 /// compiles it, so this is `None` only if the build directory was
 /// tampered with (tests treat that as a hard failure, not a skip).
-pub fn bundled_test_plugin() -> Option<std::path::PathBuf> {
-	let dir = std::path::Path::new(env!("OUT_DIR"));
+pub fn bundled_test_plugin() -> Option<path::PathBuf> {
+	let dir = path::Path::new(env!("OUT_DIR"));
 	for name in [
 		"quercus_test_plugin.dylib",
 		"quercus_test_plugin.so",

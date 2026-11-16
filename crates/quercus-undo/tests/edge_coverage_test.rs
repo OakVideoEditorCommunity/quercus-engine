@@ -21,8 +21,8 @@
 //! the `CHandle` layer they exercised).
 
 use quercus_undo::error::{
-	Error, QUERCUSUNDO_E_FAILED, QUERCUSUNDO_E_INVALID, QUERCUSUNDO_E_NOMEM, QUERCUSUNDO_E_NOT_FOUND,
-	QUERCUSUNDO_E_STATE,
+	Error, QUERCUSUNDO_E_FAILED, QUERCUSUNDO_E_INVALID, QUERCUSUNDO_E_NOMEM,
+	QUERCUSUNDO_E_NOT_FOUND, QUERCUSUNDO_E_STATE,
 };
 use quercus_undo::undocommand::{MultiUndoCommand, UndoCommand};
 use quercus_undo::undostack::{EmptyCommand, UndoStack, K_MAX_UNDO_COMMANDS};
@@ -32,7 +32,10 @@ use quercus_undo::undostack::{EmptyCommand, UndoStack, K_MAX_UNDO_COMMANDS};
 fn error_code_mapping_is_complete() {
 	assert_eq!(Error::Invalid.code(), QUERCUSUNDO_E_INVALID);
 	assert_eq!(Error::State.code(), QUERCUSUNDO_E_STATE);
-	assert_eq!(Error::Failed("ctx".to_string()).code(), QUERCUSUNDO_E_FAILED);
+	assert_eq!(
+		Error::Failed("ctx".to_string()).code(),
+		QUERCUSUNDO_E_FAILED
+	);
 	assert_eq!(Error::NotFound.code(), QUERCUSUNDO_E_NOT_FOUND);
 	assert_eq!(Error::NoMem.code(), QUERCUSUNDO_E_NOMEM);
 }

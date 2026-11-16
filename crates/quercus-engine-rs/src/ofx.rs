@@ -11,15 +11,24 @@
 //! [`CurveSet`] manage their engine-side handles on drop too.
 
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::Mutex;
 
 use crate::codec::string_out;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_ofx_scan() -> i32;
 	fn quercus_ofx_scan_path(path: *const u8, path_len: usize) -> bool;
@@ -208,7 +217,12 @@ unsafe extern "C" {
 		index: i32,
 		out: *mut QuercusOfxCurvePoint,
 	) -> bool;
-	fn quercus_ofx_curveset_upsert_point(set: *const c_void, curve: i32, key: f64, value: f64) -> bool;
+	fn quercus_ofx_curveset_upsert_point(
+		set: *const c_void,
+		curve: i32,
+		key: f64,
+		value: f64,
+	) -> bool;
 	fn quercus_ofx_curveset_push_point(
 		set: *const c_void,
 		curve: i32,
@@ -382,7 +396,8 @@ pub fn plugin_at(index: usize) -> Option<PluginInfo> {
 		return None;
 	}
 	let i = index as i32;
-	let identifier = string_out(|buf, len| unsafe { quercus_ofx_plugin_identifier_at(i, buf, len) })?;
+	let identifier =
+		string_out(|buf, len| unsafe { quercus_ofx_plugin_identifier_at(i, buf, len) })?;
 	let label = string_out(|buf, len| unsafe { quercus_ofx_plugin_label_at(i, buf, len) })?;
 	let path = string_out(|buf, len| unsafe { quercus_ofx_plugin_path_at(i, buf, len) })?;
 	let (mut major, mut minor) = (0u32, 0u32);
@@ -391,7 +406,9 @@ pub fn plugin_at(index: usize) -> Option<PluginInfo> {
 	}
 	let context_count = unsafe { quercus_ofx_plugin_context_count_at(i) }.max(0);
 	let contexts = (0..context_count)
-		.filter_map(|c| string_out(|buf, len| unsafe { quercus_ofx_plugin_context_at(i, c, buf, len) }))
+		.filter_map(|c| {
+			string_out(|buf, len| unsafe { quercus_ofx_plugin_context_at(i, c, buf, len) })
+		})
 		.collect();
 	Some(PluginInfo {
 		identifier,
@@ -576,7 +593,7 @@ pub fn set_progress_handler(
 /// reports no further `progressUpdate`/`progressEnd` events to this
 /// process.
 pub fn clear_progress_handler() {
-	unsafe { quercus_ofx_set_progress_handler(None, None, std::ptr::null_mut()) };
+	unsafe { quercus_ofx_set_progress_handler(None, None, ptr::null_mut()) };
 	if let Some(old) = PROGRESS_CALLBACKS
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
@@ -622,10 +639,11 @@ impl Instance {
 	pub fn create(plugin_id: &str, context: Option<&str>) -> Option<Instance> {
 		let (ctx, ctx_len) = match context {
 			Some(c) => (c.as_ptr(), c.len()),
-			None => (std::ptr::null(), 0),
+			None => (ptr::null(), 0),
 		};
-		let id =
-			unsafe { quercus_ofx_instance_create(plugin_id.as_ptr(), plugin_id.len(), ctx, ctx_len) };
+		let id = unsafe {
+			quercus_ofx_instance_create(plugin_id.as_ptr(), plugin_id.len(), ctx, ctx_len)
+		};
 		(id != 0).then_some(Instance { id })
 	}
 
@@ -689,14 +707,16 @@ impl Instance {
 	///
 	/// * `index` - zero-based parameter index in definition order.
 	pub fn param_label_at(&self, index: usize) -> Option<String> {
-		string_out(|buf, len| unsafe { quercus_ofx_param_label_at(self.id, index as i32, buf, len) })
+		string_out(|buf, len| unsafe {
+			quercus_ofx_param_label_at(self.id, index as i32, buf, len)
+		})
 	}
 
 	/// Reads an integer-family parameter (Integer/Integer2D/Integer3D).
 	/// None on unknown name or a type mismatch.
 	pub fn param_int(&self, name: &str) -> Option<Vec<i32>> {
 		let dim = unsafe {
-			quercus_ofx_param_get_int(self.id, name.as_ptr(), name.len(), std::ptr::null_mut(), 0)
+			quercus_ofx_param_get_int(self.id, name.as_ptr(), name.len(), ptr::null_mut(), 0)
 		};
 		if dim < 0 {
 			return None;
@@ -738,7 +758,7 @@ impl Instance {
 	/// * `name` - internal parameter name (not its display label).
 	pub fn param_double(&self, name: &str) -> Option<Vec<f64>> {
 		let dim = unsafe {
-			quercus_ofx_param_get_double(self.id, name.as_ptr(), name.len(), std::ptr::null_mut(), 0)
+			quercus_ofx_param_get_double(self.id, name.as_ptr(), name.len(), ptr::null_mut(), 0)
 		};
 		if dim < 0 {
 			return None;
@@ -843,7 +863,7 @@ impl Instance {
 	/// * `name` - internal parameter name (not its display label).
 	pub fn param_color(&self, name: &str) -> Option<Vec<f64>> {
 		let dim = unsafe {
-			quercus_ofx_param_get_color(self.id, name.as_ptr(), name.len(), std::ptr::null_mut(), 0)
+			quercus_ofx_param_get_color(self.id, name.as_ptr(), name.len(), ptr::null_mut(), 0)
 		};
 		if dim < 0 {
 			return None;
@@ -996,7 +1016,7 @@ impl Instance {
 				}
 				(pixels.as_ptr(), w as i32, h as i32)
 			}
-			None => (std::ptr::null(), 0, 0),
+			None => (ptr::null(), 0, 0),
 		};
 		unsafe {
 			quercus_ofx_instance_render_frame(
@@ -1375,13 +1395,12 @@ impl CurveSet {
 	/// * `index` - zero-based position within the curve, in key order.
 	pub fn point_at(&self, curve: usize, index: usize) -> Option<ControlPoint> {
 		let mut out = QuercusOfxCurvePoint::default();
-		unsafe { quercus_ofx_curveset_point_at(self.ptr, curve as i32, index as i32, &mut out) }.then(
-			|| ControlPoint {
+		unsafe { quercus_ofx_curveset_point_at(self.ptr, curve as i32, index as i32, &mut out) }
+			.then(|| ControlPoint {
 				key: out.key,
 				value: out.value,
 				slope: out.slope,
-			},
-		)
+			})
 	}
 
 	/// Inserts or overwrites the control point at `key` (key order is
@@ -1867,7 +1886,10 @@ mod tests {
 		let Some(interact) = create_interact(inst.id()) else {
 			panic!("the interact variant declares an overlay interact");
 		};
-		assert_eq!(persistent_message_count(inst.id()), inst.persistent_message_count());
+		assert_eq!(
+			persistent_message_count(inst.id()),
+			inst.persistent_message_count()
+		);
 		cancel_render();
 		assert_eq!(interact.idle(), status::OK);
 		// The test plugin leaves the focus actions unhandled

@@ -20,9 +20,15 @@
 //! version) and lenient handling of unknown elements.
 
 use quercus_core::Rational;
+use quercus_otio::FcpxmlError;
+use quercus_otio::TimeRange;
 use quercus_otio::{
 	Clip, Composable, ExternalReference, MediaReference, RationalTime, Timeline, Track,
 };
+use std::env;
+use std::fs;
+use std::process;
+use std::slice;
 
 /// The NTSC video rate 30000/1001 (~29.97 fps) as an exact rational.
 const NTSC_RATE: f64 = 30000.0 / 1001.0;
@@ -191,7 +197,7 @@ fn parse_synthetic_document() {
 #[test]
 fn model_round_trips_through_fcpxml() {
 	let original = parse_synthetic();
-	let xml = quercus_otio::to_fcpxml_string(std::slice::from_ref(&original)).expect("export fcpxml");
+	let xml = quercus_otio::to_fcpxml_string(slice::from_ref(&original)).expect("export fcpxml");
 	let reparsed = quercus_otio::from_fcpxml_string(&xml).expect("reparse exported fcpxml");
 	assert_eq!(reparsed.len(), 1);
 	assert_eq!(reparsed[0], original, "model survives fcpxml round trip");
@@ -251,13 +257,13 @@ fn ntsc_frame_accuracy() {
 	let mut timeline = Timeline::new("NTSC");
 	let mut video = Track::new("Video");
 	let mut clip = Clip::new("ntsc");
-	clip.set_source_range(quercus_otio::TimeRange::new(
+	clip.set_source_range(TimeRange::new(
 		RationalTime::new(0.0, NTSC_RATE),
 		RationalTime::new(3.0, NTSC_RATE),
 	));
 	clip.set_media_reference(MediaReference::ExternalReference(ExternalReference::new(
 		"file:///tmp/ntsc.mov",
-		Some(quercus_otio::TimeRange::new(
+		Some(TimeRange::new(
 			RationalTime::new(0.0, NTSC_RATE),
 			RationalTime::new(1000.0, NTSC_RATE),
 		)),
@@ -296,28 +302,28 @@ fn error_corrupt_xml() {
 	let bad = "<fcpxml version=\"1.10\"><resources></fcpxml>";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(bad),
-		Err(quercus_otio::FcpxmlError::Xml(_)) | Err(quercus_otio::FcpxmlError::Malformed(_))
+		Err(FcpxmlError::Xml(_)) | Err(FcpxmlError::Malformed(_))
 	));
 
 	// Unclosed root element.
 	let bad = "<fcpxml version=\"1.10\">";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(bad),
-		Err(quercus_otio::FcpxmlError::Malformed(_))
+		Err(FcpxmlError::Malformed(_))
 	));
 
 	// Truly broken markup.
 	let bad = "<fcpxml version=\"1.10\"><resources><format";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(bad),
-		Err(quercus_otio::FcpxmlError::Xml(_))
+		Err(FcpxmlError::Xml(_))
 	));
 
 	// Wrong root element.
 	let bad = "<root/>";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(bad),
-		Err(quercus_otio::FcpxmlError::Malformed(_))
+		Err(FcpxmlError::Malformed(_))
 	));
 }
 
@@ -333,7 +339,7 @@ fn error_missing_resources() {
 	</project></event></library>
 </fcpxml>"#;
 	match quercus_otio::from_fcpxml_string(doc) {
-		Err(quercus_otio::FcpxmlError::Malformed(msg)) => {
+		Err(FcpxmlError::Malformed(msg)) => {
 			assert!(msg.contains("nope"), "{msg}");
 		}
 		other => panic!("expected Malformed error, got {other:?}"),
@@ -347,7 +353,7 @@ fn error_missing_resources() {
 </fcpxml>"#;
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(doc),
-		Err(quercus_otio::FcpxmlError::Malformed(_))
+		Err(FcpxmlError::Malformed(_))
 	));
 }
 
@@ -357,21 +363,21 @@ fn error_unknown_version() {
 	let doc = "<fcpxml version=\"2.0\"><resources/></fcpxml>";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(doc),
-		Err(quercus_otio::FcpxmlError::UnsupportedVersion(_))
+		Err(FcpxmlError::UnsupportedVersion(_))
 	));
 
 	// Missing version.
 	let doc = "<fcpxml><resources/></fcpxml>";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(doc),
-		Err(quercus_otio::FcpxmlError::UnsupportedVersion(_))
+		Err(FcpxmlError::UnsupportedVersion(_))
 	));
 
 	// Garbage version.
 	let doc = "<fcpxml version=\"bogus\"><resources/></fcpxml>";
 	assert!(matches!(
 		quercus_otio::from_fcpxml_string(doc),
-		Err(quercus_otio::FcpxmlError::UnsupportedVersion(_))
+		Err(FcpxmlError::UnsupportedVersion(_))
 	));
 }
 
@@ -443,7 +449,7 @@ fn multiple_timelines_export_and_import() {
 	let mut a = Timeline::new("Sequence One");
 	let mut track_a = Track::new("Video");
 	let mut clip = Clip::new("c1");
-	clip.set_source_range(quercus_otio::TimeRange::new(
+	clip.set_source_range(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(48.0, 24.0),
 	));
@@ -457,7 +463,7 @@ fn multiple_timelines_export_and_import() {
 	let mut b = Timeline::new("Sequence Two");
 	let mut track_b = Track::new("Audio");
 	let mut clip2 = Clip::new("c2");
-	clip2.set_source_range(quercus_otio::TimeRange::new(
+	clip2.set_source_range(TimeRange::new(
 		RationalTime::new(0.0, 48000.0),
 		RationalTime::new(96000.0, 48000.0),
 	));
@@ -468,7 +474,8 @@ fn multiple_timelines_export_and_import() {
 	track_b.append_child(Composable::Clip(clip2));
 	b.tracks_mut().append_child(Composable::Track(track_b));
 
-	let xml = quercus_otio::to_fcpxml_string(&[a.clone(), b.clone()]).expect("export two timelines");
+	let xml =
+		quercus_otio::to_fcpxml_string(&[a.clone(), b.clone()]).expect("export two timelines");
 	assert!(xml.contains("<event"), "{xml}");
 	assert!(xml.contains("name=\"Sequence One\""), "{xml}");
 	assert!(xml.contains("name=\"Sequence Two\""), "{xml}");
@@ -505,12 +512,12 @@ fn multiple_timelines_export_and_import() {
 
 #[test]
 fn file_round_trip() {
-	let path = std::env::temp_dir().join(format!("quercusotio_fcpxml_{}.fcpxml", std::process::id()));
+	let path = env::temp_dir().join(format!("quercusotio_fcpxml_{}.fcpxml", process::id()));
 	quercus_otio::to_fcpxml_file(&[parse_synthetic()], &path).expect("write fcpxml file");
 	let timelines = quercus_otio::from_fcpxml_file(&path).expect("read fcpxml file");
 	assert_eq!(timelines.len(), 1);
 	assert_eq!(timelines[0].name(), "My Project");
-	std::fs::remove_file(&path).ok();
+	fs::remove_file(&path).ok();
 }
 
 #[test]

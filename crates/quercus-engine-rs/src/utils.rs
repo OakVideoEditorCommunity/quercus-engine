@@ -6,8 +6,18 @@ use thiserror::Error;
 
 use crate::codec::string_out;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 #[allow(improper_ctypes)]
 unsafe extern "C" {
 	fn quercus_core_colormath_working_to_display_target(
@@ -73,7 +83,11 @@ unsafe extern "C" {
 		buf: *mut u8,
 		buf_len: usize,
 	) -> i32;
-	fn quercus_core_file_directory_is_valid(dir: *const u8, dir_len: usize, try_to_create: bool) -> bool;
+	fn quercus_core_file_directory_is_valid(
+		dir: *const u8,
+		dir_len: usize,
+		try_to_create: bool,
+	) -> bool;
 	fn quercus_core_file_get_safe_temporary_filename(
 		original: *const u8,
 		original_len: usize,
@@ -111,12 +125,7 @@ fn arg(s: &str) -> (*const u8, usize) {
 /// samples. Settings are the persisted strings (see
 /// [`crate::state::color_set_pipeline_settings`]). Infallible for valid
 /// settings from Rust (strings are always UTF-8).
-pub fn working_to_display_target(
-	samples: &mut [f32],
-	working: &str,
-	gamut: &str,
-	transfer: &str,
-) {
+pub fn working_to_display_target(samples: &mut [f32], working: &str, gamut: &str, transfer: &str) {
 	let (w, wl) = arg(working);
 	let (g, gl) = arg(gamut);
 	let (t, tl) = arg(transfer);
@@ -347,9 +356,7 @@ pub fn auto_recovery_root() -> Option<String> {
 /// `None` on engine error.
 pub fn unique_file_identifier(filename: &str) -> Option<String> {
 	let (f, fl) = arg(filename);
-	string_out(|buf, len| unsafe {
-		quercus_core_file_get_unique_file_identifier(f, fl, buf, len)
-	})
+	string_out(|buf, len| unsafe { quercus_core_file_get_unique_file_identifier(f, fl, buf, len) })
 }
 
 /// Appends `extension` to `filename` when missing; `None` on engine
@@ -379,9 +386,7 @@ pub fn directory_is_valid(dir: &str, try_to_create: bool) -> bool {
 /// A collision-free temporary filename derived from `original`.
 pub fn safe_temporary_filename(original: &str) -> Option<String> {
 	let (o, ol) = arg(original);
-	string_out(|buf, len| unsafe {
-		quercus_core_file_get_safe_temporary_filename(o, ol, buf, len)
-	})
+	string_out(|buf, len| unsafe { quercus_core_file_get_safe_temporary_filename(o, ol, buf, len) })
 }
 
 /// The platform-specific executable name for `unformatted` (adds ".exe"
@@ -437,7 +442,11 @@ mod tests {
 	fn display_target_transform() {
 		let mut data = vec![0.18f32, 0.5, 0.9, 1.0];
 		working_to_display_target(&mut data, "srgb_legacy", "srgb", "srgb");
-		assert_eq!(data, vec![0.18, 0.5, 0.9, 1.0], "srgb_legacy passes through");
+		assert_eq!(
+			data,
+			vec![0.18, 0.5, 0.9, 1.0],
+			"srgb_legacy passes through"
+		);
 
 		let mut data = vec![0.18f32, 0.5, 0.9, 1.0];
 		working_to_display_target(&mut data, "acescg", "srgb", "srgb");
@@ -482,9 +491,15 @@ mod tests {
 			ensure_filename_extension("clip", "mp4").as_deref(),
 			Some("clip.mp4")
 		);
-		assert_eq!(unique_file_identifier("no-such-file.mp4"), Some(String::new()));
+		assert_eq!(
+			unique_file_identifier("no-such-file.mp4"),
+			Some(String::new())
+		);
 		// Unreadable files read as empty (C++ parity), not as an error.
-	assert_eq!(read_file_as_string("/nonexistent/quercus-sdk-util.txt"), Some(String::new()));
+		assert_eq!(
+			read_file_as_string("/nonexistent/quercus-sdk-util.txt"),
+			Some(String::new())
+		);
 		assert!(!directory_is_valid("/nonexistent/quercus-sdk-util", false));
 		assert!(formatted_executable_for_platform("ffmpeg").is_some());
 	}

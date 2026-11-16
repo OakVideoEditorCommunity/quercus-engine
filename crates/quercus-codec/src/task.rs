@@ -23,10 +23,9 @@
 //! managers call it whenever they need a task. With no callback, managers
 //! report work as unavailable — they never crash and never block.
 
+use crate::error;
 use std::ffi::c_void;
 use std::sync::Mutex;
-
-
 
 /// Kinds of background tasks quercuscodec can request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,7 +67,7 @@ pub struct TaskRequest<'a> {
 ///
 /// Returns `Ok(())` if the task was accepted (completed synchronously or
 /// queued), `Err` if the request was rejected.
-pub type TaskSubmitFn = dyn Fn(&TaskRequest, *mut std::ffi::c_void) -> crate::error::Result<()>;
+pub type TaskSubmitFn = dyn Fn(&TaskRequest, *mut std::ffi::c_void) -> error::Result<()>;
 
 /// One registered submit callback. Mirrors the C++
 /// `g_task_cb`/`g_task_cb_userdata` pair.
@@ -120,7 +119,7 @@ pub fn task_submit_is_registered() -> bool {
 ///
 /// Returns `Ok(false)` when no callback is registered (nothing submitted),
 /// `Ok(true)` when accepted, or `Err` when the callback rejected it.
-pub fn submit_task(req: &TaskRequest) -> crate::error::Result<bool> {
+pub fn submit_task(req: &TaskRequest) -> error::Result<bool> {
 	let g = TASK_SUBMIT.lock().unwrap();
 	match &*g {
 		SubmitCb::None => Ok(false),

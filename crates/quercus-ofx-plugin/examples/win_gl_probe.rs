@@ -26,19 +26,11 @@
 //! `memory_object=false`, this GPU/driver cannot use the Windows
 //! zero-copy path (the engine falls back to the old GL readback).
 
+use quercus_ofx_plugin::gl_bridge;
 fn main() {
-	println!(
-		"gl_available={}",
-		quercus_ofx_plugin::gl_bridge::gl_available()
-	);
-	println!(
-		"gl_version={:?}",
-		quercus_ofx_plugin::gl_bridge::gl_version_string()
-	);
-	println!(
-		"memory_object={}",
-		quercus_ofx_plugin::gl_bridge::gl_memory_object_available()
-	);
+	println!("gl_available={}", gl_bridge::gl_available());
+	println!("gl_version={:?}", gl_bridge::gl_version_string());
+	println!("memory_object={}", gl_bridge::gl_memory_object_available());
 	#[cfg(target_os = "windows")]
 	println!(
 		"platform=windows (requires Vulkan backend + VK_KHR_external_memory_win32 for zero-copy)"

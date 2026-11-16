@@ -17,9 +17,9 @@
 //! The `audio_config` namespace from `src/audio/src/configbridge.*`:
 //! audio-specific configuration read through the quercus_core C ABI.
 
+use quercus_core::configstore::*;
 use std::error::Error;
 use std::str::FromStr;
-use quercus_core::configstore::*;
 /// PortAudio output buffer size in frames; 0 = let PortAudio choose.
 ///
 /// `// CPP-PARITY: src/audio/src/configbridge.cpp:30`

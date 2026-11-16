@@ -90,11 +90,19 @@ impl Default for QuercusClipAudioEffectInfo {
 	}
 }
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_editor_clip_audio_state(
 		session: *const c_void,
@@ -173,10 +181,7 @@ impl EditorSession {
 	/// partially unreadable chain still returns the entries that did resolve.
 	pub fn clip_audio(&self, clip: NodeId) -> Option<ClipAudioState> {
 		let mut raw = QuercusClipAudioState::default();
-		unsafe {
-			quercus_editor_clip_audio_state(self.ptr, clip.raw(), &mut raw)
-		}
-		.then_some(())?;
+		unsafe { quercus_editor_clip_audio_state(self.ptr, clip.raw(), &mut raw) }.then_some(())?;
 		let mut effects = Vec::new();
 		for index in 0..raw.effect_count.max(0) {
 			let mut info = QuercusClipAudioEffectInfo::default();
@@ -208,9 +213,7 @@ impl EditorSession {
 			let inputs: &[&str] = match type_id.as_str() {
 				"org.olivevideoeditor.Olive.volume" => &["volume_in"],
 				"org.olivevideoeditor.Olive.pan" => &["panning_in"],
-				"org.olivevideoeditor.Olive.eq" => {
-					&["low_gain_db", "mid_gain_db", "high_gain_db"]
-				}
+				"org.olivevideoeditor.Olive.eq" => &["low_gain_db", "mid_gain_db", "high_gain_db"],
 				"org.olivevideoeditor.Olive.compressor" => &[
 					"threshold_db",
 					"ratio",
@@ -222,12 +225,9 @@ impl EditorSession {
 				"org.olivevideoeditor.Olive.gate" => {
 					&["threshold_db", "attack_ms", "release_ms", "hold_ms"]
 				}
-				"org.olivevideoeditor.Olive.ducking" => &[
-					"threshold_db",
-					"amount_db",
-					"attack_ms",
-					"release_ms",
-				],
+				"org.olivevideoeditor.Olive.ducking" => {
+					&["threshold_db", "amount_db", "attack_ms", "release_ms"]
+				}
 				_ => &[],
 			};
 			let mut params = Vec::new();
@@ -317,9 +317,7 @@ impl EditorSession {
 			let inputs: &[&str] = match type_id.as_str() {
 				"org.olivevideoeditor.Olive.volume" => &["volume_in"],
 				"org.olivevideoeditor.Olive.pan" => &["panning_in"],
-				"org.olivevideoeditor.Olive.eq" => {
-					&["low_gain_db", "mid_gain_db", "high_gain_db"]
-				}
+				"org.olivevideoeditor.Olive.eq" => &["low_gain_db", "mid_gain_db", "high_gain_db"],
 				"org.olivevideoeditor.Olive.compressor" => &[
 					"threshold_db",
 					"ratio",
@@ -331,12 +329,9 @@ impl EditorSession {
 				"org.olivevideoeditor.Olive.gate" => {
 					&["threshold_db", "attack_ms", "release_ms", "hold_ms"]
 				}
-				"org.olivevideoeditor.Olive.ducking" => &[
-					"threshold_db",
-					"amount_db",
-					"attack_ms",
-					"release_ms",
-				],
+				"org.olivevideoeditor.Olive.ducking" => {
+					&["threshold_db", "amount_db", "attack_ms", "release_ms"]
+				}
 				_ => &[],
 			};
 			let mut params = Vec::new();
@@ -361,12 +356,7 @@ impl EditorSession {
 			return false;
 		};
 		unsafe {
-			quercus_editor_add_audio_bus_effect(
-				self.ptr,
-				type_id.as_ptr(),
-				type_id.len(),
-				index,
-			)
+			quercus_editor_add_audio_bus_effect(self.ptr, type_id.as_ptr(), type_id.len(), index)
 		}
 	}
 
@@ -417,12 +407,7 @@ impl EditorSession {
 	/// is empty, or `value` is not finite. Returns `true` when the value was
 	/// stored or already equal — an unchanged value is a successful no-op
 	/// that pushes no undo row.
-	pub fn set_audio_bus_effect_param(
-		&self,
-		index: usize,
-		input_id: &str,
-		value: f64,
-	) -> bool {
+	pub fn set_audio_bus_effect_param(&self, index: usize, input_id: &str, value: f64) -> bool {
 		let Ok(index) = i32::try_from(index) else {
 			return false;
 		};

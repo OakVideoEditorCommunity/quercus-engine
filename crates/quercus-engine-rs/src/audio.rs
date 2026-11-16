@@ -5,7 +5,9 @@
 //! games — call [`create_instance`] once at startup, use the functions,
 //! optionally [`destroy_instance`] at shutdown.
 
+use crate::types;
 use std::ffi::c_void;
+use std::str;
 
 // The engine cdylib: cargo builds it as a path dependency into the
 // dependency search path (target/<profile>/deps). On Windows link its
@@ -13,14 +15,28 @@ use std::ffi::c_void;
 // quercus_engine.dll + quercus_engine.dll.lib, while the default dylib link
 // would look for quercus_engine.lib (LNK1181). +verbatim links the import
 // library under its real name; the DLL itself is found at runtime.
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_audio_manager_create_instance() -> bool;
 	fn quercus_audio_manager_destroy_instance();
 	fn quercus_audio_manager_output_device_names() -> *mut c_void;
 	fn quercus_audio_manager_input_device_names() -> *mut c_void;
-	fn quercus_audio_manager_device_index_by_name(name: *const u8, len: usize, is_output: bool) -> i32;
+	fn quercus_audio_manager_device_index_by_name(
+		name: *const u8,
+		len: usize,
+		is_output: bool,
+	) -> i32;
 	fn quercus_audio_manager_set_output_device(device: i32) -> bool;
 	fn quercus_audio_manager_set_input_device(device: i32) -> bool;
 	fn quercus_audio_manager_output_levels(peaks: *mut f32, capacity: usize) -> i32;
@@ -48,8 +64,8 @@ unsafe extern "C" {
 		format: i32,
 		samples: i64,
 	) -> i64;
-	fn quercus_audio_params_frames_to_rational(frames: i64, sample_rate: i32) -> crate::types::Rational;
-	fn quercus_audio_params_rational_to_samples(time: crate::types::Rational, sample_rate: i32) -> i64;
+	fn quercus_audio_params_frames_to_rational(frames: i64, sample_rate: i32) -> types::Rational;
+	fn quercus_audio_params_rational_to_samples(time: types::Rational, sample_rate: i32) -> i64;
 
 	// levelmeter
 	fn quercus_audio_levelmeter_analyze(
@@ -190,9 +206,8 @@ pub fn input_device_names() -> VecString {
 /// The enumeration index of the device named `name`, or `None` when no
 /// such device exists. The index is what the `set_*_device` calls take.
 pub fn device_index_by_name(name: &str, is_output: bool) -> Option<i32> {
-	let index = unsafe {
-		quercus_audio_manager_device_index_by_name(name.as_ptr(), name.len(), is_output)
-	};
+	let index =
+		unsafe { quercus_audio_manager_device_index_by_name(name.as_ptr(), name.len(), is_output) };
 	(index >= 0).then_some(index)
 }
 
@@ -300,9 +315,7 @@ pub fn push_to_output(params: AudioParams, samples: &[u8]) -> Result<(), PushErr
 		.iter()
 		.position(|&b| b == 0)
 		.unwrap_or(error_buf.len());
-	let message = std::str::from_utf8(&error_buf[..end])
-		.unwrap_or("")
-		.trim();
+	let message = str::from_utf8(&error_buf[..end]).unwrap_or("").trim();
 	Err(PushError(if message.is_empty() {
 		"unknown engine error".to_string()
 	} else {
@@ -356,7 +369,7 @@ impl AudioParams {
 /// result is the exact reduced fraction `frames / sample_rate` with no
 /// rounding. A `sample_rate` of 0 produces the null sentinel (`0/0`), which
 /// [`rational_to_samples`] maps back to 0.
-pub fn frames_to_rational(frames: i64, sample_rate: i32) -> crate::types::Rational {
+pub fn frames_to_rational(frames: i64, sample_rate: i32) -> types::Rational {
 	unsafe { quercus_audio_params_frames_to_rational(frames, sample_rate) }
 }
 
@@ -366,7 +379,7 @@ pub fn frames_to_rational(frames: i64, sample_rate: i32) -> crate::types::Ration
 /// is `round(seconds * sample_rate)`, rounded to nearest with ties away from
 /// zero (not truncated). Returns 0 for the null/NaN sentinel. Counterpart of
 /// [`frames_to_rational`].
-pub fn rational_to_samples(time: crate::types::Rational, sample_rate: i32) -> i64 {
+pub fn rational_to_samples(time: types::Rational, sample_rate: i32) -> i64 {
 	unsafe { quercus_audio_params_rational_to_samples(time, sample_rate) }
 }
 
@@ -466,7 +479,10 @@ mod tests {
 			assert_eq!(names.iter().count(), names.len());
 			assert_eq!(names.to_vec().len(), names.len());
 			assert_eq!(names.is_empty(), names.len() == 0);
-			assert!(names.get(names.len()).is_none(), "out-of-bounds must be None");
+			assert!(
+				names.get(names.len()).is_none(),
+				"out-of-bounds must be None"
+			);
 			for (i, name) in names.iter().enumerate() {
 				assert_eq!(names.get(i), Some(name));
 			}
@@ -477,7 +493,10 @@ mod tests {
 	fn device_index_of_missing_name_is_none() {
 		let _guard = SERIAL.lock().unwrap();
 		create_instance().expect("create");
-		assert_eq!(device_index_by_name("__quercus_no_such_device__", true), None);
+		assert_eq!(
+			device_index_by_name("__quercus_no_such_device__", true),
+			None
+		);
 	}
 
 	#[test]

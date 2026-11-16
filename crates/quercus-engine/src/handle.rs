@@ -143,7 +143,11 @@ mod tests {
 			assert_eq!(strong_count(handle), 2);
 
 			drop_counter_release(handle);
-			assert_eq!(flag.load(Ordering::SeqCst), 0, "value must survive while refs remain");
+			assert_eq!(
+				flag.load(Ordering::SeqCst),
+				0,
+				"value must survive while refs remain"
+			);
 			assert_eq!(strong_count(handle), 1);
 
 			drop_counter_release(handle);
@@ -167,7 +171,11 @@ mod tests {
 			assert_eq!(strong_count(handle), 1);
 			drop_counter_release(handle);
 		}
-		assert_eq!(flag.load(Ordering::SeqCst), 1, "value must be destroyed exactly once");
+		assert_eq!(
+			flag.load(Ordering::SeqCst),
+			1,
+			"value must be destroyed exactly once"
+		);
 	}
 
 	#[test]
@@ -226,7 +234,11 @@ mod tests {
 		}
 
 		unsafe {
-			assert_eq!(strong_count(handle), 1, "all transient refs must be balanced");
+			assert_eq!(
+				strong_count(handle),
+				1,
+				"all transient refs must be balanced"
+			);
 			assert_eq!(flag.load(Ordering::SeqCst), 0);
 			drop_counter_release(handle);
 		}
@@ -269,9 +281,13 @@ mod tests {
 			red: quercus_core::colormath::Xy { x: 0.64, y: 0.33 },
 			green: quercus_core::colormath::Xy { x: 0.3, y: 0.6 },
 			blue: quercus_core::colormath::Xy { x: 0.15, y: 0.06 },
-			white: quercus_core::colormath::Xy { x: 0.3127, y: 0.329 },
+			white: quercus_core::colormath::Xy {
+				x: 0.3127,
+				y: 0.329,
+			},
 		};
-		let primaries_roundtrip = crate::coreutil::QuercusPrimaries::from_native(&primaries).to_native();
+		let primaries_roundtrip =
+			crate::coreutil::QuercusPrimaries::from_native(&primaries).to_native();
 		for (actual, expected) in [
 			(primaries_roundtrip.red, primaries.red),
 			(primaries_roundtrip.green, primaries.green),
@@ -298,19 +314,23 @@ mod tests {
 				color: 7,
 			},
 		);
-		assert_roundtrip::<crate::node::QuercusStreamVideoParams>(&quercus_node::value::VideoParams {
-			width: 1920,
-			height: 1080,
-			frame_rate: quercus_core::Rational::new(24, 1),
-			pixel_format: 4,
-			channels: 4,
-			interlaced: true,
-		});
-		assert_roundtrip::<crate::node::QuercusStreamAudioParams>(&quercus_node::value::AudioParams {
-			sample_rate: 44_100,
-			channel_layout: 0x3,
-			format: 10,
-		});
+		assert_roundtrip::<crate::node::QuercusStreamVideoParams>(
+			&quercus_node::value::VideoParams {
+				width: 1920,
+				height: 1080,
+				frame_rate: quercus_core::Rational::new(24, 1),
+				pixel_format: 4,
+				channels: 4,
+				interlaced: true,
+			},
+		);
+		assert_roundtrip::<crate::node::QuercusStreamAudioParams>(
+			&quercus_node::value::AudioParams {
+				sample_rate: 44_100,
+				channel_layout: 0x3,
+				format: 10,
+			},
+		);
 
 		let waveform = crate::audio_analysis::WaveformMetadata {
 			channels: 2,
@@ -341,14 +361,18 @@ mod tests {
 			},
 		);
 		let source = quercus_audio::synchronizer::SourceClip {
-				source_start_time: quercus_core::Rational::new(10, 1),
-				media_in: quercus_core::Rational::new(1, 2),
-				has_source_start_time: true,
-			};
-		let source_roundtrip = crate::audio_analysis::QuercusAudioSourceClip::from_native(&source).to_native();
+			source_start_time: quercus_core::Rational::new(10, 1),
+			media_in: quercus_core::Rational::new(1, 2),
+			has_source_start_time: true,
+		};
+		let source_roundtrip =
+			crate::audio_analysis::QuercusAudioSourceClip::from_native(&source).to_native();
 		assert_eq!(source_roundtrip.source_start_time, source.source_start_time);
 		assert_eq!(source_roundtrip.media_in, source.media_in);
-		assert_eq!(source_roundtrip.has_source_start_time, source.has_source_start_time);
+		assert_eq!(
+			source_roundtrip.has_source_start_time,
+			source.has_source_start_time
+		);
 		assert_roundtrip::<crate::audio_analysis::QuercusAudioSyncPlacement>(
 			&quercus_audio::synchronizer::Placement {
 				timeline_in: quercus_core::Rational::new(5, 1),

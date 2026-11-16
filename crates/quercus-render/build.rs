@@ -28,8 +28,9 @@
 //! OpenColorIO's system monitor references IOKit / ColorSync /
 //! CoreGraphics display APIs.
 
+use std::env;
 fn main() {
-	if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+	if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
 		// Only the test binaries need this; the library itself links no
 		// dynamic symbols. (macOS-only — see the module comment.)
 		println!("cargo:rustc-link-arg-tests=-Wl,-export_dynamic");

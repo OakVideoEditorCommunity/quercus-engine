@@ -8,8 +8,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{edit_menu::*, editing::*, generators::*, media::*, project::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	edit_menu::*, editing::*, generators::*, media::*, project::*, sequence::*, tracks::*,
+	transitions::*,
+};
 
 /// Moves `clip` to `new_in_ts` and moves every linked follower by the same
 /// frame delta as one undoable "Move Clip" entry.
@@ -253,8 +255,10 @@ pub fn workarea_set_undoable(
 	push_multi(
 		vec![
 			quercus_timeline::workarea::WorkareaSetEnabledCommand::new(*wa, enabled).to_command(),
-			quercus_timeline::workarea::WorkareaSetRangeCommand::new_with_old(*wa, range, old_range)
-				.to_command(),
+			quercus_timeline::workarea::WorkareaSetRangeCommand::new_with_old(
+				*wa, range, old_range,
+			)
+			.to_command(),
 		],
 		"Set Workarea",
 	)

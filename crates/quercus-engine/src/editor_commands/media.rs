@@ -7,8 +7,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{editing::*, generators::*, library::*, moving::*, project::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	editing::*, generators::*, library::*, moving::*, project::*, sequence::*, tracks::*,
+	transitions::*,
+};
 
 /// Import a media file into the project's root folder (the facade's
 /// `quercusengine_project_import_footage`: the node is created in the graph
@@ -55,8 +57,10 @@ pub fn import_footage(project: &ProjectRef, path: &Path) -> Result<NodeId, Strin
 		}
 		(guard.root, id)
 	};
-	let cmd =
-		quercus_task::nodeops::folder_add_child_command((project.clone(), root), (project.clone(), id));
+	let cmd = quercus_task::nodeops::folder_add_child_command(
+		(project.clone(), root),
+		(project.clone(), id),
+	);
 	quercus_undo::global::push(cmd, "Import Footage").map_err(|e| e.to_string())?;
 	Ok(id)
 }
@@ -222,7 +226,11 @@ pub fn set_proxy_enabled(
 /// Creates a sequence using the footage's first video-stream format. Audio-only
 /// footage keeps the engine defaults. Sequence creation itself is not undoable,
 /// matching the existing sequence factory.
-pub fn create_sequence_from_footage(project: &ProjectRef, footage: NodeId, name: &str) -> Result<NodeId, String> {
+pub fn create_sequence_from_footage(
+	project: &ProjectRef,
+	footage: NodeId,
+	name: &str,
+) -> Result<NodeId, String> {
 	let params = {
 		let guard = lock(project);
 		let footage = footage_behavior(&guard.graph, footage)
@@ -405,17 +413,15 @@ pub fn library_list() -> Result<Vec<LibraryProject>, String> {
 	let infos = client.projects().map_err(|e| e.to_string())?;
 	Ok(infos
 		.into_iter()
-		.map(|info| {
-			LibraryProject {
-				uuid: info.uuid,
-				name: info.name,
-				created_at: info.created_at,
-				modified_at: info.modified_at,
-				duration_ms: info.duration_ms,
-				track_count: info.track_count,
-				clip_count: info.clip_count,
-				footage_count: info.footage_count,
-			}
+		.map(|info| LibraryProject {
+			uuid: info.uuid,
+			name: info.name,
+			created_at: info.created_at,
+			modified_at: info.modified_at,
+			duration_ms: info.duration_ms,
+			track_count: info.track_count,
+			clip_count: info.clip_count,
+			footage_count: info.footage_count,
 		})
 		.collect())
 }
@@ -448,7 +454,9 @@ pub fn library_rename(uuid: &str, name: &str) -> Result<(), String> {
 	if uuid.is_empty() || name.trim().is_empty() {
 		return Err("invalid uuid or name".to_string());
 	}
-	library_client()?.rename(uuid, name.trim()).map_err(|e| e.to_string())
+	library_client()?
+		.rename(uuid, name.trim())
+		.map_err(|e| e.to_string())
 }
 
 /// Duplicate the library row `uuid` (history included) under a fresh
@@ -589,7 +597,10 @@ pub(crate) fn push(cmd: quercus_undo::undocommand::UndoCommand, name: &str) -> R
 }
 
 /// Assemble and push a multi command (private alias).
-pub(crate) fn push_multi(children: Vec<quercus_undo::undocommand::UndoCommand>, name: &str) -> Result<(), String> {
+pub(crate) fn push_multi(
+	children: Vec<quercus_undo::undocommand::UndoCommand>,
+	name: &str,
+) -> Result<(), String> {
 	push_multi_command(children, name)
 }
 

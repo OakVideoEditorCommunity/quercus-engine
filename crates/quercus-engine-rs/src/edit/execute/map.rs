@@ -1,7 +1,7 @@
 //! Mapping from safe command variants to operation-specific ABI slots.
 
-use crate::node::NodeId;
 use crate::editor::KeyframeInterpolation;
+use crate::node::NodeId;
 use crate::types::Rational;
 
 use super::super::EditCommand;
@@ -496,7 +496,9 @@ impl CommandArgs {
 				self.simple(QuercusEditOp::CreateSequenceFromFootage, footage);
 				self.name(name);
 			}
-			EditCommand::DeleteProxy { footage } => self.simple(QuercusEditOp::DeleteProxy, footage),
+			EditCommand::DeleteProxy { footage } => {
+				self.simple(QuercusEditOp::DeleteProxy, footage)
+			}
 			EditCommand::SetProxyEnabled { footage, enabled } => {
 				self.simple(QuercusEditOp::SetProxyEnabled, footage);
 				self.params.enabled = enabled;

@@ -20,7 +20,9 @@
 
 use quercus_core::{Rational, TimeRange};
 
-use quercus_node::block::{BlockCore, ClipBlockBehavior, GapBlockBehavior, TransitionBlockBehavior};
+use quercus_node::block::{
+	BlockCore, ClipBlockBehavior, GapBlockBehavior, TransitionBlockBehavior,
+};
 use quercus_node::colormanager::ColorManager;
 use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
@@ -59,14 +61,22 @@ fn block_core_ranges() {
 	core.set_length_and_media_in(Rational::new(4, 1));
 	assert_eq!(core.in_(), Rational::new(5, 1), "in stays put");
 	assert_eq!(core.length(), Rational::new(4, 1));
-	assert_eq!(core.media_in, Rational::new(1, 1), "media in follows the length");
+	assert_eq!(
+		core.media_in,
+		Rational::new(1, 1),
+		"media in follows the length"
+	);
 
 	// `set_length_keeping_out`: the out point (and the media content end)
 	// stays, the in point shifts.
 	core.set_length_keeping_out(Rational::new(2, 1));
 	assert_eq!(core.out(), Rational::new(9, 1), "out stays put");
 	assert_eq!(core.in_(), Rational::new(7, 1), "in shifts");
-	assert_eq!(core.media_in, Rational::new(3, 1), "media in follows the in point");
+	assert_eq!(
+		core.media_in,
+		Rational::new(3, 1),
+		"media in follows the in point"
+	);
 }
 
 /// block.rs: behavior constructors + node inputs.
@@ -372,9 +382,9 @@ fn serializer_value_codecs() {
 /// calls, single-lib unification).
 #[test]
 fn undo_command_roundtrip() {
+	use quercus_undo::undocommand::UndoCommand;
 	use std::sync::atomic::{AtomicI32, Ordering};
 	use std::sync::Arc;
-	use quercus_undo::undocommand::UndoCommand;
 
 	fn from_closures(
 		redo: impl FnMut() + Send + 'static,
@@ -502,7 +512,9 @@ fn track_edge_cases() {
 	assert_eq!(empty.reference(), (0, 0), "video type, default index");
 
 	// duplicate preserves the block list and kind.
-	let dup = track.duplicate(&quercus_node::node::NodeCore::new()).unwrap();
+	let dup = track
+		.duplicate(&quercus_node::node::NodeCore::new())
+		.unwrap();
 	let d = dup
 		.as_any()
 		.unwrap()
@@ -519,7 +531,9 @@ fn track_edge_cases() {
 	assert_eq!(list.track_index(b0), None);
 	assert_eq!(list.total_length(&Tr), Rational::new(0, 1));
 	list.tracks.push(b0);
-	let dup = list.duplicate(&quercus_node::node::NodeCore::new()).unwrap();
+	let dup = list
+		.duplicate(&quercus_node::node::NodeCore::new())
+		.unwrap();
 	let d = dup
 		.as_any()
 		.unwrap()

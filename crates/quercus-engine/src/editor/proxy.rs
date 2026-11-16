@@ -4,8 +4,11 @@
 //! between a footage node and its active task, while this module is the only
 //! worker-lifecycle path allowed to change proxy generation state in the graph.
 
+use crate::task;
+use quercus_codec::proxymanager;
 use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
+use quercus_node::project;
 
 use super::EditorSessionHandle;
 use crate::codec::{copy_str_out, str_arg};
@@ -30,10 +33,7 @@ pub struct QuercusEditorProxyStatus {
 /// Used by the proxy mutations in this module to change generation state in
 /// the project graph. The graph is borrowed mutably, so the returned reference
 /// must not outlive the caller's borrow or be held across another project lock.
-fn footage_mut(
-	project: &mut quercus_node::project::Project,
-	footage: NodeId,
-) -> Option<&mut FootageBehavior> {
+fn footage_mut(project: &mut project::Project, footage: NodeId) -> Option<&mut FootageBehavior> {
 	project
 		.graph
 		.get_mut(footage)
@@ -108,19 +108,19 @@ pub unsafe extern "C" fn quercus_editor_proxy_generate(
 				footage_behavior.effective_proxy_params(),
 			)
 		};
-		let proxy_path = quercus_codec::proxymanager::ProxyManager::get_proxy_filename(
+		let proxy_path = proxymanager::ProxyManager::get_proxy_filename(
 			cache_path,
 			&filename,
 			stream_index,
 			&params,
 		)
 		.map_err(|_| "failed to build the proxy filename")?;
-		let task_id = crate::task::spawn_proxy(&filename, &proxy_path, stream_index, &params);
+		let task_id = task::spawn_proxy(&filename, &proxy_path, stream_index, &params);
 		let mut project = state.project.lock().unwrap_or_else(|e| e.into_inner());
 		let Some(footage_behavior) = footage_mut(&mut project, footage) else {
 			drop(project);
-			crate::task::quercus_task_cancel(task_id);
-			crate::task::quercus_task_release(task_id);
+			task::quercus_task_cancel(task_id);
+			task::quercus_task_release(task_id);
 			return Err("entry is not footage");
 		};
 		footage_behavior.set_proxy(&proxy_path, 1, stream_index, params.version, true);
@@ -226,22 +226,18 @@ pub unsafe extern "C" fn quercus_editor_proxy_status(
 		return false;
 	};
 	let disk_state = if footage_behavior.proxy.is_empty() {
-		quercus_codec::proxymanager::ProxyState::Missing
+		proxymanager::ProxyState::Missing
 	} else {
-		quercus_codec::proxymanager::ProxyManager::get_proxy_state(&footage_behavior.proxy)
+		proxymanager::ProxyManager::get_proxy_state(&footage_behavior.proxy)
 	};
 	let proxy_state = if state.proxy_tasks.contains_key(&footage.identity()) {
-		quercus_codec::proxymanager::ProxyState::Generating
+		proxymanager::ProxyState::Generating
 	} else {
 		match disk_state {
-			quercus_codec::proxymanager::ProxyState::Ready => {
-				quercus_codec::proxymanager::ProxyState::Ready
-			}
-			quercus_codec::proxymanager::ProxyState::Generating => {
-				quercus_codec::proxymanager::ProxyState::Generating
-			}
-			_ if footage_behavior.proxy_state == 3 => quercus_codec::proxymanager::ProxyState::Failed,
-			_ => quercus_codec::proxymanager::ProxyState::Missing,
+			proxymanager::ProxyState::Ready => proxymanager::ProxyState::Ready,
+			proxymanager::ProxyState::Generating => proxymanager::ProxyState::Generating,
+			_ if footage_behavior.proxy_state == 3 => proxymanager::ProxyState::Failed,
+			_ => proxymanager::ProxyState::Missing,
 		}
 	};
 	*out = QuercusEditorProxyStatus {

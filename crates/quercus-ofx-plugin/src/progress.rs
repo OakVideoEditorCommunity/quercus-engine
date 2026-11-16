@@ -50,8 +50,7 @@ pub trait UiProgressReporter: Send {
 
 /// Reporter factory: called by progressStart with (label, message) to create
 /// a [`UiProgressReporter`] on the spot.
-pub type ReporterFactory =
-	Arc<dyn Fn(&str, &str) -> Box<dyn UiProgressReporter> + Send + Sync>;
+pub type ReporterFactory = Arc<dyn Fn(&str, &str) -> Box<dyn UiProgressReporter> + Send + Sync>;
 
 static REPORTER_FACTORY: OnceLock<Mutex<Option<ReporterFactory>>> = OnceLock::new();
 

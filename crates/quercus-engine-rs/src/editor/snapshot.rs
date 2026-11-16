@@ -266,4 +266,3 @@ pub struct ProjectSnapshot {
 	/// The `workarea` field.
 	pub workarea: Option<WorkAreaSnapshot>,
 }
-

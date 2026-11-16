@@ -6,13 +6,28 @@
 //! [`Project`] handle; plugins read the host's open project through
 //! [`active_project`].
 
+use crate::editor;
+use std::cell;
 use std::ffi::c_void;
+use std::mem;
+use std::ptr;
+use std::sync;
 
 use crate::codec::string_out;
 use crate::types::Rational;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_node_id_invalid() -> u64;
 	fn quercus_node_id_is_valid(id: u64) -> bool;
@@ -20,11 +35,11 @@ unsafe extern "C" {
 	fn quercus_project_new() -> *mut c_void;
 	fn quercus_project_set_active(project: *const c_void);
 	fn quercus_project_active() -> *mut c_void;
-	fn quercus_project_into_storage_handle(project: *mut c_void)
-	-> crate::editor::StorageProjectHandle;
+	fn quercus_project_into_storage_handle(project: *mut c_void) -> editor::StorageProjectHandle;
 	fn quercus_project_name(project: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_project_filename(project: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_project_pretty_filename(project: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
+	fn quercus_project_pretty_filename(project: *const c_void, buf: *mut u8, buf_len: usize)
+	-> i32;
 	fn quercus_project_modified(project: *const c_void) -> bool;
 	fn quercus_project_root(project: *const c_void) -> u64;
 	fn quercus_project_add_ref(project: *const c_void);
@@ -63,7 +78,12 @@ unsafe extern "C" {
 	fn quercus_folder_child_count(project: *const c_void, id: u64) -> i32;
 	fn quercus_folder_child_at(project: *const c_void, id: u64, index: i32) -> u64;
 
-	fn quercus_footage_filename(project: *const c_void, id: u64, buf: *mut u8, buf_len: usize) -> i32;
+	fn quercus_footage_filename(
+		project: *const c_void,
+		id: u64,
+		buf: *mut u8,
+		buf_len: usize,
+	) -> i32;
 	fn quercus_footage_total_stream_count(project: *const c_void, id: u64) -> i32;
 	fn quercus_footage_video_stream_count(project: *const c_void, id: u64) -> i32;
 	fn quercus_footage_audio_stream_count(project: *const c_void, id: u64) -> i32;
@@ -103,7 +123,12 @@ unsafe extern "C" {
 	fn quercus_sequence_playhead(project: *const c_void, id: u64) -> Rational;
 	fn quercus_sequence_length(project: *const c_void, id: u64) -> Rational;
 	fn quercus_sequence_frame_rate(project: *const c_void, id: u64) -> Rational;
-	fn quercus_sequence_geometry(project: *const c_void, id: u64, width: *mut i32, height: *mut i32) -> bool;
+	fn quercus_sequence_geometry(
+		project: *const c_void,
+		id: u64,
+		width: *mut i32,
+		height: *mut i32,
+	) -> bool;
 	fn quercus_sequence_interlaced(project: *const c_void, id: u64) -> i32;
 	fn quercus_sequence_set_video_params(
 		project: *const c_void,
@@ -115,7 +140,12 @@ unsafe extern "C" {
 	) -> bool;
 	fn quercus_sequence_set_interlaced(project: *const c_void, id: u64, interlaced: bool) -> bool;
 	fn quercus_node_label(project: *const c_void, id: u64, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_node_set_label(project: *const c_void, id: u64, label: *const u8, label_len: usize) -> bool;
+	fn quercus_node_set_label(
+		project: *const c_void,
+		id: u64,
+		label: *const u8,
+		label_len: usize,
+	) -> bool;
 	fn quercus_tracklist_kind(project: *const c_void, id: u64) -> i32;
 	fn quercus_tracklist_track_count(project: *const c_void, id: u64) -> i32;
 	fn quercus_tracklist_track_at(project: *const c_void, id: u64, index: i32) -> u64;
@@ -160,7 +190,11 @@ unsafe extern "C" {
 	fn quercus_node_color(project: *const c_void, id: u64) -> i32;
 	fn quercus_block_footage(project: *const c_void, id: u64) -> u64;
 	fn quercus_block_multicam_source(project: *const c_void, id: u64) -> u64;
-	fn quercus_block_transition_width(project: *const c_void, id: u64, start_edge: bool) -> Rational;
+	fn quercus_block_transition_width(
+		project: *const c_void,
+		id: u64,
+		start_edge: bool,
+	) -> Rational;
 	fn quercus_project_node_count(project: *const c_void) -> i32;
 	fn quercus_project_node_at(project: *const c_void, index: i32) -> u64;
 
@@ -255,7 +289,11 @@ unsafe extern "C" {
 		version_info: *mut i32,
 		error: *mut i32,
 	) -> *mut c_void;
-	fn quercus_project_set_filename(project: *const c_void, path: *const u8, path_len: usize) -> bool;
+	fn quercus_project_set_filename(
+		project: *const c_void,
+		path: *const u8,
+		path_len: usize,
+	) -> bool;
 	fn quercus_project_set_working_color_space(
 		project: *const c_void,
 		setting: *const u8,
@@ -502,9 +540,9 @@ unsafe impl Sync for Project {}
 impl Project {
 	/// Converts this owned handle into the storage migration representation used
 	/// by legacy hosts. The same live Arc is retained; this handle is consumed.
-	pub fn into_storage_project_handle(self) -> crate::editor::StorageProjectHandle {
+	pub fn into_storage_project_handle(self) -> editor::StorageProjectHandle {
 		let handle = unsafe { quercus_project_into_storage_handle(self.ptr) };
-		std::mem::forget(self);
+		mem::forget(self);
 		handle
 	}
 	/// A new, initialized project (empty graph with a root folder).
@@ -529,13 +567,14 @@ impl Project {
 	/// Transfers the raw reference to another SDK handle without dropping it.
 	pub(crate) fn into_raw(self) -> *mut c_void {
 		let ptr = self.ptr;
-		std::mem::forget(self);
+		mem::forget(self);
 		ptr
 	}
 
 	/// The project display name.
 	pub fn name(&self) -> String {
-		string_out(|buf, len| unsafe { quercus_project_name(self.ptr, buf, len) }).unwrap_or_default()
+		string_out(|buf, len| unsafe { quercus_project_name(self.ptr, buf, len) })
+			.unwrap_or_default()
 	}
 
 	/// The project file path ("" when unsaved).
@@ -557,7 +596,8 @@ impl Project {
 
 	/// The stable uuid used by the project library.
 	pub fn uuid(&self) -> String {
-		string_out(|buf, len| unsafe { quercus_project_uuid(self.ptr, buf, len) }).unwrap_or_default()
+		string_out(|buf, len| unsafe { quercus_project_uuid(self.ptr, buf, len) })
+			.unwrap_or_default()
 	}
 
 	/// Reads the persisted project setting `key` from the project file's
@@ -595,7 +635,7 @@ impl Project {
 
 	/// `(cache mode, custom path)`; mode 2 uses the custom path.
 	pub fn cache_location(&self) -> (i32, String) {
-		let mode = std::cell::Cell::new(0);
+		let mode = cell::Cell::new(0);
 		let path = string_out(|buf, len| unsafe {
 			quercus_project_cache_location(self.ptr, mode.as_ptr(), buf, len)
 		})
@@ -611,9 +651,7 @@ impl Project {
 	/// use the default location. Returns `false` when the project handle is
 	/// invalid. Read back with [`Project::cache_location`].
 	pub fn set_cache_location(&self, mode: i32, path: &str) -> bool {
-		unsafe {
-			quercus_project_set_cache_location(self.ptr, mode, path.as_ptr(), path.len())
-		}
+		unsafe { quercus_project_set_cache_location(self.ptr, mode, path.as_ptr(), path.len()) }
 	}
 
 	/// The root folder of the bin tree.
@@ -728,7 +766,11 @@ impl Project {
 	///
 	/// `None` when `footage` is not footage or `ordinal` is out of range;
 	/// check [`Project::footage_video_stream_count`] first.
-	pub fn footage_video_params(&self, footage: NodeId, ordinal: usize) -> Option<StreamVideoParams> {
+	pub fn footage_video_params(
+		&self,
+		footage: NodeId,
+		ordinal: usize,
+	) -> Option<StreamVideoParams> {
 		let mut out = StreamVideoParams::default();
 		if unsafe { quercus_footage_video_params(self.ptr, footage.0, ordinal as i32, &mut out) } {
 			Some(out)
@@ -747,7 +789,11 @@ impl Project {
 	///
 	/// `None` when `footage` is not footage or `ordinal` is out of range;
 	/// check [`Project::footage_audio_stream_count`] first.
-	pub fn footage_audio_params(&self, footage: NodeId, ordinal: usize) -> Option<StreamAudioParams> {
+	pub fn footage_audio_params(
+		&self,
+		footage: NodeId,
+		ordinal: usize,
+	) -> Option<StreamAudioParams> {
 		let mut out = StreamAudioParams::default();
 		if unsafe { quercus_footage_audio_params(self.ptr, footage.0, ordinal as i32, &mut out) } {
 			Some(out)
@@ -757,15 +803,22 @@ impl Project {
 	}
 
 	/// Returns the per-footage proxy override, or `None` when global defaults apply.
-	pub fn footage_custom_proxy_params(&self, footage: NodeId) -> Option<crate::codec::ProxyParams> {
+	pub fn footage_custom_proxy_params(
+		&self,
+		footage: NodeId,
+	) -> Option<crate::codec::ProxyParams> {
 		let mut out = crate::codec::ProxyParams::default();
 		unsafe { quercus_footage_custom_proxy_params(self.ptr, footage.0, &mut out) }.then_some(out)
 	}
 
 	/// Returns custom proxy parameters when present, otherwise global defaults.
-	pub fn footage_effective_proxy_params(&self, footage: NodeId) -> Option<crate::codec::ProxyParams> {
+	pub fn footage_effective_proxy_params(
+		&self,
+		footage: NodeId,
+	) -> Option<crate::codec::ProxyParams> {
 		let mut out = crate::codec::ProxyParams::default();
-		unsafe { quercus_footage_effective_proxy_params(self.ptr, footage.0, &mut out) }.then_some(out)
+		unsafe { quercus_footage_effective_proxy_params(self.ptr, footage.0, &mut out) }
+			.then_some(out)
 	}
 
 	/// Returns source-start timecode only when the footage carries it.
@@ -791,7 +844,9 @@ impl Project {
 	/// Returns [`NodeId::INVALID`] when `index` is out of range or
 	/// `sequence` is not a sequence.
 	pub fn sequence_track_list_at(&self, sequence: NodeId, index: usize) -> NodeId {
-		NodeId::from_raw(unsafe { quercus_sequence_track_list_at(self.ptr, sequence.0, index as i32) })
+		NodeId::from_raw(unsafe {
+			quercus_sequence_track_list_at(self.ptr, sequence.0, index as i32)
+		})
 	}
 
 	/// Returns the sequence playhead position in rational seconds, relative
@@ -1146,7 +1201,9 @@ impl Project {
 
 	/// Every live node in arena order.
 	pub fn node_ids(&self) -> Vec<NodeId> {
-		(0..self.node_count()).filter_map(|i| self.node_at(i)).collect()
+		(0..self.node_count())
+			.filter_map(|i| self.node_at(i))
+			.collect()
 	}
 
 	// -- node parameters -------------------------------------------------
@@ -1161,7 +1218,14 @@ impl Project {
 	pub fn standard_value(&self, id: NodeId, input_id: &str, element: i32) -> Option<NodeValue> {
 		let mut out = NodeValue::default();
 		if unsafe {
-			quercus_node_standard_value(self.ptr, id.0, input_id.as_ptr(), input_id.len(), element, &mut out)
+			quercus_node_standard_value(
+				self.ptr,
+				id.0,
+				input_id.as_ptr(),
+				input_id.len(),
+				element,
+				&mut out,
+			)
 		} {
 			Some(out)
 		} else {
@@ -1386,7 +1450,14 @@ impl Project {
 	/// in the project file).
 	pub fn connect(&self, from: NodeId, to: NodeId, input_id: &str, element: i32) -> bool {
 		unsafe {
-			quercus_node_connect(self.ptr, from.0, to.0, input_id.as_ptr(), input_id.len(), element)
+			quercus_node_connect(
+				self.ptr,
+				from.0,
+				to.0,
+				input_id.as_ptr(),
+				input_id.len(),
+				element,
+			)
 		}
 	}
 
@@ -1399,9 +1470,10 @@ impl Project {
 	/// the project handle, the token or the input id is invalid; an input
 	/// with no incoming connection is a no-op that still returns `true`.
 	pub fn disconnect(&self, to: NodeId, input_id: &str, element: i32) -> bool {
-		unsafe { quercus_node_disconnect(self.ptr, to.0, input_id.as_ptr(), input_id.len(), element) }
+		unsafe {
+			quercus_node_disconnect(self.ptr, to.0, input_id.as_ptr(), input_id.len(), element)
+		}
 	}
-
 }
 
 impl Default for Project {
@@ -1429,7 +1501,7 @@ pub fn set_active_project(project: Option<&Project>) {
 	unsafe {
 		quercus_project_set_active(match project {
 			Some(p) => p.ptr,
-			None => std::ptr::null(),
+			None => ptr::null(),
 		})
 	};
 }
@@ -1444,7 +1516,6 @@ pub fn active_project() -> Option<Project> {
 	}
 }
 
-
 impl Project {
 	/// Saves the project as XML to `path` (`None` = the project's own
 	/// filename; save-as semantics: the path becomes the filename).
@@ -1452,7 +1523,7 @@ impl Project {
 	pub fn save(&self, path: Option<&str>) -> bool {
 		let (p, pl) = match path {
 			Some(p) => (p.as_ptr(), p.len()),
-			None => (std::ptr::null(), 0),
+			None => (ptr::null(), 0),
 		};
 		unsafe { quercus_project_save(self.ptr, p, pl) }
 	}
@@ -1473,7 +1544,7 @@ impl Project {
 	/// not depend on the project's filename, so an unsaved project
 	/// round-trips too.
 	pub fn to_xml_bytes(&self) -> Option<Vec<u8>> {
-		let n = unsafe { quercus_project_save_to_bytes(self.ptr, std::ptr::null_mut(), 0) };
+		let n = unsafe { quercus_project_save_to_bytes(self.ptr, ptr::null_mut(), 0) };
 		if n < 0 {
 			return None;
 		}
@@ -1527,7 +1598,9 @@ impl Project {
 	/// Sets the working color space: persisted into the project settings
 	/// AND applied to the process-wide color pipeline.
 	pub fn set_working_color_space(&self, setting: &str) -> bool {
-		unsafe { quercus_project_set_working_color_space(self.ptr, setting.as_ptr(), setting.len()) }
+		unsafe {
+			quercus_project_set_working_color_space(self.ptr, setting.as_ptr(), setting.len())
+		}
 	}
 
 	/// Sets the output gamut/transfer (persisted + applied to the
@@ -1639,7 +1712,7 @@ type UndoObserverFn = unsafe extern "C" fn(userdata: *mut c_void);
 
 // Registered observers (double-boxed closures; the engine hands the
 // pointer back as userdata). Registration-only, matching the engine.
-static UNDO_OBSERVERS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+static UNDO_OBSERVERS: sync::Mutex<Vec<usize>> = sync::Mutex::new(Vec::new());
 
 /// Registers a change observer: called after any undoable command lands
 /// (push, undo, redo, jump, clear) — the "project modified" signal.
@@ -1672,137 +1745,16 @@ pub fn add_undo_observer(f: impl Fn() + Send + 'static) {
 /// Serializes every test that touches the process-global undo stack
 /// (all test modules in this crate share it).
 #[cfg(test)]
-pub(crate) static UNDO_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static UNDO_SERIAL: sync::Mutex<()> = sync::Mutex::new(());
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// Layout assertions shared with `include/quercus_engine.h`.
-	#[test]
-	fn abi_mirror_layout_matches_c_header() {
-		assert_eq!(std::mem::size_of::<NodeValue>(), 56);
-		assert_eq!(
-			std::mem::size_of::<crate::editor::StorageProjectHandle>(),
-			32
-		);
-	}
-
-	/// History navigation/inspection and the observer hook (the undo
-	/// stack is process-global; serialize).
-
-	#[test]
-	fn undo_history_rows_and_observer() {
-		let _guard = UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-		static SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-		add_undo_observer(|| {
-			SEEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-		});
-
-		let project = Project::new();
-		let base = undo_count();
-		project.create_folder(project.root(), "Observed").expect("folder");
-		assert_eq!(undo_count(), base + 1);
-		assert!(SEEN.load(std::sync::atomic::Ordering::SeqCst) > 0);
-
-		assert!(undo_command_name(base).is_some());
-		assert_eq!(undo_command_done(base), Some(true));
-		assert!(undo_jump(base));
-		assert_eq!(undo_command_done(base), Some(false));
-		assert!(undo_jump(base + 1));
-		assert_eq!(undo_command_done(base), Some(true));
-
-		assert!(undo_clear());
-		assert_eq!(undo_count(), 1, "clear leaves the fresh empty row");
-	}
-
-	#[test]
-	fn node_label_and_sequence_params() {
-		let _guard = UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-		let project = Project::new();
-		let folder = project.create_folder(project.root(), "Labeled").expect("folder");
-		assert_eq!(project.node_label(folder), "Labeled");
-		assert!(project.node_set_label(folder, "Renamed"));
-		assert_eq!(project.node_label(folder), "Renamed");
-		assert!(!project.node_set_label(NodeId::INVALID, "x"));
-
-		let seq = project.create_sequence("Seq").expect("sequence");
-		// A fresh sequence carries the default 29.97 fps video params.
-		assert_eq!(project.sequence_frame_rate(seq), Rational::new(30000, 1001));
-		assert!(project.sequence_geometry(seq).is_some());
-		assert!(project.sequence_set_video_params(seq, 1920, 1080, 24, 1));
-		assert_eq!(project.sequence_frame_rate(seq), Rational::new(24, 1));
-		assert_eq!(project.sequence_geometry(seq), Some((1920, 1080)));
-		assert!(!project.sequence_set_video_params(NodeId::INVALID, 1, 1, 1, 1));
-		assert!(undo_clear());
-	}
-
-	#[test]
-	fn project_basics_and_node_ids() {
-		let project = Project::new();
-		assert!(!project.modified());
-		assert!(project.filename().is_empty());
-
-		let root = project.root();
-		assert!(root.is_valid());
-		assert!(!NodeId::INVALID.is_valid());
-		assert_eq!(project.node_kind(root), Some(NodeKind::Folder));
-		assert_eq!(project.node_kind(NodeId::INVALID), None);
-		assert!(project
-			.node_type_id(root)
-			.is_some_and(|id| id.ends_with("folder")));
-		assert_eq!(project.folder_child_count(root), 0);
-
-		// Clone shares the project: same root.
-		let clone = project.clone();
-		assert_eq!(clone.root(), root);
-	}
-
-	#[test]
-	fn active_project_slot() {
-		set_active_project(None);
-		assert!(active_project().is_none());
-
-		let project = Project::new();
-		set_active_project(Some(&project));
-		let active = active_project().expect("active");
-		assert_eq!(active.root(), project.root());
-
-		set_active_project(None);
-		assert!(active_project().is_none());
-	}
-
-	#[test]
-	fn undo_read_only() {
-		// Fresh process-wide stack state is whatever the suite left;
-		// just verify the calls work.
-		let _ = undo_can_undo();
-		let _ = undo_can_redo();
-		assert!(undo_count() >= 0);
-	}
-
-	#[test]
-	fn unreadable_nodes_fail_cleanly() {
-		let project = Project::new();
-		let root = project.root();
-		// The root folder has no "file_in" input; and no node reads work
-		// on an invalid id.
-		assert!(project.standard_value(root, "file_in", -1).is_none());
-		assert!(project.standard_value(NodeId::INVALID, "file_in", -1).is_none());
-		assert!(project
-			.value_at_time(root, "file_in", -1, Rational::new(0, 1))
-			.is_none());
-		assert_eq!(project.footage_filename(root), None, "root is a folder");
-		assert_eq!(project.track_block_count(root), 0);
-		assert_eq!(project.sequence_track_list_at(root, 0), NodeId::INVALID);
-	}
-}
+mod tests;
 
 #[cfg(test)]
 mod edit_tests {
 	use super::*;
-	use crate::codec::{Codec, EncoderSession, EncodingParams, Format};
 	use crate::codec::Frame;
+	use crate::codec::{Codec, EncoderSession, EncodingParams, Format};
 
 	// The undo stack is process-global; serialize the edit tests.
 
@@ -1856,7 +1808,9 @@ mod edit_tests {
 		let footage = project.import_footage(&clip_path).expect("import");
 		assert_eq!(project.folder_child_count(project.root()), 1);
 		assert!(project.footage_video_stream_count(footage) >= 1);
-		let params = project.footage_video_params(footage, 0).expect("video params");
+		let params = project
+			.footage_video_params(footage, 0)
+			.expect("video params");
 		assert_eq!((params.width, params.height), (64, 64));
 
 		// Sequence + clip + placement.
@@ -1880,7 +1834,11 @@ mod edit_tests {
 		assert!(undo());
 		assert_eq!(project.track_block_count(track), 0);
 		assert!(undo());
-		assert_eq!(project.folder_child_count(project.root()), 1, "only the sequence remains");
+		assert_eq!(
+			project.folder_child_count(project.root()),
+			1,
+			"only the sequence remains"
+		);
 		assert_eq!(project.folder_child_at(project.root(), 0), seq);
 
 		// Redo the whole chain.
@@ -1917,7 +1875,6 @@ mod edit_tests {
 #[cfg(test)]
 mod persist_tests {
 	use super::*;
-
 
 	#[test]
 	fn save_load_roundtrip() {
@@ -1995,7 +1952,9 @@ mod persist_tests {
 	fn deep_copy_is_independent() {
 		let _guard = UNDO_SERIAL.lock().unwrap();
 		let project = Project::new();
-		let folder = project.create_folder(project.root(), "CopyTest").expect("folder");
+		let folder = project
+			.create_folder(project.root(), "CopyTest")
+			.expect("folder");
 
 		let copy = project.deep_copy().expect("deep copy");
 		assert_eq!(copy.folder_child_count(copy.root()), 1);

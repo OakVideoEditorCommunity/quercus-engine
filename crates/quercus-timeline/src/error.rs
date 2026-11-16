@@ -20,6 +20,7 @@
 //! only codec=05 and task=08 carry one).
 
 /// ABI version stamped into every handle.
+use std::result;
 pub const QUERCUSTIMELINE_ABI_VERSION: u32 = 1;
 /// Success.
 pub const QUERCUSTIMELINE_OK: i32 = 0;
@@ -35,7 +36,7 @@ pub const QUERCUSTIMELINE_E_NOT_FOUND: i32 = -40004;
 pub const QUERCUSTIMELINE_E_NOMEM: i32 = -40005;
 
 /// Crate-internal result type; the FFI layer maps it to the codes.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, thiserror::Error)]
@@ -80,7 +81,10 @@ mod tests {
 		let cases = [
 			(Error::Invalid, "timeline: invalid argument"),
 			(Error::State, "timeline: wrong state"),
-			(Error::Failed("boom".into()), "timeline: operation failed: boom"),
+			(
+				Error::Failed("boom".into()),
+				"timeline: operation failed: boom",
+			),
 			(Error::NotFound, "timeline: not found"),
 			(Error::NoMem, "timeline: out of memory"),
 		];

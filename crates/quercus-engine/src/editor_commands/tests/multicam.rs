@@ -148,7 +148,6 @@ pub(crate) fn enabling_multicam_twice_is_idempotent() {
 	quercus_undo::global::clear().unwrap();
 }
 
-
 /// Playback must resolve the angle covering the requested time, not the
 /// angle covering the host clip's in-point. With a 0.5 s offset, switching
 /// to angle B and playing at 0.75 s used to produce no media at all.
@@ -202,13 +201,9 @@ pub(crate) fn wizard_rejects_invalid_inputs() {
 	// Empty angle list.
 	assert!(create_multicam_sequence(&project, host, &[], &[], "Empty").is_err());
 	// Angle/offset mismatch.
-	assert!(
-		create_multicam_sequence(&project, host, &[angle], &[0.0, 1.0], "Mismatch").is_err()
-	);
+	assert!(create_multicam_sequence(&project, host, &[angle], &[0.0, 1.0], "Mismatch").is_err());
 	// The host must be a sequence.
-	assert!(
-		create_multicam_sequence(&project, angle, &[angle], &[0.0], "Not a sequence").is_err()
-	);
+	assert!(create_multicam_sequence(&project, angle, &[angle], &[0.0], "Not a sequence").is_err());
 	// An angle must be a footage node.
 	let root = {
 		let guard = lock(&project);
@@ -247,7 +242,12 @@ pub(crate) fn multicam_noop_and_invalid_paths() {
 		let mut guard = lock(&project);
 		guard
 			.graph
-			.connect(footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+			.connect(
+				footage,
+				clip,
+				quercus_node::block::clip_input::TEXTURE_INPUT,
+				-1,
+			)
 			.unwrap();
 		let track = track_ids(&guard.graph, host, TrackType::Video)
 			.first()
@@ -324,10 +324,13 @@ pub(crate) fn switch_rejects_out_of_range_and_disable_real_clip() {
 	let before = lock(&project).graph.node_ids().len();
 	assert!(switch_multicam(&project, built.host_clip, 99, false, Rational::new(0, 1)).is_ok());
 	assert!(switch_multicam(&project, built.host_clip, -1, false, Rational::new(0, 1)).is_ok());
-	assert_eq!(lock(&project).graph.node_ids().len(), before, "no undo entry");
+	assert_eq!(
+		lock(&project).graph.node_ids().len(),
+		before,
+		"no undo entry"
+	);
 	assert!(
-		multicam_state(&project, built.host_clip)
-			.is_some_and(|state| state.current_source == 0)
+		multicam_state(&project, built.host_clip).is_some_and(|state| state.current_source == 0)
 	);
 
 	// Disabling a real clip without multicam still goes through the disable
@@ -365,7 +368,12 @@ pub(crate) fn clip_gain_is_undoable_and_bounded() {
 			.push(clip);
 		guard
 			.graph
-			.connect(footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+			.connect(
+				footage,
+				clip,
+				quercus_node::block::clip_input::TEXTURE_INPUT,
+				-1,
+			)
 			.unwrap();
 	}
 	assert!(set_clip_gain(&project, clip, 0.5).is_ok());
@@ -429,7 +437,12 @@ pub(crate) fn clip_pan_fade_and_audio_effects_are_undoable() {
 			.push(clip);
 		guard
 			.graph
-			.connect(footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+			.connect(
+				footage,
+				clip,
+				quercus_node::block::clip_input::TEXTURE_INPUT,
+				-1,
+			)
 			.unwrap();
 	}
 	let core_of = || {
@@ -517,9 +530,7 @@ pub(crate) fn clip_pan_fade_and_audio_effects_are_undoable() {
 	// Validation keeps invalid edits off the undo stack.
 	assert!(set_clip_pan(&project, clip, 2.0).is_err());
 	assert!(set_clip_pan(&project, clip, f64::NAN).is_err());
-	assert!(
-		set_clip_fade(&project, clip, Rational::new(-1, 1), Rational::new(0, 1)).is_err()
-	);
+	assert!(set_clip_fade(&project, clip, Rational::new(-1, 1), Rational::new(0, 1)).is_err());
 	assert!(add_clip_audio_effect(&project, clip, "  ", 0).is_err());
 	assert!(set_clip_audio_effect_enabled(&project, clip, 9, true).is_err());
 	assert!(remove_clip_audio_effect(&project, clip, 9).is_err());

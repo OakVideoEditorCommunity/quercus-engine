@@ -110,67 +110,7 @@ pub unsafe extern "C" fn quercus_codec_decoder_image_sequence_index(
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	unsafe extern "C" {
-		#[link_name = "quercus_vec_string_len"]
-		fn vec_len(this: *const QuercusVecString) -> usize;
-		#[link_name = "quercus_vec_string_get"]
-		fn vec_get(this: *const QuercusVecString, index: usize, out_len: *mut usize) -> *const u8;
-		#[link_name = "quercus_vec_string_release"]
-		unsafe fn vec_release(this: *const QuercusVecString);
-	}
-
-	#[test]
-	fn decoder_ids_include_ffmpeg() {
-		unsafe {
-			let ids = quercus_codec_decoder_ids();
-			let mut found = false;
-			for i in 0..vec_len(ids) {
-				let mut len = 0usize;
-				let ptr = vec_get(ids, i, &mut len);
-				let id = std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap();
-				found |= id == "ffmpeg";
-			}
-			vec_release(ids);
-			assert!(found, "the FFmpeg decoder must be registered");
-		}
-	}
-
-	#[test]
-	fn image_sequence_helpers() {
-		unsafe {
-			// Trailing-digit stems mark a sequence: "frame_0001.png".
-			let name = "frame_0001.png";
-			let digits = quercus_codec_decoder_image_sequence_digit_count(name.as_ptr(), name.len());
-			assert_eq!(digits, 4);
-
-			let mut buf = [0u8; 256];
-			let n = quercus_codec_decoder_transform_image_sequence_filename(
-				name.as_ptr(),
-				name.len(),
-				42,
-				buf.as_mut_ptr(),
-				buf.len(),
-			);
-			assert!(n > 0);
-			let out = std::str::from_utf8(&buf[..n as usize]).unwrap();
-			assert_eq!(out, "frame_0042.png");
-
-			// No trailing digits: not a sequence.
-			let plain = "frame.png";
-			assert_eq!(
-				quercus_codec_decoder_image_sequence_digit_count(plain.as_ptr(), plain.len()),
-				0
-			);
-			assert_eq!(
-				quercus_codec_decoder_image_sequence_digit_count(std::ptr::null(), 0),
-				-1
-			);
-		}
-	}
-}
+mod tests;
 
 // ---------------------------------------------------------------------------
 // Probe (read-only opaque handle over FootageDescription)
@@ -642,7 +582,11 @@ mod probe_tests {
 	use crate::coretypes::{QuercusRational, QuercusTimeRange};
 
 	fn temp_clip(name: &str) -> String {
-		let dir = std::env::temp_dir().join(format!("quercusengine_probe_{}_{}", name, std::process::id()));
+		let dir = std::env::temp_dir().join(format!(
+			"quercusengine_probe_{}_{}",
+			name,
+			std::process::id()
+		));
 		let _ = std::fs::create_dir_all(&dir);
 		let path = dir.join("clip.mp4");
 		quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10)
@@ -654,7 +598,13 @@ mod probe_tests {
 	fn probe_any_decoder_reports_streams() {
 		let clip = temp_clip("any");
 		unsafe {
-			let fd = quercus_codec_decoder_probe(std::ptr::null(), 0, clip.as_ptr(), clip.len(), std::ptr::null());
+			let fd = quercus_codec_decoder_probe(
+				std::ptr::null(),
+				0,
+				clip.as_ptr(),
+				clip.len(),
+				std::ptr::null(),
+			);
 			assert!(!fd.is_null(), "probe must succeed for a test clip");
 
 			assert!(quercus_codec_footage_total_stream_count(fd) >= 1);
@@ -690,8 +640,13 @@ mod probe_tests {
 		let clip = temp_clip("named");
 		unsafe {
 			let ffmpeg = "ffmpeg";
-			let fd =
-				quercus_codec_decoder_probe(ffmpeg.as_ptr(), ffmpeg.len(), clip.as_ptr(), clip.len(), std::ptr::null());
+			let fd = quercus_codec_decoder_probe(
+				ffmpeg.as_ptr(),
+				ffmpeg.len(),
+				clip.as_ptr(),
+				clip.len(),
+				std::ptr::null(),
+			);
 			assert!(!fd.is_null());
 			let mut buf = [0u8; 64];
 			let n = quercus_codec_footage_decoder_name(fd, buf.as_mut_ptr(), buf.len());
@@ -700,13 +655,25 @@ mod probe_tests {
 
 			let bogus = "no-such-decoder";
 			assert!(
-				quercus_codec_decoder_probe(bogus.as_ptr(), bogus.len(), clip.as_ptr(), clip.len(), std::ptr::null())
-					.is_null()
+				quercus_codec_decoder_probe(
+					bogus.as_ptr(),
+					bogus.len(),
+					clip.as_ptr(),
+					clip.len(),
+					std::ptr::null()
+				)
+				.is_null()
 			);
 			let missing = "/nonexistent/quercus-probe.mp4";
 			assert!(
-				quercus_codec_decoder_probe(std::ptr::null(), 0, missing.as_ptr(), missing.len(), std::ptr::null())
-					.is_null()
+				quercus_codec_decoder_probe(
+					std::ptr::null(),
+					0,
+					missing.as_ptr(),
+					missing.len(),
+					std::ptr::null()
+				)
+				.is_null()
 			);
 		}
 	}
@@ -717,13 +684,8 @@ mod probe_tests {
 		unsafe {
 			let atom = crate::corestate::quercus_core_cancelatom_new();
 			crate::corestate::quercus_core_cancelatom_cancel(atom);
-			let fd = quercus_codec_decoder_probe(
-				std::ptr::null(),
-				0,
-				clip.as_ptr(),
-				clip.len(),
-				atom,
-			);
+			let fd =
+				quercus_codec_decoder_probe(std::ptr::null(), 0, clip.as_ptr(), clip.len(), atom);
 			// A pre-cancelled atom must not yield a description.
 			assert!(fd.is_null());
 			crate::corestate::quercus_core_cancelatom_release(atom);
@@ -733,10 +695,18 @@ mod probe_tests {
 	#[test]
 	fn footage_null_is_safe() {
 		unsafe {
-			assert_eq!(quercus_codec_footage_total_stream_count(std::ptr::null()), 0);
+			assert_eq!(
+				quercus_codec_footage_total_stream_count(std::ptr::null()),
+				0
+			);
 			assert_eq!(quercus_codec_footage_stream_type(std::ptr::null(), 0), -1);
-			assert!(!quercus_codec_footage_has_source_start_time(std::ptr::null()));
-			assert!(!quercus_codec_footage_duration(std::ptr::null(), std::ptr::null_mut()));
+			assert!(!quercus_codec_footage_has_source_start_time(
+				std::ptr::null()
+			));
+			assert!(!quercus_codec_footage_duration(
+				std::ptr::null(),
+				std::ptr::null_mut()
+			));
 			quercus_codec_footage_release(std::ptr::null());
 		}
 	}
@@ -752,9 +722,7 @@ mod probe_tests {
 
 use std::sync::Arc;
 
-use quercus_codec::decoder::{
-	CodecStream, K_COLOR_RANGE_DEFAULT, RenderMode, RetrieveVideoParams,
-};
+use quercus_codec::decoder::{CodecStream, K_COLOR_RANGE_DEFAULT, RenderMode, RetrieveVideoParams};
 
 /// An open decode session. Refcounted like every engine handle.
 pub struct DecoderSession {
@@ -827,8 +795,7 @@ pub unsafe extern "C" fn quercus_codec_retrieve_params_set_stream(
 	let Some(filename) = (unsafe { str_arg(filename, filename_len) }) else {
 		return false;
 	};
-	unsafe { &mut *p }.stream =
-		CodecStream::with_block(filename.to_string(), stream_index, None);
+	unsafe { &mut *p }.stream = CodecStream::with_block(filename.to_string(), stream_index, None);
 	true
 }
 
@@ -1194,9 +1161,10 @@ pub unsafe extern "C" fn quercus_codec_decoder_retrieve_audio(
 		unsafe { std::slice::from_raw_parts_mut(dest, dest_len) }
 	};
 	let range = quercus_core::TimeRange::new(in_.to_native(), out.to_native());
-	let status = unsafe { &*session }
-		.decoder
-		.retrieve_audio(dest, &range, sample_rate, channel_layout);
+	let status =
+		unsafe { &*session }
+			.decoder
+			.retrieve_audio(dest, &range, sample_rate, channel_layout);
 	match status {
 		Ok(RetrieveAudioStatus::Success) => 0,
 		Ok(RetrieveAudioStatus::InvalidRange) => 1,
@@ -1220,7 +1188,8 @@ mod session_tests {
 		));
 		let _ = std::fs::create_dir_all(&dir);
 		let path = dir.join("clip.mp4");
-		quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("generate test media");
+		quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10)
+			.expect("generate test media");
 		path.to_string_lossy().into_owned()
 	}
 
@@ -1254,7 +1223,9 @@ mod session_tests {
 			crate::codec::frame::quercus_codec_frame_release(frame);
 
 			// Missing params / closed session fail cleanly.
-			assert!(quercus_codec_decoder_retrieve_video_frame(session, std::ptr::null()).is_null());
+			assert!(
+				quercus_codec_decoder_retrieve_video_frame(session, std::ptr::null()).is_null()
+			);
 			assert!(quercus_codec_decoder_close(session));
 			assert!(quercus_codec_decoder_retrieve_video_frame(session, params).is_null());
 
@@ -1298,7 +1269,10 @@ mod session_tests {
 				48_000,
 				0x3,
 			);
-			assert!(status == 2 || status == 1 || status == 4, "video-only clip: {status}");
+			assert!(
+				status == 2 || status == 1 || status == 4,
+				"video-only clip: {status}"
+			);
 			quercus_codec_decoder_close(session);
 			quercus_codec_decoder_release(session);
 		}
@@ -1325,8 +1299,16 @@ mod session_tests {
 			assert!(native.alpha_is_premultiplied);
 
 			// Null is a no-op everywhere.
-			quercus_codec_retrieve_params_set_time(std::ptr::null_mut(), QuercusRational { num: 0, den: 1 });
-			assert!(!quercus_codec_retrieve_params_set_stream(std::ptr::null_mut(), std::ptr::null(), 0, 0));
+			quercus_codec_retrieve_params_set_time(
+				std::ptr::null_mut(),
+				QuercusRational { num: 0, den: 1 },
+			);
+			assert!(!quercus_codec_retrieve_params_set_stream(
+				std::ptr::null_mut(),
+				std::ptr::null(),
+				0,
+				0
+			));
 			quercus_codec_retrieve_params_release(p);
 			quercus_codec_retrieve_params_release(std::ptr::null());
 		}

@@ -34,6 +34,8 @@
 //!
 //! CPP-PARITY: src/task/src/project/loadotio/loadotio.cpp
 
+use quercus_core::Rational;
+use quercus_node::factory;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -224,8 +226,7 @@ impl TaskBehavior for LoadOTIOTask {
 				else {
 					continue;
 				};
-				let mut add_track =
-					nodeops::add_track_command(project.clone(), track_list);
+				let mut add_track = nodeops::add_track_command(project.clone(), track_list);
 				add_track.redo_now();
 
 				let track_count = nodeops::tracklist_track_count(&project, track_list);
@@ -274,8 +275,8 @@ impl TaskBehavior for LoadOTIOTask {
 							let start_seconds = source_range.start_time().to_seconds();
 							let duration_seconds = source_range.duration().to_seconds();
 
-							let start_time = quercus_core::Rational::from_double(start_seconds);
-							let duration = quercus_core::Rational::from_double(duration_seconds);
+							let start_time = Rational::from_double(start_seconds);
+							let duration = Rational::from_double(duration_seconds);
 
 							if otio_block.schema_name() == "Clip" {
 								nodeops::clip_set_media_in(
@@ -356,35 +357,32 @@ impl TaskBehavior for LoadOTIOTask {
 							// Link footage
 							let footage_url = external.target_url().to_string();
 
-							let probed_item: Option<NodeRef> =
-								if let Some(existing) = imported_footage.get(&footage_url) {
-									Some(existing.clone())
-								} else {
-									let created =
-										nodeops::footage_create(&project, Some(&footage_url));
-									if let Some(created) = created {
-										imported_footage.insert(
-											footage_url.clone(),
+							let probed_item: Option<NodeRef> = if let Some(existing) =
+								imported_footage.get(&footage_url)
+							{
+								Some(existing.clone())
+							} else {
+								let created = nodeops::footage_create(&project, Some(&footage_url));
+								if let Some(created) = created {
+									imported_footage
+										.insert(footage_url.clone(), (project.clone(), created));
+
+									let label = Path::new(&footage_url)
+										.file_name()
+										.map(|n| n.to_string_lossy().into_owned())
+										.unwrap_or_default();
+									nodeops::set_node_label(&project, created, &label);
+
+									if let Some(folder_id) = sequence_footage {
+										let mut add_footage = nodeops::folder_add_child_command(
+											(project.clone(), folder_id),
 											(project.clone(), created),
 										);
-
-										let label = Path::new(&footage_url)
-											.file_name()
-											.map(|n| n.to_string_lossy().into_owned())
-											.unwrap_or_default();
-										nodeops::set_node_label(&project, created, &label);
-
-										if let Some(folder_id) = sequence_footage {
-											let mut add_footage =
-												nodeops::folder_add_child_command(
-													(project.clone(), folder_id),
-													(project.clone(), created),
-												);
-											add_footage.redo_now();
-										}
+										add_footage.redo_now();
 									}
-									created.map(|id| (project.clone(), id))
-								};
+								}
+								created.map(|id| (project.clone(), id))
+							};
 
 							if let Some((_, probed_id)) = probed_item {
 								// Position clip in its own context.
@@ -401,15 +399,11 @@ impl TaskBehavior for LoadOTIOTask {
 								nodeops::clip_set_footage(&project, block_node, probed_id);
 
 								if track_type == TrackType::Video {
-									if let Some(transform) = factory_create(
-										&project,
-										nodeops::TRANSFORM_TYPE_ID,
-									) {
+									if let Some(transform) =
+										factory_create(&project, nodeops::TRANSFORM_TYPE_ID)
+									{
 										nodeops::node_connect(
-											&project,
-											probed_id,
-											transform,
-											"tex_in",
+											&project, probed_id, transform, "tex_in",
 										);
 										nodeops::node_connect(
 											&project,
@@ -467,7 +461,7 @@ impl TaskBehavior for LoadOTIOTask {
 ///
 /// Returns `None` when the registry has no type with that id.
 fn factory_create(project: &ProjectRef, type_id: &str) -> Option<NodeId> {
-	let meta = quercus_node::factory::Factory::global().find(type_id)?;
+	let meta = factory::Factory::global().find(type_id)?;
 	let (core, behavior) = (meta.create)();
 	let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 	Some(guard.graph.add_node(core, behavior))

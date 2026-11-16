@@ -29,15 +29,18 @@
 //! transition/cache/reconnect steps have no Rust equivalent yet and are
 //! noted at each site.
 
+use crate::undocommon;
 use quercus_core::Rational;
+use quercus_core::TimeRange;
 use quercus_node::graph::NodeEntry;
 use quercus_node::id::NodeId;
+use quercus_node::track;
 use quercus_undo::undocommand::UndoCommand;
 
 use crate::util::{
-	block_in, block_length, block_out, block_set_length_and_media_out, block_set_range, block_track,
-	clip_media_in, clip_set_media_in, track_insert_block_after, track_ripple_remove_block,
-	GraphBlockRange, NodeRef,
+	block_in, block_length, block_out, block_set_length_and_media_out, block_set_range,
+	block_track, clip_media_in, clip_set_media_in, track_insert_block_after,
+	track_ripple_remove_block, GraphBlockRange, NodeRef,
 };
 
 /// `BlockSplitCommand` — split one block at a point
@@ -104,8 +107,13 @@ impl BlockSplitCommand {
 		}
 		let project = self.block.project.clone();
 		let (id, map) = {
-			let mut p = project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-			match p.graph.copy_node_and_dependency_graph_minus_items(self.block.id) {
+			let mut p = project
+				.lock()
+				.unwrap_or_else(|poisoned| poisoned.into_inner());
+			match p
+				.graph
+				.copy_node_and_dependency_graph_minus_items(self.block.id)
+			{
 				Some(r) => r,
 				None => return,
 			}
@@ -121,7 +129,9 @@ impl BlockSplitCommand {
 		// Capture the copied nodes' input edges (endpoints are copies or
 		// shared items) so a re-attach after undo can rewire them.
 		let copied_edges = {
-			let p = project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+			let p = project
+				.lock()
+				.unwrap_or_else(|poisoned| poisoned.into_inner());
 			let mut edges = Vec::new();
 			for &node_id in &copied {
 				for (from, input, element) in p.graph.input_connections(node_id) {
@@ -211,7 +221,10 @@ impl BlockSplitCommand {
 			// Second half: the split point up to the original out point. The
 			// stored-range model has no track layout to derive these from, so
 			// both ends are written explicitly along with the media window.
-			block_set_range(new_block, quercus_core::TimeRange::new(self.point, self.point + second_half_length));
+			block_set_range(
+				new_block,
+				TimeRange::new(self.point, self.point + second_half_length),
+			);
 			clip_set_media_in(new_block, media_in + first_half_length);
 
 			if let Some(track) = block_track(&self.block) {
@@ -262,11 +275,11 @@ impl BlockSplitCommand {
 
 	/// Wrap as an quercusundo command value.
 	pub fn to_command(self) -> UndoCommand {
-		crate::undocommon::box_command(self)
+		undocommon::box_command(self)
 	}
 }
 
-impl crate::undocommon::Command for BlockSplitCommand {
+impl undocommon::Command for BlockSplitCommand {
 	fn redo(&mut self) {
 		self.redo();
 	}
@@ -337,7 +350,9 @@ impl BlockSplitPreservingLinksCommand {
 			return;
 		};
 		let project = first.project.clone();
-		let mut p = project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+		let mut p = project
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner());
 		for i in 0..n_times {
 			for j in 0..n_blocks {
 				for k in (j + 1)..n_blocks {
@@ -397,11 +412,11 @@ impl BlockSplitPreservingLinksCommand {
 
 	/// Wrap as an quercusundo command value.
 	pub fn to_command(self) -> UndoCommand {
-		crate::undocommon::box_command(self)
+		undocommon::box_command(self)
 	}
 }
 
-impl crate::undocommon::Command for BlockSplitPreservingLinksCommand {
+impl undocommon::Command for BlockSplitPreservingLinksCommand {
 	fn redo(&mut self) {
 		self.redo();
 	}
@@ -444,11 +459,13 @@ impl TrackSplitAtTimeCommand {
 		}
 		let block_id = {
 			let project = self.track.project.clone();
-			let p = project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+			let p = project
+				.lock()
+				.unwrap_or_else(|poisoned| poisoned.into_inner());
 			p.graph
 				.get(self.track.id)
 				.and_then(|e| e.behavior.as_any())
-				.and_then(|a| a.downcast_ref::<quercus_node::track::TrackBehavior>())
+				.and_then(|a| a.downcast_ref::<track::TrackBehavior>())
 				.and_then(|t| {
 					t.block_containing_time(self.point, &GraphBlockRange { graph: &p.graph })
 				})
@@ -478,11 +495,11 @@ impl TrackSplitAtTimeCommand {
 
 	/// Wrap as an quercusundo command value.
 	pub fn to_command(self) -> UndoCommand {
-		crate::undocommon::box_command(self)
+		undocommon::box_command(self)
 	}
 }
 
-impl crate::undocommon::Command for TrackSplitAtTimeCommand {
+impl undocommon::Command for TrackSplitAtTimeCommand {
 	fn redo(&mut self) {
 		self.redo();
 	}

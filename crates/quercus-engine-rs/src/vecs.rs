@@ -15,6 +15,8 @@
 //! — re-query the engine or `to_vec` instead. Mutation goes through
 //! `&mut self`.
 
+use std::str;
+
 // The macro-generated extern blocks below carry their own #[link]
 // attribute, so each wrapper type is self-sufficient.
 
@@ -332,7 +334,9 @@ mod tests {
 	fn wrappers_move_across_threads() {
 		let mut v = VecF64::new();
 		v.push(2.5);
-		let len = std::thread::spawn(move || (v.len(), v.get(0))).join().unwrap();
+		let len = std::thread::spawn(move || (v.len(), v.get(0)))
+			.join()
+			.unwrap();
 		assert_eq!(len, (1, Some(2.5)));
 	}
 }

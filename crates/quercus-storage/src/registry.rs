@@ -21,6 +21,7 @@
 //! future database backend, or a test mock) register through
 //! [`Registry::register`] or the C vtable pair in `ffi.rs`.
 
+use crate::backends;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::backend::StorageBackend;
@@ -42,7 +43,7 @@ impl Registry {
 			};
 			{
 				let mut guard = lock(&registry.backends);
-				for backend in crate::backends::builtins() {
+				for backend in backends::builtins() {
 					guard.push(backend);
 				}
 			}
@@ -161,30 +162,26 @@ mod tests {
 			backends: Mutex::new(Vec::new()),
 		};
 		let backend = Arc::new(MemBackend);
-		assert!(registry.resolve(&StorageUri::parse("mem://x").unwrap()).is_err());
+		assert!(registry
+			.resolve(&StorageUri::parse("mem://x").unwrap())
+			.is_err());
 
 		registry.register(backend).unwrap();
 		// Duplicate name rejected.
 		assert!(registry.register(Arc::new(MemBackend)).is_err());
-		assert!(
-			registry
-				.resolve(&StorageUri::parse("mem://x").unwrap())
-				.is_ok()
-		);
+		assert!(registry
+			.resolve(&StorageUri::parse("mem://x").unwrap())
+			.is_ok());
 		// Unknown scheme still unresolvable.
-		assert!(
-			registry
-				.resolve(&StorageUri::parse("file:///a.ove").unwrap())
-				.is_err()
-		);
+		assert!(registry
+			.resolve(&StorageUri::parse("file:///a.ove").unwrap())
+			.is_err());
 		// Unregister flips it back to E_NO_BACKEND; unknown names E_NOT_FOUND.
 		registry.unregister("mem-test").unwrap();
 		assert!(registry.unregister("mem-test").is_err());
-		assert!(
-			registry
-				.resolve(&StorageUri::parse("mem://x").unwrap())
-				.is_err()
-		);
+		assert!(registry
+			.resolve(&StorageUri::parse("mem://x").unwrap())
+			.is_err());
 	}
 
 	#[test]

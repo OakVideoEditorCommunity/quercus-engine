@@ -38,6 +38,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time;
 
 use quercus_core::cancelatom::CancelAtom;
 
@@ -103,7 +104,7 @@ struct TaskDone {
 pub struct Task {
 	title: String,
 	error: Option<String>,
-	start_time: Option<std::time::Instant>,
+	start_time: Option<time::Instant>,
 	cancel_atom: Arc<CancelAtom>,
 	event_listener: Option<EventListener>,
 	cancel_event: Option<Box<dyn FnMut() + Send>>,
@@ -157,7 +158,7 @@ impl Task {
 	/// the behavior succeeded, `Err(..)` otherwise.
 	pub fn start(&mut self) -> Result<()> {
 		let start_ms = system_time_ms();
-		self.start_time = Some(std::time::Instant::now());
+		self.start_time = Some(time::Instant::now());
 		self.started = true;
 		if let Some(s) = &self.subscriber {
 			s.start_ms.store(start_ms, Ordering::SeqCst);
@@ -334,7 +335,7 @@ impl Task {
 	}
 
 	/// The elapsed time since [`Task::start`], for duration reporting.
-	pub fn elapsed(&self) -> Option<std::time::Duration> {
+	pub fn elapsed(&self) -> Option<time::Duration> {
 		self.start_time.map(|t| t.elapsed())
 	}
 
@@ -348,8 +349,8 @@ impl Task {
 /// Current wall-clock time in milliseconds since the Unix epoch, matching
 /// the C++ `start_time_` convention (std::chrono::system_clock ms).
 pub fn system_time_ms() -> i64 {
-	std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
+	time::SystemTime::now()
+		.duration_since(time::UNIX_EPOCH)
 		.map(|d| d.as_millis() as i64)
 		.unwrap_or(0)
 }

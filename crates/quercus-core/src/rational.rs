@@ -16,7 +16,7 @@
 
 //! Rational numbers with quercuscore-compatible semantics.
 
-use std::ops::{Add, Sub, Mul, Div};
+use std::ops::{Add, Div, Mul, Sub};
 
 /// The cap used by the C++ `reduce_fraction` oracle: it reduces against
 /// `INT_MAX` regardless of the wider integer width. We keep the same cap so

@@ -112,11 +112,11 @@ pub mod primitive {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OfxRGBAColourF {
-/// Red.
+	/// Red.
 	pub r: f32,
-/// Green.
+	/// Green.
 	pub g: f32,
-/// Blue.
+	/// Blue.
 	pub b: f32,
 	/// alpha。
 	pub a: f32,
@@ -302,9 +302,7 @@ unsafe extern "C" fn get_colour(
 			return Err(status::ERR_VALUE);
 		}
 		let _ = resolve(ctx)?;
-		let c = PALETTE
-			.get(std_colour as usize)
-			.ok_or(status::ERR_VALUE)?;
+		let c = PALETTE.get(std_colour as usize).ok_or(status::ERR_VALUE)?;
 		unsafe {
 			*out = OfxRGBAColourF {
 				r: c[0],
@@ -520,7 +518,8 @@ pub struct DrawSuiteV1 {
 	/// draw: draws a primitive (array of points, canonical coordinates).
 	pub draw: unsafe extern "C" fn(*mut c_void, c_int, *const OfxPointD, c_int) -> c_int,
 	/// drawText: draws text (Phase 1 returns kOfxStatErrUnsupported).
-	pub draw_text: unsafe extern "C" fn(*mut c_void, *const c_char, *const OfxPointD, c_int) -> c_int,
+	pub draw_text:
+		unsafe extern "C" fn(*mut c_void, *const c_char, *const OfxPointD, c_int) -> c_int,
 }
 
 /// The function table instance.
@@ -537,130 +536,20 @@ pub fn suite_v1() -> &'static DrawSuiteV1 {
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// Standard palette: getColour picks host colours by enum (out of range ->
-	/// ErrValue).
-	#[test]
-	fn get_colour_palette() {
-		let ctx = make_context((640.0, 480.0), (1.0, 1.0));
-		let mut out = OfxRGBAColourF { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
-		unsafe {
-			assert_eq!(get_colour(ctx, std_colour::ACTIVE, &mut out), status::OK);
-		}
-		assert_eq!((out.r, out.g, out.b, out.a), (1.0, 0.84, 0.0, 1.0));
-		// 越界枚举 → ErrValue。
-		unsafe {
-			assert_eq!(get_colour(ctx, 99, &mut out), status::ERR_VALUE);
-			assert_eq!(get_colour(ctx, -1, &mut out), status::ERR_VALUE);
-			// 空输出指针 → ErrValue。
-			assert_eq!(
-				get_colour(ctx, std_colour::BACKGROUND, std::ptr::null_mut()),
-				status::ERR_VALUE
-			);
-		}
-		drop_context(ctx);
-	}
-
-	/// setColour really writes state: after setLineWidth/setLineStipple it is
-	/// read back from the live table (the plugin's view during a draw
-	/// action).
-	#[test]
-	fn set_colour_and_line_state() {
-		let ctx = make_context((100.0, 100.0), (2.0, 2.0));
-		let col = OfxRGBAColourF { r: 0.9, g: 0.1, b: 0.2, a: 1.0 };
-		unsafe {
-			assert_eq!(set_colour(ctx, &col), status::OK);
-			assert_eq!(set_line_width(ctx, 3.5), status::OK);
-			assert_eq!(set_line_stipple(ctx, stipple::DASH), status::OK);
-			assert_eq!(set_line_stipple(ctx, 99), status::ERR_VALUE);
-		}
-
-		let addr = ctx as usize;
-		let live = lock();
-		let c = live.get(&addr).unwrap();
-		assert_eq!(c.colour, [0.9, 0.1, 0.2, 1.0]);
-		assert_eq!(c.line_width, 3.5);
-		assert_eq!(c.stipple, stipple::DASH);
-		drop(live);
-		drop_context(ctx);
-	}
-
-	/// Calling after removal -> Failed (the "outside kOfxInteractActionDraw"
-	/// semantics).
-	#[test]
-	fn draw_suite_outside_draw_fails() {
-		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
-		drop_context(ctx);
-		let col = OfxRGBAColourF { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
-		let mut out = OfxRGBAColourF { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
-		let s = std::ffi::CString::new("x").unwrap();
-		let pos = OfxPointD { x: 0.0, y: 0.0 };
-		let pts = [OfxPointD { x: 0.0, y: 0.0 }, OfxPointD { x: 10.0, y: 10.0 }];
-		unsafe {
-			assert_eq!(set_colour(ctx, &col), status::FAILED);
-			assert_eq!(get_colour(ctx, std_colour::TEXT, &mut out), status::FAILED);
-			assert_eq!(set_line_width(ctx, 1.0), status::FAILED);
-			assert_eq!(set_line_stipple(ctx, stipple::SOLID), status::FAILED);
-			// 合法参数（避开空指针检查）→ 摘除后 resolve 失败 → Failed。
-			assert_eq!(draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 2), status::FAILED);
-			// drawText 同样 Failed（先 resolve 失败）。
-			assert_eq!(draw_text(ctx, s.as_ptr(), &pos, 0), status::FAILED);
-		}
-	}
-
-	/// draw primitive argument validation (does not touch GL): invalid
-	/// primitive/point count -> ErrValue.
-	#[test]
-	fn draw_primitive_argument_validation() {
-		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
-		let pts = [OfxPointD { x: 0.0, y: 0.0 }, OfxPointD { x: 10.0, y: 10.0 }];
-		unsafe {
-			// 非法原语枚举。
-			assert_eq!(draw(ctx, 99, pts.as_ptr(), 2), status::ERR_VALUE);
-			assert_eq!(draw(ctx, -1, pts.as_ptr(), 2), status::ERR_VALUE);
-			// 点数不合法：LINES 奇数点。
-			assert_eq!(draw(ctx, primitive::LINES, pts.as_ptr(), 3), status::ERR_VALUE);
-			// RECTANGLE 需恰好 2 点。
-			assert_eq!(draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 3), status::ERR_VALUE);
-			// POLYGON 需 ≥3 点。
-			assert_eq!(draw(ctx, primitive::POLYGON, pts.as_ptr(), 2), status::ERR_VALUE);
-			// 空指针 + 正点数。
-			assert_eq!(draw(ctx, primitive::LINES, std::ptr::null(), 2), status::ERR_VALUE);
-			// 合法参数：环境相关的 GL 路径（无 current 上下文时宿主可能
-			// 失败）——参数校验已过即可，具体状态不在此断言。
-			let st = draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 2);
-			assert!(
-				st == status::OK || st == status::FAILED,
-				"合法参数应 OK（有 GL）或 Failed（无 GL 上下文），got {st}"
-			);
-		}
-		drop_context(ctx);
-	}
-
-	/// drawText: valid arguments -> Unsupported (faithful refusal); null
-	/// pointer -> ErrValue.
-	#[test]
-	fn draw_text_is_honest_unsupported() {
-		let ctx = make_context((10.0, 10.0), (1.0, 1.0));
-		let s = std::ffi::CString::new("hello").unwrap();
-		let pos = OfxPointD { x: 1.0, y: 2.0 };
-		unsafe {
-			assert_eq!(draw_text(ctx, s.as_ptr(), &pos, 0), status::ERR_UNSUPPORTED);
-			assert_eq!(draw_text(ctx, std::ptr::null(), &pos, 0), status::ERR_VALUE);
-		}
-		drop_context(ctx);
-	}
-}
+mod tests;
 
 // ---- GL 绘制实现（平台分派）--------------------------------------------
 
 #[cfg(target_os = "macos")]
 mod gl_imp {
+	use super::primitive;
 	use super::{DrawContext, OfxPointD};
+	use crate::gl_bridge;
 	use crate::suites::status;
+	use std::f64;
 	use std::ffi::c_void;
+	use std::ptr;
+	use std::sync;
 
 	// ---- GL 常量（GL 规范值）----
 	const GL_FALSE: i32 = 0;
@@ -758,7 +647,7 @@ mod gl_imp {
 		}
 		unsafe {
 			let ptr = src.as_ptr() as *const i8;
-			glShaderSource(sh, 1, &ptr, std::ptr::null());
+			glShaderSource(sh, 1, &ptr, ptr::null());
 			glCompileShader(sh);
 		}
 		let mut ok: i32 = 0;
@@ -789,7 +678,7 @@ mod gl_imp {
 	/// current, and this is the only place in the process that uses these GL
 	/// objects.
 	fn resources() -> Result<(u32, u32, u32), i32> {
-		static RES: std::sync::OnceLock<Result<(u32, u32, u32), i32>> = std::sync::OnceLock::new();
+		static RES: sync::OnceLock<Result<(u32, u32, u32), i32>> = sync::OnceLock::new();
 		*RES.get_or_init(|| {
 			let vs = match compile_shader(GL_VERTEX_SHADER, VERT_SRC) {
 				Ok(s) => s,
@@ -857,10 +746,22 @@ mod gl_imp {
 	fn ortho(cw: f64, ch: f64) -> [f32; 16] {
 		let (cw, ch) = (cw.max(1.0) as f32, ch.max(1.0) as f32);
 		[
-			2.0 / cw, 0.0, 0.0, 0.0,
-			0.0, 2.0 / ch, 0.0, 0.0,
-			0.0, 0.0, -1.0, 0.0,
-			-1.0, -1.0, 0.0, 1.0,
+			2.0 / cw,
+			0.0,
+			0.0,
+			0.0,
+			0.0,
+			2.0 / ch,
+			0.0,
+			0.0,
+			0.0,
+			0.0,
+			-1.0,
+			0.0,
+			-1.0,
+			-1.0,
+			0.0,
+			1.0,
 		]
 	}
 
@@ -885,43 +786,43 @@ mod gl_imp {
 	/// buffer is re-uploaded with `glBufferData`).
 	fn vertices(prim: i32, pts: &[OfxPointD]) -> (u32, Vec<f32>) {
 		match prim {
-			super::primitive::LINES => (
+			primitive::LINES => (
 				GL_LINES,
 				pts.iter().flat_map(|p| [p.x as f32, p.y as f32]).collect(),
 			),
-			super::primitive::LINE_STRIP => (
+			primitive::LINE_STRIP => (
 				GL_LINE_STRIP,
 				pts.iter().flat_map(|p| [p.x as f32, p.y as f32]).collect(),
 			),
-			super::primitive::LINE_LOOP => (
+			primitive::LINE_LOOP => (
 				GL_LINE_LOOP,
 				pts.iter().flat_map(|p| [p.x as f32, p.y as f32]).collect(),
 			),
-			super::primitive::RECTANGLE => {
+			primitive::RECTANGLE => {
 				let (x1, y1) = (pts[0].x as f32, pts[0].y as f32);
 				let (x2, y2) = (pts[1].x as f32, pts[1].y as f32);
 				// 两个三角形组成实心矩形（对角点定义）。
 				(
 					GL_TRIANGLES,
-					vec![
-						x1, y1, x2, y1, x1, y2,
-						x1, y2, x2, y1, x2, y2,
-					],
+					vec![x1, y1, x2, y1, x1, y2, x1, y2, x2, y1, x2, y2],
 				)
 			}
-			super::primitive::POLYGON => {
+			primitive::POLYGON => {
 				// 三角扇：0,i,i+1（凸多边形约定）。
 				let mut v = Vec::new();
 				for i in 1..pts.len() - 1 {
 					v.extend_from_slice(&[
-						pts[0].x as f32, pts[0].y as f32,
-						pts[i].x as f32, pts[i].y as f32,
-						pts[i + 1].x as f32, pts[i + 1].y as f32,
+						pts[0].x as f32,
+						pts[0].y as f32,
+						pts[i].x as f32,
+						pts[i].y as f32,
+						pts[i + 1].x as f32,
+						pts[i + 1].y as f32,
 					]);
 				}
 				(GL_TRIANGLES, v)
 			}
-			super::primitive::ELLIPSE => {
+			primitive::ELLIPSE => {
 				// 椭圆**线框**（文档），包围盒内 64 段线环。
 				let (cx, cy) = ((pts[0].x + pts[1].x) / 2.0, (pts[0].y + pts[1].y) / 2.0);
 				let (rx, ry) = (
@@ -931,7 +832,7 @@ mod gl_imp {
 				let n = 64;
 				let mut v = Vec::with_capacity(n * 2);
 				for i in 0..n {
-					let a = std::f64::consts::TAU * i as f64 / n as f64;
+					let a = f64::consts::TAU * i as f64 / n as f64;
 					v.push((cx + rx * a.cos()) as f32);
 					v.push((cy + ry * a.sin()) as f32);
 				}
@@ -966,7 +867,7 @@ mod gl_imp {
 	/// `GL_NO_ERROR`; empty vertices themselves map to
 	/// [`status::ERR_VALUE`].
 	pub fn render(ctx: &DrawContext, prim: i32, pts: &[OfxPointD]) -> Result<(), i32> {
-		if !crate::gl_bridge::is_current() {
+		if !gl_bridge::is_current() {
 			return Err(status::FAILED);
 		}
 		let (prog, vao, vbo) = resources().map_err(|_| status::FAILED)?;
@@ -999,7 +900,7 @@ mod gl_imp {
 			if a_pos < 0 {
 				return Err(status::FAILED);
 			}
-			glVertexAttribPointer(a_pos as u32, 2, GL_FLOAT, 0, 0, std::ptr::null());
+			glVertexAttribPointer(a_pos as u32, 2, GL_FLOAT, 0, 0, ptr::null());
 			glEnableVertexAttribArray(a_pos as u32);
 
 			let u_proj = glGetUniformLocation(prog, b"u_proj\0".as_ptr() as *const i8);
@@ -1008,7 +909,13 @@ mod gl_imp {
 			let ch = ctx.viewport.1 / ctx.pixel_scale.1.max(1e-6);
 			let m = ortho(cw, ch);
 			glUniformMatrix4fv(u_proj, 1, 0, m.as_ptr());
-			glUniform4f(u_col, ctx.colour[0], ctx.colour[1], ctx.colour[2], ctx.colour[3]);
+			glUniform4f(
+				u_col,
+				ctx.colour[0],
+				ctx.colour[1],
+				ctx.colour[2],
+				ctx.colour[3],
+			);
 
 			if ctx.line_width > 0.0 {
 				glLineWidth(ctx.line_width);

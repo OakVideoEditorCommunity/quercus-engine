@@ -4,15 +4,17 @@
 
 use quercus_codec::decoder::{CodecStream, Decoder};
 use quercus_codec::ffmpeg::FFmpegDecoder;
+use std::env;
+use std::ptr;
 
 fn probe(device_type: ffmpeg_next::ffi::AVHWDeviceType, name: &str) {
-	let mut dev: *mut ffmpeg_next::ffi::AVBufferRef = std::ptr::null_mut();
+	let mut dev: *mut ffmpeg_next::ffi::AVBufferRef = ptr::null_mut();
 	let rc = unsafe {
 		ffmpeg_next::ffi::av_hwdevice_ctx_create(
 			&mut dev,
 			device_type,
-			std::ptr::null(),
-			std::ptr::null_mut(),
+			ptr::null(),
+			ptr::null_mut(),
 			0,
 		)
 	};
@@ -32,7 +34,7 @@ fn main() {
 		ffmpeg_next::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
 		"VAAPI",
 	);
-	let args: Vec<String> = std::env::args().collect();
+	let args: Vec<String> = env::args().collect();
 	if args.len() < 2 {
 		return;
 	}

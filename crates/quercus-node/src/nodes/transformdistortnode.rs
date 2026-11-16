@@ -21,6 +21,8 @@
 //! `pos_in`/`rot_in`/`scale_in`/`uniform_scale_in`/`anchor_in` inputs
 //! and the `generate_matrix` helper.
 
+use super::mathbase;
+use super::matrix;
 /// The transform fragment shader: samples the input through the inverse
 /// of the node's pixel-space transform (`transform_in` carries the
 /// CPU-inverted matrix; `resolution_in` is auto-filled by the runner).
@@ -31,6 +33,9 @@
 /// pivot on (a corner pivot swings the image off-frame as it rotates,
 /// reading exactly like an unwanted zoom). The fixed fullscreen vertex
 /// stage stays unchanged.
+use crate::handle;
+use crate::id;
+use crate::input;
 const TRANSFORM_FRAG: &str = r#"uniform sampler2D tex_in;
 uniform mat4 transform_in;
 uniform vec2 resolution_in;
@@ -136,7 +141,7 @@ pub struct TransformDistortNode {
 	/// Inherited matrix-generator state (C++ base class
 	/// `MatrixGenerator`; provides the transform inputs and
 	/// `generate_matrix`).
-	pub matrix: super::matrix::MatrixGenerator,
+	pub matrix: matrix::MatrixGenerator,
 	/// Angle between the drag-start mouse position and the anchor
 	/// (C++ `double gizmo_start_angle_`).
 	gizmo_start_angle: f64,
@@ -205,7 +210,7 @@ impl TransformDistortNode {
 	/// params from the C++ `VideoParams` (the Rust texture handle carries
 	/// no params) and `is_a_scale_gizmo` compares gizmo pointers.
 	#[allow(dead_code)] // C++ parity helpers; the pure ones are covered by
-	// the tests, the rest are not representable in the Rust model.
+					 // the tests, the rest are not representable in the Rust model.
 	fn adjust_matrix_by_resolutions(
 		mat: [f64; 16],
 		sequence_res: (f64, f64),
@@ -214,10 +219,10 @@ impl TransformDistortNode {
 		autoscale_type: AutoScaleType,
 	) -> [f64; 16] {
 		// First, create an identity matrix.
-		let mut adjusted_matrix = super::mathbase::identity_matrix();
+		let mut adjusted_matrix = mathbase::identity_matrix();
 
 		// Scale it to a square based on the sequence's resolution.
-		adjusted_matrix = super::matrix::matrix_scale(
+		adjusted_matrix = matrix::matrix_scale(
 			adjusted_matrix,
 			2.0 / sequence_res.0,
 			2.0 / sequence_res.1,
@@ -225,13 +230,13 @@ impl TransformDistortNode {
 		);
 
 		// Apply offset if applicable.
-		adjusted_matrix = super::matrix::matrix_translate(adjusted_matrix, offset.0, offset.1);
+		adjusted_matrix = matrix::matrix_translate(adjusted_matrix, offset.0, offset.1);
 
 		// Adjust by the matrix we generated earlier.
-		adjusted_matrix = super::matrix::matrix_mul(adjusted_matrix, mat);
+		adjusted_matrix = matrix::matrix_mul(adjusted_matrix, mat);
 
 		// Scale back out to texture size (adjusted by pixel aspect).
-		adjusted_matrix = super::matrix::matrix_scale(
+		adjusted_matrix = matrix::matrix_scale(
 			adjusted_matrix,
 			texture_res.0 * 0.5,
 			texture_res.1 * 0.5,
@@ -242,7 +247,7 @@ impl TransformDistortNode {
 		// (without cropping).
 		if autoscale_type != AutoScaleType::None {
 			if autoscale_type == AutoScaleType::Stretch {
-				adjusted_matrix = super::matrix::matrix_scale(
+				adjusted_matrix = matrix::matrix_scale(
 					adjusted_matrix,
 					sequence_res.0 / texture_res.0,
 					sequence_res.1 / texture_res.1,
@@ -254,9 +259,10 @@ impl TransformDistortNode {
 
 				let scale_by_x = sequence_res.0 / texture_res.0;
 				let scale_by_y = sequence_res.1 / texture_res.1;
-				
 
-				let autoscale_val = if (autoscale_type == AutoScaleType::Fit) == (sequence_real_ar > footage_real_ar) {
+				let autoscale_val = if (autoscale_type == AutoScaleType::Fit)
+					== (sequence_real_ar > footage_real_ar)
+				{
 					// Scale by height. Either the sequence is wider than
 					// the footage or we're using fill and cutting off the
 					// sides.
@@ -269,7 +275,7 @@ impl TransformDistortNode {
 				};
 
 				adjusted_matrix =
-					super::matrix::matrix_scale(adjusted_matrix, autoscale_val, autoscale_val, 1.0);
+					matrix::matrix_scale(adjusted_matrix, autoscale_val, autoscale_val, 1.0);
 			}
 		}
 
@@ -401,12 +407,12 @@ impl NodeBehavior for TransformDistortNode {
 			Some(crate::value::NodeValue::Matrix(m)) => *m,
 			_ => match core.value_at_time(PARENT_INPUT, -1, time) {
 				crate::value::NodeValue::Matrix(m) => m,
-				_ => super::mathbase::identity_matrix(),
+				_ => mathbase::identity_matrix(),
 			},
 		};
 
 		// Generate matrix.
-		let generated_matrix = super::matrix::MatrixGenerator::generate_matrix(
+		let generated_matrix = matrix::MatrixGenerator::generate_matrix(
 			inputs, core, time, false, false, false, parent,
 		);
 		table.push(
@@ -419,7 +425,7 @@ impl NodeBehavior for TransformDistortNode {
 			Some(tex @ crate::value::NodeValue::Texture(_)) => {
 				// The identity transform passes the texture through (C++
 				// skips the job when the real matrix is identity).
-				let identity = super::mathbase::identity_matrix();
+				let identity = mathbase::identity_matrix();
 				let is_identity = generated_matrix
 					.iter()
 					.zip(identity)
@@ -438,7 +444,7 @@ impl NodeBehavior for TransformDistortNode {
 				// variant stays unrepresentable: it needs the texture's
 				// params and the sequence resolution at job-build time
 				// (`// CPP-PARITY: transformdistortnode.cpp` value()).
-				let Some(inverse) = super::matrix::matrix_invert_2d(generated_matrix) else {
+				let Some(inverse) = matrix::matrix_invert_2d(generated_matrix) else {
 					table.push(crate::value::ValueType::Texture, tex.clone(), None);
 					return;
 				};
@@ -449,16 +455,18 @@ impl NodeBehavior for TransformDistortNode {
 				);
 				table.push(
 					crate::value::ValueType::Texture,
-					crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-						node_id: crate::id::NodeId::INVALID,
-						time,
-						iterations: 1,
-						type_id: self.type_id().to_string(),
-						shader_id: String::new(),
-						effect_input: core.effect_input.clone(),
-						params,
-						iterative_input: TEXTURE_INPUT.to_string(),
-					}))),
+					crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+						ShaderJobPayload {
+							node_id: id::NodeId::INVALID,
+							time,
+							iterations: 1,
+							type_id: self.type_id().to_string(),
+							shader_id: String::new(),
+							effect_input: core.effect_input.clone(),
+							params,
+							iterative_input: TEXTURE_INPUT.to_string(),
+						},
+					))),
 					None,
 				);
 			}
@@ -533,7 +541,7 @@ impl NodeBehavior for TransformDistortNode {
 	/// Deep copy (C++ `copy()`).
 	fn duplicate(&self, _core: &NodeCore) -> Option<Box<dyn NodeBehavior>> {
 		Some(Box::new(TransformDistortNode {
-			matrix: super::matrix::MatrixGenerator,
+			matrix: matrix::MatrixGenerator,
 			gizmo_start_angle: self.gizmo_start_angle,
 			gizmo_anchor_pt: self.gizmo_anchor_pt,
 			gizmo_scale_uniform: self.gizmo_scale_uniform,
@@ -563,25 +571,25 @@ impl NodeBehavior for TransformDistortNode {
 /// `scale_in`); sets the video-effect flag and the effect input.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// Inherit the MatrixGenerator inputs (pos/rot/scale/uniform/anchor).
-	let (mut core, _) = super::matrix::create();
+	let (mut core, _) = matrix::create();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
-	let parent_input = crate::input::Input::new(
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
+	let parent_input = input::Input::new(
 		PARENT_INPUT,
 		crate::value::ValueType::Matrix,
 		crate::value::NodeValue::None,
 	);
-	let autoscale_input = crate::input::Input::new(
+	let autoscale_input = input::Input::new(
 		AUTOSCALE_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(AutoScaleType::None as i64),
 	);
-	let interpolation_input = crate::input::Input::new(
+	let interpolation_input = input::Input::new(
 		INTERPOLATION_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(2),
@@ -603,29 +611,29 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// `pos_in`), and the eight scale point gizmos (absolute drag
 	// behavior, bound to `scale_in`) in `k_gizmo_scale_*` order.
 	let rotation_gizmo = Gizmo {
-		position_inputs: vec![(super::matrix::ROTATION_INPUT.to_string(), -1, 0)],
+		position_inputs: vec![(matrix::ROTATION_INPUT.to_string(), -1, 0)],
 		drag_point: (0.0, 0.0),
 	};
 	let poly_gizmo = Gizmo {
 		position_inputs: vec![
-			(super::matrix::POSITION_INPUT.to_string(), -1, 0),
-			(super::matrix::POSITION_INPUT.to_string(), -1, 1),
+			(matrix::POSITION_INPUT.to_string(), -1, 0),
+			(matrix::POSITION_INPUT.to_string(), -1, 1),
 		],
 		drag_point: (0.0, 0.0),
 	};
 	let anchor_gizmo = Gizmo {
 		position_inputs: vec![
-			(super::matrix::ANCHOR_INPUT.to_string(), -1, 0),
-			(super::matrix::ANCHOR_INPUT.to_string(), -1, 1),
-			(super::matrix::POSITION_INPUT.to_string(), -1, 0),
-			(super::matrix::POSITION_INPUT.to_string(), -1, 1),
+			(matrix::ANCHOR_INPUT.to_string(), -1, 0),
+			(matrix::ANCHOR_INPUT.to_string(), -1, 1),
+			(matrix::POSITION_INPUT.to_string(), -1, 0),
+			(matrix::POSITION_INPUT.to_string(), -1, 1),
 		],
 		drag_point: (0.0, 0.0),
 	};
 	let scale_gizmo = |_i: usize| Gizmo {
 		position_inputs: vec![
-			(super::matrix::SCALE_INPUT.to_string(), -1, 0),
-			(super::matrix::SCALE_INPUT.to_string(), -1, 1),
+			(matrix::SCALE_INPUT.to_string(), -1, 0),
+			(matrix::SCALE_INPUT.to_string(), -1, 1),
 		],
 		drag_point: (0.0, 0.0),
 	};
@@ -660,7 +668,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(
 		core,
 		Box::new(TransformDistortNode {
-			matrix: super::matrix::MatrixGenerator,
+			matrix: matrix::MatrixGenerator,
 			gizmo_start_angle: 0.0,
 			gizmo_anchor_pt: (0.0, 0.0),
 			gizmo_scale_uniform: false,
@@ -697,12 +705,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -828,8 +836,8 @@ mod tests {
 			NodeValue::Texture(h) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe { crate::jobs::shader_job(&handle) }
-			.expect("shader job payload expected");
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.transform");
 		assert_eq!(payload.shader_id, "");
 		assert_eq!(payload.iterations, 1);

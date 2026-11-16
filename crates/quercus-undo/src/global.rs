@@ -71,7 +71,10 @@ fn observers() -> &'static Mutex<Vec<CommandObserver>> {
 /// are supported and run in registration order. There is no un-registration
 /// API — observers are process-lifetime, mirroring the global stack itself.
 pub fn add_observer(f: CommandObserver) {
-	observers().lock().unwrap_or_else(|e| e.into_inner()).push(f);
+	observers()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.push(f);
 }
 
 /// Invoke every registered observer (called on the stack-path push, the

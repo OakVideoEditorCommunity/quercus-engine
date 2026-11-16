@@ -233,14 +233,14 @@ mod tests {
 
 	fn video_params(index: i32) -> VideoParams {
 		let mut vp = VideoParams::new_basic(
-            1920,
-            1080,
-            quercus_core::ocioutils::PixelFormat::from_code(0),
-            4,
-            1,
-            1,
-            0,
-            1,
+			1920,
+			1080,
+			quercus_core::ocioutils::PixelFormat::from_code(0),
+			4,
+			1,
+			1,
+			0,
+			1,
 		);
 		vp.set_stream_index(index);
 		vp

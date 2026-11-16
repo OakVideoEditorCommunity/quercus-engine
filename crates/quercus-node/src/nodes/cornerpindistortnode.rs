@@ -19,6 +19,9 @@
 //! `olive::CornerPinDistortNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, Gizmo, NodeBehavior, NodeCore};
 
@@ -335,16 +338,18 @@ impl NodeBehavior for CornerPinDistortNode {
 			// main texture inside the params row.
 			table.push(
 				crate::value::ValueType::Texture,
-				crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
-					time,
-					iterations: 1,
-					type_id: self.type_id().to_string(),
-					shader_id: String::new(),
-					effect_input: core.effect_input.clone(),
-					params: inputs.clone(),
-					iterative_input: String::new(),
-				}))),
+				crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+					ShaderJobPayload {
+						node_id: id::NodeId::INVALID,
+						time,
+						iterations: 1,
+						type_id: self.type_id().to_string(),
+						shader_id: String::new(),
+						effect_input: core.effect_input.clone(),
+						params: inputs.clone(),
+						iterative_input: String::new(),
+					},
+				))),
 				None,
 			);
 		} else {
@@ -448,35 +453,35 @@ impl CornerPinDistortNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		PERSPECTIVE_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(true),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		TOP_LEFT_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		TOP_RIGHT_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		BOTTOM_RIGHT_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		BOTTOM_LEFT_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
@@ -538,12 +543,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 

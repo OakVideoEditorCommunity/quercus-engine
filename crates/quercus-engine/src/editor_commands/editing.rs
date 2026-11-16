@@ -7,8 +7,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{edit_menu::*, generators::*, media::*, moving::*, project::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	edit_menu::*, generators::*, media::*, moving::*, project::*, sequence::*, tracks::*,
+	transitions::*,
+};
 
 /// Trim `clip`'s timeline range to `[new_in_ts, new_out_ts)` (undoable
 /// "Trim Clip"; the facade's `quercusengine_clip_trim` semantics: one end at

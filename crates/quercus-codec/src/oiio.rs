@@ -31,18 +31,23 @@
 use crate::decoder::{CodecStream, Decoder, RetrieveVideoParams};
 use crate::encoder::Encoder;
 use crate::encodingparams::EncodingParams;
+use crate::error;
+use crate::footagedescription;
+use crate::frame;
+use quercus_core::cancelatom;
+use std::sync;
 
 /// `olive::OIIODecoder` — OpenImageIO-backed media decoder (still images).
 pub struct OIIODecoder {
 	/// Opened stream (locked).
-	stream: std::sync::Mutex<Option<CodecStream>>,
+	stream: sync::Mutex<Option<CodecStream>>,
 }
 
 impl OIIODecoder {
 	/// A decoder in the closed state (no stream recorded yet).
 	pub fn new() -> Self {
 		OIIODecoder {
-			stream: std::sync::Mutex::new(None),
+			stream: sync::Mutex::new(None),
 		}
 	}
 
@@ -71,22 +76,22 @@ impl Decoder for OIIODecoder {
 	}
 
 	fn probe(
-        &self,
-        _filename: &str,
-        _cancelled: Option<&quercus_core::cancelatom::CancelAtom>,
-	) -> Option<crate::footagedescription::FootageDescription> {
+		&self,
+		_filename: &str,
+		_cancelled: Option<&cancelatom::CancelAtom>,
+	) -> Option<footagedescription::FootageDescription> {
 		// Probing is a dylib operation; without it we cannot report anything.
 		None
 	}
 
-	fn open(&self, stream: &CodecStream) -> crate::error::Result<()> {
+	fn open(&self, stream: &CodecStream) -> error::Result<()> {
 		// Record the requested stream so `stream()` reflects the open target,
 		// but actual decoding is unavailable without the dylib.
 		*self.stream.lock().unwrap_or_else(|e| e.into_inner()) = Some(stream.clone());
-		Err(crate::error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
+		Err(error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
 	}
 
-	fn close(&self) -> crate::error::Result<()> {
+	fn close(&self) -> error::Result<()> {
 		// Trait contract: "safe when closed". Clear the opened stream and
 		// no-op; nothing was ever decoded.
 		*self.stream.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -104,15 +109,15 @@ impl Decoder for OIIODecoder {
 	fn retrieve_video_frame(
 		&self,
 		_p: &RetrieveVideoParams,
-	) -> crate::error::Result<std::sync::Arc<crate::frame::Frame>> {
-		Err(crate::error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
+	) -> error::Result<sync::Arc<frame::Frame>> {
+		Err(error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
 	}
 
 	fn retrieve_video(
 		&self,
 		_p: &RetrieveVideoParams,
-	) -> crate::error::Result<crate::decoder::QuercusRenderTexture> {
-		Err(crate::error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
+	) -> error::Result<crate::decoder::QuercusRenderTexture> {
+		Err(error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
 	}
 
 	fn retrieve_audio(
@@ -121,19 +126,19 @@ impl Decoder for OIIODecoder {
 		_range: &quercus_core::TimeRange,
 		_sample_rate: i32,
 		_channel_layout: u64,
-	) -> crate::error::Result<crate::decoder::RetrieveAudioStatus> {
-		Err(crate::error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
+	) -> error::Result<crate::decoder::RetrieveAudioStatus> {
+		Err(error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
 	}
 
 	fn conform_audio(
-        &self,
-        _output_filenames: &[String],
-        _sample_rate: i32,
-        _channel_layout: u64,
-        _sample_format: i32,
-        _cancelled: Option<&quercus_core::cancelatom::CancelAtom>,
-	) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
+		&self,
+		_output_filenames: &[String],
+		_sample_rate: i32,
+		_channel_layout: u64,
+		_sample_format: i32,
+		_cancelled: Option<&cancelatom::CancelAtom>,
+	) -> error::Result<()> {
+		Err(error::Error::Failed(Self::NOT_AVAILABLE.to_string()))
 	}
 }
 
@@ -168,34 +173,34 @@ impl Encoder for OIIOEncoder {
 		true
 	}
 
-	fn configure(&self, _params: &EncodingParams) -> crate::error::Result<()> {
+	fn configure(&self, _params: &EncodingParams) -> error::Result<()> {
 		// `configure` writes `self.params`, which an `&self` receiver cannot
 		// do, and real encoding needs the dylib anyway.
-		Err(crate::error::Error::Failed(
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}
 
-	fn open(&self) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(
+	fn open(&self) -> error::Result<()> {
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}
 
-	fn close(&self) -> crate::error::Result<()> {
+	fn close(&self) -> error::Result<()> {
 		// `Encoder::close` is documented idempotent; with no encoder opened
 		// there is nothing to release.
 		Ok(())
 	}
 
-	fn write_video(&self, _frame: &crate::frame::Frame) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(
+	fn write_video(&self, _frame: &frame::Frame) -> error::Result<()> {
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}
 
-	fn write_audio(&self, _samples: &[f32], _frame_count: i32) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(
+	fn write_audio(&self, _samples: &[f32], _frame_count: i32) -> error::Result<()> {
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}
@@ -205,14 +210,14 @@ impl Encoder for OIIOEncoder {
 		_text: &str,
 		_in_seconds: f64,
 		_out_seconds: f64,
-	) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(
+	) -> error::Result<()> {
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}
 
-	fn flush(&self) -> crate::error::Result<()> {
-		Err(crate::error::Error::Failed(
+	fn flush(&self) -> error::Result<()> {
+		Err(error::Error::Failed(
 			"OIIO encoding is not available in this build (needs libquercusoiio dylib)".to_string(),
 		))
 	}

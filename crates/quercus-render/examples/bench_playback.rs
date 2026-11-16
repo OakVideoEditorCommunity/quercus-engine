@@ -33,13 +33,22 @@
 //! Set `QUERCUS_BENCH_GENERATE=1` to synthesize a 1080p/25 fps 10 s clip at
 //! `<media>` when the file does not exist.
 
+use quercus_codec::testmedia;
+use quercus_render::error;
+use quercus_render::eval;
+use quercus_render::pipeline;
+use std::env;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_core::{PixelFormat, Rational};
 use quercus_render::procpool::{DispatcherConfig, ProcessDispatcher};
-use quercus_render::ticket::{Completion, Producer, TicketPayload, TicketResult, VideoTicketParams};
+use quercus_render::ticket::{
+	Completion, Producer, TicketPayload, TicketResult, VideoTicketParams,
+};
 use quercus_render::worker::{Job, JobDispatch, JobSchedule};
 
 /// The comparison frame format: both backends must produce the same
@@ -50,13 +59,13 @@ const BENCH_FORMAT: PixelFormat = PixelFormat::F32;
 
 /// Locate the quercus-worker binary (see bench_process).
 fn worker_bin() -> PathBuf {
-	if let Ok(p) = std::env::var("QUERCUS_WORKER_BIN") {
+	if let Ok(p) = env::var("QUERCUS_WORKER_BIN") {
 		return PathBuf::from(p);
 	}
-	if let Ok(exe) = std::env::current_exe() {
+	if let Ok(exe) = env::current_exe() {
 		if let Some(examples) = exe.parent() {
 			if let Some(profile) = examples.parent() {
-				let candidate = profile.join(format!("quercus-worker{}", std::env::consts::EXE_SUFFIX));
+				let candidate = profile.join(format!("quercus-worker{}", env::consts::EXE_SUFFIX));
 				if candidate.exists() {
 					return candidate;
 				}
@@ -72,7 +81,7 @@ fn worker_bin() -> PathBuf {
 #[cfg(unix)]
 fn cpu_times() -> (f64, f64) {
 	fn rusage(who: i32) -> (f64, f64) {
-		let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+		let mut usage: libc::rusage = unsafe { mem::zeroed() };
 		if unsafe { libc::getrusage(who, &mut usage) } != 0 {
 			return (0.0, 0.0);
 		}
@@ -192,7 +201,7 @@ fn run_processes(media: &str, frames: usize, width: i32, height: i32, workers: O
 			)),
 			audio: None,
 			produce: Arc::new(|_, _| {
-				Err(quercus_render::error::Error::Failed(
+				Err(error::Error::Failed(
 					"process backend does not use the in-process producer".into(),
 				))
 			}),
@@ -235,7 +244,7 @@ fn run_processes(media: &str, frames: usize, width: i32, height: i32, workers: O
 			eprintln!("timeout: {done}/{frames} completions");
 			break;
 		}
-		std::thread::sleep(Duration::from_millis(2));
+		thread::sleep(Duration::from_millis(2));
 	}
 	let elapsed = start.elapsed();
 	// Children (the worker pool) are only accounted at wait(): shut the
@@ -259,7 +268,7 @@ fn run_processes(media: &str, frames: usize, width: i32, height: i32, workers: O
 /// render/decode threads; the pipeline prefetches each frame's decode on
 /// post and orders the queue by priority.
 fn run_pipeline(media: &str, frames: usize, width: i32, height: i32) {
-	let backend = quercus_render::pipeline::PipelineBackend::new().expect("pipeline start");
+	let backend = pipeline::PipelineBackend::new().expect("pipeline start");
 	println!("thread pipeline: 1 render + 1 decode thread, {frames} x {width}x{height} F32 frames of {media}");
 
 	let cpu_start = cpu_times();
@@ -279,7 +288,7 @@ fn run_pipeline(media: &str, frames: usize, width: i32, height: i32) {
 			}
 		});
 		let producer: Producer = Arc::new(|time, params| {
-			quercus_render::eval::render_produced_frame(time, params).map(TicketPayload::Video)
+			eval::render_produced_frame(time, params).map(TicketPayload::Video)
 		});
 		let job = Job {
 			node_identity: 1,
@@ -315,7 +324,7 @@ fn run_pipeline(media: &str, frames: usize, width: i32, height: i32) {
 			eprintln!("timeout: {done}/{frames} completions");
 			break;
 		}
-		std::thread::sleep(Duration::from_millis(2));
+		thread::sleep(Duration::from_millis(2));
 	}
 	let elapsed = start.elapsed();
 	let cpu_end = cpu_times();
@@ -334,19 +343,19 @@ fn run_pipeline(media: &str, frames: usize, width: i32, height: i32) {
 }
 
 fn main() {
-	let media = std::env::args()
+	let media = env::args()
 		.nth(1)
 		.unwrap_or_else(|| "tests/demo.mp4".to_string());
-	let frames: usize = std::env::args()
+	let frames: usize = env::args()
 		.nth(2)
 		.and_then(|s| s.parse().ok())
 		.unwrap_or(240);
-	let workers: Option<usize> = std::env::args().nth(3).and_then(|s| s.parse().ok());
-	let long_edge: i32 = std::env::args()
+	let workers: Option<usize> = env::args().nth(3).and_then(|s| s.parse().ok());
+	let long_edge: i32 = env::args()
 		.nth(4)
 		.and_then(|s| s.parse().ok())
 		.unwrap_or(480);
-	let mode = std::env::args()
+	let mode = env::args()
 		.nth(5)
 		.unwrap_or_else(|| "processes".to_string());
 
@@ -354,8 +363,8 @@ fn main() {
 	// long edge (demo.mp4 is 16:9 1080p).
 	let (width, height) = ((long_edge as f64 * 16.0 / 9.0).round() as i32, long_edge);
 
-	if !std::path::Path::new(&media).exists() && std::env::var_os("QUERCUS_BENCH_GENERATE").is_some() {
-		quercus_codec::testmedia::write_test_clip(std::path::Path::new(&media), 1920, 1080, 250, 25)
+	if !std::path::Path::new(&media).exists() && env::var_os("QUERCUS_BENCH_GENERATE").is_some() {
+		testmedia::write_test_clip(std::path::Path::new(&media), 1920, 1080, 250, 25)
 			.expect("generate the 1080p benchmark clip");
 		println!("generated 1080p/25 fps test media at {media}");
 	}

@@ -33,8 +33,8 @@ pub const TEXTURE_INPUT: &str = "tex_in";
 /// channel; `m8..m11` blue; `m12..m15` alpha. Typed as pairs of indices
 /// by [`MATRIX_LABELS`].
 pub const MATRIX_INPUTS: [&str; 16] = [
-	"m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "m12", "m13",
-	"m14", "m15",
+	"m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "m12", "m13", "m14",
+	"m15",
 ];
 
 /// Human-readable label per [`MATRIX_INPUTS`] entry: the output channel
@@ -142,16 +142,18 @@ impl NodeBehavior for ColorMatrixNode {
 
 		table.push(
 			ValueType::Texture,
-			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: crate::id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -242,7 +244,10 @@ mod tests {
 		assert_eq!(behavior.categories(), &[Category::Color]);
 		assert_eq!(core.effect_input, TEXTURE_INPUT);
 		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-		assert_eq!(core.get_input(TEXTURE_INPUT).unwrap().value_type, ValueType::Texture);
+		assert_eq!(
+			core.get_input(TEXTURE_INPUT).unwrap().value_type,
+			ValueType::Texture
+		);
 		for (i, id) in MATRIX_INPUTS.iter().enumerate() {
 			let input = core.get_input(id).expect("matrix input registered");
 			assert_eq!(input.value_type, ValueType::Float);
@@ -273,8 +278,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("shader job expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 		let mut identity = [0.0f64; 16];
 		for i in 0..4 {
 			identity[i * 5] = 1.0;
@@ -294,8 +298,9 @@ mod tests {
 	fn value_packs_row_major_matrix_from_row() {
 		let (core, behavior) = create();
 		// Red -> green, green -> red, blue and alpha held.
-		let swap = [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-			1.0];
+		let swap = [
+			0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+		];
 		let mut inputs = crate::value::NodeValueRow::from([(TEXTURE_INPUT.to_string(), tex())]);
 		for (i, id) in MATRIX_INPUTS.iter().enumerate() {
 			inputs.insert(id.to_string(), NodeValue::Float(swap[i]));
@@ -305,8 +310,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("shader job expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 		assert_eq!(
 			payload.params.get(MATRIX_UNIFORM),
 			Some(&NodeValue::Matrix(swap))
@@ -323,8 +327,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("shader job expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 		let Some(NodeValue::Matrix(m)) = payload.params.get(MATRIX_UNIFORM) else {
 			panic!("matrix uniform expected");
 		};

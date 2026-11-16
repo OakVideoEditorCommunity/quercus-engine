@@ -7,6 +7,12 @@
 // render and the synchronous readback separately, and reports the
 // distributions. Used while tuning the async readback pipeline.
 
+use quercus_codec::gpuinterop;
+use quercus_codec::hwdecode;
+use quercus_core::backend;
+use quercus_render::eval;
+use std::env;
+use std::sync;
 use std::time::{Duration, Instant};
 
 use quercus_core::texture::Texture;
@@ -64,7 +70,7 @@ fn report(name: &str, mut samples: Vec<Duration>) {
 }
 
 fn main() {
-	let mut args = std::env::args().skip(1);
+	let mut args = env::args().skip(1);
 	let media = args
 		.next()
 		.unwrap_or_else(|| "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4".into());
@@ -72,7 +78,7 @@ fn main() {
 	let width: i32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1920);
 	let height: i32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1080);
 
-	if quercus_core::backend::GpuContext::shared().is_none() {
+	if backend::GpuContext::shared().is_none() {
 		eprintln!("SKIP: no GPU context");
 		return;
 	}
@@ -86,8 +92,7 @@ fn main() {
 		let mut p = template.clone();
 		p.time = Rational::new(n as i64, 25);
 		let started = Instant::now();
-		let texture = quercus_render::eval::render_produced_frame(p.time, &p)
-			.expect("montage render");
+		let texture = eval::render_produced_frame(p.time, &p).expect("montage render");
 		render_times.push(started.elapsed());
 		if matches!(texture, Texture::Gpu { .. }) {
 			gpu_frames += 1;
@@ -113,8 +118,8 @@ fn main() {
 		"frames={frames} gpu={gpu_frames} wall={:.2}s fps={:.1} imports={} transfers={}",
 		elapsed.as_secs_f64(),
 		frames as f64 / elapsed.as_secs_f64(),
-		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
-		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		gpuinterop::HW_IMPORTS.load(sync::atomic::Ordering::Relaxed),
+		hwdecode::HW_TRANSFERS.load(sync::atomic::Ordering::Relaxed),
 	);
 	report("render", render_times);
 	report("readback", readback_times);

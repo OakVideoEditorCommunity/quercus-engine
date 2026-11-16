@@ -26,12 +26,21 @@
 
 use crate::codec::string_out;
 use crate::node::{NodeId, Project};
+use std::ffi;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_effect_factory_count() -> i32;
 	fn quercus_effect_factory_type_id_at(index: i32, buf: *mut u8, buf_len: usize) -> i32;
@@ -47,27 +56,31 @@ unsafe extern "C" {
 		buf_len: usize,
 	) -> i32;
 
-	fn quercus_effect_chain_count(project: *const std::ffi::c_void, host: u64) -> i32;
-	fn quercus_effect_chain_at(project: *const std::ffi::c_void, host: u64, index: i32) -> u64;
+	fn quercus_effect_chain_count(project: *const ffi::c_void, host: u64) -> i32;
+	fn quercus_effect_chain_at(project: *const ffi::c_void, host: u64, index: i32) -> u64;
 	fn quercus_effect_chain_insert(
-		project: *const std::ffi::c_void,
+		project: *const ffi::c_void,
 		host: u64,
 		index: i32,
 		type_id: *const u8,
 		type_id_len: usize,
 	) -> u64;
-	fn quercus_effect_chain_remove(project: *const std::ffi::c_void, host: u64, effect: u64) -> bool;
+	fn quercus_effect_chain_remove(project: *const ffi::c_void, host: u64, effect: u64) -> bool;
 	fn quercus_effect_chain_move(
-		project: *const std::ffi::c_void,
+		project: *const ffi::c_void,
 		host: u64,
 		effect: u64,
 		new_index: i32,
 	) -> bool;
-	fn quercus_effect_set_enabled(project: *const std::ffi::c_void, effect: u64, enabled: bool)
-		-> bool;
-	fn quercus_effect_is_enabled(project: *const std::ffi::c_void, effect: u64) -> bool;
-	fn quercus_effect_plugin_instance_handle(project: *const std::ffi::c_void, node: u64) -> u64;
-	fn quercus_effect_input_id(project: *const std::ffi::c_void, node: u64, buf: *mut u8, len: usize) -> i32;
+	fn quercus_effect_set_enabled(project: *const ffi::c_void, effect: u64, enabled: bool) -> bool;
+	fn quercus_effect_is_enabled(project: *const ffi::c_void, effect: u64) -> bool;
+	fn quercus_effect_plugin_instance_handle(project: *const ffi::c_void, node: u64) -> u64;
+	fn quercus_effect_input_id(
+		project: *const ffi::c_void,
+		node: u64,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
 }
 
 // Node flags (quercus-node's `node::flags` — compile-time values mirrored
@@ -212,7 +225,9 @@ pub fn dynamic_factory_entries() -> Vec<DynamicFactoryEntry> {
 impl Project {
 	/// Returns the input that carries a node's effect chain, if it has one.
 	pub fn effect_input_id(&self, node: NodeId) -> Option<String> {
-		string_out(|buf, len| unsafe { quercus_effect_input_id(self.as_raw(), node.raw(), buf, len) })
+		string_out(|buf, len| unsafe {
+			quercus_effect_input_id(self.as_raw(), node.raw(), buf, len)
+		})
 	}
 
 	/// The effect chain of `host`, closest-to-source first (signal order).
@@ -220,7 +235,9 @@ impl Project {
 	pub fn effect_chain(&self, host: NodeId) -> Vec<NodeId> {
 		let count = unsafe { quercus_effect_chain_count(self.as_raw(), host.raw()) }.max(0);
 		(0..count)
-			.map(|i| NodeId::from_raw(unsafe { quercus_effect_chain_at(self.as_raw(), host.raw(), i) }))
+			.map(|i| {
+				NodeId::from_raw(unsafe { quercus_effect_chain_at(self.as_raw(), host.raw(), i) })
+			})
 			.collect()
 	}
 
@@ -228,12 +245,7 @@ impl Project {
 	/// chain position `index` (clamped to the ends; `usize::MAX`
 	/// appends). Returns the new node, or `None` on failure (unknown
 	/// host/type, or the host/type cannot host effects).
-	pub fn effect_chain_insert(
-		&self,
-		host: NodeId,
-		index: usize,
-		type_id: &str,
-	) -> Option<NodeId> {
+	pub fn effect_chain_insert(&self, host: NodeId, index: usize, type_id: &str) -> Option<NodeId> {
 		let index = index.min(i32::MAX as usize) as i32;
 		let id = unsafe {
 			quercus_effect_chain_insert(
@@ -314,7 +326,11 @@ mod tests {
 	#[test]
 	fn factory_table_enumerates() {
 		let entries = factory_entries();
-		assert!(entries.len() > 60, "the built-in node types ({})", entries.len());
+		assert!(
+			entries.len() > 60,
+			"the built-in node types ({})",
+			entries.len()
+		);
 		let video_effects = entries
 			.iter()
 			.filter(|e| e.flags & NODE_FLAG_VIDEO_EFFECT != 0)
@@ -376,7 +392,11 @@ mod tests {
 		assert!(project.effect_is_enabled(first));
 
 		// Failure paths.
-		assert!(project.effect_chain_insert(host, 0, "no.such.type").is_none());
+		assert!(
+			project
+				.effect_chain_insert(host, 0, "no.such.type")
+				.is_none()
+		);
 		assert!(!project.effect_chain_remove(host, NodeId::INVALID));
 
 		assert!(crate::node::undo_clear());

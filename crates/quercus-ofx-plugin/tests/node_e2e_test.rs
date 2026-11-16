@@ -27,6 +27,13 @@
 //! All tests skip when the test plugin is not built (the common convention).
 //! The host singleton is serialized through `common::with_host`.
 
+use quercus_node::handle;
+use quercus_node::input;
+use quercus_node::nodes;
+use quercus_ofx_plugin::node_factory;
+use quercus_ofx_plugin::param;
+use quercus_ofx_plugin::render_driver;
+use quercus_render::eval;
 mod common;
 
 use quercus_core::texture::Texture;
@@ -71,8 +78,7 @@ impl NodeBehavior for ConstSource {
 		time: Rational,
 		table: &mut quercus_node::value::NodeValueTable,
 	) {
-		let mut frame =
-			quercus_render::eval::generate_frame(time, self.size, PixelFormat::F32).unwrap();
+		let mut frame = eval::generate_frame(time, self.size, PixelFormat::F32).unwrap();
 		for pixel in frame.data.as_chunks_mut::<16>().0 {
 			for (i, v) in self.rgba.iter().enumerate() {
 				pixel[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -80,7 +86,7 @@ impl NodeBehavior for ConstSource {
 		}
 		table.push(
 			ValueType::Texture,
-			NodeValue::Texture(quercus_node::handle::make_owned(Texture::wrap_frame(frame))),
+			NodeValue::Texture(handle::make_owned(Texture::wrap_frame(frame))),
 			None,
 		);
 	}
@@ -97,7 +103,7 @@ fn scan_and_register() -> bool {
 		common::skip("测试插件扫描失败");
 		return false;
 	}
-	quercus_ofx_plugin::node_factory::register_plugin_nodes();
+	node_factory::register_plugin_nodes();
 	true
 }
 
@@ -108,7 +114,7 @@ fn rendered_texture(table: &quercus_node::value::NodeValueTable) -> Texture {
 	else {
 		panic!("纹理槽不是 Texture 值");
 	};
-	unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	unsafe { handle::get_checked::<Texture>(handle) }
 		.cloned()
 		.expect("纹理盒必须是渲染产物（PluginJobPayload 已 resolve）")
 }
@@ -180,10 +186,7 @@ fn plugin_nodes_register_with_translated_inputs() {
 
 		// debug：secret → hidden。
 		let debug = core.get_input("debug").expect("debug 输入");
-		assert!(
-			debug.flags & quercus_node::input::flags::HIDDEN != 0,
-			"secret 参数应隐藏"
-		);
+		assert!(debug.flags & input::flags::HIDDEN != 0, "secret 参数应隐藏");
 
 		// label：String → Text。
 		let label = core.get_input("label").expect("label 输入");
@@ -197,7 +200,7 @@ fn plugin_nodes_register_with_translated_inputs() {
 		// 行为是持真实实例句柄的 PluginNode。
 		let plugin = behavior
 			.as_any()
-			.and_then(|a| a.downcast_ref::<quercus_node::nodes::plugin::PluginNode>())
+			.and_then(|a| a.downcast_ref::<nodes::plugin::PluginNode>())
 			.expect("行为应是 PluginNode");
 		assert!(!plugin.instance_handle().is_null());
 
@@ -229,7 +232,7 @@ fn plugin_renders_constant_frame_end_to_end() {
 			.expect("Source 连接");
 
 		let mut traverser = Traverser::new();
-		let mut hooks = quercus_render::eval::RenderEvalHooks::new();
+		let mut hooks = eval::RenderEvalHooks::new();
 		let table = traverser
 			.evaluate(
 				&graph,
@@ -274,7 +277,7 @@ fn identity_variant_passes_source_through() {
 			.expect("Source 连接");
 
 		let mut traverser = Traverser::new();
-		let mut hooks = quercus_render::eval::RenderEvalHooks::new();
+		let mut hooks = eval::RenderEvalHooks::new();
 		let table = traverser
 			.evaluate(
 				&graph,
@@ -302,21 +305,22 @@ fn param_overrides_reach_instance() {
 		let inst = Host::global()
 			.create_instance(PLUGIN_ID, None)
 			.expect("实例");
-		let id = quercus_ofx_plugin::node_factory::register_instance(inst.clone());
+		let id = node_factory::register_instance(inst.clone());
 
 		// 数值覆盖（gain = 1.25）。
-		let job_values = [("gain".to_string(), quercus_node::value::NodeValue::Float(1.25))];
+		let job_values = [(
+			"gain".to_string(),
+			quercus_node::value::NodeValue::Float(1.25),
+		)];
 		let pod: Vec<(String, quercus_ofx_plugin::node::Value)> = job_values
 			.iter()
 			.filter_map(|(k, v)| {
 				quercus_ofx_plugin::node::Value::from_node_value(v).map(|p| (k.clone(), p))
 			})
 			.collect();
-		let dst = quercus_render::eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32)
-			.unwrap();
-		let src = quercus_render::eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32)
-			.unwrap();
-		let job = quercus_ofx_plugin::render_driver::RenderJob {
+		let dst = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let src = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let job = render_driver::RenderJob {
 			time: 0.0,
 			dst: Texture::wrap_frame(dst),
 			src: Some(Texture::wrap_frame(src)),
@@ -327,20 +331,18 @@ fn param_overrides_reach_instance() {
 			clear_destination: false,
 			interactive: false,
 		};
-		quercus_ofx_plugin::render_driver::render_frame(&inst.value, &job).expect("render_frame 应成功");
+		render_driver::render_frame(&inst.value, &job).expect("render_frame 应成功");
 		let gain = inst.value.params.find("gain").unwrap().get();
-		assert_eq!(
-			gain,
-			quercus_ofx_plugin::param::ParamValue::Double([1.25, 0.0, 0.0], 1)
-		);
+		assert_eq!(gain, param::ParamValue::Double([1.25, 0.0, 0.0], 1));
 
 		// NaN 覆盖回退默认（gain 默认 0.0）。
-		let pod_nan = vec![("gain".to_string(), quercus_ofx_plugin::node::Value::float(f64::NAN))];
-		let dst = quercus_render::eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32)
-			.unwrap();
-		let src = quercus_render::eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32)
-			.unwrap();
-		let job = quercus_ofx_plugin::render_driver::RenderJob {
+		let pod_nan = vec![(
+			"gain".to_string(),
+			quercus_ofx_plugin::node::Value::float(f64::NAN),
+		)];
+		let dst = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let src = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let job = render_driver::RenderJob {
 			time: 0.0,
 			dst: Texture::wrap_frame(dst),
 			src: Some(Texture::wrap_frame(src)),
@@ -351,13 +353,13 @@ fn param_overrides_reach_instance() {
 			clear_destination: false,
 			interactive: false,
 		};
-		quercus_ofx_plugin::render_driver::render_frame(&inst.value, &job).expect("NaN 覆盖不应失败");
+		render_driver::render_frame(&inst.value, &job).expect("NaN 覆盖不应失败");
 		assert_eq!(
 			inst.value.params.find("gain").unwrap().get(),
-			quercus_ofx_plugin::param::ParamValue::Double([0.0, 0.0, 0.0], 1)
+			param::ParamValue::Double([0.0, 0.0, 0.0], 1)
 		);
 
-		quercus_ofx_plugin::node_factory::unregister_instance(id);
+		node_factory::unregister_instance(id);
 		Host::global().shutdown();
 	});
 }

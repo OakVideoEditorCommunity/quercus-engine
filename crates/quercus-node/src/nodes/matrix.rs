@@ -18,8 +18,11 @@
 //! `src/node/src/generator/matrix/matrix.{h,cpp}`,
 //! `olive::MatrixGenerator`).
 
+use super::mathbase;
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use std::f64;
 
 /// Position input id (C++ `k_position_input`). Type: vec2; default
 /// `(0.0, 0.0)`.
@@ -109,7 +112,7 @@ impl NodeBehavior for MatrixGenerator {
 			false,
 			false,
 			false,
-			super::mathbase::identity_matrix(),
+			mathbase::identity_matrix(),
 		);
 		table.push(
 			crate::value::ValueType::Matrix,
@@ -245,7 +248,7 @@ pub fn matrix_mul(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
 
 /// Post-multiply a 2D translation (C++ `Matrix4x4::translate(x, y)`).
 pub fn matrix_translate(m: [f64; 16], x: f64, y: f64) -> [f64; 16] {
-	let mut t = super::mathbase::identity_matrix();
+	let mut t = mathbase::identity_matrix();
 	t[3] = x;
 	t[7] = y;
 	matrix_mul(m, t)
@@ -266,7 +269,7 @@ pub fn matrix_translate(m: [f64; 16], x: f64, y: f64) -> [f64; 16] {
 /// * `y` - scale factor along the local Y axis.
 /// * `z` - scale factor along the local Z axis.
 pub fn matrix_scale(m: [f64; 16], x: f64, y: f64, z: f64) -> [f64; 16] {
-	let mut s = super::mathbase::identity_matrix();
+	let mut s = mathbase::identity_matrix();
 	s[0] = x;
 	s[5] = y;
 	s[10] = z;
@@ -276,9 +279,9 @@ pub fn matrix_scale(m: [f64; 16], x: f64, y: f64, z: f64) -> [f64; 16] {
 /// Post-multiply a Z-axis rotation in degrees (C++
 /// `Matrix4x4::rotate(degrees)`).
 fn matrix_rotate_z(m: [f64; 16], degrees: f64) -> [f64; 16] {
-	let radians = degrees * std::f64::consts::PI / 180.0;
+	let radians = degrees * f64::consts::PI / 180.0;
 	let (c, s) = (radians.cos(), radians.sin());
-	let mut r = super::mathbase::identity_matrix();
+	let mut r = mathbase::identity_matrix();
 	r[0] = c;
 	r[1] = -s;
 	r[4] = s;
@@ -301,7 +304,7 @@ pub fn matrix_invert_2d(m: [f64; 16]) -> Option<[f64; 16]> {
 	}
 	let inv = 1.0 / det;
 	let (ia, ib, ic, id) = (d * inv, -b * inv, -c * inv, a * inv);
-	let mut out = super::mathbase::identity_matrix();
+	let mut out = mathbase::identity_matrix();
 	out[0] = ia;
 	out[1] = ib;
 	out[3] = -(ia * tx + ib * ty);
@@ -368,7 +371,7 @@ fn row_bool(
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut pos = crate::input::Input::new(
+	let mut pos = input::Input::new(
 		POSITION_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
@@ -379,7 +382,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)];
 	core.add_input(pos);
 
-	let mut rot = crate::input::Input::new(
+	let mut rot = input::Input::new(
 		ROTATION_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
@@ -394,7 +397,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(rot);
 
-	let mut scale = crate::input::Input::new(
+	let mut scale = input::Input::new(
 		SCALE_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([1.0, 1.0]),
@@ -412,15 +415,15 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(scale);
 
-	let mut uniform = crate::input::Input::new(
+	let mut uniform = input::Input::new(
 		UNIFORM_SCALE_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(true),
 	);
-	uniform.flags |= crate::input::flags::NOT_CONNECTABLE | crate::input::flags::NOT_KEYFRAMABLE;
+	uniform.flags |= input::flags::NOT_CONNECTABLE | input::flags::NOT_KEYFRAMABLE;
 	core.add_input(uniform);
 
-	let mut anchor = crate::input::Input::new(
+	let mut anchor = input::Input::new(
 		ANCHOR_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
@@ -456,183 +459,4 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::node::NodeBehavior;
-	use crate::value::{NodeValue, NodeValueTable, ValueType};
-	use quercus_core::Rational;
-
-	#[test]
-	fn input_names() {
-		let n = MatrixGenerator;
-		assert_eq!(n.input_name(POSITION_INPUT), "Position");
-		assert_eq!(n.input_name(ROTATION_INPUT), "Rotation");
-		assert_eq!(n.input_name(SCALE_INPUT), "Scale");
-		assert_eq!(n.input_name(UNIFORM_SCALE_INPUT), "Uniform Scale");
-		assert_eq!(n.input_name(ANCHOR_INPUT), "Anchor Point");
-	}
-
-	#[test]
-	fn create_wires_inputs() {
-		let (core, behavior) = create();
-		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.ortho");
-		assert_eq!(
-			core.get_input(POSITION_INPUT).unwrap().default,
-			NodeValue::Vec2([0.0, 0.0])
-		);
-		assert_eq!(
-			core.get_input(SCALE_INPUT).unwrap().default,
-			NodeValue::Vec2([1.0, 1.0])
-		);
-		assert_eq!(
-			core.get_input(UNIFORM_SCALE_INPUT).unwrap().default,
-			NodeValue::Boolean(true)
-		);
-	}
-
-	#[test]
-	fn value_defaults_produce_identity() {
-		let (core, behavior) = create();
-		let mut table = NodeValueTable::default();
-		behavior.value(
-			&core,
-			&crate::value::NodeValueRow::default(),
-			Rational::new(0, 1),
-			&mut table,
-		);
-		assert_eq!(
-			table.get(ValueType::Matrix),
-			Some(&NodeValue::Matrix(super::super::mathbase::identity_matrix()))
-		);
-	}
-
-	#[test]
-	fn value_translate_position() {
-		let (mut core, behavior) = create();
-		core.set_standard_value(POSITION_INPUT, -1, NodeValue::Vec2([10.0, 20.0]));
-		let mut table = NodeValueTable::default();
-		behavior.value(
-			&core,
-			&crate::value::NodeValueRow::default(),
-			Rational::new(0, 1),
-			&mut table,
-		);
-		// translate(10, 20) is stored at m[0][3] / m[1][3].
-		let m = match table.get(ValueType::Matrix).unwrap() {
-			NodeValue::Matrix(m) => *m,
-			_ => panic!("matrix expected"),
-		};
-		assert_eq!(m[3], 10.0);
-		assert_eq!(m[7], 20.0);
-	}
-
-	#[test]
-	fn value_non_uniform_scale() {
-		let (mut core, behavior) = create();
-		core.set_standard_value(UNIFORM_SCALE_INPUT, -1, NodeValue::Boolean(false));
-		core.set_standard_value(SCALE_INPUT, -1, NodeValue::Vec2([2.0, 3.0]));
-		let mut table = NodeValueTable::default();
-		behavior.value(
-			&core,
-			&crate::value::NodeValueRow::default(),
-			Rational::new(0, 1),
-			&mut table,
-		);
-		let m = match table.get(ValueType::Matrix).unwrap() {
-			NodeValue::Matrix(m) => *m,
-			_ => panic!("matrix expected"),
-		};
-		assert_eq!(m[0], 2.0);
-		assert_eq!(m[5], 3.0);
-	}
-
-	#[test]
-	fn value_uniform_scale_replicates_x() {
-		let (mut core, behavior) = create();
-		// uniform_scale defaults to true.
-		core.set_standard_value(SCALE_INPUT, -1, NodeValue::Vec2([2.0, 9.0]));
-		let mut table = NodeValueTable::default();
-		behavior.value(
-			&core,
-			&crate::value::NodeValueRow::default(),
-			Rational::new(0, 1),
-			&mut table,
-		);
-		let m = match table.get(ValueType::Matrix).unwrap() {
-			NodeValue::Matrix(m) => *m,
-			_ => panic!("matrix expected"),
-		};
-		assert_eq!(m[0], 2.0);
-		assert_eq!(m[5], 2.0, "uniform scale replicates X");
-	}
-
-	#[test]
-	fn compose_matrix_rotation_translate_order() {
-		// rotate(90) post-multiplied by translate(-10, 0): a pure
-		// translation (10, 0) under a 90-degree rotation lands in the
-		// negative Y translation slot.
-		let m = MatrixGenerator::compose_matrix(
-			[0.0, 0.0],
-			90.0,
-			[1.0, 1.0],
-			false,
-			[-10.0, 0.0],
-			super::super::mathbase::identity_matrix(),
-		);
-		assert!((m[0] - 0.0).abs() < 1e-9);
-		assert!((m[5] - 0.0).abs() < 1e-9);
-		assert!((m[7] - 10.0).abs() < 1e-9, "m[1][3] = +10 after rotate(90)");
-		assert!((m[3] - 0.0).abs() < 1e-9);
-	}
-
-	#[test]
-	fn compose_matrix_identity_inputs() {
-		let m = MatrixGenerator::compose_matrix(
-			[0.0, 0.0],
-			0.0,
-			[1.0, 1.0],
-			false,
-			[0.0, 0.0],
-			super::super::mathbase::identity_matrix(),
-		);
-		assert!(super::super::mathbase::matrix_is_identity(m));
-	}
-
-	#[test]
-	fn matrix_helpers_are_row_major() {
-		let mut a = super::super::mathbase::identity_matrix();
-		a[3] = 100.0; // translate x
-		let mut b = super::super::mathbase::identity_matrix();
-		b[5] = 2.0; // scale y
-		let prod = matrix_mul(a, b);
-		assert_eq!(prod[5], 2.0);
-		assert_eq!(prod[3], 100.0, "post-multiplied translate survives");
-	}
-
-	#[test]
-	fn input_value_changed_toggles_disable1() {
-		let (mut core, behavior) = create();
-		let mut b = behavior;
-		b.input_value_changed(&mut core, UNIFORM_SCALE_INPUT, -1);
-		let scale = core.get_input(SCALE_INPUT).unwrap();
-		assert!(scale
-			.properties
-			.iter()
-			.any(|(k, v)| { k == "disable1" && *v == NodeValue::Boolean(true) }));
-
-		core.set_standard_value(UNIFORM_SCALE_INPUT, -1, NodeValue::Boolean(false));
-		b.input_value_changed(&mut core, UNIFORM_SCALE_INPUT, -1);
-		let scale = core.get_input(SCALE_INPUT).unwrap();
-		assert!(scale
-			.properties
-			.iter()
-			.any(|(k, v)| { k == "disable1" && *v == NodeValue::Boolean(false) }));
-	}
-
-	#[test]
-	fn duplicate_clones() {
-		let (core, behavior) = create();
-		let dup = behavior.duplicate(&core).unwrap();
-		assert_eq!(dup.name(), "Orthographic Matrix");
-	}
-}
+mod tests;

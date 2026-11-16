@@ -29,11 +29,7 @@ pub mod coretypes;
 #[cfg(not(feature = "docs-only"))]
 pub mod coreutil;
 #[cfg(not(feature = "docs-only"))]
-pub mod effect;
-#[cfg(not(feature = "docs-only"))]
 pub mod editor;
-#[cfg(not(feature = "docs-only"))]
-mod ext;
 #[cfg(not(feature = "docs-only"))]
 pub mod editor_commands;
 #[cfg(not(feature = "docs-only"))]
@@ -42,6 +38,10 @@ pub mod editor_dispatch;
 pub mod editor_graph;
 #[cfg(not(feature = "docs-only"))]
 pub mod editor_params;
+#[cfg(not(feature = "docs-only"))]
+pub mod effect;
+#[cfg(not(feature = "docs-only"))]
+mod ext;
 #[cfg(not(feature = "docs-only"))]
 pub mod handle;
 #[cfg(not(feature = "docs-only"))]
@@ -59,11 +59,11 @@ pub mod preview_video;
 #[cfg(not(feature = "docs-only"))]
 pub mod render;
 #[cfg(not(feature = "docs-only"))]
-pub mod thumbnail;
-#[cfg(not(feature = "docs-only"))]
 pub mod storage;
 #[cfg(not(feature = "docs-only"))]
 pub mod task;
+#[cfg(not(feature = "docs-only"))]
+pub mod thumbnail;
 #[cfg(not(feature = "docs-only"))]
 pub mod timeline;
 #[cfg(not(feature = "docs-only"))]

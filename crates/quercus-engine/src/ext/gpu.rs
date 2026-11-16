@@ -3,8 +3,11 @@
 // ---------------------------------------------------------------------------
 
 use quercus_core::backend::{BackendKind, GpuContext};
+use quercus_core::lut;
 use quercus_core::wgpu;
 use std::ffi::c_void;
+use std::panic;
+use std::slice;
 use std::sync::Arc;
 
 /// A [`BackendKind`] from its C ABI discriminant (0..=4, the enum order).
@@ -80,7 +83,7 @@ pub unsafe extern "C" fn quercus_render_gpu_install(
 	};
 	// A host device is untrusted and foreign; a panic must not unwind
 	// across the C ABI boundary.
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		// SAFETY: checked non-null; the caller upholds the pointer contract.
 		let ctx = unsafe { adopt_raw(wgpu_device, wgpu_queue, kind) };
 		GpuContext::install_shared(Some(ctx))
@@ -109,10 +112,7 @@ pub extern "C" fn quercus_render_gpu_init(backend_kind: i32) -> bool {
 	};
 	// Device creation runs driver code; a panic must not unwind across
 	// the C ABI boundary.
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-		GpuContext::init_shared(kind)
-	}))
-	.unwrap_or(false)
+	panic::catch_unwind(panic::AssertUnwindSafe(|| GpuContext::init_shared(kind))).unwrap_or(false)
 }
 
 /// The shared context's backend as a [`BackendKind`] discriminant (0..=4),
@@ -179,15 +179,17 @@ pub unsafe extern "C" fn quercus_render_gpu_set_display_lut(
 	if lo.is_null() || hi.is_null() || data.is_null() {
 		return false;
 	}
-	let expected = (edge as usize).checked_pow(3).and_then(|n| n.checked_mul(3));
+	let expected = (edge as usize)
+		.checked_pow(3)
+		.and_then(|n| n.checked_mul(3));
 	if expected != Some(len) {
 		return false;
 	}
-	let lut = quercus_core::lut::Lut3d {
+	let lut = lut::Lut3d {
 		edge,
-		lo: unsafe { std::slice::from_raw_parts(lo, 3) }.try_into().unwrap(),
-		hi: unsafe { std::slice::from_raw_parts(hi, 3) }.try_into().unwrap(),
-		data: unsafe { std::slice::from_raw_parts(data, len) }.to_vec(),
+		lo: unsafe { slice::from_raw_parts(lo, 3) }.try_into().unwrap(),
+		hi: unsafe { slice::from_raw_parts(hi, 3) }.try_into().unwrap(),
+		data: unsafe { slice::from_raw_parts(data, len) }.to_vec(),
 	};
 	GpuContext::shared()
 		.filter(|ctx| ctx.is_adopted())

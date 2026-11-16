@@ -22,6 +22,19 @@
 //! path the engine's viewer uses. The LAST track is the topmost stack
 //! element (NLE stacking: the highest-numbered track wins).
 
+use quercus_codec::testmedia;
+use quercus_core::backend;
+use quercus_core::color;
+use quercus_core::colormath;
+use quercus_node::factory;
+use quercus_node::nodes;
+use quercus_node::value;
+use quercus_render::error;
+use quercus_render::eval;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{PixelFormat, Rational, TimeRange};
@@ -39,8 +52,8 @@ mod common;
 
 /// Unique temp path per test (the process id disambiguates parallel test
 /// binaries; the tag separates tests inside one binary).
-fn clip_path(tag: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercusrender_graph_{tag}_{}.mp4", std::process::id()))
+fn clip_path(tag: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercusrender_graph_{tag}_{}.mp4", process::id()))
 }
 
 /// These tests verify graph/decode/composite MECHANICS (stacking, scaling,
@@ -49,9 +62,9 @@ fn clip_path(tag: &str) -> std::path::PathBuf {
 /// pixel-value assertions hold regardless of the ACEScg default. All tests
 /// in this binary set the same value, so the shared global is race-free.
 fn pin_legacy_working_space() {
-	quercus_core::color::set_pipeline_color_settings(
-		quercus_core::colormath::WorkingColorSpace::SrgbLegacy,
-		quercus_core::colormath::OutputColorSpec::default(),
+	color::set_pipeline_color_settings(
+		colormath::WorkingColorSpace::SrgbLegacy,
+		colormath::OutputColorSpec::default(),
 	);
 }
 
@@ -149,8 +162,8 @@ fn frame_data(texture: &Texture) -> Vec<u8> {
 fn graph_sequence_renders_two_tracks() {
 	let path_a = clip_path("two_tracks_a");
 	let path_b = clip_path("two_tracks_b");
-	quercus_codec::testmedia::write_test_clip(&path_a, 64, 64, 10, 10).expect("clip A generation");
-	quercus_codec::testmedia::write_test_clip(&path_b, 32, 32, 10, 10).expect("clip B generation");
+	testmedia::write_test_clip(&path_a, 64, 64, 10, 10).expect("clip A generation");
+	testmedia::write_test_clip(&path_b, 32, 32, 10, 10).expect("clip B generation");
 
 	let (project, seq) = build_project(&[
 		(
@@ -165,7 +178,7 @@ fn graph_sequence_renders_two_tracks() {
 		),
 	]);
 
-	let t05 = quercus_render::eval::render_graph_frame(
+	let t05 = eval::render_graph_frame(
 		&project,
 		seq,
 		Rational::new(1, 2),
@@ -173,7 +186,7 @@ fn graph_sequence_renders_two_tracks() {
 		PixelFormat::F32,
 	)
 	.expect("render t=0.5");
-	let t15 = quercus_render::eval::render_graph_frame(
+	let t15 = eval::render_graph_frame(
 		&project,
 		seq,
 		Rational::new(3, 2),
@@ -190,7 +203,7 @@ fn graph_sequence_renders_two_tracks() {
 		Rational::new(0, 1),
 		Rational::new(1, 1),
 	)]);
-	let solo_a_tex = quercus_render::eval::render_graph_frame(
+	let solo_a_tex = eval::render_graph_frame(
 		&solo_a,
 		seq_a,
 		Rational::new(1, 2),
@@ -203,7 +216,7 @@ fn graph_sequence_renders_two_tracks() {
 		Rational::new(1, 1),
 		Rational::new(2, 1),
 	)]);
-	let solo_b_tex = quercus_render::eval::render_graph_frame(
+	let solo_b_tex = eval::render_graph_frame(
 		&solo_b,
 		seq_b,
 		Rational::new(3, 2),
@@ -236,8 +249,8 @@ fn graph_sequence_renders_two_tracks() {
 		"t=1.5 is not black"
 	);
 
-	let _ = std::fs::remove_file(&path_a);
-	let _ = std::fs::remove_file(&path_b);
+	let _ = fs::remove_file(&path_a);
+	let _ = fs::remove_file(&path_b);
 }
 
 /// NLE stacking regression: two OPAQUE solid-color clips covering the
@@ -248,9 +261,9 @@ fn graph_sequence_renders_two_tracks() {
 fn graph_sequence_stacks_highest_track_on_top() {
 	let red = clip_path("stack_red");
 	let blue = clip_path("stack_blue");
-	quercus_codec::testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
+	testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
 		.expect("red clip generation");
-	quercus_codec::testmedia::write_test_clip_solid(&blue, 64, 64, 10, 10, [0.1, 0.1, 0.9, 1.0])
+	testmedia::write_test_clip_solid(&blue, 64, 64, 10, 10, [0.1, 0.1, 0.9, 1.0])
 		.expect("blue clip generation");
 
 	// V1 = red (bottom), V2 = blue (top).
@@ -266,7 +279,7 @@ fn graph_sequence_stacks_highest_track_on_top() {
 			Rational::new(1, 1),
 		),
 	]);
-	let tex = quercus_render::eval::render_graph_frame(
+	let tex = eval::render_graph_frame(
 		&project,
 		seq,
 		Rational::new(0, 1),
@@ -289,7 +302,7 @@ fn graph_sequence_stacks_highest_track_on_top() {
 		Rational::new(0, 1),
 		Rational::new(1, 1),
 	)]);
-	let solo_tex = quercus_render::eval::render_graph_frame(
+	let solo_tex = eval::render_graph_frame(
 		&solo,
 		solo_seq,
 		Rational::new(0, 1),
@@ -305,8 +318,8 @@ fn graph_sequence_stacks_highest_track_on_top() {
 		channel(&solo_data, 8, 8, 2)
 	);
 
-	let _ = std::fs::remove_file(&red);
-	let _ = std::fs::remove_file(&blue);
+	let _ = fs::remove_file(&red);
+	let _ = fs::remove_file(&blue);
 }
 
 /// The driver rejects bad arguments explainably: non-F32 format, a
@@ -315,7 +328,7 @@ fn graph_sequence_stacks_highest_track_on_top() {
 fn graph_render_rejects_bad_inputs() {
 	let (project, seq) = build_project(&[]);
 
-	let err = quercus_render::eval::render_graph_frame(
+	let err = eval::render_graph_frame(
 		&project,
 		seq,
 		Rational::new(0, 1),
@@ -323,9 +336,9 @@ fn graph_render_rejects_bad_inputs() {
 		PixelFormat::U8,
 	)
 	.expect_err("non-F32 format rejected");
-	assert_eq!(err.code(), quercus_render::error::Error::Invalid.code());
+	assert_eq!(err.code(), error::Error::Invalid.code());
 
-	let err = quercus_render::eval::render_graph_frame(
+	let err = eval::render_graph_frame(
 		&project,
 		seq,
 		Rational::new(0, 1),
@@ -333,9 +346,9 @@ fn graph_render_rejects_bad_inputs() {
 		PixelFormat::F32,
 	)
 	.expect_err("non-positive size rejected");
-	assert_eq!(err.code(), quercus_render::error::Error::Invalid.code());
+	assert_eq!(err.code(), error::Error::Invalid.code());
 
-	let err = quercus_render::eval::render_graph_frame(
+	let err = eval::render_graph_frame(
 		&project,
 		NodeId::INVALID,
 		Rational::new(0, 1),
@@ -343,7 +356,7 @@ fn graph_render_rejects_bad_inputs() {
 		PixelFormat::F32,
 	)
 	.expect_err("missing viewer rejected");
-	assert_eq!(err.code(), quercus_render::error::Error::NotFound.code());
+	assert_eq!(err.code(), error::Error::NotFound.code());
 }
 
 /// One sequence + one track with a single clip, with an effect node
@@ -444,18 +457,18 @@ fn channel(data: &[u8], x: usize, y: usize, c: usize) -> f32 {
 /// when no GPU adapter exists.
 #[test]
 fn shader_job_opacity_halves_pixels() {
-	if quercus_core::backend::shared_gpu_or_skip("shader_job_opacity_halves_pixels").is_none() {
+	if backend::shared_gpu_or_skip("shader_job_opacity_halves_pixels").is_none() {
 		return;
 	}
 	let path = clip_path("opacity_job");
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("clip generation");
 
 	let (plain_project, plain_seq) = build_project(&[(
 		&path.to_string_lossy(),
 		Rational::new(0, 1),
 		Rational::new(1, 1),
 	)]);
-	let plain_tex = quercus_render::eval::render_graph_frame(
+	let plain_tex = eval::render_graph_frame(
 		&plain_project,
 		plain_seq,
 		Rational::new(0, 1),
@@ -472,7 +485,7 @@ fn shader_job_opacity_halves_pixels() {
 			Rational::new(1, 1),
 		),
 		|p, footage, clip| {
-			let (ecore, ebehavior) = quercus_node::nodes::opacity::create();
+			let (ecore, ebehavior) = nodes::opacity::create();
 			let effect = p.graph.add_node(ecore, ebehavior);
 			p.graph.disconnect(
 				footage,
@@ -481,20 +494,25 @@ fn shader_job_opacity_halves_pixels() {
 				-1,
 			);
 			p.graph
-				.connect(footage, effect, quercus_node::nodes::opacity::TEXTURE_INPUT, -1)
+				.connect(footage, effect, nodes::opacity::TEXTURE_INPUT, -1)
 				.expect("connect footage to effect");
 			p.graph
-				.connect(effect, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+				.connect(
+					effect,
+					clip,
+					quercus_node::block::clip_input::TEXTURE_INPUT,
+					-1,
+				)
 				.expect("connect effect to clip");
 			p.graph.get_mut(effect).unwrap().core.set_standard_value(
-				quercus_node::nodes::opacity::VALUE_INPUT,
+				nodes::opacity::VALUE_INPUT,
 				-1,
-				quercus_node::value::NodeValue::Float(0.5),
+				value::NodeValue::Float(0.5),
 			);
 			effect
 		},
 	);
-	let effect_tex = quercus_render::eval::render_graph_frame(
+	let effect_tex = eval::render_graph_frame(
 		&effect_project,
 		effect_seq,
 		Rational::new(0, 1),
@@ -528,7 +546,7 @@ fn shader_job_opacity_halves_pixels() {
 		"opacity channel ratio {mean} is not 0.25"
 	);
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 /// M12 phase 3a: a box-blur shader job (radius 2, both axes) is resolved
@@ -538,18 +556,18 @@ fn shader_job_opacity_halves_pixels() {
 /// boundary pixel on the right half. Skipped when no GPU adapter exists.
 #[test]
 fn shader_job_blur_smooths_edge() {
-	if quercus_core::backend::shared_gpu_or_skip("shader_job_blur_smooths_edge").is_none() {
+	if backend::shared_gpu_or_skip("shader_job_blur_smooths_edge").is_none() {
 		return;
 	}
 	let path = clip_path("blur_job");
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("clip generation");
 
 	let (plain_project, plain_seq) = build_project(&[(
 		&path.to_string_lossy(),
 		Rational::new(0, 1),
 		Rational::new(1, 1),
 	)]);
-	let plain_tex = quercus_render::eval::render_graph_frame(
+	let plain_tex = eval::render_graph_frame(
 		&plain_project,
 		plain_seq,
 		Rational::new(0, 1),
@@ -566,7 +584,7 @@ fn shader_job_blur_smooths_edge() {
 			Rational::new(1, 1),
 		),
 		|p, footage, clip| {
-			let (ecore, ebehavior) = quercus_node::nodes::blur::create();
+			let (ecore, ebehavior) = nodes::blur::create();
 			let effect = p.graph.add_node(ecore, ebehavior);
 			p.graph.disconnect(
 				footage,
@@ -575,36 +593,29 @@ fn shader_job_blur_smooths_edge() {
 				-1,
 			);
 			p.graph
-				.connect(footage, effect, quercus_node::nodes::blur::TEXTURE_INPUT, -1)
+				.connect(footage, effect, nodes::blur::TEXTURE_INPUT, -1)
 				.expect("connect footage to effect");
 			p.graph
-				.connect(effect, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+				.connect(
+					effect,
+					clip,
+					quercus_node::block::clip_input::TEXTURE_INPUT,
+					-1,
+				)
 				.expect("connect effect to clip");
 			let core = &mut p.graph.get_mut(effect).unwrap().core;
+			core.set_standard_value(nodes::blur::METHOD_INPUT, -1, value::NodeValue::Combo(0));
+			core.set_standard_value(nodes::blur::RADIUS_INPUT, -1, value::NodeValue::Float(2.0));
 			core.set_standard_value(
-				quercus_node::nodes::blur::METHOD_INPUT,
+				nodes::blur::HORIZ_INPUT,
 				-1,
-				quercus_node::value::NodeValue::Combo(0),
+				value::NodeValue::Boolean(true),
 			);
-			core.set_standard_value(
-				quercus_node::nodes::blur::RADIUS_INPUT,
-				-1,
-				quercus_node::value::NodeValue::Float(2.0),
-			);
-			core.set_standard_value(
-				quercus_node::nodes::blur::HORIZ_INPUT,
-				-1,
-				quercus_node::value::NodeValue::Boolean(true),
-			);
-			core.set_standard_value(
-				quercus_node::nodes::blur::VERT_INPUT,
-				-1,
-				quercus_node::value::NodeValue::Boolean(true),
-			);
+			core.set_standard_value(nodes::blur::VERT_INPUT, -1, value::NodeValue::Boolean(true));
 			effect
 		},
 	);
-	let effect_tex = quercus_render::eval::render_graph_frame(
+	let effect_tex = eval::render_graph_frame(
 		&effect_project,
 		effect_seq,
 		Rational::new(0, 1),
@@ -634,7 +645,7 @@ fn shader_job_blur_smooths_edge() {
 		r(&plain, 32)
 	);
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 /// Chroma Key on a green clip: the keying node's job payload flows through
@@ -648,18 +659,16 @@ fn shader_job_blur_smooths_edge() {
 /// Skipped when no GPU adapter or OCIO config exists.
 #[test]
 fn chromakey_job_keys_green_with_ociobased_stub() {
-	if quercus_core::backend::shared_gpu_or_skip("chromakey_job_keys_green_with_ociobased_stub")
-		.is_none()
-	{
+	if backend::shared_gpu_or_skip("chromakey_job_keys_green_with_ociobased_stub").is_none() {
 		return;
 	}
-	if quercus_core::color::set_up_default_config().is_err() {
+	if color::set_up_default_config().is_err() {
 		eprintln!("skipping chromakey_job_keys_green_with_ociobased_stub: no OCIO config");
 		return;
 	}
 
 	let path = clip_path("chromakey_job");
-	quercus_codec::testmedia::write_test_clip_solid(&path, 64, 64, 10, 10, [0.0, 1.0, 0.0, 1.0])
+	testmedia::write_test_clip_solid(&path, 64, 64, 10, 10, [0.0, 1.0, 0.0, 1.0])
 		.expect("green clip generation");
 
 	// The chromakey built from the factory (the same `create()` the
@@ -672,7 +681,7 @@ fn chromakey_job_keys_green_with_ociobased_stub() {
 				Rational::new(1, 1),
 			),
 			|p, footage, clip| {
-				let (ecore, ebehavior) = quercus_node::factory::Factory::global()
+				let (ecore, ebehavior) = factory::Factory::global()
 					.create_any("org.olivevideoeditor.Olive.chromakey")
 					.expect("chromakey factory entry");
 				let effect = p.graph.add_node(ecore, ebehavior);
@@ -686,17 +695,22 @@ fn chromakey_job_keys_green_with_ociobased_stub() {
 					.connect(footage, effect, "tex_in", -1)
 					.expect("connect footage to chromakey");
 				p.graph
-					.connect(effect, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+					.connect(
+						effect,
+						clip,
+						quercus_node::block::clip_input::TEXTURE_INPUT,
+						-1,
+					)
 					.expect("connect chromakey to clip");
 				p.graph.get_mut(effect).unwrap().core.set_standard_value(
 					"color_key",
 					-1,
-					quercus_node::value::NodeValue::Color(key),
+					value::NodeValue::Color(key),
 				);
 				effect
 			},
 		);
-		let tex = quercus_render::eval::render_graph_frame(
+		let tex = eval::render_graph_frame(
 			&project,
 			seq,
 			Rational::new(0, 1),
@@ -740,7 +754,7 @@ fn chromakey_job_keys_green_with_ociobased_stub() {
 		energy(&red_keyed)
 	);
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 /// Generator sizing is anchored to the SEQUENCE resolution (C++ inserts
@@ -753,12 +767,11 @@ fn chromakey_job_keys_green_with_ociobased_stub() {
 /// target-anchored behavior drew 50% vs 12.5%).
 #[test]
 fn shape_generator_size_is_sequence_relative() {
-	if quercus_core::backend::shared_gpu_or_skip("shape_generator_size_is_sequence_relative").is_none()
-	{
+	if backend::shared_gpu_or_skip("shape_generator_size_is_sequence_relative").is_none() {
 		return;
 	}
 	let path = clip_path("shape_seqrel");
-	quercus_codec::testmedia::write_test_clip_solid(&path, 64, 64, 10, 10, [0.0, 0.0, 1.0, 1.0])
+	testmedia::write_test_clip_solid(&path, 64, 64, 10, 10, [0.0, 0.0, 1.0, 1.0])
 		.expect("blue clip generation");
 
 	let (project, seq) = build_effect_project(
@@ -768,7 +781,7 @@ fn shape_generator_size_is_sequence_relative() {
 			Rational::new(1, 1),
 		),
 		|p, footage, clip| {
-			let (ecore, ebehavior) = quercus_node::factory::Factory::global()
+			let (ecore, ebehavior) = factory::Factory::global()
 				.create_any("org.olivevideoeditor.Olive.shape")
 				.expect("shape factory entry");
 			let effect = p.graph.add_node(ecore, ebehavior);
@@ -784,12 +797,17 @@ fn shape_generator_size_is_sequence_relative() {
 				.connect(footage, effect, "base_in", -1)
 				.expect("connect footage to shape base");
 			p.graph
-				.connect(effect, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+				.connect(
+					effect,
+					clip,
+					quercus_node::block::clip_input::TEXTURE_INPUT,
+					-1,
+				)
 				.expect("connect shape to clip");
 			p.graph.get_mut(effect).unwrap().core.set_standard_value(
 				"size_in",
 				-1,
-				quercus_node::value::NodeValue::Vec2([96.0, 96.0]),
+				value::NodeValue::Vec2([96.0, 96.0]),
 			);
 			effect
 		},
@@ -797,7 +815,7 @@ fn shape_generator_size_is_sequence_relative() {
 
 	// The fraction of the middle row covered by the opaque red square.
 	let red_fraction = |width: i32, height: i32| -> f32 {
-		let tex = quercus_render::eval::render_graph_frame(
+		let tex = eval::render_graph_frame(
 			&project,
 			seq,
 			Rational::new(0, 1),
@@ -832,5 +850,5 @@ fn shape_generator_size_is_sequence_relative() {
 		"96px on the 1920px sequence is 5%%, got {small}"
 	);
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }

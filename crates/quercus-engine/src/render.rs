@@ -101,9 +101,7 @@ pub extern "C" fn quercus_render_manager_set_workspace_size(width: i32, height: 
 /// Points the inline (test) render backend at the live project so it
 /// evaluates through the traverser, like the worker pool's snapshot.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_render_manager_set_inline_project(
-	project: *const ProjectHandle,
-) -> bool {
+pub extern "C" fn quercus_render_manager_set_inline_project(project: *const ProjectHandle) -> bool {
 	let Some(project) = crate::node::project_arc(project) else {
 		return false;
 	};
@@ -318,13 +316,9 @@ pub unsafe extern "C" fn quercus_render_frame_f32(
 		return -1;
 	};
 	let project = unsafe { &*project }.project();
-	let Ok(pixels) = render_frame_f32_data(
-		project.clone(),
-		viewer,
-		time.to_native(),
-		width,
-		height,
-	) else {
+	let Ok(pixels) =
+		render_frame_f32_data(project.clone(), viewer, time.to_native(), width, height)
+	else {
 		return -1;
 	};
 	unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), dst, needed) };
@@ -345,32 +339,36 @@ fn render_viewer_texture(
 		Sequence,
 		Footage(String, i32),
 	}
-	let viewer_kind = {
-		let guard = project.lock().unwrap_or_else(|e| e.into_inner());
-		let entry = guard.graph.get(viewer).ok_or("viewer node does not exist")?;
-		if entry
-			.behavior
-			.as_any()
-			.and_then(|behavior| behavior.downcast_ref::<quercus_node::sequence::SequenceBehavior>())
-			.is_some()
+	let viewer_kind =
 		{
-			Viewer::Sequence
-		} else if let Some(footage) = entry
-			.behavior
-			.as_any()
-			.and_then(|behavior| behavior.downcast_ref::<quercus_node::footage::FootageBehavior>())
-		{
-			let stream = footage
-				.streams
-				.iter()
-				.find(|stream| stream.is_video)
-				.map(|stream| stream.index)
-				.ok_or("footage has no video stream")?;
-			Viewer::Footage(footage.filename.clone(), stream)
-		} else {
-			return Err("viewer is neither a sequence nor video footage".into());
-		}
-	};
+			let guard = project.lock().unwrap_or_else(|e| e.into_inner());
+			let entry = guard
+				.graph
+				.get(viewer)
+				.ok_or("viewer node does not exist")?;
+			if entry
+				.behavior
+				.as_any()
+				.and_then(|behavior| {
+					behavior.downcast_ref::<quercus_node::sequence::SequenceBehavior>()
+				})
+				.is_some()
+			{
+				Viewer::Sequence
+			} else if let Some(footage) = entry.behavior.as_any().and_then(|behavior| {
+				behavior.downcast_ref::<quercus_node::footage::FootageBehavior>()
+			}) {
+				let stream = footage
+					.streams
+					.iter()
+					.find(|stream| stream.is_video)
+					.map(|stream| stream.index)
+					.ok_or("footage has no video stream")?;
+				Viewer::Footage(footage.filename.clone(), stream)
+			} else {
+				return Err("viewer is neither a sequence nor video footage".into());
+			}
+		};
 	match viewer_kind {
 		Viewer::Sequence => quercus_render::eval::render_graph_frame(
 			project,
@@ -472,10 +470,9 @@ pub unsafe extern "C" fn quercus_render_frame_rgba8_display(
 	if dst_capacity < needed {
 		return -1;
 	}
-	let (Some(gamut), Some(transfer)) = (
-		unsafe { str_arg(gamut, gamut_len) },
-		unsafe { str_arg(transfer, transfer_len) },
-	) else {
+	let (Some(gamut), Some(transfer)) = (unsafe { str_arg(gamut, gamut_len) }, unsafe {
+		str_arg(transfer, transfer_len)
+	}) else {
 		return -1;
 	};
 	let Some(viewer) = NodeId::from_identity(viewer) else {
@@ -509,8 +506,8 @@ pub unsafe extern "C" fn quercus_render_frame_rgba8_display(
 					.and_then(|any| any.downcast_ref::<quercus_core::backend::GpuContext>())
 				{
 					use quercus_core::backend::{
-						PackParams, PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ,
-						PACK_TRANSFER_SRGB,
+						PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ,
+						PACK_TRANSFER_SRGB, PackParams,
 					};
 					let params = PackParams {
 						matrix: quercus_core::colormath::rgb_to_rgb_matrix(
@@ -530,8 +527,7 @@ pub unsafe extern "C" fn quercus_render_frame_rgba8_display(
 						let tight = width as usize * 4;
 						let row = frame.linesize_bytes().max(tight);
 						if frame.data.len() >= row * (height as usize - 1) + tight {
-							let out =
-								unsafe { std::slice::from_raw_parts_mut(dst, needed) };
+							let out = unsafe { std::slice::from_raw_parts_mut(dst, needed) };
 							for y in 0..height as usize {
 								out[y * tight..(y + 1) * tight]
 									.copy_from_slice(&frame.data[y * row..y * row + tight]);
@@ -729,7 +725,9 @@ mod tests {
 
 		let src = [10u8, 20, 30, 255, 1, 2, 3, 4];
 		let mut dst = [0u8; 8];
-		assert!(unsafe { quercus_render_swizzle_bgra8_to_rgba8(src.as_ptr(), dst.as_mut_ptr(), 2) });
+		assert!(unsafe {
+			quercus_render_swizzle_bgra8_to_rgba8(src.as_ptr(), dst.as_mut_ptr(), 2)
+		});
 		assert_eq!(dst, [30, 20, 10, 255, 3, 2, 1, 4]);
 		assert!(!unsafe {
 			quercus_render_swizzle_bgra8_to_rgba8(std::ptr::null(), dst.as_mut_ptr(), 2)

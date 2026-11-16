@@ -8,16 +8,25 @@
 //! [`crate::ofx::install_render_executor`]).
 
 use std::ffi::c_void;
+use std::path;
 
 use crate::codec::string_out;
 use crate::node::{NodeId, Project};
 use crate::types::Rational;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_render_frame_f32(
 		project: *const c_void,
@@ -80,7 +89,11 @@ unsafe extern "C" {
 	fn quercus_render_textengine_add_font_dir(path: *const u8, path_len: usize) -> bool;
 	fn quercus_render_textengine_font_family_count() -> i32;
 	fn quercus_render_textengine_font_family_at(index: i32, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_render_swizzle_bgra8_to_rgba8(src: *const u8, dst: *mut u8, pixel_count: usize) -> bool;
+	fn quercus_render_swizzle_bgra8_to_rgba8(
+		src: *const u8,
+		dst: *mut u8,
+		pixel_count: usize,
+	) -> bool;
 }
 
 /// Renders a sequence or video-footage viewer at `time`, returning tight
@@ -411,14 +424,15 @@ pub fn gpu_set_display_transform_required(required: bool) {
 /// length does not match `edge` (or `edge^3 * 3` overflows), when no host-adopted
 /// GPU context exists (nothing is installed and the CPU path stays authoritative),
 /// or when the GPU upload fails.
-pub fn gpu_set_display_lut(
-	edge: u32,
-	lo: &[f32; 3],
-	hi: &[f32; 3],
-	data: &[f32],
-) -> bool {
+pub fn gpu_set_display_lut(edge: u32, lo: &[f32; 3], hi: &[f32; 3], data: &[f32]) -> bool {
 	unsafe {
-		quercus_render_gpu_set_display_lut(edge, lo.as_ptr(), hi.as_ptr(), data.as_ptr(), data.len())
+		quercus_render_gpu_set_display_lut(
+			edge,
+			lo.as_ptr(),
+			hi.as_ptr(),
+			data.as_ptr(),
+			data.len(),
+		)
 	}
 }
 
@@ -446,7 +460,7 @@ pub fn textengine_add_font_data(bytes: &[u8]) -> bool {
 
 /// Adds every font file under `path` (recursively) to the shared text
 /// backend. False for a missing/non-directory path.
-pub fn textengine_add_font_dir(path: &std::path::Path) -> bool {
+pub fn textengine_add_font_dir(path: &path::Path) -> bool {
 	let Some(path) = path.to_str() else {
 		return false;
 	};
@@ -534,6 +548,10 @@ mod tests {
 		let families = font_families();
 		assert!(!families.is_empty(), "the host exposes font families");
 		assert!(families.iter().all(|name| !name.is_empty()));
-		assert_eq!(families, font_families(), "the engine caches the enumeration");
+		assert_eq!(
+			families,
+			font_families(),
+			"the engine caches the enumeration"
+		);
 	}
 }

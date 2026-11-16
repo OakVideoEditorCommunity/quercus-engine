@@ -18,6 +18,9 @@
 //! `olive::NoiseGeneratorNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -152,16 +155,18 @@ impl NodeBehavior for NoiseGeneratorNode {
 		);
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -185,15 +190,15 @@ impl NodeBehavior for NoiseGeneratorNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut base = crate::input::Input::new(
+	let mut base = input::Input::new(
 		BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	let mut strength = crate::input::Input::new(
+	let mut strength = input::Input::new(
 		STRENGTH_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.2),
@@ -207,7 +212,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(strength);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -239,12 +244,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = NoiseGeneratorNode;
 		assert_eq!(n.input_name(BASE_INPUT), "Base");
@@ -281,9 +286,8 @@ mod tests {
 		let NodeValue::Texture(handle) = table.get(ValueType::Texture).unwrap() else {
 			unreachable!()
 		};
-		let job =
-			unsafe { crate::jobs::shader_job(handle) }
-				.expect("noise output boxes a ShaderJobPayload");
+		let job = unsafe { crate::jobs::shader_job(handle) }
+			.expect("noise output boxes a ShaderJobPayload");
 		assert_eq!(job.type_id, "org.olivevideoeditor.Olive.noise");
 		assert_eq!(job.shader_id, "");
 		assert_eq!(job.iterations, 1);
@@ -305,9 +309,8 @@ mod tests {
 		let NodeValue::Texture(handle) = table.get(ValueType::Texture).unwrap() else {
 			unreachable!()
 		};
-		let job =
-			unsafe { crate::jobs::shader_job(handle) }
-				.expect("noise output boxes a ShaderJobPayload");
+		let job = unsafe { crate::jobs::shader_job(handle) }
+			.expect("noise output boxes a ShaderJobPayload");
 		assert_eq!(job.type_id, "org.olivevideoeditor.Olive.noise");
 		assert!(job.params.contains_key(BASE_INPUT));
 		assert!(job.params.contains_key("time_in"));

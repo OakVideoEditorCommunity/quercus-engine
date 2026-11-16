@@ -28,9 +28,14 @@
 //! flight can delay it. Keep the guard alive for as long as custom URIs
 //! should be routed.
 
+use std::error;
 use std::ffi::{CString, c_char, c_void};
 use std::io::{self, SeekFrom};
+use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr;
+use std::slice;
+use std::str;
 
 /// Failure returned by a [`MediaIoProvider`] or [`MediaStream`].
 ///
@@ -50,7 +55,7 @@ impl std::fmt::Display for MediaIoError {
 	}
 }
 
-impl std::error::Error for MediaIoError {}
+impl error::Error for MediaIoError {}
 
 /// Readable and seekable byte source for one media resource.
 ///
@@ -136,15 +141,45 @@ struct QuercusMediaIoVTable {
 	// ABI: order matters — byte-identical with the engine struct.
 	// The header generator parses these types textually, so keep each
 	// `fn(...)` on one line.
-	can_open: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut QuercusMediaIoError) -> i32>,
-	open: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut *mut c_void, *mut QuercusMediaIoError) -> i32>,
-	read: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, *mut u8, usize, *mut QuercusMediaIoError) -> i64>,
-	seek: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, i64, i32, *mut QuercusMediaIoError) -> i64>,
+	can_open: Option<
+		unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut QuercusMediaIoError) -> i32,
+	>,
+	open: Option<
+		unsafe extern "C" fn(
+			*mut c_void,
+			*const u8,
+			usize,
+			*mut *mut c_void,
+			*mut QuercusMediaIoError,
+		) -> i32,
+	>,
+	read: Option<
+		unsafe extern "C" fn(
+			*mut c_void,
+			*mut c_void,
+			*mut u8,
+			usize,
+			*mut QuercusMediaIoError,
+		) -> i64,
+	>,
+	seek: Option<
+		unsafe extern "C" fn(*mut c_void, *mut c_void, i64, i32, *mut QuercusMediaIoError) -> i64,
+	>,
 	close: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
 }
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_codec_mediaio_register(
 		vt: *const QuercusMediaIoVTable,
@@ -216,8 +251,8 @@ unsafe fn path_arg<'a>(ptr: *const u8, len: usize) -> Result<&'a str, (i32, Stri
 			Err((E_INVALID, "null media path".to_string()))
 		};
 	}
-	let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-	std::str::from_utf8(bytes).map_err(|_| (E_INVALID, "media path is not valid UTF-8".to_string()))
+	let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+	str::from_utf8(bytes).map_err(|_| (E_INVALID, "media path is not valid UTF-8".to_string()))
 }
 
 /// Map an `io::Error` to the error-record pair (code 0 = generic).
@@ -328,7 +363,7 @@ unsafe extern "C" fn mediaio_open(
 		let Some(out_stream) = (unsafe { out_stream.as_mut() }) else {
 			return Err((E_INVALID, "null media stream out-parameter".to_string()));
 		};
-		*out_stream = std::ptr::null_mut();
+		*out_stream = ptr::null_mut();
 		let path = unsafe { path_arg(path, path_len) }?;
 		// SAFETY: see `mediaio_can_open`.
 		let provider = unsafe { &*(userdata as *const ProviderBox) };
@@ -398,7 +433,7 @@ unsafe extern "C" fn mediaio_read(
 		let buffer: &mut [u8] = if cap == 0 {
 			&mut []
 		} else {
-			unsafe { std::slice::from_raw_parts_mut(buf, cap) }
+			unsafe { slice::from_raw_parts_mut(buf, cap) }
 		};
 		let count = stream.stream.read(buffer).map_err(io_failure)?;
 		if count > cap {
@@ -455,9 +490,8 @@ unsafe extern "C" fn mediaio_seek(
 		}
 		let from = match whence {
 			0 => {
-				let offset = u64::try_from(offset).map_err(|_| {
-					(E_INVALID, "negative media seek offset".to_string())
-				})?;
+				let offset = u64::try_from(offset)
+					.map_err(|_| (E_INVALID, "negative media seek offset".to_string()))?;
 				SeekFrom::Start(offset)
 			}
 			1 => SeekFrom::Current(offset),
@@ -469,8 +503,7 @@ unsafe extern "C" fn mediaio_seek(
 		// SAFETY: see `mediaio_read`.
 		let stream = unsafe { &mut *(stream as *mut StreamBox) };
 		let position = stream.stream.seek(from).map_err(io_failure)?;
-		i64::try_from(position)
-			.map_err(|_| (E_INVALID, "media seek position overflow".to_string()))
+		i64::try_from(position).map_err(|_| (E_INVALID, "media seek position overflow".to_string()))
 	}));
 	match outcome {
 		Ok(Ok(position)) => position,
@@ -530,7 +563,7 @@ pub fn register_media_io(
 	// `MediaIoRegistration::drop`.
 	let userdata = Box::into_raw(Box::new(ProviderBox { provider, name }));
 	let vt = QuercusMediaIoVTable {
-		struct_size: std::mem::size_of::<QuercusMediaIoVTable>() as u32,
+		struct_size: mem::size_of::<QuercusMediaIoVTable>() as u32,
 		abi_version: MEDIAIO_ABI_VERSION,
 		// SAFETY: `userdata` is live for the whole call; the engine copies
 		// the name before returning.

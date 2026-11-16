@@ -19,6 +19,9 @@
 //! `olive::FlipDistortNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -138,16 +141,18 @@ impl NodeBehavior for FlipDistortNode {
 			// input key locates the main texture inside the params row.
 			table.push(
 				crate::value::ValueType::Texture,
-				crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
-					time,
-					iterations: 1,
-					type_id: self.type_id().to_string(),
-					shader_id: String::new(),
-					effect_input: core.effect_input.clone(),
-					params: inputs.clone(),
-					iterative_input: TEXTURE_INPUT.to_string(),
-				}))),
+				crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+					ShaderJobPayload {
+						node_id: id::NodeId::INVALID,
+						time,
+						iterations: 1,
+						type_id: self.type_id().to_string(),
+						shader_id: String::new(),
+						effect_input: core.effect_input.clone(),
+						params: inputs.clone(),
+						iterative_input: TEXTURE_INPUT.to_string(),
+					},
+				))),
 				None,
 			);
 		} else {
@@ -174,20 +179,20 @@ impl NodeBehavior for FlipDistortNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		HORIZONTAL_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		VERTICAL_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -218,12 +223,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -288,8 +293,8 @@ mod tests {
 			NodeValue::Texture(h) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe { crate::jobs::shader_job(&handle) }
-			.expect("shader job payload expected");
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.flip");
 		assert_eq!(payload.shader_id, "");
 		assert_eq!(payload.iterations, 1);
@@ -311,8 +316,8 @@ mod tests {
 			NodeValue::Texture(h) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe { crate::jobs::shader_job(&handle) }
-			.expect("shader job payload expected");
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.flip");
 		assert_eq!(payload.iterations, 1);
 	}

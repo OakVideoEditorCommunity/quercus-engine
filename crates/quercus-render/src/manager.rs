@@ -24,6 +24,17 @@
 //! skeleton's `&'static` reference was replaced because a resettable
 //! singleton cannot hand out stable references safely).
 
+use crate::manager;
+use crate::ofxhost;
+use crate::pipeline;
+use quercus_core::configstore;
+use quercus_core::filefunctions;
+use quercus_core::PixelFormat;
+use quercus_node::id;
+use quercus_node::project;
+use std::env;
+use std::fs;
+use std::path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -63,7 +74,7 @@ pub enum RenderBackendChoice {
 /// The backend `QUERCUS_PIPELINE` asks for: `threads` selects the M1 thread
 /// pipeline, anything else (including unset) the default process pool.
 fn backend_choice_from_env() -> RenderBackendChoice {
-	if std::env::var("QUERCUS_PIPELINE").as_deref() == Ok("threads") {
+	if env::var("QUERCUS_PIPELINE").as_deref() == Ok("threads") {
 		RenderBackendChoice::Pipeline
 	} else {
 		RenderBackendChoice::Processes(DispatcherConfig::default())
@@ -105,7 +116,8 @@ pub struct RenderManager {
 	/// backend loads the snapshot file in its workers instead; this slot
 	/// only exists so `render_produced_frame` can run the same
 	/// [`quercus_node::traverser`] graph evaluation without forking a child.
-	inline_graph: Mutex<Option<(String, std::sync::Arc<std::sync::Mutex<quercus_node::project::Project>>)>>,	/// Teardown in progress (M16 S1): set first thing in
+	inline_graph: Mutex<Option<(String, std::sync::Arc<std::sync::Mutex<project::Project>>)>>,
+	/// Teardown in progress (M16 S1): set first thing in
 	/// [`RenderManager::shutdown`]; `set_graph_snapshot` /
 	/// `clear_graph_snapshot` become no-ops afterwards so a stale push
 	/// from a dying test/app cannot re-arm the worker pool mid-shutdown.
@@ -117,11 +129,11 @@ pub struct RenderManager {
 	/// The thread pipeline, when running the Pipeline backend (`None` on
 	/// the inline and process backends). Holding the `Arc` keeps the
 	/// render/decode threads alive for the manager's lifetime.
-	pipeline: Option<Arc<crate::pipeline::PipelineBackend>>,
+	pipeline: Option<Arc<pipeline::PipelineBackend>>,
 	/// The single OpenFX host client (M3), when the Pipeline backend is
 	/// live: the render thread's plugin jobs go through it instead of the
 	/// in-process executor (design §3.2).
-	ofx_host: Option<Arc<crate::ofxhost::OfxHost>>,
+	ofx_host: Option<Arc<ofxhost::OfxHost>>,
 }
 
 impl RenderManager {
@@ -151,38 +163,33 @@ impl RenderManager {
 			// preview must show the node graph, not the decoded-only
 			// montage.
 			if params.viewer != 0 && !params.project.is_empty() {
-				if let Some(m) = crate::manager::RenderManager::global() {
+				if let Some(m) = manager::RenderManager::global() {
 					if let Some((uuid, project)) = m.inline_graph() {
 						if uuid == params.project {
-							if let Some(viewer_id) =
-								quercus_node::id::NodeId::from_identity(params.viewer)
-							{
+							if let Some(viewer_id) = id::NodeId::from_identity(params.viewer) {
 								if let Ok(texture) = eval::render_graph_frame(
 									&project,
 									viewer_id,
 									time,
 									params.render_size(),
-									quercus_core::PixelFormat::F32,
+									PixelFormat::F32,
 								) {
-									return Ok(crate::ticket::TicketPayload::Video(
-										texture,
-									));
+									return Ok(crate::ticket::TicketPayload::Video(texture));
 								}
 							}
 						}
 					}
 				}
 			}
-			eval::render_produced_frame(time, params)
-				.map(crate::ticket::TicketPayload::Video)
+			eval::render_produced_frame(time, params).map(crate::ticket::TicketPayload::Video)
 		});
 		let (dispatch, audio_dispatch, audio_fallback, process_pool, pipeline, ofx_host): (
 			Arc<dyn JobDispatch>,
 			Arc<dyn JobDispatch>,
 			Option<Arc<dyn JobDispatch>>,
 			Option<Arc<ProcessDispatcher>>,
-			Option<Arc<crate::pipeline::PipelineBackend>>,
-			Option<Arc<crate::ofxhost::OfxHost>>,
+			Option<Arc<pipeline::PipelineBackend>>,
+			Option<Arc<ofxhost::OfxHost>>,
 		) = match choice {
 			RenderBackendChoice::Threads => {
 				// Test-only inline backend: synchronous execution on the
@@ -206,7 +213,14 @@ impl RenderManager {
 				// audio-side plugin crash now takes down the main process,
 				// and the mix cost lands on the UI tick.
 				let inline = InlineDispatcher::sync();
-				(dispatcher.clone(), inline, None, Some(dispatcher), None, None)
+				(
+					dispatcher.clone(),
+					inline,
+					None,
+					Some(dispatcher),
+					None,
+					None,
+				)
 			}
 			RenderBackendChoice::Pipeline => {
 				// M1 thread pipeline: the render thread executes the same
@@ -220,17 +234,10 @@ impl RenderManager {
 				// process dependency; GPU texture sharing is not implied
 				// (the in-process executor's render path is still the
 				// CPU/GL-readback path).
-				crate::ofxhost::install_client(None);
-				let pipeline = crate::pipeline::PipelineBackend::new()?;
+				ofxhost::install_client(None);
+				let pipeline = pipeline::PipelineBackend::new()?;
 				let inline = InlineDispatcher::sync();
-				(
-					pipeline.clone(),
-					inline,
-					None,
-					None,
-					Some(pipeline),
-					None,
-				)
+				(pipeline.clone(), inline, None, None, Some(pipeline), None)
 			}
 		};
 		let tickets = Arc::new(TicketArena::new_with_audio_fallback(
@@ -264,19 +271,19 @@ impl RenderManager {
 	/// is no snapshot (or the process pool answers frames instead).
 	pub fn inline_graph(
 		&self,
-	) -> Option<(String, std::sync::Arc<std::sync::Mutex<quercus_node::project::Project>>)> {
+	) -> Option<(String, std::sync::Arc<std::sync::Mutex<project::Project>>)> {
 		lock(&self.inline_graph).clone()
 	}
 
 	/// The thread pipeline, when the Pipeline backend is live (its queue
 	/// stats and decode service). `None` on the inline and process backends.
-	pub fn pipeline_backend(&self) -> Option<Arc<crate::pipeline::PipelineBackend>> {
+	pub fn pipeline_backend(&self) -> Option<Arc<pipeline::PipelineBackend>> {
 		self.pipeline.clone()
 	}
 
 	/// The single OpenFX host client, when the Pipeline backend is live
 	/// (tests/observability). `None` on the inline and process backends.
-	pub fn ofx_host(&self) -> Option<Arc<crate::ofxhost::OfxHost>> {
+	pub fn ofx_host(&self) -> Option<Arc<ofxhost::OfxHost>> {
 		self.ofx_host.clone()
 	}
 
@@ -307,7 +314,7 @@ impl RenderManager {
 			// Stop routing plugin jobs to the OFX host before tearing it
 			// down (an in-flight submit fails out to a purple frame).
 			if let Some(host) = &manager.ofx_host {
-				crate::ofxhost::install_client(None);
+				ofxhost::install_client(None);
 				host.shutdown();
 			}
 			// Drain after the cancels so queued completions fire. Both
@@ -336,14 +343,14 @@ impl RenderManager {
 	/// snapshot (file retained at zero refs).
 	pub fn set_graph_snapshot(
 		&self,
-		project: &std::sync::Mutex<quercus_node::project::Project>,
+		project: &std::sync::Mutex<project::Project>,
 		revision: u64,
 	) -> Result<()> {
 		if self.stopping.load(Ordering::Acquire) {
 			return Ok(()); // teardown: no re-arm after the drain
 		}
 		let uuid = lock(project).uuid.clone();
-		if std::env::var_os("QUERCUS_DEBUG_SNAPSHOT").is_some() {
+		if env::var_os("QUERCUS_DEBUG_SNAPSHOT").is_some() {
 			eprintln!(
 				"[snapshot] set_graph_snapshot uuid {uuid} revision {revision} key {:?}",
 				*lock(&self.current_key)
@@ -370,10 +377,7 @@ impl RenderManager {
 	/// Installs the live project the inline backend's graph mode renders
 	/// from (quercus-app calls this on project adoption; it also arms the uuid
 	/// the snapshot dedups against). The process backend ignores it.
-	pub fn set_inline_project(
-		&self,
-		project: std::sync::Arc<std::sync::Mutex<quercus_node::project::Project>>,
-	) {
+	pub fn set_inline_project(&self, project: std::sync::Arc<std::sync::Mutex<project::Project>>) {
 		let uuid = match project.lock() {
 			Ok(g) => g.uuid.clone(),
 			Err(p) => p.into_inner().uuid.clone(),
@@ -392,7 +396,7 @@ impl RenderManager {
 	/// re-send has no dedup).
 	pub fn resync_graph_snapshot(
 		&self,
-		project: &std::sync::Mutex<quercus_node::project::Project>,
+		project: &std::sync::Mutex<project::Project>,
 		revision: u64,
 	) -> Result<()> {
 		if self.stopping.load(Ordering::Acquire) {
@@ -443,12 +447,10 @@ impl RenderManager {
 			return;
 		};
 		let slots = pool.slots_per_worker();
-		let slot_bytes = crate::procpool::slot_bytes_for(
-			width.max(1),
-			height.max(1),
-			pool.slot_format(),
-		);
-		let target = crate::procpool::worker_count_for_size(slots, slot_bytes, (width, height), fps);
+		let slot_bytes =
+			crate::procpool::slot_bytes_for(width.max(1), height.max(1), pool.slot_format());
+		let target =
+			crate::procpool::worker_count_for_size(slots, slot_bytes, (width, height), fps);
 		pool.set_target_workers(target);
 	}
 
@@ -555,7 +557,7 @@ static DISK_CACHE_LAST_PRUNE: Mutex<Option<Instant>> = Mutex::new(None);
 /// get_default_disk_cache_path`); shared with quercusnode via quercus_core
 /// (single-lib unification).
 pub fn disk_cache_path() -> String {
-	quercus_core::filefunctions::default_disk_cache_path()
+	filefunctions::default_disk_cache_path()
 }
 
 /// The configured disk-cache byte budget (`DiskCacheMaxBytes`).
@@ -565,7 +567,7 @@ pub fn disk_cache_path() -> String {
 /// is not registered in `ConfigStore::set_defaults`, so a value loaded from
 /// `config.toml` arrives as a string.
 pub fn disk_cache_max_bytes() -> i64 {
-	let raw = quercus_core::configstore::ConfigStore::instance()
+	let raw = configstore::ConfigStore::instance()
 		.get(None, DISK_CACHE_MAX_BYTES_KEY)
 		.unwrap_or_default();
 	raw.trim().parse::<i64>().unwrap_or(0).max(0)
@@ -580,11 +582,7 @@ pub fn disk_cache_max_bytes() -> i64 {
 /// applies on the next enforcement step.
 pub fn set_disk_cache_max_bytes(max: i64) -> Result<()> {
 	let max = max.max(0);
-	quercus_core::configstore::ConfigStore::instance().set_int64(
-		None,
-		DISK_CACHE_MAX_BYTES_KEY,
-		max,
-	);
+	configstore::ConfigStore::instance().set_int64(None, DISK_CACHE_MAX_BYTES_KEY, max);
 	// A newly applied budget must not wait for the debounce window.
 	reset_quota_debounce();
 	if max > 0 {
@@ -609,15 +607,15 @@ pub fn set_disk_cache_path(path: &str) -> Result<()> {
 	if path.is_empty() {
 		return Err(Error::Invalid);
 	}
-	let root = std::path::Path::new(path);
+	let root = path::Path::new(path);
 	if !root.is_absolute() {
 		return Err(Error::Failed(format!(
 			"disk cache path must be absolute: {path}"
 		)));
 	}
-	std::fs::create_dir_all(root)
+	fs::create_dir_all(root)
 		.map_err(|e| Error::Failed(format!("create disk cache dir {path}: {e}")))?;
-	quercus_core::configstore::ConfigStore::instance().set(None, DISK_CACHE_PATH_KEY, path);
+	configstore::ConfigStore::instance().set(None, DISK_CACHE_PATH_KEY, path);
 	Ok(())
 }
 
@@ -625,7 +623,7 @@ pub fn set_disk_cache_path(path: &str) -> Result<()> {
 /// scan; the C++ DiskManager index is replaced by the folder walk).
 pub fn disk_cache_size() -> Result<i64> {
 	let path = disk_cache_path();
-	let root = std::path::Path::new(&path);
+	let root = path::Path::new(&path);
 	if !root.exists() {
 		return Ok(0);
 	}
@@ -640,13 +638,11 @@ pub fn disk_cache_size() -> Result<i64> {
 /// clear_disk_cache`).
 pub fn disk_cache_clear() -> Result<()> {
 	let path = disk_cache_path();
-	let root = std::path::Path::new(&path);
+	let root = path::Path::new(&path);
 	if root.exists() {
-		std::fs::remove_dir_all(root)
-			.map_err(|e| Error::Failed(format!("clear disk cache: {e}")))?;
+		fs::remove_dir_all(root).map_err(|e| Error::Failed(format!("clear disk cache: {e}")))?;
 	}
-	std::fs::create_dir_all(root)
-		.map_err(|e| Error::Failed(format!("recreate disk cache: {e}")))?;
+	fs::create_dir_all(root).map_err(|e| Error::Failed(format!("recreate disk cache: {e}")))?;
 	Ok(())
 }
 
@@ -656,7 +652,7 @@ pub fn disk_cache_clear() -> Result<()> {
 /// `max_bytes <= 0` disables pruning and returns `0`. Missing directories are
 /// a no-op. See [`prune_dir`] for the eviction rules.
 pub fn prune_disk_cache_to(max_bytes: i64) -> Result<i64> {
-	prune_dir(std::path::Path::new(&disk_cache_path()), max_bytes)
+	prune_dir(path::Path::new(&disk_cache_path()), max_bytes)
 }
 
 /// Enforce the configured disk-cache quota after a cache write.
@@ -712,17 +708,17 @@ fn reset_quota_debounce() {
 /// left in place. A file with an unreadable mtime is treated as oldest. The
 /// newest file is always kept even when it alone exceeds the budget, so the
 /// function can return with the directory still over `max_bytes`.
-fn prune_dir(dir: &std::path::Path, max_bytes: i64) -> Result<i64> {
+fn prune_dir(dir: &path::Path, max_bytes: i64) -> Result<i64> {
 	if max_bytes <= 0 || !dir.exists() {
 		return Ok(0);
 	}
 
 	// (mtime, path, size), oldest first. `walk` returns directory order,
 	// which is filesystem-dependent, so sort explicitly before evicting.
-	let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf, i64)> = Vec::new();
+	let mut entries: Vec<(std::time::SystemTime, path::PathBuf, i64)> = Vec::new();
 	let mut total: i64 = 0;
 	for path in walk(dir) {
-		let meta = match std::fs::metadata(&path) {
+		let meta = match fs::metadata(&path) {
 			Ok(m) => m,
 			Err(_) => continue, // unstattable: never delete blind
 		};
@@ -747,7 +743,7 @@ fn prune_dir(dir: &std::path::Path, max_bytes: i64) -> Result<i64> {
 		if remaining <= max_bytes {
 			break;
 		}
-		if std::fs::remove_file(path).is_err() {
+		if fs::remove_file(path).is_err() {
 			continue; // in use / permission denied: leave it for next time
 		}
 		freed = freed.saturating_add(*size);
@@ -768,9 +764,9 @@ fn prune_dir(dir: &std::path::Path, max_bytes: i64) -> Result<i64> {
 ///
 /// * `dir` - root directory; symlinked directories are followed because the
 ///   directory test uses `Path::is_dir` (as are symlinked files).
-fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn walk(dir: &path::Path) -> Vec<path::PathBuf> {
 	let mut out = Vec::new();
-	if let Ok(rd) = std::fs::read_dir(dir) {
+	if let Ok(rd) = fs::read_dir(dir) {
 		for entry in rd.flatten() {
 			let path = entry.path();
 			if path.is_dir() {
@@ -784,327 +780,4 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    /// Serializes the manager-singleton tests (the singleton is global).
-	static MANAGER_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-	fn manager_lock() -> MutexGuard<'static, ()> {
-		MANAGER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-	}
-
-	#[test]
-	fn init_shutdown_roundtrip() {
-		let _lock = manager_lock();
-		// Ensure a clean slate. The manager tests use the test-only inline
-		// backend (the process backend spawns real quercus-worker children).
-		RenderManager::shutdown();
-		RenderManager::init_with_backend(RenderBackendChoice::Threads).unwrap();
-		assert!(RenderManager::global().is_some());
-		// Idempotence: second init is a state error.
-		assert_eq!(
-			RenderManager::init_with_backend(RenderBackendChoice::Threads)
-				.unwrap_err()
-				.code(),
-			Error::State.code()
-		);
-		RenderManager::shutdown();
-		assert!(RenderManager::global().is_none());
-		// Re-init works after shutdown (C++ destroy_instance semantics).
-		RenderManager::init_with_backend(RenderBackendChoice::Threads).unwrap();
-		RenderManager::shutdown();
-	}
-
-	#[test]
-	fn aggressive_gc_toggle() {
-		let _lock = manager_lock();
-		RenderManager::shutdown();
-		RenderManager::init_with_backend(RenderBackendChoice::Threads).unwrap();
-		let m = RenderManager::global().unwrap();
-		assert!(!m.aggressive_gc());
-		m.set_aggressive_gc(true);
-		assert!(m.aggressive_gc());
-		RenderManager::shutdown();
-	}
-
-	#[test]
-	fn cacher_is_lazily_created() {
-		let _lock = manager_lock();
-		RenderManager::shutdown();
-		RenderManager::init_with_backend(RenderBackendChoice::Threads).unwrap();
-		let m = RenderManager::global().unwrap();
-		{
-			let g = m.get_cacher();
-			assert!(g.is_some());
-		}
-		RenderManager::shutdown();
-	}
-
-	#[test]
-	fn disk_cache_size_and_clear() {
-		let _guard = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		let dir = std::env::temp_dir().join("quercusrender-diskcache-test");
-		std::env::set_var("QUERCUS_CONFIG_DIR", &dir);
-		std::fs::create_dir_all(dir.join("mediacache").join("sub")).unwrap();
-		std::fs::write(dir.join("mediacache").join("sub").join("a.bin"), [1u8; 100]).unwrap();
-		assert_eq!(disk_cache_size().unwrap(), 100);
-		disk_cache_clear().unwrap();
-		assert_eq!(disk_cache_size().unwrap(), 0);
-		assert!(dir.join("mediacache").exists());
-		std::fs::remove_dir_all(&dir).ok();
-		std::env::remove_var("QUERCUS_CONFIG_DIR");
-	}
-
-	#[test]
-	fn disk_cache_size_missing_dir_is_zero() {
-		let _guard = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		let dir = std::env::temp_dir().join("quercusrender-diskcache-missing");
-		std::env::set_var("QUERCUS_CONFIG_DIR", &dir);
-		let _ = std::fs::remove_dir_all(&dir);
-		assert_eq!(disk_cache_size().unwrap(), 0);
-		std::env::remove_var("QUERCUS_CONFIG_DIR");
-	}
-
-	#[test]
-	fn backend_choice_env_selects_pipeline() {
-		let _guard = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		std::env::remove_var("QUERCUS_PIPELINE");
-		assert!(matches!(
-			backend_choice_from_env(),
-			RenderBackendChoice::Processes(_)
-		));
-		std::env::set_var("QUERCUS_PIPELINE", "threads");
-		assert!(matches!(
-			backend_choice_from_env(),
-			RenderBackendChoice::Pipeline
-		));
-		// Any other value keeps the default process pool.
-		std::env::set_var("QUERCUS_PIPELINE", "processes");
-		assert!(matches!(
-			backend_choice_from_env(),
-			RenderBackendChoice::Processes(_)
-		));
-		std::env::remove_var("QUERCUS_PIPELINE");
-	}
-
-	// ---- disk-cache quota ---------------------------------------------------
-
-	/// Serializes the quota tests, which mutate the process-wide
-	/// `DiskCachePath` / `DiskCacheMaxBytes` config entries. They also hold
-	/// [`quercus_core::commonutil::ENV_TEST_LOCK`] because the config path
-	/// depends on `QUERCUS_CONFIG_DIR`.
-	static DISK_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-	fn disk_cache_test_lock() -> MutexGuard<'static, ()> {
-		DISK_CACHE_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner())
-	}
-
-	/// A unique, empty temp directory for one quota test.
-	fn quota_temp_dir(tag: &str) -> std::path::PathBuf {
-		let dir =
-			std::env::temp_dir().join(format!("quercusrender-quota-{}-{tag}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).unwrap();
-		dir
-	}
-
-	/// Write `size` zero bytes and sleep briefly so the next write gets a
-	/// strictly newer mtime (`std` has no portable "set mtime").
-	fn write_with_mtime_gap(path: &std::path::Path, size: usize) {
-		std::fs::write(path, vec![0u8; size]).unwrap();
-		std::thread::sleep(std::time::Duration::from_millis(10));
-	}
-
-	/// Sum the regular files under `dir` (mirrors [`disk_cache_size`] but
-	/// for an explicit directory).
-	fn dir_file_size(dir: &std::path::Path) -> i64 {
-		walk(dir)
-			.into_iter()
-			.filter_map(|p| std::fs::metadata(&p).ok())
-			.filter(|m| m.is_file())
-			.map(|m| m.len() as i64)
-			.sum()
-	}
-
-	fn save_disk_cache_config() -> (Option<String>, i64) {
-		let store = quercus_core::configstore::ConfigStore::instance();
-		(
-			store.get(None, DISK_CACHE_PATH_KEY).ok(),
-			disk_cache_max_bytes(),
-		)
-	}
-
-	fn restore_disk_cache_config(saved: (Option<String>, i64)) {
-		let store = quercus_core::configstore::ConfigStore::instance();
-		store.set(None, DISK_CACHE_PATH_KEY, saved.0.as_deref().unwrap_or(""));
-		store.set_int64(None, DISK_CACHE_MAX_BYTES_KEY, saved.1);
-		reset_quota_debounce();
-	}
-
-	#[test]
-	fn prune_dir_removes_oldest_files_first() {
-		let dir = quota_temp_dir("oldest");
-		for name in ["a", "b", "c", "d"] {
-			write_with_mtime_gap(&dir.join(name), 100);
-		}
-		let freed = prune_dir(&dir, 250).unwrap();
-		// 400 bytes -> evict a and b (200 bytes) -> 200 <= 250.
-		assert_eq!(freed, 200);
-		assert!(!dir.join("a").exists(), "oldest file evicted");
-		assert!(!dir.join("b").exists(), "second-oldest evicted");
-		assert!(dir.join("c").exists());
-		assert!(dir.join("d").exists(), "newest file kept");
-		assert_eq!(dir_file_size(&dir), 200);
-		std::fs::remove_dir_all(&dir).ok();
-	}
-
-	#[test]
-	fn prune_dir_keeps_newest_file_over_budget() {
-		let dir = quota_temp_dir("newest");
-		write_with_mtime_gap(&dir.join("old"), 100);
-		write_with_mtime_gap(&dir.join("new"), 100);
-		// Budget below a single file: evict everything but the newest.
-		assert_eq!(prune_dir(&dir, 10).unwrap(), 100);
-		assert!(!dir.join("old").exists());
-		assert!(dir.join("new").exists());
-		assert_eq!(dir_file_size(&dir), 100);
-		// With only the newest left it is retained even though over budget.
-		assert_eq!(prune_dir(&dir, 10).unwrap(), 0);
-		assert!(dir.join("new").exists());
-		std::fs::remove_dir_all(&dir).ok();
-	}
-
-	#[test]
-	fn prune_dir_zero_or_negative_budget_is_unlimited() {
-		let dir = quota_temp_dir("unlimited");
-		write_with_mtime_gap(&dir.join("a"), 100);
-		write_with_mtime_gap(&dir.join("b"), 100);
-		assert_eq!(prune_dir(&dir, 0).unwrap(), 0);
-		assert_eq!(prune_dir(&dir, -5).unwrap(), 0);
-		assert!(dir.join("a").exists());
-		assert!(dir.join("b").exists());
-		std::fs::remove_dir_all(&dir).ok();
-	}
-
-	#[test]
-	fn prune_dir_missing_directory_is_zero() {
-		let dir = quota_temp_dir("missing").join("not-there");
-		assert_eq!(prune_dir(&dir, 100).unwrap(), 0);
-		assert!(!dir.exists());
-	}
-
-	#[test]
-	fn prune_disk_cache_to_missing_configured_dir_is_zero() {
-		let _local = disk_cache_test_lock();
-		let _env = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		let saved = save_disk_cache_config();
-		let dir = quota_temp_dir("configured-missing").join("not-there");
-		quercus_core::configstore::ConfigStore::instance().set(
-			None,
-			DISK_CACHE_PATH_KEY,
-			&dir.to_string_lossy(),
-		);
-		assert_eq!(prune_disk_cache_to(100).unwrap(), 0);
-		restore_disk_cache_config(saved);
-	}
-
-	#[test]
-	fn set_max_bytes_writes_config_and_enforces() {
-		let _local = disk_cache_test_lock();
-		let _env = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		let saved = save_disk_cache_config();
-		let dir = quota_temp_dir("config");
-		for name in ["a", "b", "c", "d"] {
-			write_with_mtime_gap(&dir.join(name), 100);
-		}
-
-		set_disk_cache_path(&dir.to_string_lossy()).unwrap();
-		assert_eq!(
-			disk_cache_path(),
-			dir.to_string_lossy().into_owned(),
-			"DiskCachePath points at the temp dir"
-		);
-		assert_eq!(
-			disk_cache_size().unwrap(),
-			400,
-			"budget disabled before set"
-		);
-
-		// A zero budget makes enforcement a no-op even after a write event.
-		enforce_disk_cache_quota();
-		assert_eq!(disk_cache_size().unwrap(), 400);
-
-		set_disk_cache_max_bytes(250).unwrap();
-		assert_eq!(disk_cache_max_bytes(), 250);
-		assert_eq!(
-			quercus_core::configstore::ConfigStore::instance()
-				.get(None, DISK_CACHE_MAX_BYTES_KEY)
-				.unwrap(),
-			"250",
-			"config key written"
-		);
-		assert!(
-			disk_cache_size().unwrap() <= 250,
-			"setter enforced the quota immediately"
-		);
-		assert!(!dir.join("a").exists());
-		assert!(!dir.join("b").exists());
-		assert!(dir.join("c").exists());
-		assert!(dir.join("d").exists());
-
-		// Negative values clamp to 0 (unlimited) and disable pruning.
-		set_disk_cache_max_bytes(-7).unwrap();
-		assert_eq!(disk_cache_max_bytes(), 0);
-		assert_eq!(
-			quercus_core::configstore::ConfigStore::instance().get_int64(
-				None,
-				DISK_CACHE_MAX_BYTES_KEY,
-				-1
-			),
-			0
-		);
-
-		restore_disk_cache_config(saved);
-		std::fs::remove_dir_all(&dir).ok();
-	}
-
-	#[test]
-	fn set_disk_cache_path_validates_and_creates() {
-		let _local = disk_cache_test_lock();
-		let _env = quercus_core::commonutil::ENV_TEST_LOCK
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
-		let saved = save_disk_cache_config();
-		let base = quota_temp_dir("path");
-		let target = base.join("nested").join("cache");
-
-		assert_eq!(
-			set_disk_cache_path("   ").unwrap_err().code(),
-			Error::Invalid.code()
-		);
-		assert_eq!(
-			set_disk_cache_path("relative/cache").unwrap_err().code(),
-			Error::Failed("".into()).code()
-		);
-		set_disk_cache_path(&target.to_string_lossy()).unwrap();
-		assert!(target.is_dir(), "setter creates the directory");
-		assert_eq!(disk_cache_path(), target.to_string_lossy().into_owned());
-
-		restore_disk_cache_config(saved);
-		std::fs::remove_dir_all(&base).ok();
-	}
-}
+mod tests;

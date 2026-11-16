@@ -1,14 +1,21 @@
 //! Owned preview-audio mixing and C ABI buffers.
 
+use crate::editor_commands;
+use quercus_codec::proxymanager;
 use quercus_core::TimeRange;
+use quercus_core::configstore;
 use quercus_node::block::ClipBlockBehavior;
 use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
 use quercus_node::track::{TrackBehavior, TrackListBehavior, TrackType};
+use quercus_render::audio;
+use quercus_render::eval;
 use quercus_render::manager::RenderManager;
 use quercus_render::ticket::{AudioTicketParams, MontageAudio, MontageClip, TicketPayload};
+use std::ptr;
+use std::sync;
 
 use crate::coretypes::QuercusTimeRange;
 use crate::handle::NativeMirror;
@@ -159,9 +166,7 @@ pub unsafe extern "C" fn quercus_audio_buffer_copy_samples(
 	if dst.is_null() || dst_capacity < audio.data.samples.len() {
 		return 0;
 	}
-	unsafe {
-		std::ptr::copy_nonoverlapping(audio.data.samples.as_ptr(), dst, audio.data.samples.len())
-	};
+	unsafe { ptr::copy_nonoverlapping(audio.data.samples.as_ptr(), dst, audio.data.samples.len()) };
 	audio.data.samples.len()
 }
 
@@ -185,13 +190,12 @@ fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> {
 		.find(|stream| !stream.is_video)
 		.map(|stream| (footage.filename.clone(), stream.index))
 		.or_else(|| (!footage.filename.is_empty()).then(|| (footage.filename.clone(), 1)))?;
-	let use_proxy =
-		quercus_core::configstore::ConfigStore::instance().get_bool(None, "UseProxyMedia", 1) != 0;
+	let use_proxy = configstore::ConfigStore::instance().get_bool(None, "UseProxyMedia", 1) != 0;
 	if use_proxy
 		&& footage.proxy_enabled
-		&& quercus_codec::proxymanager::ProxyManager::get_proxy_state(&footage.proxy)
-			== quercus_codec::proxymanager::ProxyState::Ready
-		&& quercus_codec::proxymanager::ProxyManager::proxy_filename_has_audio(&footage.proxy)
+		&& proxymanager::ProxyManager::get_proxy_state(&footage.proxy)
+			== proxymanager::ProxyState::Ready
+		&& proxymanager::ProxyManager::proxy_filename_has_audio(&footage.proxy)
 	{
 		Some((footage.proxy.clone(), 1))
 	} else {
@@ -207,7 +211,7 @@ fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> {
 /// has no footage input, the input node is gone, or its behavior is not
 /// footage.
 fn footage_of(project: &Project, clip: NodeId) -> Option<&FootageBehavior> {
-	let footage = crate::editor_commands::find_input_footage(&project.graph, clip)?;
+	let footage = editor_commands::find_input_footage(&project.graph, clip)?;
 	project
 		.graph
 		.get(footage)
@@ -306,7 +310,7 @@ fn audio_montage(project: &Project, sequence: NodeId, range: TimeRange) -> Vec<M
 /// Mixes one sequence or footage range. Existing render managers keep their
 /// ticket/worker path; headless consumers use the same mixer on an engine task.
 pub(crate) fn render_audio(
-	project: std::sync::Arc<std::sync::Mutex<Project>>,
+	project: sync::Arc<sync::Mutex<Project>>,
 	viewer: NodeId,
 	range: TimeRange,
 	sample_rate: i32,
@@ -326,7 +330,7 @@ pub(crate) fn render_audio(
 		{
 			(
 				audio_montage(&guard, viewer, range),
-				quercus_render::audio::load_bus_effects(&guard.settings, viewer.identity()),
+				audio::load_bus_effects(&guard.settings, viewer.identity()),
 			)
 		} else {
 			let footage = guard
@@ -385,7 +389,7 @@ pub(crate) fn render_audio(
 			_ => return Err("audio render produced no samples".into()),
 		}
 	} else {
-		match quercus_render::eval::render_audio_samples(&params).map_err(|e| e.to_string())? {
+		match eval::render_audio_samples(&params).map_err(|e| e.to_string())? {
 			TicketPayload::Audio(samples) => samples,
 			_ => return Err("audio render produced no samples".into()),
 		}
@@ -401,10 +405,7 @@ pub(crate) fn render_audio(
 
 /// The sequence's audio output `(sample_rate, channel_layout)`, defaulting
 /// to the sequence defaults for a stale/non-sequence viewer.
-pub(crate) fn sequence_audio_params(
-	project: &Project,
-	sequence: NodeId,
-) -> (i32, u64) {
+pub(crate) fn sequence_audio_params(project: &Project, sequence: NodeId) -> (i32, u64) {
 	let Some(params) = project
 		.graph
 		.get(sequence)
@@ -421,7 +422,7 @@ pub(crate) fn sequence_audio_params(
 /// using the sequence's own audio parameters. Used by the loudness
 /// measurement ABI so it evaluates exactly what playback/export would.
 pub(crate) fn render_sequence_audio(
-	project: std::sync::Arc<std::sync::Mutex<Project>>,
+	project: sync::Arc<sync::Mutex<Project>>,
 	sequence: NodeId,
 	range: TimeRange,
 ) -> Result<AudioBufferData, String> {

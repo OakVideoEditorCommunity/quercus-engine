@@ -6,8 +6,8 @@
 
 pub mod prelude;
 pub use prelude::*;
-mod project;
 mod parameters;
+mod project;
 pub use parameters::*;
 pub use project::*;
 pub(crate) mod sequence;
@@ -34,7 +34,7 @@ mod multicam_wizard;
 pub use multicam_wizard::*;
 mod edit_menu;
 mod subtitles;
-pub use subtitles::*;
 pub use edit_menu::*;
+pub use subtitles::*;
 #[cfg(test)]
 mod tests;

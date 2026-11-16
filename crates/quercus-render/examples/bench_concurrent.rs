@@ -1,3 +1,13 @@
+use quercus_codec::gpuinterop;
+use quercus_codec::hwdecode;
+use quercus_core::backend;
+use quercus_render::error;
+use quercus_render::eval;
+use quercus_render::pipeline;
+use quercus_render::worker;
+use std::env;
+use std::sync;
+use std::thread;
 use std::time::Instant;
 
 use quercus_core::{PixelFormat, Rational};
@@ -42,7 +52,7 @@ fn params(media: &str, width: i32, height: i32, cpu_effect: bool) -> VideoTicket
 }
 
 fn main() {
-	let mut args = std::env::args().skip(1);
+	let mut args = env::args().skip(1);
 	let media = args
 		.next()
 		.unwrap_or_else(|| "/home/sunyu/Videos/20260404双创宣传片素材拍摄/C0024.MP4".into());
@@ -50,23 +60,21 @@ fn main() {
 	let frames: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(4);
 	let width: i32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1920);
 	let height: i32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(1080);
-	let _ui_device = std::env::var_os("QUERCUS_STRESS_UI")
-		.and_then(|_| quercus_core::backend::GpuContext::create(
-			quercus_core::backend::BackendKind::Vulkan,
-		));
-	let pipeline = std::env::var_os("QUERCUS_STRESS_PIPELINE")
-		.map(|_| quercus_render::pipeline::PipelineBackend::new().expect("pipeline start"));
+	let _ui_device = env::var_os("QUERCUS_STRESS_UI")
+		.and_then(|_| backend::GpuContext::create(backend::BackendKind::Vulkan));
+	let pipeline = env::var_os("QUERCUS_STRESS_PIPELINE")
+		.map(|_| pipeline::PipelineBackend::new().expect("pipeline start"));
 	let started = Instant::now();
 	let mut tasks = Vec::new();
 	for worker in 0..workers {
 		let media = media.clone();
-		tasks.push(std::thread::spawn(move || {
+		tasks.push(thread::spawn(move || {
 			let template = params(&media, width, height, worker % 2 == 1);
 			for frame in 0..frames {
 				let time = Rational::new(frame as i64, 25);
 				let mut params = template.clone();
 				params.time = time;
-				let texture = quercus_render::eval::render_produced_frame(time, &params)?;
+				let texture = eval::render_produced_frame(time, &params)?;
 				let readback = texture.to_frame();
 				if let Err(error) = readback {
 					eprintln!("[stress] worker={worker} frame={frame} readback failed: {error}");
@@ -74,7 +82,7 @@ fn main() {
 				}
 				eprintln!("[stress] worker={worker} frame={frame} done");
 			}
-			Ok::<(), quercus_render::error::Error>(())
+			Ok::<(), error::Error>(())
 		}));
 	}
 	for task in tasks {
@@ -85,10 +93,10 @@ fn main() {
 	eprintln!(
 		"[stress] wall={:.2}s imports={} transfers={}",
 		started.elapsed().as_secs_f64(),
-		quercus_codec::gpuinterop::HW_IMPORTS.load(std::sync::atomic::Ordering::Relaxed),
-		quercus_codec::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed),
+		gpuinterop::HW_IMPORTS.load(sync::atomic::Ordering::Relaxed),
+		hwdecode::HW_TRANSFERS.load(sync::atomic::Ordering::Relaxed),
 	);
 	if let Some(pipeline) = pipeline {
-		quercus_render::worker::JobDispatch::shutdown(&*pipeline);
+		worker::JobDispatch::shutdown(&*pipeline);
 	}
 }

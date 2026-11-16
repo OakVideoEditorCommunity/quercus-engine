@@ -21,6 +21,8 @@
 // still part of the shared fixture API.
 #![allow(dead_code)]
 
+use quercus_core::backend;
+use quercus_render::manager;
 use std::sync::{Mutex, MutexGuard};
 
 /// Serializes tests that initialize the process-wide RenderManager
@@ -38,23 +40,23 @@ impl ManagerGuard {
 	/// Initialize the manager and hold the serialization lock. Uses the
 	/// test-only inline backend so no quercus-worker children are spawned.
 	pub fn init() -> Self {
-		Self::init_with(quercus_render::manager::RenderBackendChoice::Threads)
+		Self::init_with(manager::RenderBackendChoice::Threads)
 	}
 
 	/// Initialize the manager with an explicit backend choice and hold the
 	/// serialization lock. Callers that pass `Pipeline` get the M1 thread
 	/// pipeline; everything else behaves like [`ManagerGuard::init`].
-	pub fn init_with(choice: quercus_render::manager::RenderBackendChoice) -> Self {
+	pub fn init_with(choice: manager::RenderBackendChoice) -> Self {
 		let guard = MANAGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-		quercus_render::manager::RenderManager::shutdown();
-		quercus_render::manager::RenderManager::init_with_backend(choice).expect("manager init");
+		manager::RenderManager::shutdown();
+		manager::RenderManager::init_with_backend(choice).expect("manager init");
 		Self { _guard: guard }
 	}
 }
 
 impl Drop for ManagerGuard {
 	fn drop(&mut self) {
-		quercus_render::manager::RenderManager::shutdown();
+		manager::RenderManager::shutdown();
 	}
 }
 
@@ -69,15 +71,15 @@ impl Drop for ManagerGuard {
 /// silently dropping the import signal; elsewhere the skip prints a
 /// distinctive `SKIP:` marker so CI logs distinguish skipped from executed
 /// tests.
-pub fn gpu_context_for_import() -> Option<std::sync::Arc<quercus_core::backend::GpuContext>> {
-	let created = quercus_core::backend::GpuContext::create(quercus_core::backend::BackendKind::Auto);
+pub fn gpu_context_for_import() -> Option<std::sync::Arc<backend::GpuContext>> {
+	let created = backend::GpuContext::create(backend::BackendKind::Auto);
 	let Some(ctx) = created else {
 		skip_import_gpu("no GPU adapter");
 		return None;
 	};
 	if matches!(
 		ctx.kind(),
-		quercus_core::backend::BackendKind::Vulkan | quercus_core::backend::BackendKind::Metal
+		backend::BackendKind::Vulkan | backend::BackendKind::Metal
 	) {
 		return Some(ctx);
 	}
@@ -88,7 +90,7 @@ pub fn gpu_context_for_import() -> Option<std::sync::Arc<quercus_core::backend::
 /// Report (and under `QUERCUS_REQUIRE_GPU`, fail) a missing import-capable
 /// adapter. The single `SKIP:` line keeps the skip observable in CI logs.
 fn skip_import_gpu(reason: &str) {
-	if quercus_core::backend::require_gpu_adapter() {
+	if backend::require_gpu_adapter() {
 		panic!(
 			"no importable GPU context for the M5 hardware import ({reason}); \
 			 QUERCUS_REQUIRE_GPU is set"
@@ -219,7 +221,10 @@ pub extern "C" fn quercuscore_audioparams_channel_layout(params: *const QuercusA
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_set_channel_layout(params: *mut QuercusAudioParams, layout: u64) {
+pub extern "C" fn quercuscore_audioparams_set_channel_layout(
+	params: *mut QuercusAudioParams,
+	layout: u64,
+) {
 	audio_params_set(params as *mut c_void, |p| p.channel_layout = layout);
 }
 
@@ -236,22 +241,33 @@ pub extern "C" fn quercuscore_audioparams_set_time_base(
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_set_format(params: *mut QuercusAudioParams, format: c_int) {
+pub extern "C" fn quercuscore_audioparams_set_format(
+	params: *mut QuercusAudioParams,
+	format: c_int,
+) {
 	audio_params_set(params as *mut c_void, |p| p.format = format);
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_set_stream_index(params: *mut QuercusAudioParams, index: c_int) {
+pub extern "C" fn quercuscore_audioparams_set_stream_index(
+	params: *mut QuercusAudioParams,
+	index: c_int,
+) {
 	audio_params_set(params as *mut c_void, |p| p.stream_index = index);
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_set_duration(params: *mut QuercusAudioParams, duration: i64) {
+pub extern "C" fn quercuscore_audioparams_set_duration(
+	params: *mut QuercusAudioParams,
+	duration: i64,
+) {
 	audio_params_set(params as *mut c_void, |p| p.duration = duration);
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_channel_count(params: *const QuercusAudioParams) -> c_int {
+pub extern "C" fn quercuscore_audioparams_channel_count(
+	params: *const QuercusAudioParams,
+) -> c_int {
 	audio_params_get(params as *const c_void)
 		.channel_layout
 		.count_ones() as c_int
@@ -279,7 +295,9 @@ pub extern "C" fn quercuscore_audioparams_is_valid(params: *const QuercusAudioPa
 }
 
 #[no_mangle]
-pub extern "C" fn quercuscore_audioparams_time_base(params: *const QuercusAudioParams) -> *mut c_void {
+pub extern "C" fn quercuscore_audioparams_time_base(
+	params: *const QuercusAudioParams,
+) -> *mut c_void {
 	let p = audio_params_get(params as *const c_void);
 	let r = (p.time_base_num, p.time_base_den);
 	let raw = Box::into_raw(Box::new(r));

@@ -2,12 +2,27 @@
 //! format/codec enumerations, the proxy manager, and the background-task
 //! submit lane.
 
+use crate::state;
 use std::ffi::{CStr, CString, c_void};
+use std::mem;
+use std::ptr;
+use std::slice;
+use std::str;
 
 use crate::vecs::VecI32;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	// exportcodec
 	fn quercus_codec_codec_is_valid(codec: i32) -> bool;
@@ -74,7 +89,10 @@ unsafe extern "C" {
 	fn quercus_codec_frame_channel_count(this: *const c_void) -> i32;
 	fn quercus_codec_frame_timestamp(this: *const c_void) -> crate::types::Rational;
 	fn quercus_codec_frame_set_timestamp(this: *mut c_void, ts: crate::types::Rational);
-	fn quercus_codec_frame_get_params(this: *const c_void, out: *mut crate::types::VideoParams) -> bool;
+	fn quercus_codec_frame_get_params(
+		this: *const c_void,
+		out: *mut crate::types::VideoParams,
+	) -> bool;
 	fn quercus_codec_frame_set_params(this: *mut c_void, params: crate::types::VideoParams);
 	fn quercus_codec_frame_add_ref(this: *const c_void);
 	fn quercus_codec_frame_release(this: *const c_void);
@@ -136,7 +154,8 @@ unsafe extern "C" {
 	) -> bool;
 	fn quercus_codec_footage_has_source_start_time(fd: *const c_void) -> bool;
 	fn quercus_codec_footage_source_start_time(fd: *const c_void) -> crate::types::Rational;
-	fn quercus_codec_footage_duration(fd: *const c_void, out: *mut crate::types::TimeRange) -> bool;
+	fn quercus_codec_footage_duration(fd: *const c_void, out: *mut crate::types::TimeRange)
+	-> bool;
 	fn quercus_codec_footage_add_ref(fd: *const c_void);
 	fn quercus_codec_footage_release(fd: *const c_void);
 
@@ -226,7 +245,7 @@ pub enum ProxyParamsError {
 /// Runs an engine snprintf-style string getter to completion: query the
 /// length, allocate, fetch. `None` on engine error (-1).
 pub(crate) fn string_out(f: impl Fn(*mut u8, usize) -> i32) -> Option<String> {
-	let n = f(std::ptr::null_mut(), 0);
+	let n = f(ptr::null_mut(), 0);
 	if n < 0 {
 		return None;
 	}
@@ -291,7 +310,7 @@ impl Codec {
 	pub fn from_i32(v: i32) -> Option<Codec> {
 		if unsafe { quercus_codec_codec_is_valid(v) } {
 			// Validity was checked against the engine's own table.
-			Some(unsafe { std::mem::transmute::<i32, Codec>(v) })
+			Some(unsafe { mem::transmute::<i32, Codec>(v) })
 		} else {
 			None
 		}
@@ -367,7 +386,7 @@ impl Format {
 	/// The discriminant for a raw ABI value; `None` outside `0..=14`.
 	pub fn from_i32(v: i32) -> Option<Format> {
 		if unsafe { quercus_codec_format_is_valid(v) } {
-			Some(unsafe { std::mem::transmute::<i32, Format>(v) })
+			Some(unsafe { mem::transmute::<i32, Format>(v) })
 		} else {
 			None
 		}
@@ -478,7 +497,7 @@ impl ProxyParams {
 
 	fn read_cstr(field: &[u8; 32]) -> &str {
 		let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
-		std::str::from_utf8(&field[..end]).unwrap_or("")
+		str::from_utf8(&field[..end]).unwrap_or("")
 	}
 
 	/// Copies `value` into a fixed 32-byte NUL-terminated field.
@@ -600,7 +619,12 @@ pub fn proxy_get_filename(
 /// error.
 pub fn proxy_get_working_filename(proxy_filename: &str) -> Option<String> {
 	string_out(|buf, len| unsafe {
-		quercus_codec_proxy_get_working_filename(proxy_filename.as_ptr(), proxy_filename.len(), buf, len)
+		quercus_codec_proxy_get_working_filename(
+			proxy_filename.as_ptr(),
+			proxy_filename.len(),
+			buf,
+			len,
+		)
 	})
 }
 
@@ -712,7 +736,8 @@ struct QuercusCodecTaskRequest {
 	proxy_height: i32,
 }
 
-type TaskSubmitFn = unsafe extern "C" fn(req: *const QuercusCodecTaskRequest, userdata: *mut c_void) -> i32;
+type TaskSubmitFn =
+	unsafe extern "C" fn(req: *const QuercusCodecTaskRequest, userdata: *mut c_void) -> i32;
 
 fn borrow_cstr<'a>(p: *const std::ffi::c_char) -> &'a str {
 	if p.is_null() {
@@ -729,7 +754,11 @@ fn borrow_cstr<'a>(p: *const std::ffi::c_char) -> &'a str {
 /// every other value to [`TaskKind::Conform`].
 fn request_from_c(raw: &QuercusCodecTaskRequest) -> TaskRequest<'_> {
 	TaskRequest {
-		kind: if raw.kind == 1 { TaskKind::Proxy } else { TaskKind::Conform },
+		kind: if raw.kind == 1 {
+			TaskKind::Proxy
+		} else {
+			TaskKind::Conform
+		},
 		input_filename: borrow_cstr(raw.input_filename),
 		output_filename: borrow_cstr(raw.output_filename),
 		stream_index: raw.stream_index,
@@ -758,7 +787,7 @@ where
 	F: Fn(&TaskRequest) -> i32 + Send + 'static,
 {
 	match cb {
-		None => unsafe { quercus_codec_task_set_submit_cb(None, std::ptr::null_mut()) },
+		None => unsafe { quercus_codec_task_set_submit_cb(None, ptr::null_mut()) },
 		Some(f) => {
 			/// C ABI trampoline that forwards one task request to the boxed
 			/// `F` callback held in `userdata`.
@@ -820,7 +849,9 @@ pub fn task_submit(req: &TaskRequest) -> Result<bool, Error> {
 // Frame (reference-counted CPU pixel buffer)
 // ---------------------------------------------------------------------------
 
-use crate::types::{AudioStreamParams, PixelFormat, Rational, SubtitleParams, TimeRange, VideoParams};
+use crate::types::{
+	AudioStreamParams, PixelFormat, Rational, SubtitleParams, TimeRange, VideoParams,
+};
 
 /// A reference-counted CPU pixel buffer; the plugin I/O carrier.
 ///
@@ -882,7 +913,7 @@ impl Frame {
 			return None;
 		}
 		let len = self.allocated_size();
-		Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
+		Some(unsafe { slice::from_raw_parts_mut(ptr, len) })
 	}
 
 	/// The allocated buffer size in bytes (0 when unallocated).
@@ -1064,7 +1095,6 @@ pub fn remove_digit_placeholder(filename: &str) -> Option<String> {
 // Probe (read-only FootageDescription handle)
 // ---------------------------------------------------------------------------
 
-
 /// A stream's kind within a [`FootageDescription`].
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1094,11 +1124,11 @@ impl StreamType {
 pub fn decoder_probe(
 	decoder_id: Option<&str>,
 	filename: &str,
-	cancel: Option<&crate::state::CancelAtom>,
+	cancel: Option<&state::CancelAtom>,
 ) -> Option<FootageDescription> {
 	let (id, id_len) = match decoder_id {
 		Some(id) => (id.as_ptr(), id.len()),
-		None => (std::ptr::null(), 0),
+		None => (ptr::null(), 0),
 	};
 	let ptr = unsafe {
 		quercus_codec_decoder_probe(
@@ -1106,7 +1136,7 @@ pub fn decoder_probe(
 			id_len,
 			filename.as_ptr(),
 			filename.len(),
-			crate::state::atom_ptr(cancel),
+			state::atom_ptr(cancel),
 		)
 	};
 	if ptr.is_null() {
@@ -1191,7 +1221,8 @@ impl FootageDescription {
 	/// The `ordinal`-th subtitle stream's params (per-type ordinal).
 	pub fn subtitle_stream(&self, ordinal: usize) -> Option<SubtitleParams> {
 		let mut out = SubtitleParams::default();
-		if unsafe { quercus_codec_footage_get_subtitle_stream(self.ptr, ordinal as i32, &mut out) } {
+		if unsafe { quercus_codec_footage_get_subtitle_stream(self.ptr, ordinal as i32, &mut out) }
+		{
 			Some(out)
 		} else {
 			None
@@ -1396,7 +1427,7 @@ impl DecoderSession {
 	pub fn open(decoder_id: Option<&str>, filename: &str, stream_index: i32) -> Option<Self> {
 		let (id, id_len) = match decoder_id {
 			Some(id) => (id.as_ptr(), id.len()),
-			None => (std::ptr::null(), 0),
+			None => (ptr::null(), 0),
 		};
 		let ptr = unsafe {
 			quercus_codec_decoder_open(id, id_len, filename.as_ptr(), filename.len(), stream_index)
@@ -1494,7 +1525,6 @@ impl Drop for DecoderSession {
 // ---------------------------------------------------------------------------
 /// Backwards-compatible alias for [`QuercusCodecEncodingParams`].
 pub type EncodingParams = QuercusCodecEncodingParams;
-
 
 /// Encoding parameters. Layout matches the engine's `EncodingParams`
 /// (which mirrors quercus-codec's `repr(C)` struct field for field); the
@@ -1605,7 +1635,7 @@ impl QuercusCodecEncodingParams {
 
 	fn read_cstr(field: &[u8]) -> &str {
 		let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
-		std::str::from_utf8(&field[..end]).unwrap_or("")
+		str::from_utf8(&field[..end]).unwrap_or("")
 	}
 
 	/// Copies `value` into a fixed-size NUL-terminated string field.
@@ -1693,7 +1723,11 @@ impl QuercusCodecEncodingParams {
 	/// Returns [`ParamsStringError::TooLong`] when `value` does not fit the
 	/// field and [`ParamsStringError::InteriorNul`] when it contains a NUL byte.
 	pub fn set_color_transform_output(&mut self, value: &str) -> Result<(), ParamsStringError> {
-		Self::write_cstr(&mut self.color_transform_output, "color_transform_output", value)
+		Self::write_cstr(
+			&mut self.color_transform_output,
+			"color_transform_output",
+			value,
+		)
 	}
 }
 
@@ -1761,7 +1795,12 @@ impl EncoderSession {
 	/// buffer (for example when `frame_count` disagrees with `samples`).
 	pub fn write_audio(&self, samples: &[f32], frame_count: i32) -> Result<(), Error> {
 		if unsafe {
-			quercus_codec_encoder_write_audio(self.ptr, samples.as_ptr(), samples.len(), frame_count)
+			quercus_codec_encoder_write_audio(
+				self.ptr,
+				samples.as_ptr(),
+				samples.len(),
+				frame_count,
+			)
 		} {
 			Ok(())
 		} else {
@@ -1828,281 +1867,4 @@ impl Drop for EncoderSession {
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-	use std::sync::Mutex;
-
-	// The task-submit registry is process-global; serialize the tests
-	// that touch it.
-	static SERIAL: Mutex<()> = Mutex::new(());
-
-	fn proxy_task<'a>(input: &'a str, output: &'a str) -> TaskRequest<'a> {
-		TaskRequest {
-			kind: TaskKind::Proxy,
-			input_filename: input,
-			output_filename: output,
-			stream_index: 3,
-			sample_rate: 0,
-			channel_layout: 0,
-			sample_format: 0,
-			proxy_width: 640,
-			proxy_height: 360,
-		}
-	}
-
-	fn temp_cache(name: &str) -> String {
-		let dir = std::env::temp_dir().join(format!(
-			"quercusengine_sdk_proxy_{name}_{}",
-			std::process::id()
-		));
-		let _ = std::fs::create_dir_all(&dir);
-		dir.to_string_lossy().into_owned()
-	}
-
-	#[test]
-	fn codec_enum_roundtrip_and_flags() {
-		assert_eq!(Codec::count(), 19);
-		assert_eq!(Codec::from_i32(1), Some(Codec::H264));
-		assert_eq!(Codec::from_i32(19), None);
-		assert_eq!(Codec::from_i32(-1), None);
-		assert_eq!(Codec::H264.name(), "H.264");
-		assert!(Codec::OpenEXR.is_still_image());
-		assert!(!Codec::H264.is_still_image());
-		assert!(Codec::FLAC.is_lossless());
-	}
-
-	#[test]
-	fn format_strings_and_codec_lists() {
-		assert_eq!(Format::count(), 15);
-		assert_eq!(Format::from_i32(1), Some(Format::Matroska));
-		assert_eq!(Format::from_i32(15), None);
-		assert_eq!(Format::Matroska.name(), "Matroska Video");
-		assert_eq!(Format::Matroska.extension(), "mkv");
-
-		let video = Format::Matroska.video_codecs();
-		assert!(video.to_vec().contains(&(Codec::H264 as i32)));
-		let audio = Format::Matroska.audio_codecs();
-		assert!(audio.to_vec().contains(&(Codec::AAC as i32)));
-	}
-
-	#[test]
-	fn proxy_params_roundtrip_and_validation() {
-		let mut p = ProxyParams::default();
-		assert_eq!((p.width, p.height, p.divider), (1280, 720, 1));
-		assert_eq!(p.extension(), "mp4");
-		assert_eq!(p.preset(), "veryfast");
-
-		p.set_extension("mkv").unwrap();
-		assert_eq!(p.extension(), "mkv");
-		assert!(p.set_extension(&"x".repeat(32)).is_err());
-		assert!(p.set_preset("a\0b").is_err());
-	}
-
-	#[test]
-	fn proxy_state_and_filenames() {
-		assert_eq!(
-			proxy_get_state("/nonexistent/quercus-sdk-proxy.mp4"),
-			ProxyState::Missing
-		);
-		let params = ProxyParams::default();
-		let cache = std::env::temp_dir().to_string_lossy().into_owned();
-		let filename =
-			proxy_get_filename(&cache, "quercus-sdk-src.mp4", 0, &params).expect("filename");
-		assert!(filename.ends_with(".v1.a1.mp4"), "unexpected: {filename}");
-		let working = proxy_get_working_filename(&filename).expect("working");
-		assert!(working.ends_with(".working.mp4"));
-	}
-
-	#[test]
-	fn proxy_get_or_start_states() {
-		let _guard = SERIAL.lock().unwrap();
-		set_task_submit_cb::<fn(&TaskRequest) -> i32>(None);
-
-		let cache = temp_cache("missing");
-		let result = proxy_get_or_start(&cache, "/tmp/quercus-sdk-gos.mp4", 0, &ProxyParams::default())
-			.expect("call");
-		assert_eq!(result.state, ProxyState::Missing);
-		assert!(!result.filename.is_empty());
-
-		// A registered, accepting callback flips it to Generating.
-		set_task_submit_cb(Some(|_req: &TaskRequest| 0));
-		let cache = temp_cache("generating");
-		let result = proxy_get_or_start(&cache, "/tmp/quercus-sdk-gos.mp4", 0, &ProxyParams::default())
-			.expect("call");
-		assert_eq!(result.state, ProxyState::Generating);
-		set_task_submit_cb::<fn(&TaskRequest) -> i32>(None);
-	}
-
-	#[test]
-	fn task_submit_without_and_with_registrar() {
-		let _guard = SERIAL.lock().unwrap();
-		set_task_submit_cb::<fn(&TaskRequest) -> i32>(None);
-		assert!(!task_submit_is_registered());
-		assert_eq!(task_submit(&proxy_task("/tmp/a.mp4", "/tmp/a.p.mp4")), Ok(false));
-
-		use std::sync::atomic::{AtomicUsize, Ordering};
-		static CALLS: AtomicUsize = AtomicUsize::new(0);
-		CALLS.store(0, Ordering::SeqCst);
-		set_task_submit_cb(Some(move |req: &TaskRequest| {
-			CALLS.fetch_add(1, Ordering::SeqCst);
-			assert_eq!(req.kind, TaskKind::Proxy);
-			assert_eq!(req.input_filename, "/tmp/a.mp4");
-			assert_eq!(req.stream_index, 3);
-			0
-		}));
-		assert!(task_submit_is_registered());
-		assert_eq!(task_submit(&proxy_task("/tmp/a.mp4", "/tmp/a.p.mp4")), Ok(true));
-		assert_eq!(CALLS.load(Ordering::SeqCst), 1);
-
-		set_task_submit_cb::<fn(&TaskRequest) -> i32>(None);
-		assert!(!task_submit_is_registered());
-	}
-
-	#[test]
-	fn task_submit_rejects_nul_filenames() {
-		let _guard = SERIAL.lock().unwrap();
-		set_task_submit_cb::<fn(&TaskRequest) -> i32>(None);
-		let req = proxy_task("/tmp/a\0b.mp4", "/tmp/a.p.mp4");
-		assert!(task_submit(&req).is_err());
-	}
-
-	#[test]
-	fn decoder_ids_and_sequence_helpers() {
-		let ids = decoder_ids();
-		assert!(ids.iter().any(|id| id == "ffmpeg"));
-
-		assert_eq!(image_sequence_digit_count("frame_0001.png"), Some(4));
-		assert_eq!(image_sequence_digit_count("frame.png"), Some(0));
-		assert_eq!(
-			transform_image_sequence_filename("frame_0001.png", 42).as_deref(),
-			Some("frame_0042.png")
-		);
-	}
-
-	#[test]
-	fn encoder_placeholder_helpers() {
-		assert!(filename_contains_digit_placeholder("out_[#####].png"));
-		assert!(!filename_contains_digit_placeholder("out.png"));
-		assert_eq!(placeholder_digit_count("out_[#####].png"), Some(5));
-		let stripped = remove_digit_placeholder("out_[#####].png").expect("strip");
-		assert!(!stripped.contains('#'), "got {stripped}");
-	}
-
-	#[test]
-	fn probe_negative_paths() {
-		// The positive path is covered end-to-end by the engine tests
-		// (they generate real media with testmedia); here we verify the
-		// wrapper's None mapping.
-		assert!(decoder_probe(Some("no-such-decoder"), "/nonexistent/x.mp4", None).is_none());
-		assert!(decoder_probe(None, "/nonexistent/x.mp4", None).is_none());
-	}
-
-	#[test]
-	fn decoder_session_negative_paths() {
-		// The positive decode path is covered end-to-end by the engine
-		// tests (they generate real media with testmedia).
-		assert!(DecoderSession::open(Some("no-such-decoder"), "/nonexistent/x.mp4", 0).is_none());
-		assert!(DecoderSession::open(None, "/nonexistent/x.mp4", 0).is_none());
-	}
-
-	#[test]
-	fn retrieve_params_builder_chains() {
-		use crate::types::{Rational, TimeRange};
-		let p = RetrieveParams::new()
-			.stream("clip.mp4", 0)
-			.time(Rational::new(1, 2))
-			.length(TimeRange::new(Rational::new(0, 1), Rational::new(10, 1)))
-			.force_range(Some(1))
-			.force_range(None)
-			.image_sequence(4, 7)
-			.target_size(Some((1920, 1080)))
-			.target_size(None)
-			.mode(true)
-			.premultiplied_alpha(true);
-		let clone = p.clone();
-		drop(p);
-		drop(clone);
-	}
-
-	#[test]
-	fn encode_h264_roundtrip_via_sdk() {
-		let out = std::env::temp_dir()
-			.join(format!("quercussdk_encode_{}.mp4", std::process::id()));
-		let mut params = QuercusCodecEncodingParams::new();
-		params.set_filename(out.to_str().unwrap()).unwrap();
-		params.format = Format::MPEG4Video as i32;
-		params.video_enabled = 1;
-		params.video_codec = Codec::H264 as i32;
-		params.video_width = 64;
-		params.video_height = 64;
-		params.video_time_base_num = 1;
-		params.video_time_base_den = 10;
-		params.video_pixel_format = crate::types::PixelFormat::F32 as i32;
-		params.video_pixel_aspect_num = 1;
-		params.video_pixel_aspect_den = 1;
-
-		let session = EncoderSession::create(&params).expect("create");
-		session.open().expect("open");
-
-		let mut vp = crate::types::VideoParams::new();
-		vp.width = 64;
-		vp.height = 64;
-		vp.format = crate::types::PixelFormat::F32 as i32;
-		vp.channel_count = 4;
-		for i in 0..10 {
-			let mut frame = Frame::with_params(&vp);
-			frame.allocate().expect("allocate");
-			frame.set_timestamp(crate::types::Rational::new(i, 10));
-			frame.data().unwrap()[..64 * 16].fill(0x3F); // some nonzero pattern
-			session.write_video(&frame).expect("write");
-		}
-		session.flush().expect("flush");
-		session.close().expect("close");
-		drop(session);
-
-		let len = std::fs::metadata(&out).expect("output exists").len();
-		assert!(len > 1000, "encoded file is implausibly small: {len}");
-		let _ = std::fs::remove_file(&out);
-	}
-
-	#[test]
-	fn encoder_negative_paths() {
-		// Unknown format.
-		let params = QuercusCodecEncodingParams::new();
-		assert!(EncoderSession::create(&params).is_none());
-
-		// Field validation.
-		let mut params = QuercusCodecEncodingParams::new();
-		assert!(params.set_filename(&"x".repeat(2000)).is_err());
-		assert!(params.set_filename("a\0b").is_err());
-		params.set_filename("/tmp/quercus.mp4").unwrap();
-		assert_eq!(params.filename(), "/tmp/quercus.mp4");
-	}
-
-	#[test]
-	fn frame_lifecycle() {
-		let mut params = crate::types::VideoParams::new();
-		params.width = 64;
-		params.height = 32;
-		params.format = crate::types::PixelFormat::F32 as i32;
-		params.channel_count = 4;
-
-		let mut frame = Frame::with_params(&params);
-		assert!(!frame.is_allocated());
-		frame.allocate().expect("allocate");
-		assert_eq!((frame.width(), frame.height()), (64, 32));
-		assert_eq!(frame.format(), crate::types::PixelFormat::F32);
-		assert_eq!(frame.allocated_size(), 64 * 32 * 4 * 4);
-		assert_eq!(frame.linesize_bytes(), 64 * 4 * 4);
-
-		frame.data().expect("data")[..16].fill(0xAB);
-		frame.set_timestamp(crate::types::Rational::new(3, 2));
-		assert_eq!(frame.timestamp(), crate::types::Rational::new(3, 2));
-		assert_eq!(frame.params().map(|p| p.width), Some(64));
-
-		// Clones share the buffer until the last drop.
-		let clone = frame.clone();
-		drop(frame);
-		assert!(clone.is_allocated());
-	}
-}
+mod tests;

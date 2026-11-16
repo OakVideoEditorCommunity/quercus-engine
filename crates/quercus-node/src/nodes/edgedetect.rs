@@ -137,16 +137,18 @@ impl NodeBehavior for EdgeDetectNode {
 
 		table.push(
 			ValueType::Texture,
-			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: crate::id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}

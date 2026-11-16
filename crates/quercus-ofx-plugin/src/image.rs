@@ -306,15 +306,15 @@ impl Image {
 		// validateImageBaseProperties 的必备项，带可校验默认值）。
 		img.props.define(
 			"OfxPropType",
-			vec![Value::String(std::ffi::CString::new("OfxTypeImage").unwrap())],
+			vec![Value::String(
+				std::ffi::CString::new("OfxTypeImage").unwrap(),
+			)],
 		);
 		// OFX 必备图像属性（支持库 ImageBase/Image 构造的无默认值强读；
 		// 缺失即抛 PropertyUnknownToHost → MissingHostFeature 紫帧）：
 		// 方形像素 1.0；预乘声明（本管线按预乘 alpha 处理）；无场。
-		img.props.define(
-			"OfxImagePropPixelAspectRatio",
-			vec![Value::Double(1.0)],
-		);
+		img.props
+			.define("OfxImagePropPixelAspectRatio", vec![Value::Double(1.0)]);
 		img.props.define(
 			"OfxImageEffectPropPreMultiplication",
 			// kOfxImagePreMultiplied 的真实字符串值是
@@ -326,7 +326,9 @@ impl Image {
 		);
 		img.props.define(
 			"OfxImagePropField",
-			vec![Value::String(std::ffi::CString::new("OfxFieldNone").unwrap())],
+			vec![Value::String(
+				std::ffi::CString::new("OfxFieldNone").unwrap(),
+			)],
 		);
 		// OfxImageEffectPropRenderScale：openfx-misc 的
 		// checkBadRenderScaleOrField 用它比对渲染参数（1:1）。

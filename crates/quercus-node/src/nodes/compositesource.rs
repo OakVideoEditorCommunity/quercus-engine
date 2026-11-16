@@ -32,6 +32,7 @@
 //! this type has no C++ counterpart — the renderer reaches it through
 //! [`create`] directly.
 
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Stable type id (`org.olivevideoeditor.Olive.composite_source`).
@@ -105,12 +106,12 @@ impl NodeBehavior for CompositeSource {
 /// create-menu hiding flag.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 	core.flags |= crate::node::flags::DONT_SHOW_IN_CREATE_MENU;
 	core.effect_input = TEXTURE_INPUT.to_string();
@@ -155,7 +156,12 @@ mod tests {
 			NodeValue::Texture(crate::handle::make_owned(texture)),
 		)]);
 		let mut table = NodeValueTable::default();
-		behavior.value(&core, &inputs, quercus_core::Rational::new(0, 1), &mut table);
+		behavior.value(
+			&core,
+			&inputs,
+			quercus_core::Rational::new(0, 1),
+			&mut table,
+		);
 		assert!(matches!(
 			table.get(ValueType::Texture),
 			Some(NodeValue::Texture(_))

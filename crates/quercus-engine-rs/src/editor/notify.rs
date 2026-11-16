@@ -1,6 +1,7 @@
 //! RAII subscriptions for successful session command notifications.
 
 use std::ffi::c_void;
+use std::panic;
 use std::sync::Mutex;
 
 use crate::editor::EditorSession;
@@ -8,8 +9,18 @@ use crate::editor::EditorSession;
 #[cfg(test)]
 mod tests;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_editor_edit_subscribe(
 		session: *mut c_void,
@@ -47,7 +58,7 @@ struct ObserverCallback {
 /// the call; the engine keeps it alive while a notification is in flight.
 unsafe extern "C" fn call_observer(data: *mut c_void, op: u32, revision: i64) {
 	let observer = unsafe { &*(data as *const ObserverCallback) };
-	let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		let mut callback = observer.callback.lock().unwrap_or_else(|e| e.into_inner());
 		callback(op, revision);
 	}));

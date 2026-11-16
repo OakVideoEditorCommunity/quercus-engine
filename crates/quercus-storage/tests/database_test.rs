@@ -31,22 +31,22 @@ mod common;
 
 use std::path::PathBuf;
 
-use sea_orm::entity::prelude::*;
-use sea_orm::QueryOrder;
 use quercus_node::id::NodeId;
 use quercus_node::value::NodeValue;
 use quercus_storage::backend::StorageBackend;
 use quercus_storage::backends::database::entities::{journal, project, snapshot};
 use quercus_storage::backends::database::{
-	derive_stats, DatabaseBackend, KIND_IMPORT, KIND_REDO, ProjectStats, SNAPSHOT_KEEP,
+	derive_stats, DatabaseBackend, ProjectStats, KIND_IMPORT, KIND_REDO, SNAPSHOT_KEEP,
 };
 use quercus_storage::error::{
-	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_E_IO, QUERCUSSTORAGE_E_NO_BACKEND,
-	QUERCUSSTORAGE_E_NOT_FOUND, QUERCUSSTORAGE_OK,
+	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_E_IO,
+	QUERCUSSTORAGE_E_NOT_FOUND, QUERCUSSTORAGE_E_NO_BACKEND, QUERCUSSTORAGE_OK,
 };
 use quercus_storage::nodeutil::project_arc;
 use quercus_storage::registry::Registry;
 use quercus_storage::uri::StorageUri;
+use sea_orm::entity::prelude::*;
+use sea_orm::QueryOrder;
 
 use common::*;
 
@@ -92,7 +92,10 @@ fn roundtrip_field_by_field() {
 			.id
 	});
 	let mirrored = settings_rows(&db, row);
-	assert!(mirrored.contains(&("projectname".to_string(), "full-fixture".to_string())), "{mirrored:?}");
+	assert!(
+		mirrored.contains(&("projectname".to_string(), "full-fixture".to_string())),
+		"{mirrored:?}"
+	);
 }
 
 #[test]
@@ -158,23 +161,45 @@ fn first_save_is_an_import_command() {
 	});
 	let (pid, command_seq, rows) = rows;
 	assert_eq!(command_seq, 1);
-	assert_eq!(rows.len(), node_count + 1, "every node + the settings pseudo-node");
-	assert!(rows.iter().all(|r| r.seq == 1 && r.kind == KIND_IMPORT), "one import command");
-	assert!(rows.iter().all(|r| r.old_xml.is_none()), "import has no before images");
-	assert!(rows.iter().all(|r| r.new_xml.is_some()), "import has after images");
+	assert_eq!(
+		rows.len(),
+		node_count + 1,
+		"every node + the settings pseudo-node"
+	);
+	assert!(
+		rows.iter().all(|r| r.seq == 1 && r.kind == KIND_IMPORT),
+		"one import command"
+	);
+	assert!(
+		rows.iter().all(|r| r.old_xml.is_none()),
+		"import has no before images"
+	);
+	assert!(
+		rows.iter().all(|r| r.new_xml.is_some()),
+		"import has after images"
+	);
 	// The settings pseudo-node (identity 0) is present.
-	assert!(rows.iter().any(|r| r.node_identity == 0), "settings row present");
+	assert!(
+		rows.iter().any(|r| r.node_identity == 0),
+		"settings row present"
+	);
 	assert_eq!(
 		rows.iter().filter(|r| r.node_identity == 0).count(),
 		1,
 		"exactly one settings row"
 	);
 	// The real-node rows use the +1 offset (settings 0 reserved).
-	assert!(rows.iter().all(|r| r.node_identity >= 1 || r.node_identity == 0));
+	assert!(rows
+		.iter()
+		.all(|r| r.node_identity >= 1 || r.node_identity == 0));
 	// The node fragments round-trip: the settings row holds the settings
 	// element.
 	let settings_row = rows.iter().find(|r| r.node_identity == 0).unwrap();
-	assert!(settings_row.new_xml.as_deref().unwrap().starts_with("<settings>"));
+	assert!(settings_row
+		.new_xml
+		.as_deref()
+		.unwrap()
+		.starts_with("<settings>"));
 	let _ = pid;
 }
 
@@ -201,12 +226,13 @@ fn later_saves_are_diffs() {
 			.filter(|id| p.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.collect();
 		let a = math_ids[0];
-		p.graph
-			.get_mut(a)
-			.unwrap()
-			.core
-			.set_standard_value("param_a_in", -1, NodeValue::Float(9.5));
-		p.settings.insert("projectname".to_string(), "diffed".to_string());
+		p.graph.get_mut(a).unwrap().core.set_standard_value(
+			"param_a_in",
+			-1,
+			NodeValue::Float(9.5),
+		);
+		p.settings
+			.insert("projectname".to_string(), "diffed".to_string());
 	}
 	save_project(&backend, &project, &uri).unwrap();
 
@@ -228,11 +254,23 @@ fn later_saves_are_diffs() {
 	let (pid, command_seq, rows) = rows;
 	assert_eq!(command_seq, 2);
 	let seq2: Vec<&journal::Model> = rows.iter().filter(|r| r.seq == 2).collect();
-	assert_eq!(seq2.len(), 2, "one changed node + the settings row, nothing else");
+	assert_eq!(
+		seq2.len(),
+		2,
+		"one changed node + the settings row, nothing else"
+	);
 	assert!(seq2.iter().all(|r| r.kind == KIND_REDO));
-	assert!(seq2.iter().all(|r| r.old_xml.is_some() && r.new_xml.is_some()), "diff carries both images");
+	assert!(
+		seq2.iter()
+			.all(|r| r.old_xml.is_some() && r.new_xml.is_some()),
+		"diff carries both images"
+	);
 	let settings_row = seq2.iter().find(|r| r.node_identity == 0).unwrap();
-	assert!(settings_row.new_xml.as_deref().unwrap().contains(">diffed<"));
+	assert!(settings_row
+		.new_xml
+		.as_deref()
+		.unwrap()
+		.contains(">diffed<"));
 	let _ = pid;
 
 	// Head state after the diff reflects both changes.
@@ -247,10 +285,17 @@ fn later_saves_are_diffs() {
 			.filter(|id| l.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.collect();
 		assert_eq!(
-			l.graph.get(math_ids[0]).unwrap().core.standard_value("param_a_in", -1),
+			l.graph
+				.get(math_ids[0])
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			NodeValue::Float(9.5)
 		);
-		assert_eq!(l.settings.get("projectname").cloned(), Some("diffed".to_string()));
+		assert_eq!(
+			l.settings.get("projectname").cloned(),
+			Some("diffed".to_string())
+		);
 	}
 }
 
@@ -400,23 +445,26 @@ fn undo_to_any_point() {
 	// Command 2: value 6.0.
 	{
 		let mut p = project.lock().unwrap();
-		p.graph
-			.get_mut(math_a)
-			.unwrap()
-			.core
-			.set_standard_value("param_a_in", -1, NodeValue::Float(6.0));
+		p.graph.get_mut(math_a).unwrap().core.set_standard_value(
+			"param_a_in",
+			-1,
+			NodeValue::Float(6.0),
+		);
 	}
 	save_project(&backend, &project, &uri).unwrap();
 	// Command 3: add a node.
 	let (new_id, value) = {
 		let mut p = project.lock().unwrap();
-		let (core, behavior) = (quercus_node::factory::Factory::global().find(MATH).unwrap().create)();
-		let id = p.graph.add_node(core, behavior);
-		p.graph
-			.get_mut(id)
+		let (core, behavior) = (quercus_node::factory::Factory::global()
+			.find(MATH)
 			.unwrap()
-			.core
-			.set_standard_value("param_a_in", -1, NodeValue::Float(11.0));
+			.create)();
+		let id = p.graph.add_node(core, behavior);
+		p.graph.get_mut(id).unwrap().core.set_standard_value(
+			"param_a_in",
+			-1,
+			NodeValue::Float(11.0),
+		);
 		let v = p
 			.graph
 			.get(id)
@@ -434,7 +482,11 @@ fn undo_to_any_point() {
 		let h = head.lock().unwrap();
 		assert!(h.graph.is_valid(new_id), "node added in command 3 is live");
 		assert_eq!(
-			h.graph.get(new_id).unwrap().core.standard_value("param_a_in", -1),
+			h.graph
+				.get(new_id)
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			value
 		);
 	}
@@ -452,7 +504,11 @@ fn undo_to_any_point() {
 			.find(|id| l.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.unwrap();
 		assert_eq!(
-			l.graph.get(id).unwrap().core.standard_value("param_a_in", -1),
+			l.graph
+				.get(id)
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			NodeValue::Float(6.0)
 		);
 	}
@@ -478,7 +534,11 @@ fn undo_to_any_point() {
 			.find(|id| l.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.unwrap();
 		assert_eq!(
-			l.graph.get(id).unwrap().core.standard_value("param_a_in", -1),
+			l.graph
+				.get(id)
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			NodeValue::Float(2.5)
 		);
 	}
@@ -498,7 +558,10 @@ fn undo_to_any_point() {
 			0,
 			"empty project at seq 0"
 		);
-		assert!(l.graph.endpoints().is_some(), "endpoints exist even in the empty state");
+		assert!(
+			l.graph.endpoints().is_some(),
+			"endpoints exist even in the empty state"
+		);
 	}
 
 	// Out of range -> E_INVALID.
@@ -529,11 +592,7 @@ fn snapshot_pruning_keeps_three() {
 			{
 				let mut p = project.lock().unwrap();
 				let id = p.graph.node_ids()[0];
-				p.graph
-					.get_mut(id)
-					.unwrap()
-					.core
-					.label = format!("step {i}");
+				p.graph.get_mut(id).unwrap().core.label = format!("step {i}");
 			}
 			save_project(&backend, &project, &uri).unwrap();
 		}
@@ -554,7 +613,11 @@ fn snapshot_pruning_keeps_three() {
 				.map(|s| s.command_seq)
 				.collect::<Vec<i64>>()
 		});
-		assert_eq!(seqs.len() as u64, SNAPSHOT_KEEP, "only the newest {SNAPSHOT_KEEP}");
+		assert_eq!(
+			seqs.len() as u64,
+			SNAPSHOT_KEEP,
+			"only the newest {SNAPSHOT_KEEP}"
+		);
 		assert_eq!(seqs[0], 6, "the newest survives");
 	});
 }
@@ -589,7 +652,9 @@ fn journal_retention_truncation() {
 	}
 	save_project(&backend, &project, &uri).unwrap();
 	// Snapshot at the head so rows ≤ 2 are covered.
-	backend.snapshot(&StorageUri::parse(&uri).unwrap(), &uuid).unwrap();
+	backend
+		.snapshot(&StorageUri::parse(&uri).unwrap(), &uuid)
+		.unwrap();
 
 	// Backdate every journal row two days, then save a third command
 	// with a 1-day retention window.
@@ -636,7 +701,10 @@ fn journal_retention_truncation() {
 		(proj.id, rows)
 	});
 	let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
-	assert!(!seqs.contains(&1) && !seqs.contains(&2), "old commands pruned: {seqs:?}");
+	assert!(
+		!seqs.contains(&1) && !seqs.contains(&2),
+		"old commands pruned: {seqs:?}"
+	);
 	assert_eq!(seqs, vec![3], "only the fresh command remains");
 	let _ = pid;
 
@@ -652,7 +720,11 @@ fn journal_retention_truncation() {
 			.filter(|id| l.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.collect();
 		assert_eq!(
-			l.graph.get(math_ids[0]).unwrap().core.standard_value("param_a_in", -1),
+			l.graph
+				.get(math_ids[0])
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			NodeValue::Float(4.5)
 		);
 		assert_eq!(
@@ -678,24 +750,34 @@ fn list_delete_duplicate_rename() {
 	let backend = DatabaseBackend::new();
 
 	// Empty library lists nothing.
-	assert!(backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap().is_empty());
+	assert!(backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap()
+		.is_empty());
 
 	let alpha = save_named_project(&backend, &uri, "Alpha");
 	let beta = save_named_project(&backend, &uri, "Beta");
 
-	let list = backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap();
+	let list = backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap();
 	assert_eq!(list.len(), 2, "two rows");
 	// Most recently modified first.
 	assert_eq!(list[0].name, "Beta");
 	assert_eq!(list[1].name, "Alpha");
 	assert_eq!(list[0].command_seq, 1);
-	assert_eq!(list[0].schema_ver, quercus_node::serializer::CURRENT_VERSION.0 as i32);
+	assert_eq!(
+		list[0].schema_ver,
+		quercus_node::serializer::CURRENT_VERSION.0 as i32
+	);
 
 	// Rename (library metadata).
 	backend
 		.rename_project(&StorageUri::parse(&uri).unwrap(), &alpha, "Alpha Renamed")
 		.unwrap();
-	let list = backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap();
+	let list = backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap();
 	assert!(list.iter().any(|p| p.name == "Alpha Renamed"), "{list:?}");
 	assert_eq!(
 		backend
@@ -713,7 +795,9 @@ fn list_delete_duplicate_rename() {
 	assert_ne!(copy.uuid, beta, "fresh uuid");
 	assert_eq!(copy.name, "Beta (copy)");
 	assert_eq!(copy.command_seq, 1);
-	let list = backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap();
+	let list = backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap();
 	assert_eq!(list.len(), 3);
 	let renamed_copy = backend
 		.duplicate_project(&StorageUri::parse(&uri).unwrap(), &beta, Some("Beta Clone"))
@@ -734,7 +818,10 @@ fn list_delete_duplicate_rename() {
 			.delete_project(&StorageUri::parse(&uri).unwrap(), uuid)
 			.unwrap();
 	}
-	assert!(backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap().is_empty());
+	assert!(backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap()
+		.is_empty());
 	assert_eq!(
 		backend
 			.delete_project(&StorageUri::parse(&uri).unwrap(), "{missing}")
@@ -802,7 +889,11 @@ fn duplicate_preserves_history() {
 			.filter(|id| l.graph.get(*id).unwrap().behavior.type_id() == MATH)
 			.collect();
 		assert_eq!(
-			l.graph.get(math_ids[0]).unwrap().core.standard_value("param_a_in", -1),
+			l.graph
+				.get(math_ids[0])
+				.unwrap()
+				.core
+				.standard_value("param_a_in", -1),
 			NodeValue::Float(2.5)
 		);
 	}
@@ -901,7 +992,9 @@ fn export_and_import_round_trip() {
 		)
 		.unwrap();
 	assert_ne!(imported2, imported, "repeat imports are new rows");
-	let list = backend.list_projects(&StorageUri::parse(&uri).unwrap()).unwrap();
+	let list = backend
+		.list_projects(&StorageUri::parse(&uri).unwrap())
+		.unwrap();
 	assert_eq!(list.len(), 3, "original + two imports");
 	let session = DatabaseBackend::new();
 	let (imported_uuid, imported_proj) = load_project(&session, &project_uri(&uri, &imported));
@@ -916,7 +1009,10 @@ fn export_and_import_round_trip() {
 				.count(),
 			12
 		);
-		assert_eq!(l.settings.get("projectname").cloned(), Some("full-fixture".to_string()));
+		assert_eq!(
+			l.settings.get("projectname").cloned(),
+			Some("full-fixture".to_string())
+		);
 	}
 
 	// Error paths: unknown project on export; non-file target; corrupt
@@ -1020,7 +1116,11 @@ fn pg_invalid_and_unreachable_targets_error_cleanly() {
 	let uuid = uuid_of(&project);
 
 	// Invalid connection strings -> E_INVALID at parse (no connection).
-	for bad in ["quercusdb+pg://", "quercusdb+pg://?project={x}", "quercusdb+pg://user@"] {
+	for bad in [
+		"quercusdb+pg://",
+		"quercusdb+pg://?project={x}",
+		"quercusdb+pg://user@",
+	] {
 		let err = backend
 			.list_projects(&StorageUri::parse(bad).unwrap())
 			.err()
@@ -1036,22 +1136,29 @@ fn pg_invalid_and_unreachable_targets_error_cleanly() {
 	for call in [
 		backend.load(&StorageUri::parse(dead).unwrap()).map(|_| ()),
 		save_project(&backend, &project, dead),
-		backend.list_projects(&StorageUri::parse(dead).unwrap()).map(|_| ()),
+		backend
+			.list_projects(&StorageUri::parse(dead).unwrap())
+			.map(|_| ()),
 		backend.delete_project(&StorageUri::parse(dead).unwrap(), &uuid),
 		backend.rename_project(&StorageUri::parse(dead).unwrap(), &uuid, "X"),
 		backend
 			.duplicate_project(&StorageUri::parse(dead).unwrap(), &uuid, None)
 			.map(|_| ()),
-		backend
-			.export_to_file(
-				&StorageUri::parse(dead).unwrap(),
-				&uuid,
-				&StorageUri::parse("file:///tmp/x.ove").unwrap(),
-			),
+		backend.export_to_file(
+			&StorageUri::parse(dead).unwrap(),
+			&uuid,
+			&StorageUri::parse("file:///tmp/x.ove").unwrap(),
+		),
 		backend.snapshot(&StorageUri::parse(dead).unwrap(), &uuid),
-		backend.load_at(&StorageUri::parse(dead).unwrap(), &uuid, 1).map(|_| ()),
+		backend
+			.load_at(&StorageUri::parse(dead).unwrap(), &uuid, 1)
+			.map(|_| ()),
 	] {
-		assert_eq!(call.err().unwrap().code(), QUERCUSSTORAGE_E_IO, "dead pg target");
+		assert_eq!(
+			call.err().unwrap().code(),
+			QUERCUSSTORAGE_E_IO,
+			"dead pg target"
+		);
 	}
 
 	// The sqlite library next to it is untouched by all of the above.
@@ -1149,7 +1256,11 @@ fn failure_paths_report_cleanly() {
 		println!("SKIP: read-only library write check needs an unprivileged user");
 	} else {
 		let err = result.err().expect("read-only library write must fail");
-		assert_eq!(err.code(), QUERCUSSTORAGE_E_IO, "read-only library write must fail");
+		assert_eq!(
+			err.code(),
+			QUERCUSSTORAGE_E_IO,
+			"read-only library write must fail"
+		);
 	}
 	for (f, p) in targets.iter().zip(saved) {
 		std::fs::set_permissions(f, p).unwrap();
@@ -1247,7 +1358,8 @@ fn concurrent_writers_are_serialized() {
 				// A same-uuid/seq insert conflict surfaces as a database
 				// error (or a retried BUSY gives up).
 				assert!(
-					*code == QUERCUSSTORAGE_E_IO || *code == quercus_storage::error::QUERCUSSTORAGE_E_FAILED,
+					*code == QUERCUSSTORAGE_E_IO
+						|| *code == quercus_storage::error::QUERCUSSTORAGE_E_FAILED,
 					"writer {i} failed with unexpected code {code}"
 				);
 			}

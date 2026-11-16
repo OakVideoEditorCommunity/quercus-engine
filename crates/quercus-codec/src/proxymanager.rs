@@ -367,10 +367,9 @@ impl ProxyManager {
 	/// transcode can run.
 	pub fn find_ffmpeg(configured_path: &str) -> String {
 		// An explicitly configured path takes precedence if it is usable.
-		if !configured_path.is_empty()
-			&& is_executable_file(Path::new(configured_path)) {
-				return absolute(configured_path);
-			}
+		if !configured_path.is_empty() && is_executable_file(Path::new(configured_path)) {
+			return absolute(configured_path);
+		}
 
 		// Fall back to searching the system PATH (split per platform:
 		// `;` on Windows, `:` elsewhere — see [`split_path_env`]).
@@ -533,12 +532,14 @@ mod tests {
 	use super::*;
 
 	fn temp_subdir(name: &str) -> String {
-		let dir =
-			std::env::temp_dir().join(format!("quercuscodec_proxy_{}_{}", name, std::process::id()));
+		let dir = std::env::temp_dir().join(format!(
+			"quercuscodec_proxy_{}_{}",
+			name,
+			std::process::id()
+		));
 		let _ = std::fs::create_dir_all(&dir);
 		dir.to_string_lossy().into_owned()
 	}
-
 
 	#[test]
 	fn proxy_params_default_values() {
@@ -612,13 +613,15 @@ mod tests {
 		// Divider mode tags the divider instead of an absolute size.
 		let mut d = p.clone();
 		d.divider = 2;
-		let f3 = ProxyManager::get_proxy_filename(&cache, missing.to_str().unwrap(), 0, &d).unwrap();
+		let f3 =
+			ProxyManager::get_proxy_filename(&cache, missing.to_str().unwrap(), 0, &d).unwrap();
 		assert!(f3.contains(".div2."));
 
 		// No audio.
 		let mut na = p.clone();
 		na.include_audio = 0;
-		let f4 = ProxyManager::get_proxy_filename(&cache, missing.to_str().unwrap(), 0, &na).unwrap();
+		let f4 =
+			ProxyManager::get_proxy_filename(&cache, missing.to_str().unwrap(), 0, &na).unwrap();
 		assert!(f4.contains(".a0."));
 	}
 
@@ -864,7 +867,10 @@ mod tests_coverage {
 			ProxyManager::proxy_state_from_string("bogus"),
 			ProxyState::Missing
 		);
-		assert_eq!(ProxyManager::proxy_state_from_string(""), ProxyState::Missing);
+		assert_eq!(
+			ProxyManager::proxy_state_from_string(""),
+			ProxyState::Missing
+		);
 	}
 
 	#[test]
@@ -880,7 +886,10 @@ mod tests_coverage {
 	fn get_proxy_state_reads_the_filesystem() {
 		assert_eq!(ProxyManager::get_proxy_state(""), ProxyState::Missing);
 
-		let dir = std::env::temp_dir().join(format!("quercuscodec-proxy-coverage-{}", std::process::id()));
+		let dir = std::env::temp_dir().join(format!(
+			"quercuscodec-proxy-coverage-{}",
+			std::process::id()
+		));
 		std::fs::create_dir_all(&dir).unwrap();
 
 		// A finished proxy exists on disk.
@@ -893,8 +902,7 @@ mod tests_coverage {
 
 		// Only the working file exists: still generating.
 		let pending = dir.join("pending.mp4");
-		let working =
-			ProxyManager::get_working_filename(&pending.to_string_lossy()).unwrap();
+		let working = ProxyManager::get_working_filename(&pending.to_string_lossy()).unwrap();
 		std::fs::write(&working, b"partial").unwrap();
 		assert_eq!(
 			ProxyManager::get_proxy_state(&pending.to_string_lossy()),

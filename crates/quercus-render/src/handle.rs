@@ -27,6 +27,7 @@
 //! [`RefBox<T>`] on this crate's heap.
 
 use std::any::Any;
+use std::ffi;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// ABI version stamped into every handle.
@@ -58,7 +59,7 @@ pub use quercus_core::handle::CHandle;
 /// `ctx` must be the `RefBox<T>` pointer taken from a live handle created by
 /// [`make_owned`] for the same `T`, and that box must not have been reclaimed.
 /// Calling with a null or dangling pointer is undefined behavior.
-unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut ffi::c_void) {
 	unsafe {
 		let rb = ctx as *const RefBox<T>;
 		// The caller guarantees the handle stays valid for the call.
@@ -80,7 +81,7 @@ unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 /// (typically by consuming the handle). Releasing after the last reference was
 /// already dropped is undefined behavior, as is passing a null or dangling
 /// pointer.
-unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut ffi::c_void) {
 	unsafe {
 		let rb = ctx as *mut RefBox<T>;
 		// AcqRel: the thread that drops the last reference must observe all
@@ -104,7 +105,7 @@ pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 		value,
 	}));
 	CHandle {
-		ctx: rb as *mut std::ffi::c_void,
+		ctx: rb as *mut ffi::c_void,
 		addref: Some(refbox_addref::<T>),
 		release: Some(refbox_release_owned::<T>),
 		abi_version: QUERCUSRENDER_ABI_VERSION,

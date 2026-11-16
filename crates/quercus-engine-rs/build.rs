@@ -144,7 +144,10 @@ fn publish_runtime_copy(source: &Path, dir: &Path) {
 	#[cfg(unix)]
 	if let Ok(meta) = std::fs::metadata(source) {
 		use std::os::unix::fs::PermissionsExt;
-		let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(meta.permissions().mode()));
+		let _ = std::fs::set_permissions(
+			&target,
+			std::fs::Permissions::from_mode(meta.permissions().mode()),
+		);
 	}
 }
 
@@ -160,7 +163,10 @@ fn stage_engine_artifact(source: &Path, out_dir: &Path) -> PathBuf {
 	#[cfg(unix)]
 	if let Ok(meta) = std::fs::metadata(source) {
 		use std::os::unix::fs::PermissionsExt;
-		let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(meta.permissions().mode()));
+		let _ = std::fs::set_permissions(
+			&target,
+			std::fs::Permissions::from_mode(meta.permissions().mode()),
+		);
 	}
 	// MSVC links against the import library, not the runtime DLL.
 	if cfg!(target_os = "windows") {

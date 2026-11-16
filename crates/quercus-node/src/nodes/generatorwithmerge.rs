@@ -22,7 +22,10 @@
 //! base texture. Not instantiable, so this is a helper module, not a
 //! [`NodeBehavior`] implementation.
 
+use crate::handle;
+use crate::id;
 use crate::jobs::{Job, ShaderJobPayload};
+use crate::nodes;
 use crate::value::NodeValue;
 
 /// Base texture input id (C++ `k_base_input`). Type: texture; flags:
@@ -99,7 +102,7 @@ impl GeneratorWithMerge {
 	/// legacy deferred model) keeps the old placeholder behavior.
 	pub fn push_mergable_job(
 		inputs: &crate::value::NodeValueRow,
-		job: crate::handle::CHandle,
+		job: handle::CHandle,
 		table: &mut crate::value::NodeValueTable,
 	) {
 		match inputs.get(BASE_INPUT) {
@@ -119,21 +122,23 @@ impl GeneratorWithMerge {
 								.expect("base input matched above"),
 						);
 						params.insert(
-							crate::nodes::merge::BLEND_INPUT.to_string(),
+							nodes::merge::BLEND_INPUT.to_string(),
 							NodeValue::Texture(unsafe { job.addref() }),
 						);
 						table.push(
 							crate::value::ValueType::Texture,
-							NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-								node_id: crate::id::NodeId::INVALID,
-								time: gen_job.time,
-								iterations: 1,
-								type_id: gen_job.type_id.clone(),
-								shader_id: "mrg".to_string(),
-								effect_input: BASE_INPUT.to_string(),
-								params,
-								iterative_input: String::new(),
-							}))),
+							NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+								ShaderJobPayload {
+									node_id: id::NodeId::INVALID,
+									time: gen_job.time,
+									iterations: 1,
+									type_id: gen_job.type_id.clone(),
+									shader_id: "mrg".to_string(),
+									effect_input: BASE_INPUT.to_string(),
+									params,
+									iterative_input: String::new(),
+								},
+							))),
 							None,
 						);
 					}
@@ -143,7 +148,7 @@ impl GeneratorWithMerge {
 						// boxes a job payload.
 						table.push(
 							crate::value::ValueType::Texture,
-							NodeValue::Texture(crate::handle::CHandle::null()),
+							NodeValue::Texture(handle::CHandle::null()),
 							None,
 						);
 					}
@@ -162,18 +167,19 @@ impl GeneratorWithMerge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn push_job_without_base_pushes_job_unchanged() {
-		let job = crate::handle::make_owned(crate::jobs::Job::ShaderJob(crate::jobs::ShaderJobPayload {
-			type_id: "org.olivevideoeditor.Olive.solidgenerator".to_string(),
-			time: Rational::new(2, 1),
-			shader_id: "1".to_string(),
-			..Default::default()
-		}));
+		let job =
+			crate::handle::make_owned(crate::jobs::Job::ShaderJob(crate::jobs::ShaderJobPayload {
+				type_id: "org.olivevideoeditor.Olive.solidgenerator".to_string(),
+				time: Rational::new(2, 1),
+				shader_id: "1".to_string(),
+				..Default::default()
+			}));
 		let mut table = NodeValueTable::default();
 		GeneratorWithMerge::push_mergable_job(
 			&crate::value::NodeValueRow::default(),
@@ -184,10 +190,7 @@ mod tests {
 			Some(NodeValue::Texture(h)) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe {
-			crate::jobs::shader_job(&handle)
-		}
-		.expect("job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(&handle) }.expect("job payload boxed");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.solidgenerator");
 		assert_eq!(payload.shader_id, "1");
 		assert_eq!(payload.time, Rational::new(2, 1));
@@ -226,10 +229,7 @@ mod tests {
 			Some(NodeValue::Texture(h)) => *h,
 			_ => panic!("texture expected"),
 		};
-		let merge = unsafe {
-			crate::jobs::shader_job(&handle)
-		}
-		.expect("merge job payload boxed");
+		let merge = unsafe { crate::jobs::shader_job(&handle) }.expect("merge job payload boxed");
 		assert_eq!(merge.shader_id, "mrg");
 		assert_eq!(merge.type_id, "org.olivevideoeditor.Olive.solidgenerator");
 		assert_eq!(merge.time, Rational::new(2, 1));
@@ -240,11 +240,12 @@ mod tests {
 			Some(NodeValue::Texture(h)) => *h,
 			_ => panic!("texture expected"),
 		};
-		let blend_job = unsafe {
-			crate::jobs::shader_job(&blend)
-		}
-		.expect("blend job payload boxed");
-		assert_eq!(blend_job.type_id, "org.olivevideoeditor.Olive.solidgenerator");
+		let blend_job =
+			unsafe { crate::jobs::shader_job(&blend) }.expect("blend job payload boxed");
+		assert_eq!(
+			blend_job.type_id,
+			"org.olivevideoeditor.Olive.solidgenerator"
+		);
 		assert_eq!(blend_job.shader_id, "1");
 	}
 

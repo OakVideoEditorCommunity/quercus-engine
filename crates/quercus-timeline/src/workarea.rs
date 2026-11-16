@@ -21,6 +21,7 @@
 //! De-Qt: no QObject, no signals — change notifications are the facade's
 //! job.
 
+use crate::undocommon;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{Rational, TimeRange};
@@ -189,11 +190,11 @@ impl WorkareaSetEnabledCommand {
 
 	/// Wrap as an quercusundo command handle.
 	pub fn to_command(self) -> UndoCommand {
-		crate::undocommon::box_command(self)
+		undocommon::box_command(self)
 	}
 }
 
-impl crate::undocommon::Command for WorkareaSetEnabledCommand {
+impl undocommon::Command for WorkareaSetEnabledCommand {
 	/// `Command::redo` — the inherent method takes precedence.
 	fn redo(&mut self) {
 		self.redo();
@@ -315,11 +316,11 @@ impl WorkareaSetRangeCommand {
 
 	/// Wrap as an quercusundo command handle.
 	pub fn to_command(self) -> UndoCommand {
-		crate::undocommon::box_command(self)
+		undocommon::box_command(self)
 	}
 }
 
-impl crate::undocommon::Command for WorkareaSetRangeCommand {
+impl undocommon::Command for WorkareaSetRangeCommand {
 	/// `Command::redo` — the inherent method takes precedence.
 	fn redo(&mut self) {
 		self.redo();

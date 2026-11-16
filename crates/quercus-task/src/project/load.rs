@@ -28,6 +28,8 @@
 //!
 //! CPP-PARITY: src/task/src/project/load/load.h
 
+use quercus_node::serializer;
+use std::fs;
 use std::sync::{Arc, Mutex};
 
 use quercus_node::project::Project;
@@ -83,7 +85,7 @@ impl TaskBehavior for ProjectLoadBaseTask {
 	/// Load the project from `filename` via the direct quercusnode serializer
 	/// (`quercus_node::serializer::load`), storing the resulting project.
 	fn run(&mut self, task: &mut Task) -> Result<()> {
-		let xml = match std::fs::read_to_string(&self.filename) {
+		let xml = match fs::read_to_string(&self.filename) {
 			Ok(xml) => xml,
 			Err(e) => {
 				task.set_error(&format!(
@@ -95,7 +97,7 @@ impl TaskBehavior for ProjectLoadBaseTask {
 			}
 		};
 
-		let project = match quercus_node::serializer::load(&xml) {
+		let project = match serializer::load(&xml) {
 			Ok(project) => project,
 			Err(e) => {
 				task.set_error(&format!(

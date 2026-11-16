@@ -26,15 +26,20 @@
 //! retired facade exported as `quercusengine_node_effect_*`; sunk into the
 //! engine, they no longer depend on app-side composition.
 
+use crate::editor_commands;
 use quercus_node::factory::Factory;
 use quercus_node::graph::Graph;
 use quercus_node::id::NodeId;
 use quercus_node::node::ENABLED_INPUT;
+use quercus_node::nodes;
+use quercus_node::project;
 use quercus_node::value::NodeValue;
+use quercus_undo::global;
 use quercus_undo::undocommand::UndoCommand;
+use std::sync;
 
 use crate::codec::{copy_str_out, str_arg};
-use crate::node::{QUERCUS_NODE_ID_INVALID, ProjectHandle};
+use crate::node::{ProjectHandle, QUERCUS_NODE_ID_INVALID};
 
 // ---------------------------------------------------------------------------
 // Pure graph helpers (the chain walk)
@@ -44,7 +49,11 @@ use crate::node::{QUERCUS_NODE_ID_INVALID, ProjectHandle};
 /// effects (C++ `Node::GetEffectInputID`).
 pub(crate) fn effect_input_of(g: &Graph, node: NodeId) -> Option<String> {
 	let id = &g.get(node)?.core.effect_input;
-	if id.is_empty() { None } else { Some(id.clone()) }
+	if id.is_empty() {
+		None
+	} else {
+		Some(id.clone())
+	}
 }
 
 /// The node feeding `node`'s input `input_id`, or `None` when the input
@@ -158,9 +167,9 @@ fn neighbors(g: &Graph, host: NodeId, chain: &[NodeId], pos: usize) -> (Option<N
 // Undo plumbing (quercus-app's graphops helpers, engine-local)
 // ---------------------------------------------------------------------------
 
-type ProjectRef = std::sync::Arc<std::sync::Mutex<quercus_node::project::Project>>;
+type ProjectRef = sync::Arc<sync::Mutex<project::Project>>;
 
-fn lock(p: &ProjectRef) -> std::sync::MutexGuard<'_, quercus_node::project::Project> {
+fn lock(p: &ProjectRef) -> sync::MutexGuard<'_, project::Project> {
 	p.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -177,7 +186,7 @@ fn lock(p: &ProjectRef) -> std::sync::MutexGuard<'_, quercus_node::project::Proj
 ///
 /// Returns the undo stack's error text when it rejects the command.
 fn push(cmd: UndoCommand, name: &str) -> Result<(), String> {
-	quercus_undo::global::push(cmd, name).map_err(|e| e.to_string())
+	global::push(cmd, name).map_err(|e| e.to_string())
 }
 
 /// Runs `f` as one undo group: begins a named group, then commits it when `f`
@@ -195,14 +204,14 @@ fn push(cmd: UndoCommand, name: &str) -> Result<(), String> {
 /// Propagates `f`'s error (after aborting the group); a failing
 /// `group_begin`/`group_end` is converted to a `String` as well.
 fn grouped<T>(name: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-	quercus_undo::global::group_begin(name).map_err(|e| e.to_string())?;
+	global::group_begin(name).map_err(|e| e.to_string())?;
 	match f() {
 		Ok(v) => {
-			quercus_undo::global::group_end().map_err(|e| e.to_string())?;
+			global::group_end().map_err(|e| e.to_string())?;
 			Ok(v)
 		}
 		Err(e) => {
-			let _ = quercus_undo::global::group_abort();
+			let _ = global::group_abort();
 			Err(e)
 		}
 	}
@@ -305,15 +314,17 @@ fn disconnect_command(p: &ProjectRef, to: NodeId, input_id: &str) -> Result<Undo
 
 /// The shared state of an add-node command: the entry awaiting its first
 /// redo, and the live id once assigned.
-type AddNodeState = std::sync::Arc<
-	std::sync::Mutex<(Option<quercus_node::graph::NodeEntry>, Option<NodeId>)>,
->;
+type AddNodeState =
+	sync::Arc<sync::Mutex<(Option<quercus_node::graph::NodeEntry>, Option<NodeId>)>>;
 
 /// An undoable node add: the redo moves the entry into the graph
 /// (re-adding under the same id on re-redo), the undo takes it back out.
 /// The new id lands in the returned state for follow-up wiring.
-fn add_node_command(p: &ProjectRef, entry: quercus_node::graph::NodeEntry) -> (UndoCommand, AddNodeState) {
-	let state: AddNodeState = std::sync::Arc::new(std::sync::Mutex::new((Some(entry), None)));
+fn add_node_command(
+	p: &ProjectRef,
+	entry: quercus_node::graph::NodeEntry,
+) -> (UndoCommand, AddNodeState) {
+	let state: AddNodeState = sync::Arc::new(sync::Mutex::new((Some(entry), None)));
 	let (s1, s2) = (state.clone(), state.clone());
 	let (p1, p2) = (p.clone(), p.clone());
 	(
@@ -367,7 +378,7 @@ pub(crate) fn create_impl(
 			.1
 			.ok_or_else(|| "the add-node command produced no id".to_string())?;
 		push(
-			crate::editor_commands::set_context_position_command(p, fresh, context, x, y)?,
+			editor_commands::set_context_position_command(p, fresh, context, x, y)?,
 			"Add Node",
 		)?;
 		Ok(fresh)
@@ -426,11 +437,20 @@ pub(crate) fn insert_impl(
 			.1
 			.ok_or_else(|| "the add-node command produced no id".to_string())?;
 		if upstream.is_some() {
-			push(disconnect_command(p, downstream, &downstream_input)?, "Add Effect")?;
+			push(
+				disconnect_command(p, downstream, &downstream_input)?,
+				"Add Effect",
+			)?;
 		}
-		push(connect_command(p, fresh, downstream, &downstream_input)?, "Add Effect")?;
+		push(
+			connect_command(p, fresh, downstream, &downstream_input)?,
+			"Add Effect",
+		)?;
 		if let Some(upstream) = upstream {
-			push(connect_command(p, upstream, fresh, &new_input)?, "Add Effect")?;
+			push(
+				connect_command(p, upstream, fresh, &new_input)?,
+				"Add Effect",
+			)?;
 		}
 		Ok(fresh)
 	})
@@ -494,7 +514,12 @@ pub(crate) fn remove_impl(p: &ProjectRef, host: NodeId, effect: NodeId) -> Resul
 /// Undoable reorder of `effect` to chain position `new_index` (an
 /// insertion index **after** removal; `0..=len-1` where `len` is the
 /// post-removal chain length). One undo row ("Reorder Effect").
-pub(crate) fn move_impl(p: &ProjectRef, host: NodeId, effect: NodeId, new_index: usize) -> Result<(), String> {
+pub(crate) fn move_impl(
+	p: &ProjectRef,
+	host: NodeId,
+	effect: NodeId,
+	new_index: usize,
+) -> Result<(), String> {
 	let (chain_vec, from) = {
 		let g = lock(p);
 		let chain_vec = chain(&g.graph, host);
@@ -573,10 +598,19 @@ pub(crate) fn move_impl(p: &ProjectRef, host: NodeId, effect: NodeId, new_index:
 			)?;
 		}
 		// …then wire it between its new neighbors.
-		push(disconnect_command(p, down2, &down2_input)?, "Reorder Effect")?;
-		push(connect_command(p, effect, down2, &down2_input)?, "Reorder Effect")?;
+		push(
+			disconnect_command(p, down2, &down2_input)?,
+			"Reorder Effect",
+		)?;
+		push(
+			connect_command(p, effect, down2, &down2_input)?,
+			"Reorder Effect",
+		)?;
 		if let Some(up2) = up2 {
-			push(connect_command(p, up2, effect, &eff_input)?, "Reorder Effect")?;
+			push(
+				connect_command(p, up2, effect, &eff_input)?,
+				"Reorder Effect",
+			)?;
 		}
 		Ok(())
 	})
@@ -584,7 +618,11 @@ pub(crate) fn move_impl(p: &ProjectRef, host: NodeId, effect: NodeId, new_index:
 
 /// Undoable enable toggle of an effect node ("Toggle Effect"; the
 /// `enabled_in` flag).
-pub(crate) fn set_enabled_impl(p: &ProjectRef, effect: NodeId, enabled: bool) -> Result<(), String> {
+pub(crate) fn set_enabled_impl(
+	p: &ProjectRef,
+	effect: NodeId,
+	enabled: bool,
+) -> Result<(), String> {
 	let old = {
 		let g = lock(p);
 		if !g.graph.is_valid(effect) {
@@ -627,7 +665,11 @@ pub extern "C" fn quercus_effect_factory_count() -> i32 {
 /// The type id of the static entry at `index`, snprintf-style; -1 when
 /// out of range.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_effect_factory_type_id_at(index: i32, buf: *mut u8, buf_len: usize) -> i32 {
+pub extern "C" fn quercus_effect_factory_type_id_at(
+	index: i32,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
 	let entries = Factory::global().entries();
 	if index < 0 || index as usize >= entries.len() {
 		return -1;
@@ -745,7 +787,11 @@ pub extern "C" fn quercus_effect_chain_count(project: *const ProjectHandle, host
 /// The chain node at `index` (closest-to-source first);
 /// `QUERCUS_NODE_ID_INVALID` when out of range.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_effect_chain_at(project: *const ProjectHandle, host: u64, index: i32) -> u64 {
+pub extern "C" fn quercus_effect_chain_at(
+	project: *const ProjectHandle,
+	host: u64,
+	index: i32,
+) -> u64 {
 	let Some(host) = NodeId::from_identity(host) else {
 		return QUERCUS_NODE_ID_INVALID;
 	};
@@ -815,8 +861,7 @@ pub extern "C" fn quercus_effect_chain_remove(
 	host: u64,
 	effect: u64,
 ) -> bool {
-	let (Some(host), Some(effect)) =
-		(NodeId::from_identity(host), NodeId::from_identity(effect))
+	let (Some(host), Some(effect)) = (NodeId::from_identity(host), NodeId::from_identity(effect))
 	else {
 		return false;
 	};
@@ -836,8 +881,7 @@ pub extern "C" fn quercus_effect_chain_move(
 	effect: u64,
 	new_index: i32,
 ) -> bool {
-	let (Some(host), Some(effect)) =
-		(NodeId::from_identity(host), NodeId::from_identity(effect))
+	let (Some(host), Some(effect)) = (NodeId::from_identity(host), NodeId::from_identity(effect))
 	else {
 		return false;
 	};
@@ -920,7 +964,7 @@ pub unsafe extern "C" fn quercus_effect_plugin_instance_handle(
 		.graph
 		.get(node)
 		.and_then(|entry| entry.behavior.as_any())
-		.and_then(|behavior| behavior.downcast_ref::<quercus_node::nodes::plugin::PluginNode>())
+		.and_then(|behavior| behavior.downcast_ref::<nodes::plugin::PluginNode>())
 		.and_then(|plugin| {
 			let handle = plugin.instance_handle();
 			(!handle.is_null()).then_some(handle.0)
@@ -942,7 +986,9 @@ mod tests {
 
 	/// The global undo stack is process-wide; serialize these tests.
 	fn undo_lock() -> std::sync::MutexGuard<'static, ()> {
-		crate::node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+		crate::node::UNDO_SERIAL
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
 	}
 
 	/// A project with one clip node (an effect-chain host: clips carry
@@ -982,7 +1028,10 @@ mod tests {
 	#[test]
 	fn factory_table_enumerates() {
 		let count = quercus_effect_factory_count();
-		assert!(count > 60, "the built-in node types are registered ({count})");
+		assert!(
+			count > 60,
+			"the built-in node types are registered ({count})"
+		);
 		let mut buf = [0u8; 256];
 		for i in 0..count {
 			let n = quercus_effect_factory_type_id_at(i, buf.as_mut_ptr(), buf.len());
@@ -992,7 +1041,10 @@ mod tests {
 			let category = quercus_effect_factory_category_at(i);
 			assert!((-2..=11).contains(&category), "entry {i} category in range");
 		}
-		assert_eq!(quercus_effect_factory_type_id_at(-1, buf.as_mut_ptr(), buf.len()), -1);
+		assert_eq!(
+			quercus_effect_factory_type_id_at(-1, buf.as_mut_ptr(), buf.len()),
+			-1
+		);
 		assert_eq!(
 			quercus_effect_factory_type_id_at(count, buf.as_mut_ptr(), buf.len()),
 			-1
@@ -1019,17 +1071,28 @@ mod tests {
 
 		unsafe {
 			let first = quercus_effect_chain_insert(project, host, 0, t, tl);
-			assert!(crate::node::quercus_node_id_is_valid(first), "insert into an empty chain");
+			assert!(
+				crate::node::quercus_node_id_is_valid(first),
+				"insert into an empty chain"
+			);
 			assert_eq!(quercus_effect_chain_count(project, host), 1);
 			assert_eq!(quercus_effect_chain_at(project, host, 0), first);
 
 			let second = quercus_effect_chain_insert(project, host, 0, t, tl);
 			assert_eq!(quercus_effect_chain_count(project, host), 2);
-			assert_eq!(quercus_effect_chain_at(project, host, 0), second, "source side");
+			assert_eq!(
+				quercus_effect_chain_at(project, host, 0),
+				second,
+				"source side"
+			);
 			assert_eq!(quercus_effect_chain_at(project, host, 1), first);
 
 			let third = quercus_effect_chain_insert(project, host, 99, t, tl);
-			assert_eq!(quercus_effect_chain_at(project, host, 2), third, "clamped to the end");
+			assert_eq!(
+				quercus_effect_chain_at(project, host, 2),
+				third,
+				"clamped to the end"
+			);
 
 			// One undo row per insert.
 			quercus_undo::global::undo().unwrap();

@@ -18,6 +18,9 @@
 //! `olive::BlurFilterNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, Gizmo, NodeBehavior, NodeCore};
 
@@ -365,10 +368,11 @@ impl NodeBehavior for BlurFilterNode {
 		if radius > 0.0 {
 			// Method-specific considerations.
 			if (method == Method::Box as i64 || method == Method::Gaussian as i64)
-				&& !horiz && !vert {
-					// Disable the job if both directions are unchecked.
-					can_push_job = false;
-				}
+				&& !horiz && !vert
+			{
+				// Disable the job if both directions are unchecked.
+				can_push_job = false;
+			}
 		} else {
 			can_push_job = false;
 		}
@@ -377,10 +381,9 @@ impl NodeBehavior for BlurFilterNode {
 		// all other methods are single-pass (C++ `iterations = 2` only for
 		// the double-pass case).
 		let mut iterations = 1;
-		if (method == Method::Box as i64 || method == Method::Gaussian as i64)
-			&& horiz && vert {
-				iterations = 2;
-			}
+		if (method == Method::Box as i64 || method == Method::Gaussian as i64) && horiz && vert {
+			iterations = 2;
+		}
 
 		if can_push_job {
 			// The shader-job box (C++ ShaderJob): the behavior's type id
@@ -388,16 +391,18 @@ impl NodeBehavior for BlurFilterNode {
 			// the main texture inside the params row.
 			table.push(
 				crate::value::ValueType::Texture,
-				crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
-					time,
-					iterations,
-					type_id: self.type_id().to_string(),
-					shader_id: String::new(),
-					effect_input: core.effect_input.clone(),
-					params: inputs.clone(),
-					iterative_input: String::new(),
-				}))),
+				crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+					ShaderJobPayload {
+						node_id: id::NodeId::INVALID,
+						time,
+						iterations,
+						type_id: self.type_id().to_string(),
+						shader_id: String::new(),
+						effect_input: core.effect_input.clone(),
+						params: inputs.clone(),
+						iterative_input: String::new(),
+					},
+				))),
 				None,
 			);
 		} else {
@@ -484,9 +489,9 @@ impl BlurFilterNode {
 fn set_hidden(core: &mut NodeCore, id: &str, hidden: bool) {
 	if let Some(input) = core.get_input_mut(id) {
 		if hidden {
-			input.flags |= crate::input::flags::HIDDEN;
+			input.flags |= input::flags::HIDDEN;
 		} else {
-			input.flags &= !crate::input::flags::HIDDEN;
+			input.flags &= !input::flags::HIDDEN;
 		}
 	}
 }
@@ -510,23 +515,23 @@ fn set_hidden(core: &mut NodeCore, id: &str, hidden: bool) {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	let mut method = crate::input::Input::new(
+	let mut method = input::Input::new(
 		METHOD_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(Method::Gaussian as i64),
 	);
-	method.flags |= crate::input::flags::NOT_KEYFRAMABLE | crate::input::flags::NOT_CONNECTABLE;
+	method.flags |= input::flags::NOT_KEYFRAMABLE | input::flags::NOT_CONNECTABLE;
 	core.add_input(method);
 
-	let mut radius = crate::input::Input::new(
+	let mut radius = input::Input::new(
 		RADIUS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(10.0),
@@ -535,26 +540,26 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	core.add_input(radius);
 
 	// Box and gaussian only.
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		HORIZ_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(true),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		VERT_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(true),
 	));
 
 	// Directional only.
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		DIRECTIONAL_DEGREES_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
 	));
 
 	// Radial only.
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		RADIAL_CENTER_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
@@ -563,7 +568,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// Hide the method-specific inputs for the default (gaussian) method.
 	BlurFilterNode::update_inputs(&mut core, Method::Gaussian as i64);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		REPEAT_EDGE_PIXELS_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(true),
@@ -606,12 +611,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -710,8 +715,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("texture expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job pushed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job pushed");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.blur");
 		assert_eq!(
 			payload.params.get(RADIUS_INPUT),

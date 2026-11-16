@@ -29,6 +29,12 @@
 //! Reference: HS: ofxhImageEffect.cpp:2776 (the fetchSuite dispatch table and
 //! version negotiation).
 
+use crate::image;
+use crate::instance;
+use crate::render;
+use std::cell;
+use std::ffi;
+use std::sync;
 pub mod draw;
 pub mod gl_render;
 pub mod image_effect;
@@ -95,6 +101,8 @@ pub mod status {
 /// to ≥8, so the low 3 bits are always 0).
 pub mod tag {
 	/// Tag mask (the low 3 bits).
+	use crate::property;
+	use std::ffi;
 	pub const MASK: usize = 0b111;
 	/// A bare property set (used directly inside the host / passed as `&props` by
 	/// tests).
@@ -128,8 +136,8 @@ pub mod tag {
 	/// [`tag`] (only the low 3 bits are used); the handle is the bitwise OR of the
 	/// two. Called by the host when creating object handles, and public so the host
 	/// and tests can build handles.
-	pub fn make(props: *const crate::property::PropertySet, t: usize) -> *mut std::ffi::c_void {
-		(props as usize | t) as *mut std::ffi::c_void
+	pub fn make(props: *const property::PropertySet, t: usize) -> *mut ffi::c_void {
+		(props as usize | t) as *mut ffi::c_void
 	}
 
 	/// Strip the low 3 tag bits off a handle and get the property-set pointer back.
@@ -137,8 +145,8 @@ pub mod tag {
 	/// A bare property-set pointer (tag 0) is returned unchanged (see
 	/// [`tag::PROPERTY_SET`]); the inverse of [`tag::make`]. Only the bits are
 	/// cleared — the address is not validated.
-	pub fn strip(handle: *mut std::ffi::c_void) -> *const crate::property::PropertySet {
-		((handle as usize) & !MASK) as *const crate::property::PropertySet
+	pub fn strip(handle: *mut ffi::c_void) -> *const property::PropertySet {
+		((handle as usize) & !MASK) as *const property::PropertySet
 	}
 
 	/// Read the object tag from the low 3 bits of a handle.
@@ -147,7 +155,7 @@ pub mod tag {
 	/// `DESCRIPTOR` … `INTERACT`); only a bit mask is applied — the handle is not
 	/// dereferenced or validated, and the caller must ensure it was built by this
 	/// crate's [`tag::make`].
-	pub fn kind(handle: *mut std::ffi::c_void) -> usize {
+	pub fn kind(handle: *mut ffi::c_void) -> usize {
 		(handle as usize) & MASK
 	}
 }
@@ -161,13 +169,13 @@ pub struct RenderCtx {
 	/// The current render time (seconds).
 	pub time: f64,
 	/// The render scale.
-	pub scale: crate::instance::RenderScale,
+	pub scale: instance::RenderScale,
 	/// The project time domain (timeline getTimeBounds).
-	pub range: crate::instance::OfxRangeD,
+	pub range: instance::OfxRangeD,
 }
 
 thread_local! {
-	static RENDER_CTX: std::cell::RefCell<Option<RenderCtx>> = const { std::cell::RefCell::new(None) };
+	static RENDER_CTX: cell::RefCell<Option<RenderCtx>> = const { cell::RefCell::new(None) };
 }
 
 /// Set/clear the render context (called by the render driver; it must be cleared
@@ -186,18 +194,18 @@ pub(crate) fn render_ctx() -> Option<RenderCtx> {
 thread_local! {
 	/// The current render's output image (set by the render driver; the image effect
 	/// suite's clipGetImage returns it for the Output clip).
-	static CURRENT_OUTPUT: std::cell::RefCell<Option<std::sync::Arc<crate::image::Image>>> =
-		const { std::cell::RefCell::new(None) };
+	static CURRENT_OUTPUT: cell::RefCell<Option<sync::Arc<image::Image>>> =
+		const { cell::RefCell::new(None) };
 }
 
 /// Set/clear the current output image (called by the render driver; it must be
 /// cleared before the action returns).
-pub(crate) fn set_current_output(image: Option<std::sync::Arc<crate::image::Image>>) {
+pub(crate) fn set_current_output(image: Option<sync::Arc<image::Image>>) {
 	CURRENT_OUTPUT.with(|c| *c.borrow_mut() = image);
 }
 
 /// Read the current output image.
-pub(crate) fn current_output() -> Option<std::sync::Arc<crate::image::Image>> {
+pub(crate) fn current_output() -> Option<sync::Arc<image::Image>> {
 	CURRENT_OUTPUT.with(|c| c.borrow().clone())
 }
 
@@ -212,10 +220,10 @@ pub(crate) fn current_output() -> Option<std::sync::Arc<crate::image::Image>> {
 #[derive(Clone)]
 pub struct GlCtx {
 	/// The current renderer (a quercusrender backend context).
-	pub renderer: crate::render::Renderer,
+	pub renderer: render::Renderer,
 	/// The attached output texture (the render target; in GL mode the plugin draws
 	/// its result into it).
-	pub output_texture: crate::render::Texture,
+	pub output_texture: render::Texture,
 	/// The actual pixel depth of the current GL texture (a kOfxBitDepth* static
 	/// string; Phase 2 is F32 throughout the chain and render_gl fills this in after
 	/// negotiating against the plugin's kOfxOpenGLPropPixelDepth — the texture
@@ -230,7 +238,7 @@ pub struct GlCtx {
 }
 
 thread_local! {
-	static GL_CTX: std::cell::RefCell<Option<GlCtx>> = const { std::cell::RefCell::new(None) };
+	static GL_CTX: cell::RefCell<Option<GlCtx>> = const { cell::RefCell::new(None) };
 }
 
 /// Set/clear the GL render context (called by the GL render driver; it must be
@@ -269,8 +277,8 @@ pub(crate) fn gl_ctx() -> Option<GlCtx> {
 /// Phase 3 adds: OfxInteractSuite v1, OfxDrawSuite v1 (the interact host).
 /// Phase 4 adds: OfxParametricParameterSuite v1 (curve parameters,
 /// suites/parametric.rs).
-pub fn fetch_suite(name: &str, version: i32) -> Option<*const std::ffi::c_void> {
-	let suite: *const std::ffi::c_void = match (name, version) {
+pub fn fetch_suite(name: &str, version: i32) -> Option<*const ffi::c_void> {
+	let suite: *const ffi::c_void = match (name, version) {
 		("OfxPropertySuite", 1) => ptr(property::suite_v1()),
 		("OfxMemorySuite", 1) => ptr(memory::suite_v1()),
 		("OfxImageEffectSuite", 1) => ptr(image_effect::suite_v1()),
@@ -297,8 +305,8 @@ pub fn fetch_suite(name: &str, version: i32) -> Option<*const std::ffi::c_void> 
 /// suite's `suite_v1`/`suite_v2`), so the returned pointer stays valid for the
 /// lifetime of the process and callers must not free it; this function only
 /// converts a reference to a pointer and does not copy the table.
-fn ptr<T>(p: &'static T) -> *const std::ffi::c_void {
-	p as *const T as *const std::ffi::c_void
+fn ptr<T>(p: &'static T) -> *const ffi::c_void {
+	p as *const T as *const ffi::c_void
 }
 
 #[cfg(test)]
@@ -396,14 +404,17 @@ mod tests {
 			) -> quercus_render::error::Result<()> {
 				Ok(())
 			}
-			fn download(&self, _token: u64) -> quercus_render::error::Result<quercus_core::texture::Frame> {
+			fn download(
+				&self,
+				_token: u64,
+			) -> quercus_render::error::Result<quercus_core::texture::Frame> {
 				Ok(quercus_core::texture::Frame::new())
 			}
 			fn blit(
-                &self,
-                _src: u64,
-                _dst: u64,
-                _processor: Option<&quercus_core::color::ColorProcessor>,
+				&self,
+				_src: u64,
+				_dst: u64,
+				_processor: Option<&quercus_core::color::ColorProcessor>,
 			) -> quercus_render::error::Result<()> {
 				Ok(())
 			}
@@ -417,10 +428,7 @@ mod tests {
 			output_gl_texture: Some(42),
 		}));
 		let got = gl_ctx().unwrap();
-		assert_eq!(
-			got.renderer.kind(),
-			quercus_core::backend::BackendKind::Cpu
-		);
+		assert_eq!(got.renderer.kind(), quercus_core::backend::BackendKind::Cpu);
 		assert!(got.output_texture.is_dummy());
 		assert_eq!(got.gl_pixel_depth, "OfxBitDepthFloat");
 		assert_eq!(got.output_gl_texture, Some(42));

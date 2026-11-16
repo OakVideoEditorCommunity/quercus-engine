@@ -31,9 +31,12 @@
 //! F32 RGBA, which is all the payload needs).
 
 use crate::error::{Error, Result};
+use crate::manager;
 use quercus_core::frame::VideoParamsPod;
 use quercus_core::texture::Frame;
 use quercus_core::{PixelFormat, Rational};
+use std::fs;
+use std::io;
 
 /// Container magic (`QUERCUSCACHE1`, one digit per container revision).
 const MAGIC: &[u8; 13] = b"QUERCUSCACHE1";
@@ -64,14 +67,14 @@ pub fn save_cache_frame(path: &str, frame: &Frame) -> Result<()> {
 	buf.extend_from_slice(&frame.data);
 
 	let tmp = format!("{path}.tmp");
-	std::fs::write(&tmp, &buf)
+	fs::write(&tmp, &buf)
 		.map_err(|e| Error::Failed(format!("frame cache write failed: {tmp}: {e}")))?;
-	std::fs::rename(&tmp, path)
+	fs::rename(&tmp, path)
 		.map_err(|e| Error::Failed(format!("frame cache rename failed: {tmp}: {e}")))?;
 	// A completed frame write may push the cache over its configured byte
 	// budget; enforcement is debounced and best-effort, so it never fails
 	// the write itself.
-	crate::manager::enforce_disk_cache_quota();
+	manager::enforce_disk_cache_quota();
 	Ok(())
 }
 
@@ -82,8 +85,8 @@ pub fn save_cache_frame(path: &str, frame: &Frame) -> Result<()> {
 /// carries invalid metadata or a payload length that does not match
 /// `height × linesize`.
 pub fn load_cache_frame(path: &str) -> Result<Frame> {
-	let bytes = std::fs::read(path).map_err(|e| {
-		if e.kind() == std::io::ErrorKind::NotFound {
+	let bytes = fs::read(path).map_err(|e| {
+		if e.kind() == io::ErrorKind::NotFound {
 			Error::NotFound
 		} else {
 			Error::Failed(format!("frame cache read failed: {path}: {e}"))
@@ -248,7 +251,10 @@ mod tests {
 	fn temp_path(tag: &str) -> String {
 		let n = COUNTER.fetch_add(1, Ordering::Relaxed);
 		std::env::temp_dir()
-			.join(format!("quercuscache_io_{}_{n}_{tag}.bin", std::process::id()))
+			.join(format!(
+				"quercuscache_io_{}_{n}_{tag}.bin",
+				std::process::id()
+			))
 			.to_string_lossy()
 			.into_owned()
 	}

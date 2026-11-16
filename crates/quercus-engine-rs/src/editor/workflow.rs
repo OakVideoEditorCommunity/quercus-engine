@@ -5,8 +5,13 @@ mod tests {
 	use crate::edit::EditCommand;
 	use crate::editor::{EditorSession, KeyframeInterpolation, TrackKind};
 	use crate::node::NodeValue;
+	use crate::ofx;
 	use crate::render::RenderBackend;
+	use crate::test_support;
 	use crate::types::Rational;
+	use std::env;
+	use std::fs;
+	use std::process;
 
 	fn float(value: f64) -> NodeValue {
 		let mut raw = NodeValue {
@@ -22,16 +27,16 @@ mod tests {
 		let _guard = crate::node::UNDO_SERIAL
 			.lock()
 			.unwrap_or_else(|e| e.into_inner());
-		let Some(plugin_dir) = crate::test_support::ofx_plugin_scan_dir() else {
+		let Some(plugin_dir) = test_support::ofx_plugin_scan_dir() else {
 			println!("SKIP: bundled CPU test plugin is unavailable");
 			return;
 		};
-		assert!(crate::ofx::scan_path(&plugin_dir.to_string_lossy()));
-		crate::ofx::register_plugin_nodes();
+		assert!(ofx::scan_path(&plugin_dir.to_string_lossy()));
+		ofx::register_plugin_nodes();
 		let _ = crate::render::manager_init(RenderBackend::Threads);
 		let session = EditorSession::new().expect("session");
 		let sequence = session.create_sequence("Independent").expect("sequence");
-		let media = crate::test_support::make_test_clip("p3_workflow");
+		let media = test_support::make_test_clip("p3_workflow");
 		let footage = session.project().import_footage(&media).expect("footage");
 		let clip = session
 			.execute(EditCommand::PlaceFootageClip {
@@ -58,7 +63,7 @@ mod tests {
 			session
 				.execute(EditCommand::UpsertNodeKeyframe {
 					node: effect,
-				input_id: "gain".into(),
+					input_id: "gain".into(),
 					element: -1,
 					time: Rational::new(time, 1),
 					value: float(saturation),
@@ -89,23 +94,37 @@ mod tests {
 			})
 			.expect("CPU plugin button");
 
-		let rendered = crate::render::render_frame_f32(&session.project(), sequence, Rational::new(1, 1), (32, 16))
-			.expect("CPU effect frame");
+		let rendered = crate::render::render_frame_f32(
+			&session.project(),
+			sequence,
+			Rational::new(1, 1),
+			(32, 16),
+		)
+		.expect("CPU effect frame");
 		assert_eq!(rendered.len(), 32 * 16 * 4);
-		assert!(rendered.chunks_exact(4).all(|pixel| pixel == [0.5, 0.5, 0.5, 1.0]));
+		assert!(
+			rendered
+				.chunks_exact(4)
+				.all(|pixel| pixel == [0.5, 0.5, 0.5, 1.0])
+		);
 
-		let path = std::env::temp_dir()
-			.join(format!("quercus_p3_workflow_{}.ove", std::process::id()))
+		let path = env::temp_dir()
+			.join(format!("quercus_p3_workflow_{}.ove", process::id()))
 			.to_string_lossy()
 			.into_owned();
 		session.save(&path).expect("save workflow");
 		let opened = EditorSession::open(&path).expect("reload workflow");
 		let reloaded = opened.parameters(effect).expect("reloaded parameters");
 		assert_eq!(reloaded.get("gain").unwrap().track(-1).unwrap().len(), 2);
-		let reopened = crate::render::render_frame_f32(&opened.project(), sequence, Rational::new(1, 1), (32, 16))
-			.expect("reloaded render");
+		let reopened = crate::render::render_frame_f32(
+			&opened.project(),
+			sequence,
+			Rational::new(1, 1),
+			(32, 16),
+		)
+		.expect("reloaded render");
 		assert_eq!(reopened, rendered);
-		let _ = std::fs::remove_file(path);
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(path);
+		let _ = fs::remove_file(media);
 	}
 }

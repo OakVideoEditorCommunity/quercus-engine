@@ -146,7 +146,10 @@ impl Project {
 	/// setting is absent).
 	pub fn working_color_space(&self) -> quercus_core::colormath::WorkingColorSpace {
 		quercus_core::colormath::WorkingColorSpace::from_setting(
-			self.settings.get(SETTING_WORKING_COLOR_SPACE).map(String::as_str).unwrap_or(""),
+			self.settings
+				.get(SETTING_WORKING_COLOR_SPACE)
+				.map(String::as_str)
+				.unwrap_or(""),
 		)
 	}
 
@@ -154,8 +157,14 @@ impl Project {
 	/// settings are absent).
 	pub fn output_color_spec(&self) -> quercus_core::colormath::OutputColorSpec {
 		quercus_core::colormath::OutputColorSpec::from_settings(
-			self.settings.get(SETTING_OUTPUT_GAMUT).map(String::as_str).unwrap_or(""),
-			self.settings.get(SETTING_OUTPUT_TRANSFER).map(String::as_str).unwrap_or(""),
+			self.settings
+				.get(SETTING_OUTPUT_GAMUT)
+				.map(String::as_str)
+				.unwrap_or(""),
+			self.settings
+				.get(SETTING_OUTPUT_TRANSFER)
+				.map(String::as_str)
+				.unwrap_or(""),
 		)
 	}
 
@@ -165,8 +174,10 @@ impl Project {
 	/// [`Project::working_color_space`] reads, persisting the string form via
 	/// `as_setting`; empty or absent settings still fall back to ACEScg on read.
 	pub fn set_working_color_space(&mut self, space: quercus_core::colormath::WorkingColorSpace) {
-		self.settings
-			.insert(SETTING_WORKING_COLOR_SPACE.to_string(), space.as_setting().to_string());
+		self.settings.insert(
+			SETTING_WORKING_COLOR_SPACE.to_string(),
+			space.as_setting().to_string(),
+		);
 	}
 
 	/// Set the output/delivery colorspace properties.
@@ -175,10 +186,14 @@ impl Project {
 	/// settings read by [`Project::output_color_spec`], replacing any previous
 	/// values; absent settings fall back to sRGB on read.
 	pub fn set_output_color_spec(&mut self, spec: quercus_core::colormath::OutputColorSpec) {
-		self.settings
-			.insert(SETTING_OUTPUT_GAMUT.to_string(), spec.gamut.as_setting().to_string());
-		self.settings
-			.insert(SETTING_OUTPUT_TRANSFER.to_string(), spec.transfer.as_setting().to_string());
+		self.settings.insert(
+			SETTING_OUTPUT_GAMUT.to_string(),
+			spec.gamut.as_setting().to_string(),
+		);
+		self.settings.insert(
+			SETTING_OUTPUT_TRANSFER.to_string(),
+			spec.transfer.as_setting().to_string(),
+		);
 	}
 
 	/// Deep-copy the whole project for background render isolation
@@ -371,16 +386,15 @@ impl Project {
 					return self.custom_cache_path.clone();
 				}
 			}
-			1
-				if !self.filename.is_empty() => {
-					let dir = std::path::Path::new(&self.filename)
-						.parent()
-						.map(|p| p.to_string_lossy().into_owned())
-						.unwrap_or_default();
-					if !dir.is_empty() {
-						return format!("{}/cache", dir);
-					}
+			1 if !self.filename.is_empty() => {
+				let dir = std::path::Path::new(&self.filename)
+					.parent()
+					.map(|p| p.to_string_lossy().into_owned())
+					.unwrap_or_default();
+				if !dir.is_empty() {
+					return format!("{}/cache", dir);
 				}
+			}
 			_ => {}
 		}
 		// Default location: the shared disk-cache directory (single-lib:
@@ -483,4 +497,3 @@ pub enum ChangeRecord {
 		element: i32,
 	},
 }
-

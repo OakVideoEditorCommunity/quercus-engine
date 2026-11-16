@@ -10,16 +10,18 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use quercus_core::Rational;
-use quercus_node::block::{AdjustmentBlockBehavior, ClipBlockBehavior, GapBlockBehavior, TransitionBlockBehavior};
-use quercus_node::footage::FootageBehavior;
+use quercus_node::block::{
+	AdjustmentBlockBehavior, ClipBlockBehavior, GapBlockBehavior, TransitionBlockBehavior,
+};
 use quercus_node::folder::FolderBehavior;
+use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
 use quercus_node::track::{TrackBehavior, TrackListBehavior};
 use quercus_storage::error::{
-	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_OK,
-	QUERCUSSTORAGE_TOO_NEW, QUERCUSSTORAGE_TOO_OLD, QUERCUSSTORAGE_UNKNOWN_VERSION,
+	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_OK, QUERCUSSTORAGE_TOO_NEW,
+	QUERCUSSTORAGE_TOO_OLD, QUERCUSSTORAGE_UNKNOWN_VERSION,
 };
 use quercus_timeline::util::GraphBlockRange;
 
@@ -149,7 +151,10 @@ pub unsafe extern "C" fn quercus_project_set_active(project: *const ProjectHandl
 /// A new reference on the active project (null when none is set).
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_project_active() -> *mut ProjectHandle {
-	let slot = ACTIVE_PROJECT.read().unwrap_or_else(|e| e.into_inner()).clone();
+	let slot = ACTIVE_PROJECT
+		.read()
+		.unwrap_or_else(|e| e.into_inner())
+		.clone();
 	match slot {
 		Some(inner) => crate::handle::into_ffi(ProjectHandle { inner }) as *mut ProjectHandle,
 		None => std::ptr::null_mut(),
@@ -214,7 +219,12 @@ fn behavior_as<T: 'static>(project: &Project, id: NodeId) -> Option<&T> {
 /// treat a null buffer as a size query). The getters in this module use it to turn
 /// an unavailable value (null handle, unknown/stale id, wrong node kind) into the
 /// conventional `-1`.
-fn write_str<R: Default>(value: Option<R>, f: impl FnOnce(&R, *mut u8, usize) -> i32, buf: *mut u8, buf_len: usize) -> i32 {
+fn write_str<R: Default>(
+	value: Option<R>,
+	f: impl FnOnce(&R, *mut u8, usize) -> i32,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
 	match value {
 		Some(v) => f(&v, buf, buf_len),
 		None => -1,
@@ -343,19 +353,17 @@ pub unsafe extern "C" fn quercus_node_type_id(
 pub unsafe extern "C" fn quercus_node_kind(project: *const ProjectHandle, id: u64) -> i32 {
 	let Some(id) = node_id(id) else { return 0 };
 	with_project(project, |p| {
-		p.graph.get(id).map(|e| {
-			match e.behavior.type_id() {
-				"org.olivevideoeditor.Olive.folder" => 1,
-				"org.olivevideoeditor.Olive.footage" => 2,
-				"org.olivevideoeditor.Olive.sequence" => 3,
-				"org.olivevideoeditor.Olive.track" => 4,
-				"org.olivevideoeditor.Olive.clipblock" => 5,
-				"org.olivevideoeditor.Olive.gapblock" => 6,
-				"org.olivevideoeditor.Olive.transitionblock" => 7,
-				"org.olivevideoeditor.Olive.adjustment" => 8,
-				"org.olivevideoeditor.Olive.tracklist" => 9,
-				_ => 0,
-			}
+		p.graph.get(id).map(|e| match e.behavior.type_id() {
+			"org.olivevideoeditor.Olive.folder" => 1,
+			"org.olivevideoeditor.Olive.footage" => 2,
+			"org.olivevideoeditor.Olive.sequence" => 3,
+			"org.olivevideoeditor.Olive.track" => 4,
+			"org.olivevideoeditor.Olive.clipblock" => 5,
+			"org.olivevideoeditor.Olive.gapblock" => 6,
+			"org.olivevideoeditor.Olive.transitionblock" => 7,
+			"org.olivevideoeditor.Olive.adjustment" => 8,
+			"org.olivevideoeditor.Olive.tracklist" => 9,
+			_ => 0,
 		})
 	})
 	.flatten()
@@ -407,7 +415,9 @@ pub unsafe extern "C" fn quercus_folder_child_at(
 	id: u64,
 	index: i32,
 ) -> u64 {
-	let Some(id) = node_id(id) else { return QUERCUS_NODE_ID_INVALID };
+	let Some(id) = node_id(id) else {
+		return QUERCUS_NODE_ID_INVALID;
+	};
 	if index < 0 {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -820,7 +830,9 @@ pub unsafe extern "C" fn quercus_sequence_track_list_at(
 	id: u64,
 	index: i32,
 ) -> u64 {
-	let Some(id) = node_id(id) else { return QUERCUS_NODE_ID_INVALID };
+	let Some(id) = node_id(id) else {
+		return QUERCUS_NODE_ID_INVALID;
+	};
 	if index < 0 {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -853,8 +865,7 @@ pub unsafe extern "C" fn quercus_sequence_playhead(
 	let null = QuercusRational { num: 0, den: 0 };
 	let Some(id) = node_id(id) else { return null };
 	with_project(project, |p| {
-		behavior_as::<SequenceBehavior>(p, id)
-			.map(|s| QuercusRational::from_native(&s.playhead))
+		behavior_as::<SequenceBehavior>(p, id).map(|s| QuercusRational::from_native(&s.playhead))
 	})
 	.flatten()
 	.unwrap_or(null)
@@ -926,7 +937,9 @@ pub unsafe extern "C" fn quercus_tracklist_track_at(
 	id: u64,
 	index: i32,
 ) -> u64 {
-	let Some(id) = node_id(id) else { return QUERCUS_NODE_ID_INVALID };
+	let Some(id) = node_id(id) else {
+		return QUERCUS_NODE_ID_INVALID;
+	};
 	if index < 0 {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -1005,7 +1018,9 @@ pub unsafe extern "C" fn quercus_track_block_at(
 	id: u64,
 	index: i32,
 ) -> u64 {
-	let Some(id) = node_id(id) else { return QUERCUS_NODE_ID_INVALID };
+	let Some(id) = node_id(id) else {
+		return QUERCUS_NODE_ID_INVALID;
+	};
 	if index < 0 {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -1040,7 +1055,9 @@ pub unsafe extern "C" fn quercus_track_block_containing_time(
 	id: u64,
 	time: QuercusRational,
 ) -> u64 {
-	let Some(id) = node_id(id) else { return QUERCUS_NODE_ID_INVALID };
+	let Some(id) = node_id(id) else {
+		return QUERCUS_NODE_ID_INVALID;
+	};
 	with_project(project, |p| {
 		behavior_as::<TrackBehavior>(p, id).and_then(|t| {
 			t.block_containing_time(time.to_native(), &GraphBlockRange { graph: &p.graph })
@@ -1062,13 +1079,15 @@ pub unsafe extern "C" fn quercus_track_block_containing_time(
 /// `project` must be null or a live handle owned by the caller for the duration
 /// of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_track_length(project: *const ProjectHandle, id: u64) -> QuercusRational {
+pub unsafe extern "C" fn quercus_track_length(
+	project: *const ProjectHandle,
+	id: u64,
+) -> QuercusRational {
 	let null = QuercusRational { num: 0, den: 1 };
 	let Some(id) = node_id(id) else { return null };
 	with_project(project, |p| {
-		behavior_as::<TrackBehavior>(p, id).map(|t| {
-			QuercusRational::from_native(&t.length(&GraphBlockRange { graph: &p.graph }))
-		})
+		behavior_as::<TrackBehavior>(p, id)
+			.map(|t| QuercusRational::from_native(&t.length(&GraphBlockRange { graph: &p.graph })))
 	})
 	.flatten()
 	.unwrap_or(null)
@@ -1088,16 +1107,15 @@ pub unsafe extern "C" fn quercus_track_length(project: *const ProjectHandle, id:
 ///
 /// `Some(&BlockCore)` for a live block node, `None` for a missing node or any other
 /// node type.
-fn block_core<'a>(
-	project: &'a Project,
-	id: NodeId,
-) -> Option<&'a quercus_node::block::BlockCore> {
+fn block_core<'a>(project: &'a Project, id: NodeId) -> Option<&'a quercus_node::block::BlockCore> {
 	let any = project.graph.get(id)?.behavior.as_any()?;
 	[
 		any.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
 		any.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
-		any.downcast_ref::<TransitionBlockBehavior>().map(|b| &b.core),
-		any.downcast_ref::<AdjustmentBlockBehavior>().map(|b| &b.core),
+		any.downcast_ref::<TransitionBlockBehavior>()
+			.map(|b| &b.core),
+		any.downcast_ref::<AdjustmentBlockBehavior>()
+			.map(|b| &b.core),
 	]
 	.into_iter()
 	.flatten()
@@ -1158,9 +1176,7 @@ pub unsafe extern "C" fn quercus_track_height_pixels(
 	with_project(project, |p| {
 		behavior_as::<TrackBehavior>(p, id)
 			.map(|t| {
-				f64::from(
-					quercus_node::track::internal_height_to_pixel_height(t.height).max(24),
-				)
+				f64::from(quercus_node::track::internal_height_to_pixel_height(t.height).max(24))
 			})
 			.unwrap_or(64.0)
 	})
@@ -1210,9 +1226,11 @@ pub unsafe extern "C" fn quercus_track_list(project: *const ProjectHandle, id: u
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_track_index(project: *const ProjectHandle, id: u64) -> i32 {
 	let Some(id) = node_id(id) else { return -1 };
-	with_project(project, |p| behavior_as::<TrackBehavior>(p, id).map(|t| t.index))
-		.flatten()
-		.unwrap_or(-1)
+	with_project(project, |p| {
+		behavior_as::<TrackBehavior>(p, id).map(|t| t.index)
+	})
+	.flatten()
+	.unwrap_or(-1)
 }
 
 /// Creates a generator node from the node factory and adds it to the graph.
@@ -1247,7 +1265,10 @@ pub unsafe extern "C" fn quercus_generator_create(
 		else {
 			return QUERCUS_NODE_ID_INVALID;
 		};
-		if !behavior.categories().contains(&quercus_node::node::Category::Generator) {
+		if !behavior
+			.categories()
+			.contains(&quercus_node::node::Category::Generator)
+		{
 			return QUERCUS_NODE_ID_INVALID;
 		}
 		g.graph.add_node(core, behavior).identity()
@@ -1399,11 +1420,9 @@ pub unsafe extern "C" fn quercus_block_speed(project: *const ProjectHandle, id: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_block_link_count(project: *const ProjectHandle, id: u64) -> i32 {
 	let Some(id) = node_id(id) else { return 0 };
-	with_project(project, |p| {
-		block_core(p, id).map(|c| c.links.len() as i32)
-	})
-	.flatten()
-	.unwrap_or(0)
+	with_project(project, |p| block_core(p, id).map(|c| c.links.len() as i32))
+		.flatten()
+		.unwrap_or(0)
 }
 
 /// One block token linked to this block (the linked A/V group).
@@ -1626,10 +1645,7 @@ pub unsafe extern "C" fn quercus_project_node_count(project: *const ProjectHandl
 /// `project` must be null or a live handle owned by the caller for the duration
 /// of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_project_node_at(
-	project: *const ProjectHandle,
-	index: i32,
-) -> u64 {
+pub unsafe extern "C" fn quercus_project_node_at(project: *const ProjectHandle, index: i32) -> u64 {
 	if index < 0 {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -1743,7 +1759,9 @@ fn read_value(
 	if out.is_null() {
 		return false;
 	}
-	let Some(id) = node_id(token) else { return false };
+	let Some(id) = node_id(token) else {
+		return false;
+	};
 	let Some(input) = (unsafe { str_arg(input_id, input_id_len) }) else {
 		return false;
 	};
@@ -2014,10 +2032,8 @@ pub unsafe extern "C" fn quercus_sequence_set_video_params(
 			let v = &mut s.video_params[0];
 			v.width = width;
 			v.height = height;
-			v.frame_rate = quercus_core::Rational::new(
-				i64::from(frame_rate_num),
-				i64::from(frame_rate_den),
-			);
+			v.frame_rate =
+				quercus_core::Rational::new(i64::from(frame_rate_num), i64::from(frame_rate_den));
 		}
 		true
 	})
@@ -2099,274 +2115,7 @@ pub extern "C" fn quercus_undo_index() -> i64 {
 pub(crate) static UNDO_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	fn cstr_arg(s: &str) -> (*const u8, usize) {
-		(s.as_ptr(), s.len())
-	}
-
-	/// A project with one footage node in the root folder.
-	fn project_with_footage() -> *mut ProjectHandle {
-		let project = quercus_project_new();
-		assert!(!project.is_null());
-		// Build a footage node through quercus-node directly (the engine's
-		// read API is what's under test).
-		{
-			let inner = unsafe { &*project }.inner.clone();
-			let mut g = inner.lock().unwrap();
-			let (core, mut behavior) = quercus_node::footage::FootageBehavior::create();
-			{
-				let b = behavior
-					.as_any_mut()
-					.unwrap()
-					.downcast_mut::<FootageBehavior>()
-					.unwrap();
-				b.filename = "/tmp/quercus-node-test.mp4".to_string();
-			}
-			let id = g.graph.add_node(core, behavior);
-			let root = g.root;
-			g.graph
-				.get_mut(root)
-				.unwrap()
-				.behavior
-				.as_any_mut()
-				.unwrap()
-				.downcast_mut::<FolderBehavior>()
-				.unwrap()
-				.add_child(id);
-		}
-		project
-	}
-
-	#[test]
-	fn id_tokens_and_project_basics() {
-		assert_eq!(quercus_node_id_invalid(), u32::MAX as u64);
-		assert!(!quercus_node_id_is_valid(quercus_node_id_invalid()));
-
-		let project = quercus_project_new();
-		unsafe {
-			let root = quercus_project_root(project);
-			assert!(quercus_node_id_is_valid(root), "initialized project has a root");
-			assert_eq!(quercus_node_kind(project, root), 1, "root is a folder");
-			assert_eq!(quercus_folder_child_count(project, root), 0);
-
-			let mut buf = [0u8; 128];
-			let n = quercus_node_type_id(project, root, buf.as_mut_ptr(), buf.len());
-			assert!(std::str::from_utf8(&buf[..n as usize]).unwrap().ends_with("folder"));
-			assert!(quercus_project_filename(project, buf.as_mut_ptr(), buf.len()) >= 0);
-			assert!(!quercus_project_modified(project));
-
-			quercus_project_release(project);
-		}
-	}
-
-	/// Node labels and sequence introspection through the C ABI.
-	#[test]
-	fn node_label_and_sequence_params() {
-		// Folder creation is undoable; serialize against the other
-		// undo-stack tests.
-		let _guard = UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-		unsafe {
-			let project = quercus_project_new();
-			let root = quercus_project_root(project);
-			let (n, nl) = ("Labeled".as_ptr(), 7);
-			let folder = quercus_folder_create(project, root, n, nl);
-			assert!(quercus_node_id_is_valid(folder));
-
-			let mut buf = [0u8; 64];
-			let len = quercus_node_label(project, folder, buf.as_mut_ptr(), buf.len());
-			assert_eq!(std::str::from_utf8(&buf[..len as usize]).unwrap(), "Labeled");
-			assert!(quercus_node_set_label(project, folder, "Renamed".as_ptr(), 7));
-			let len = quercus_node_label(project, folder, buf.as_mut_ptr(), buf.len());
-			assert_eq!(std::str::from_utf8(&buf[..len as usize]).unwrap(), "Renamed");
-			assert_eq!(quercus_node_label(project, u64::MAX, buf.as_mut_ptr(), 64), -1);
-			assert!(!quercus_node_set_label(project, u64::MAX, "x".as_ptr(), 1));
-
-			let (s, sl) = ("Seq".as_ptr(), 3);
-			let seq = quercus_sequence_create(project, s, sl);
-			// A fresh sequence carries the default 29.97 fps video params.
-			assert_eq!(quercus_sequence_frame_rate(project, seq), QuercusRational { num: 30000, den: 1001 });
-			assert!(quercus_sequence_geometry(project, seq, std::ptr::null_mut(), std::ptr::null_mut()));
-			assert!(quercus_sequence_set_video_params(project, seq, 1920, 1080, 24, 1));
-			assert_eq!(quercus_sequence_frame_rate(project, seq), QuercusRational { num: 24, den: 1 });
-			let (mut w, mut h) = (0, 0);
-			assert!(quercus_sequence_geometry(project, seq, &mut w, &mut h));
-			assert_eq!((w, h), (1920, 1080));
-			assert_eq!(quercus_sequence_length(project, seq), QuercusRational { num: 0, den: 1 });
-			assert!(!quercus_sequence_set_video_params(project, u64::MAX, 1, 1, 1, 1));
-
-			quercus_project_release(project);
-			assert!(quercus_undo::global::clear().is_ok());
-		}
-	}
-
-	#[test]
-	fn active_project_slot() {
-		unsafe {
-			quercus_project_set_active(std::ptr::null());
-			assert!(quercus_project_active().is_null());
-
-			let project = quercus_project_new();
-			quercus_project_set_active(project);
-			let active = quercus_project_active();
-			assert!(!active.is_null());
-			// Same underlying project: the root token matches.
-			assert_eq!(quercus_project_root(active), quercus_project_root(project));
-
-			quercus_project_set_active(std::ptr::null());
-			assert!(quercus_project_active().is_null());
-
-			quercus_project_release(active);
-			quercus_project_release(project);
-		}
-	}
-
-	#[test]
-	fn footage_traversal() {
-		let project = project_with_footage();
-		unsafe {
-			let root = quercus_project_root(project);
-			assert_eq!(quercus_folder_child_count(project, root), 1);
-			let child = quercus_folder_child_at(project, root, 0);
-			assert!(quercus_node_id_is_valid(child));
-			assert_eq!(quercus_node_kind(project, child), 2, "footage");
-
-			let mut buf = [0u8; 128];
-			let n = quercus_footage_filename(project, child, buf.as_mut_ptr(), buf.len());
-			assert_eq!(
-				std::str::from_utf8(&buf[..n as usize]).unwrap(),
-				"/tmp/quercus-node-test.mp4"
-			);
-
-			// Unprobed: zero streams.
-			assert_eq!(quercus_footage_total_stream_count(project, child), 0);
-			assert!(!quercus_footage_video_params(project, child, 0, std::ptr::null_mut()));
-
-			quercus_project_release(project);
-		}
-	}
-
-	#[test]
-	fn sequence_track_tracklist_traversal() {
-		let project = quercus_project_new();
-		{
-			let inner = unsafe { &*project }.inner.clone();
-			let mut g = inner.lock().unwrap();
-			// sequence → tracklist(video) → track(video)
-			let (seq_core, seq_b) = quercus_node::sequence::SequenceBehavior::create();
-			let seq = g.graph.add_node(seq_core, seq_b);
-			let (tl_core, tl_b) = quercus_node::track::TrackListBehavior::create();
-			let tl = g.graph.add_node(tl_core, tl_b);
-			let (tr_core, tr_b) = quercus_node::track::TrackBehavior::create();
-			let tr = g.graph.add_node(tr_core, tr_b);
-
-			let tl_b = g
-				.graph
-				.get_mut(tl)
-				.unwrap()
-				.behavior
-				.as_any_mut()
-				.unwrap()
-				.downcast_mut::<TrackListBehavior>()
-				.unwrap();
-			tl_b.tracks.push(tr);
-			let seq_b = g
-				.graph
-				.get_mut(seq)
-				.unwrap()
-				.behavior
-				.as_any_mut()
-				.unwrap()
-				.downcast_mut::<SequenceBehavior>()
-				.unwrap();
-			seq_b.track_lists.push(tl);
-		}
-		unsafe {
-			let root = quercus_project_root(project);
-			let _ = root;
-			// find the sequence via graph scan (it is not in the bin)
-			// — simpler: the traversal entry points are exercised directly.
-			// (sequence id is not discoverable via the folder tree)
-			let mut found_seq = 0u64;
-			{
-				let inner = &*project;
-				let g = inner.inner.lock().unwrap();
-				for id in g.graph.node_ids() {
-					if g.graph.get(id).unwrap().behavior.type_id()
-						== "org.olivevideoeditor.Olive.sequence"
-					{
-						found_seq = id.identity();
-					}
-				}
-			}
-			assert_eq!(quercus_sequence_track_list_count(project, found_seq), 1);
-			let tl = quercus_sequence_track_list_at(project, found_seq, 0);
-			assert_eq!(quercus_tracklist_track_count(project, tl), 1);
-			let tr = quercus_tracklist_track_at(project, tl, 0);
-			assert_eq!(quercus_track_block_count(project, tr), 0);
-			quercus_project_release(project);
-		}
-	}
-
-	#[test]
-	fn param_reads_and_undo_readonly() {
-		let project = project_with_footage();
-		unsafe {
-			let root = quercus_project_root(project);
-			let child = quercus_folder_child_at(project, root, 0);
-
-			// footage has a "file_in" text input — not POD-representable,
-			// so the read must fail cleanly (false), not crash.
-			let mut out = quercus_node::value::QuercusNodeValue::none();
-			let (i, il) = cstr_arg("file_in");
-			assert!(!quercus_node_standard_value(project, child, i, il, -1, &mut out));
-			// Unknown input id: false.
-			let (i, il) = cstr_arg("no_such_input");
-			assert!(!quercus_node_standard_value(project, child, i, il, -1, &mut out));
-			// value_at_time on a static text input: also false (string).
-			let (i, il) = cstr_arg("file_in");
-			assert!(!quercus_node_value_at_time(
-				project,
-				child,
-				i,
-				il,
-				-1,
-				QuercusRational { num: 0, den: 1 },
-				&mut out,
-			));
-
-			// Fresh process-wide stack state is whatever the suite left;
-			// just verify the calls work.
-			let _ = quercus_undo_can_undo();
-			let _ = quercus_undo_can_redo();
-			assert!(quercus_undo_count() >= 0);
-			assert!(quercus_undo_index() >= 0 || quercus_undo_count() == 0);
-
-			quercus_project_release(project);
-		}
-	}
-
-	#[test]
-	fn null_safety_sweep() {
-		unsafe {
-			let mut buf = [0u8; 64];
-			assert_eq!(quercus_node_kind(std::ptr::null(), 1), 0);
-			assert_eq!(quercus_node_type_id(std::ptr::null(), 1, buf.as_mut_ptr(), 64), -1);
-			assert_eq!(quercus_folder_child_count(std::ptr::null(), 1), 0);
-			assert_eq!(quercus_folder_child_at(std::ptr::null(), 1, 0), QUERCUS_NODE_ID_INVALID);
-			assert_eq!(quercus_footage_filename(std::ptr::null(), 1, buf.as_mut_ptr(), 64), -1);
-			assert_eq!(quercus_footage_duration(std::ptr::null(), 1).den, 0);
-			assert_eq!(quercus_sequence_track_list_count(std::ptr::null(), 1), 0);
-			assert_eq!(quercus_tracklist_kind(std::ptr::null(), 1), -1);
-			assert_eq!(quercus_track_length(std::ptr::null(), 1).num, 0);
-			assert_eq!(quercus_block_in(std::ptr::null(), 1).den, 0);
-			assert!(!quercus_project_modified(std::ptr::null()));
-			assert_eq!(quercus_project_root(std::ptr::null()), QUERCUS_NODE_ID_INVALID);
-			quercus_project_release(std::ptr::null());
-		}
-	}
-}
+mod tests;
 
 // ---------------------------------------------------------------------------
 // Batch 2: editing (undo-integrated)
@@ -2387,7 +2136,10 @@ use quercus_undo::undocommand::UndoCommand;
 /// recovered with `into_inner`, so a panic on another thread does not make the
 /// editing entry points panic here. `f` runs under the lock and must not re-enter
 /// another entry point that locks the same project (that would deadlock).
-fn with_project_mut<R>(project: *const ProjectHandle, f: impl FnOnce(&mut Project) -> R) -> Option<R> {
+fn with_project_mut<R>(
+	project: *const ProjectHandle,
+	f: impl FnOnce(&mut Project) -> R,
+) -> Option<R> {
 	if project.is_null() {
 		return None;
 	}
@@ -2500,11 +2252,7 @@ pub unsafe extern "C" fn quercus_footage_import(
 				return None;
 			}
 			let (mut core, mut behavior) = FootageBehavior::create();
-			core.set_standard_value(
-				"file_in",
-				-1,
-				NodeValue::Text(filename.to_string()),
-			);
+			core.set_standard_value("file_in", -1, NodeValue::Text(filename.to_string()));
 			let f = behavior
 				.as_any_mut()
 				.and_then(|a| a.downcast_mut::<FootageBehavior>())?;
@@ -2620,7 +2368,10 @@ pub unsafe extern "C" fn quercus_node_remove(project: *const ProjectHandle, id: 
 		return false;
 	}
 	let project_ref = unsafe { &*project }.inner.clone();
-	push_undo(quercus_task::nodeops::remove_node_command(project_ref, id), "Remove Node")
+	push_undo(
+		quercus_task::nodeops::remove_node_command(project_ref, id),
+		"Remove Node",
+	)
 }
 
 /// Creates a sequence, mounts it in the bin root, and gives it the default
@@ -2710,13 +2461,14 @@ fn find_or_create_track_list(
 ) -> Option<NodeId> {
 	let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 	// Existing list of this kind?
-	let existing = behavior_as::<SequenceBehavior>(&guard, seq)?.track_lists.iter().find_map(
-		|&list| {
-			let matches = behavior_as::<TrackListBehavior>(&guard, list)
-				.is_some_and(|l| l.kind == kind);
+	let existing = behavior_as::<SequenceBehavior>(&guard, seq)?
+		.track_lists
+		.iter()
+		.find_map(|&list| {
+			let matches =
+				behavior_as::<TrackListBehavior>(&guard, list).is_some_and(|l| l.kind == kind);
 			matches.then_some(list)
-		},
-	);
+		});
 	if existing.is_some() {
 		return existing;
 	}
@@ -2726,8 +2478,9 @@ fn find_or_create_track_list(
 		.and_then(|a| a.downcast_mut::<TrackListBehavior>())
 	{
 		list.kind = kind;
-		list.array_base =
-			behavior_as::<SequenceBehavior>(&guard, seq)?.track_lists.len() as i32;
+		list.array_base = behavior_as::<SequenceBehavior>(&guard, seq)?
+			.track_lists
+			.len() as i32;
 	}
 	let list_id = guard.graph.add_node(core, behavior);
 	if let Some(s) = guard
@@ -2887,11 +2640,13 @@ pub unsafe extern "C" fn quercus_track_insert_block_after(
 	let project_ref = unsafe { &*project }.inner.clone();
 	let before = node_id(before).map(|b| NodeRef::new(project_ref.clone(), b));
 	push_undo(
-		UndoCommand::new(quercus_timeline::undotrack::TrackInsertBlockAfterCommand::new(
-			NodeRef::new(project_ref.clone(), track),
-			NodeRef::new(project_ref, block),
-			before,
-		)),
+		UndoCommand::new(
+			quercus_timeline::undotrack::TrackInsertBlockAfterCommand::new(
+				NodeRef::new(project_ref.clone(), track),
+				NodeRef::new(project_ref, block),
+				before,
+			),
+		),
 		"Insert Block",
 	)
 }
@@ -2926,10 +2681,12 @@ pub unsafe extern "C" fn quercus_track_ripple_remove_block(
 	}
 	let project_ref = unsafe { &*project }.inner.clone();
 	push_undo(
-		UndoCommand::new(quercus_timeline::undotrack::TrackRippleRemoveBlockCommand::new(
-			NodeRef::new(project_ref.clone(), track),
-			NodeRef::new(project_ref, block),
-		)),
+		UndoCommand::new(
+			quercus_timeline::undotrack::TrackRippleRemoveBlockCommand::new(
+				NodeRef::new(project_ref.clone(), track),
+				NodeRef::new(project_ref, block),
+			),
+		),
 		"Ripple Remove Block",
 	)
 }
@@ -2956,8 +2713,7 @@ pub unsafe extern "C" fn quercus_track_replace_block(
 	old: u64,
 	new: u64,
 ) -> bool {
-	let (Some(track), Some(old), Some(new)) = (node_id(track), node_id(old), node_id(new))
-	else {
+	let (Some(track), Some(old), Some(new)) = (node_id(track), node_id(old), node_id(new)) else {
 		return false;
 	};
 	if project.is_null() {
@@ -3092,13 +2848,17 @@ pub(crate) fn set_standard_value_impl(
 			move || {
 				let mut g = project_redo.lock().unwrap_or_else(|e| e.into_inner());
 				if let Some(entry) = g.graph.get_mut(id) {
-					entry.core.set_standard_value(&input_redo, element, new_value.clone());
+					entry
+						.core
+						.set_standard_value(&input_redo, element, new_value.clone());
 				}
 			},
 			move || {
 				let mut g = project_undo.lock().unwrap_or_else(|e| e.into_inner());
 				if let Some(entry) = g.graph.get_mut(id) {
-					entry.core.set_standard_value(&input_undo, element, old_value.clone());
+					entry
+						.core
+						.set_standard_value(&input_undo, element, old_value.clone());
 				}
 			},
 		),
@@ -3145,8 +2905,10 @@ pub unsafe extern "C" fn quercus_node_connect(
 	let Some(input) = (unsafe { str_arg(input_id, input_id_len) }) else {
 		return false;
 	};
-	with_project_mut(project, |guard| guard.graph.connect(from, to, input, element).is_ok())
-		.unwrap_or(false)
+	with_project_mut(project, |guard| {
+		guard.graph.connect(from, to, input, element).is_ok()
+	})
+	.unwrap_or(false)
 }
 
 /// Disconnects whatever feeds `to`'s `input_id` at `element`.
@@ -3188,7 +2950,6 @@ pub unsafe extern "C" fn quercus_node_disconnect(
 mod edit_tests {
 	use super::*;
 
-
 	fn temp_clip(name: &str) -> String {
 		let dir = std::env::temp_dir().join(format!(
 			"quercusengine_nodeedit_{}_{}",
@@ -3197,7 +2958,8 @@ mod edit_tests {
 		));
 		let _ = std::fs::create_dir_all(&dir);
 		let path = dir.join("clip.mp4");
-		quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("generate test media");
+		quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10)
+			.expect("generate test media");
 		path.to_string_lossy().into_owned()
 	}
 
@@ -3312,7 +3074,11 @@ mod edit_tests {
 			assert!(quercus_undo_group_abort());
 			assert_eq!(quercus_undo_count(), base + 1, "abort records nothing");
 			let root = quercus_project_root(project);
-			assert_eq!(quercus_folder_child_count(project, root), 1, "aborted import rolled back");
+			assert_eq!(
+				quercus_folder_child_count(project, root),
+				1,
+				"aborted import rolled back"
+			);
 
 			quercus_project_release(project);
 		}
@@ -3330,22 +3096,32 @@ mod edit_tests {
 			value.kind = quercus_node::value::quercus::RATIONAL;
 			value.num = 7;
 			value.den = 1;
-			assert!(quercus_node_set_standard_value(project, clip, i, il, -1, value));
+			assert!(quercus_node_set_standard_value(
+				project, clip, i, il, -1, value
+			));
 
 			let mut out = quercus_node::value::QuercusNodeValue::none();
-			assert!(quercus_node_standard_value(project, clip, i, il, -1, &mut out));
+			assert!(quercus_node_standard_value(
+				project, clip, i, il, -1, &mut out
+			));
 			assert_eq!((out.num, out.den), (7, 1));
 
 			assert!(quercus_undo_undo());
-			assert!(quercus_node_standard_value(project, clip, i, il, -1, &mut out));
+			assert!(quercus_node_standard_value(
+				project, clip, i, il, -1, &mut out
+			));
 			assert_eq!((out.num, out.den), (0, 1), "undo restored the old value");
 			assert!(quercus_undo_redo());
-			assert!(quercus_node_standard_value(project, clip, i, il, -1, &mut out));
+			assert!(quercus_node_standard_value(
+				project, clip, i, il, -1, &mut out
+			));
 			assert_eq!((out.num, out.den), (7, 1));
 
 			// Unknown input id fails cleanly.
 			let (i, il) = arg("no_such_input");
-			assert!(!quercus_node_set_standard_value(project, clip, i, il, -1, value));
+			assert!(!quercus_node_set_standard_value(
+				project, clip, i, il, -1, value
+			));
 
 			quercus_project_release(project);
 		}
@@ -3356,21 +3132,49 @@ mod edit_tests {
 		let _guard = super::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		unsafe {
 			let project = quercus_project_new();
-			assert_eq!(quercus_footage_import(project, std::ptr::null(), 0), QUERCUS_NODE_ID_INVALID);
+			assert_eq!(
+				quercus_footage_import(project, std::ptr::null(), 0),
+				QUERCUS_NODE_ID_INVALID
+			);
 			assert_eq!(
 				quercus_footage_import(project, "/nonexistent/x.mp4".as_ptr(), 17),
 				QUERCUS_NODE_ID_INVALID
 			);
-			assert_eq!(quercus_folder_create(std::ptr::null(), 1, "f".as_ptr(), 1), QUERCUS_NODE_ID_INVALID);
-			assert_eq!(quercus_sequence_create(std::ptr::null(), "s".as_ptr(), 1), QUERCUS_NODE_ID_INVALID);
+			assert_eq!(
+				quercus_folder_create(std::ptr::null(), 1, "f".as_ptr(), 1),
+				QUERCUS_NODE_ID_INVALID
+			);
+			assert_eq!(
+				quercus_sequence_create(std::ptr::null(), "s".as_ptr(), 1),
+				QUERCUS_NODE_ID_INVALID
+			);
 			assert!(!quercus_node_remove(project, QUERCUS_NODE_ID_INVALID));
 			// A well-formed token naming no live node is a no-op command:
 			// either outcome is acceptable, it just must not crash.
 			let _ = quercus_node_remove(project, 1);
-			assert!(!quercus_track_append_block(project, QUERCUS_NODE_ID_INVALID, 2));
-			assert!(!quercus_track_ripple_remove_block(project, QUERCUS_NODE_ID_INVALID, 2));
-			assert!(!quercus_block_set_length(project, QUERCUS_NODE_ID_INVALID, QuercusRational { num: 1, den: 1 }));
-			assert!(!quercus_node_connect(project, 1, QUERCUS_NODE_ID_INVALID, "x".as_ptr(), 1, -1));
+			assert!(!quercus_track_append_block(
+				project,
+				QUERCUS_NODE_ID_INVALID,
+				2
+			));
+			assert!(!quercus_track_ripple_remove_block(
+				project,
+				QUERCUS_NODE_ID_INVALID,
+				2
+			));
+			assert!(!quercus_block_set_length(
+				project,
+				QUERCUS_NODE_ID_INVALID,
+				QuercusRational { num: 1, den: 1 }
+			));
+			assert!(!quercus_node_connect(
+				project,
+				1,
+				QUERCUS_NODE_ID_INVALID,
+				"x".as_ptr(),
+				1,
+				-1
+			));
 			// On a non-empty stack this undoes a real entry; redo it
 			// immediately — a redoable tail would be dropped by the next
 			// push, shifting the global count out from under the other
@@ -3412,10 +3216,7 @@ pub unsafe extern "C" fn quercus_project_save_to_bytes(
 	let Some(project) = (unsafe { project.as_ref() }) else {
 		return QUERCUSSTORAGE_E_INVALID;
 	};
-	let guard = project
-		.inner
-		.lock()
-		.unwrap_or_else(|e| e.into_inner());
+	let guard = project.inner.lock().unwrap_or_else(|e| e.into_inner());
 	let xml = match quercus_node::serializer::save(&guard) {
 		Ok(xml) => xml,
 		Err(_) => return QUERCUSSTORAGE_E_FORMAT,
@@ -3583,12 +3384,7 @@ pub unsafe extern "C" fn quercus_project_load(
 	let mut version_info = QUERCUSSTORAGE_OK;
 	let mut error = 0;
 	let project = unsafe {
-		quercus_project_load_from_bytes(
-			bytes.as_ptr(),
-			bytes.len(),
-			&mut version_info,
-			&mut error,
-		)
+		quercus_project_load_from_bytes(bytes.as_ptr(), bytes.len(), &mut version_info, &mut error)
 	};
 	if project.is_null() {
 		return std::ptr::null_mut();
@@ -3695,10 +3491,9 @@ pub unsafe extern "C" fn quercus_project_set_output_color_spec(
 	transfer: *const u8,
 	transfer_len: usize,
 ) -> bool {
-	let (Some(gamut), Some(transfer)) = (
-		unsafe { str_arg(gamut, gamut_len) },
-		unsafe { str_arg(transfer, transfer_len) },
-	) else {
+	let (Some(gamut), Some(transfer)) = (unsafe { str_arg(gamut, gamut_len) }, unsafe {
+		str_arg(transfer, transfer_len)
+	}) else {
 		return false;
 	};
 	let spec = quercus_core::colormath::OutputColorSpec::from_settings(gamut, transfer);
@@ -3939,7 +3734,10 @@ pub unsafe extern "C" fn quercus_project_set_cache_location(
 /// `project` must be null or a live handle owned by the caller for the duration
 /// of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_sequence_interlaced(project: *const ProjectHandle, id: u64) -> i32 {
+pub unsafe extern "C" fn quercus_sequence_interlaced(
+	project: *const ProjectHandle,
+	id: u64,
+) -> i32 {
 	node_id(id)
 		.and_then(|id| {
 			with_project(project, |p| {
@@ -3969,7 +3767,12 @@ pub unsafe extern "C" fn quercus_sequence_interlaced(project: *const ProjectHand
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_track_height(project: *const ProjectHandle, id: u64) -> f64 {
 	node_id(id)
-		.and_then(|id| with_project(project, |p| behavior_as::<TrackBehavior>(p, id).map(|t| t.height)).flatten())
+		.and_then(|id| {
+			with_project(project, |p| {
+				behavior_as::<TrackBehavior>(p, id).map(|t| t.height)
+			})
+			.flatten()
+		})
 		.unwrap_or(0.0)
 }
 
@@ -3992,7 +3795,12 @@ pub unsafe extern "C" fn quercus_track_height(project: *const ProjectHandle, id:
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_track_muted(project: *const ProjectHandle, id: u64) -> bool {
 	node_id(id)
-		.and_then(|id| with_project(project, |p| behavior_as::<TrackBehavior>(p, id).map(|t| t.muted)).flatten())
+		.and_then(|id| {
+			with_project(project, |p| {
+				behavior_as::<TrackBehavior>(p, id).map(|t| t.muted)
+			})
+			.flatten()
+		})
 		.unwrap_or(false)
 }
 
@@ -4014,7 +3822,12 @@ pub unsafe extern "C" fn quercus_track_muted(project: *const ProjectHandle, id: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_track_locked(project: *const ProjectHandle, id: u64) -> bool {
 	node_id(id)
-		.and_then(|id| with_project(project, |p| behavior_as::<TrackBehavior>(p, id).map(|t| t.locked)).flatten())
+		.and_then(|id| {
+			with_project(project, |p| {
+				behavior_as::<TrackBehavior>(p, id).map(|t| t.locked)
+			})
+			.flatten()
+		})
 		.unwrap_or(false)
 }
 
@@ -4045,9 +3858,13 @@ pub unsafe extern "C" fn quercus_block_enabled(project: *const ProjectHandle, id
 							Some(block.core.enabled)
 						} else if let Some(block) = behavior.downcast_ref::<GapBlockBehavior>() {
 							Some(block.core.enabled)
-						} else if let Some(block) = behavior.downcast_ref::<TransitionBlockBehavior>() {
+						} else if let Some(block) =
+							behavior.downcast_ref::<TransitionBlockBehavior>()
+						{
 							Some(block.core.enabled)
-						} else if let Some(block) = behavior.downcast_ref::<AdjustmentBlockBehavior>() {
+						} else if let Some(block) =
+							behavior.downcast_ref::<AdjustmentBlockBehavior>()
+						{
 							Some(block.core.enabled)
 						} else {
 							None
@@ -4083,14 +3900,20 @@ mod persist_tests {
 				.into_owned();
 			let (p, pl) = arg(&path);
 			assert!(quercus_project_save(project, p, pl));
-			assert!(!quercus_project_modified(project), "saved projects are clean");
+			assert!(
+				!quercus_project_modified(project),
+				"saved projects are clean"
+			);
 
 			let loaded = quercus_project_load(p, pl);
 			assert!(!loaded.is_null(), "reload the saved project");
 			let root = quercus_project_root(loaded);
 			assert_eq!(quercus_folder_child_count(loaded, root), 1);
-			assert_eq!(quercus_folder_child_at(loaded, root, 0), folder,
-				"NodeIds survive the round trip");
+			assert_eq!(
+				quercus_folder_child_at(loaded, root, 0),
+				folder,
+				"NodeIds survive the round trip"
+			);
 
 			quercus_project_release(loaded);
 			quercus_project_release(project);
@@ -4175,11 +3998,17 @@ mod persist_tests {
 			let mut loaded_uuid_buf = [0u8; 64];
 			let loaded_uuid_len =
 				quercus_project_uuid(loaded, loaded_uuid_buf.as_mut_ptr(), loaded_uuid_buf.len());
-			assert_eq!(&loaded_uuid_buf[..loaded_uuid_len as usize], uuid.as_bytes());
+			assert_eq!(
+				&loaded_uuid_buf[..loaded_uuid_len as usize],
+				uuid.as_bytes()
+			);
 			let mut loaded_name_buf = [0u8; 64];
 			let loaded_name_len =
 				quercus_project_name(loaded, loaded_name_buf.as_mut_ptr(), loaded_name_buf.len());
-			assert_eq!(&loaded_name_buf[..loaded_name_len as usize], name.as_bytes());
+			assert_eq!(
+				&loaded_name_buf[..loaded_name_len as usize],
+				name.as_bytes()
+			);
 			let mut filename_buf = [0u8; 8];
 			assert_eq!(
 				quercus_project_filename(loaded, filename_buf.as_mut_ptr(), filename_buf.len()),
@@ -4201,71 +4030,76 @@ mod persist_tests {
 
 			// Newer document: null handle, TOO_NEW, no error.
 			let too_new = b"<olive version=\"999999\"></olive>";
-			assert!(quercus_project_load_from_bytes(
-				too_new.as_ptr(),
-				too_new.len(),
-				&mut version_info,
-				&mut error,
-			)
-			.is_null());
+			assert!(
+				quercus_project_load_from_bytes(
+					too_new.as_ptr(),
+					too_new.len(),
+					&mut version_info,
+					&mut error,
+				)
+				.is_null()
+			);
 			assert_eq!(version_info, QUERCUSSTORAGE_TOO_NEW);
 			assert_eq!(error, 0);
 
 			// Unrecognized root: null handle, UNKNOWN_VERSION, no error.
 			let unknown = b"<thirdparty></thirdparty>";
-			assert!(quercus_project_load_from_bytes(
-				unknown.as_ptr(),
-				unknown.len(),
-				&mut version_info,
-				&mut error,
-			)
-			.is_null());
+			assert!(
+				quercus_project_load_from_bytes(
+					unknown.as_ptr(),
+					unknown.len(),
+					&mut version_info,
+					&mut error,
+				)
+				.is_null()
+			);
 			assert_eq!(version_info, QUERCUSSTORAGE_UNKNOWN_VERSION);
 			assert_eq!(error, 0);
 
 			// Not XML: format error.
 			let not_xml = b"not xml";
-			assert!(quercus_project_load_from_bytes(
-				not_xml.as_ptr(),
-				not_xml.len(),
-				&mut version_info,
-				&mut error,
-			)
-			.is_null());
+			assert!(
+				quercus_project_load_from_bytes(
+					not_xml.as_ptr(),
+					not_xml.len(),
+					&mut version_info,
+					&mut error,
+				)
+				.is_null()
+			);
 			assert_eq!(error, QUERCUSSTORAGE_E_FORMAT);
 
 			// Non-UTF-8 bytes: format error.
 			let non_utf8 = [0xFFu8, 0xFE, 0x00];
-			assert!(quercus_project_load_from_bytes(
-				non_utf8.as_ptr(),
-				non_utf8.len(),
-				&mut version_info,
-				&mut error,
-			)
-			.is_null());
+			assert!(
+				quercus_project_load_from_bytes(
+					non_utf8.as_ptr(),
+					non_utf8.len(),
+					&mut version_info,
+					&mut error,
+				)
+				.is_null()
+			);
 			assert_eq!(error, QUERCUSSTORAGE_E_FORMAT);
 
 			// Null input pointer: invalid argument.
 			assert!(
-				quercus_project_load_from_bytes(
-					std::ptr::null(),
-					0,
-					&mut version_info,
-					&mut error
-				)
-				.is_null()
+				quercus_project_load_from_bytes(std::ptr::null(), 0, &mut version_info, &mut error)
+					.is_null()
 			);
 			assert_eq!(error, QUERCUSSTORAGE_E_INVALID);
 
 			// Null version-info pointer: invalid argument, reported
 			// through the error slot.
-			assert!(quercus_project_load_from_bytes(
-				not_xml.as_ptr(),
-				not_xml.len(),
-				std::ptr::null_mut(),
-				&mut error,
-			)
-			.is_null());
+			assert!(
+				quercus_project_load_from_bytes(
+					not_xml.as_ptr(),
+					not_xml.len(),
+					std::ptr::null_mut(),
+					&mut error,
+				)
+				.is_null()
+			);
 			assert_eq!(error, QUERCUSSTORAGE_E_INVALID);
 		}
 	}
@@ -4281,7 +4115,8 @@ mod persist_tests {
 
 			let (w, wl) = arg("srgb_legacy");
 			assert!(quercus_project_set_working_color_space(project, w, wl));
-			let n = crate::corestate::quercus_core_color_get_working_space(buf.as_mut_ptr(), buf.len());
+			let n =
+				crate::corestate::quercus_core_color_get_working_space(buf.as_mut_ptr(), buf.len());
 			assert_eq!(
 				std::str::from_utf8(&buf[..n as usize]).unwrap(),
 				"srgb_legacy",
@@ -4289,7 +4124,11 @@ mod persist_tests {
 			);
 
 			// Restore the pipeline.
-			assert!(quercus_project_set_working_color_space(project, saved.as_ptr(), saved.len()));
+			assert!(quercus_project_set_working_color_space(
+				project,
+				saved.as_ptr(),
+				saved.len()
+			));
 			quercus_project_release(project);
 		}
 	}
@@ -4305,12 +4144,21 @@ mod persist_tests {
 
 			let copy = quercus_project_deep_copy(project);
 			assert!(!copy.is_null());
-			assert_eq!(quercus_folder_child_count(copy, quercus_project_root(copy)), 1);
+			assert_eq!(
+				quercus_folder_child_count(copy, quercus_project_root(copy)),
+				1
+			);
 
 			// Mutating the copy leaves the original alone.
 			assert!(quercus_node_remove(copy, folder));
-			assert_eq!(quercus_folder_child_count(copy, quercus_project_root(copy)), 0);
-			assert_eq!(quercus_folder_child_count(project, quercus_project_root(project)), 1);
+			assert_eq!(
+				quercus_folder_child_count(copy, quercus_project_root(copy)),
+				0
+			);
+			assert_eq!(
+				quercus_folder_child_count(project, quercus_project_root(project)),
+				1
+			);
 
 			quercus_project_release(copy);
 			quercus_project_release(project);
@@ -4349,16 +4197,38 @@ mod persist_tests {
 			assert!(quercus_track_muted(project, track));
 			assert!(quercus_track_locked(project, track));
 
-			assert!(quercus_project_set_setting(project, "key".as_ptr(), 3, "value".as_ptr(), 5));
+			assert!(quercus_project_set_setting(
+				project,
+				"key".as_ptr(),
+				3,
+				"value".as_ptr(),
+				5
+			));
 			let mut buf = [0u8; 64];
-			let len = quercus_project_setting(project, "key".as_ptr(), 3, buf.as_mut_ptr(), buf.len());
+			let len =
+				quercus_project_setting(project, "key".as_ptr(), 3, buf.as_mut_ptr(), buf.len());
 			assert_eq!(std::str::from_utf8(&buf[..len as usize]).unwrap(), "value");
-			assert!(!quercus_project_set_setting(project, "".as_ptr(), 0, "bad".as_ptr(), 3));
-			assert!(quercus_project_set_cache_location(project, 2, "/tmp/cache".as_ptr(), 10));
+			assert!(!quercus_project_set_setting(
+				project,
+				"".as_ptr(),
+				0,
+				"bad".as_ptr(),
+				3
+			));
+			assert!(quercus_project_set_cache_location(
+				project,
+				2,
+				"/tmp/cache".as_ptr(),
+				10
+			));
 			let mut mode = -1;
-			let len = quercus_project_cache_location(project, &mut mode, buf.as_mut_ptr(), buf.len());
+			let len =
+				quercus_project_cache_location(project, &mut mode, buf.as_mut_ptr(), buf.len());
 			assert_eq!(mode, 2);
-			assert_eq!(std::str::from_utf8(&buf[..len as usize]).unwrap(), "/tmp/cache");
+			assert_eq!(
+				std::str::from_utf8(&buf[..len as usize]).unwrap(),
+				"/tmp/cache"
+			);
 
 			let expected = with_project(project, |guard| guard.uuid.clone()).unwrap();
 			let len = quercus_project_uuid(project, buf.as_mut_ptr(), buf.len());

@@ -27,6 +27,11 @@
 //! The quercuscodec submit registry is process-global, so the tests in this
 //! file serialize on one mutex.
 
+use quercus_codec::testmedia;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Mutex, MutexGuard};
 
 use quercus_codec::task::{submit_task, TaskKind, TaskRequest};
@@ -53,7 +58,10 @@ fn serial() -> MutexGuard<'static, ()> {
 /// interim synchronous contract's "conform task failed"), so the
 /// distinguishing reason is asserted here, on the task base the behavior
 /// writes — a bad output name must fail the name contract, not the probe.
-fn conform_directly(input: &str, output: &str) -> (quercus_task::error::Result<()>, Option<String>) {
+fn conform_directly(
+	input: &str,
+	output: &str,
+) -> (quercus_task::error::Result<()>, Option<String>) {
 	let req = request(TaskKind::Conform, input, output);
 	let mut inner = ConformTask::new(&req);
 	let mut driver = Task::new("conform", None);
@@ -91,16 +99,16 @@ fn assert_bridge_failed(context: &str, result: quercus_codec::error::Result<bool
 	}
 }
 
-fn work_dir(tag: &str) -> std::path::PathBuf {
-	let path = std::env::temp_dir().join(format!("quercustask_bridge_{tag}_{}", std::process::id()));
-	let _ = std::fs::remove_dir_all(&path);
-	std::fs::create_dir_all(&path).expect("work dir");
+fn work_dir(tag: &str) -> path::PathBuf {
+	let path = env::temp_dir().join(format!("quercustask_bridge_{tag}_{}", process::id()));
+	let _ = fs::remove_dir_all(&path);
+	fs::create_dir_all(&path).expect("work dir");
 	path
 }
 
-fn write_clip(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+fn write_clip(dir: &path::Path, name: &str) -> path::PathBuf {
 	let path = dir.join(name);
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
 	path
 }
 
@@ -168,7 +176,7 @@ fn conform_submission_writes_pcm_files() {
 	// The final per-channel files exist (renamed from the working names).
 	for channel in 0..2 {
 		let final_name = dir.join(format!("audio.{channel}.pcm"));
-		let meta = std::fs::metadata(&final_name)
+		let meta = fs::metadata(&final_name)
 			.unwrap_or_else(|e| panic!("{} missing: {e}", final_name.display()));
 		assert!(meta.len() > 0, "conform output is empty");
 		assert!(
@@ -178,7 +186,7 @@ fn conform_submission_writes_pcm_files() {
 	}
 
 	unregister_codec_task_submitter().expect("unregister");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 /// A missing source file is rejected (no decoder can probe it); the
@@ -204,7 +212,7 @@ fn conform_submission_rejects_missing_media() {
 	assert_eq!(error.as_deref(), Some("Failed to create decoder"));
 
 	unregister_codec_task_submitter().expect("unregister");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 /// An output name that does not follow the `.0.pcm` contract is rejected
@@ -234,7 +242,7 @@ fn conform_submission_rejects_a_bad_output_name() {
 	assert_eq!(error.as_deref(), Some("Invalid conform output filename"));
 
 	unregister_codec_task_submitter().expect("unregister");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 /// A rename failure while moving the working files into place fails the
@@ -249,7 +257,7 @@ fn conform_submission_reports_a_failed_rename() {
 	let clip = write_clip(&dir, "clip.mp4");
 	// The final first-channel path is an existing directory: the file
 	// rename onto it must fail.
-	std::fs::create_dir(dir.join("audio.0.pcm")).expect("blocking directory");
+	fs::create_dir(dir.join("audio.0.pcm")).expect("blocking directory");
 	let out = dir.join("audio.0.pcm");
 	let clip_str = clip.to_string_lossy();
 	let out_str = out.to_string_lossy();
@@ -268,7 +276,7 @@ fn conform_submission_reports_a_failed_rename() {
 	);
 
 	unregister_codec_task_submitter().expect("unregister");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 // ---- proxy ------------------------------------------------------------
@@ -302,5 +310,5 @@ fn proxy_submission_rejects_a_missing_source() {
 	);
 
 	unregister_codec_task_submitter().expect("unregister");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }

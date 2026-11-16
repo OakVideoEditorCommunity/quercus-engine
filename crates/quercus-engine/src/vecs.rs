@@ -38,9 +38,10 @@
 /// let handle: *mut Vec<i32> = vec![1, 2, 3].into_ffi_vec();
 /// # unsafe { drop(std::sync::Arc::from_raw(handle)) };
 /// ```
+use crate::handle;
 pub trait IntoFfiVec: Sized {
 	fn into_ffi_vec(self) -> *mut Self {
-		crate::handle::into_ffi(self) as *mut Self
+		handle::into_ffi(self) as *mut Self
 	}
 }
 
@@ -322,7 +323,11 @@ mod tests {
 		#[link_name = "quercus_vec_string_push"]
 		fn string_push(this: *mut std::ffi::c_void, value: *const u8, length: usize) -> bool;
 		#[link_name = "quercus_vec_string_get"]
-		fn string_get(this: *const std::ffi::c_void, index: usize, out_len: *mut usize) -> *const u8;
+		fn string_get(
+			this: *const std::ffi::c_void,
+			index: usize,
+			out_len: *mut usize,
+		) -> *const u8;
 		#[link_name = "quercus_vec_string_release"]
 		unsafe fn string_release(this: *const std::ffi::c_void);
 	}

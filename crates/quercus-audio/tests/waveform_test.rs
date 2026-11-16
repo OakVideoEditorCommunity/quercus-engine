@@ -17,13 +17,16 @@
 //! AudioVisualWaveform contract tests (waveform.rs), calling the public
 //! Rust API.
 
+use std::env;
+use std::fs;
+use std::process;
 mod common;
 
 use std::ffi::CString;
 
 use common::write_wav;
-use quercus_core::Rational;
 use quercus_audio::waveform::{extract, AudioVisualWaveform, SamplePerChannel};
+use quercus_core::Rational;
 
 /// Fill `w` with 100 samples/channel of a 0..0.99 ramp at 100 Hz (1 s).
 fn fill_ramp(w: &mut AudioVisualWaveform) {
@@ -66,7 +69,12 @@ fn overwrite_sums_range_copy() {
 
 	let mut dst = AudioVisualWaveform::new();
 	dst.set_channel_count(2);
-	dst.overwrite_sums(&src, Rational::new(0, 1), Rational::new(0, 1), Rational::NULL);
+	dst.overwrite_sums(
+		&src,
+		Rational::new(0, 1),
+		Rational::new(0, 1),
+		Rational::NULL,
+	);
 	// A null length means "copy everything": dst matches src exactly.
 	let out = summary(&dst, Rational::new(0, 1), Rational::new(1, 1));
 	assert_eq!(out.len(), 2);
@@ -154,7 +162,7 @@ fn sum_and_resum_golden() {
 /// quercuscodec's in-process FFmpeg decoder and reduces it to min/max points.
 #[test]
 fn extract_file_and_notfound() {
-	let path = std::env::temp_dir().join(format!("quercusaudio_extract_{}.wav", std::process::id()));
+	let path = env::temp_dir().join(format!("quercusaudio_extract_{}.wav", process::id()));
 	// 8 frames of stereo ramp, 48000 Hz.
 	let mut samples = Vec::with_capacity(16);
 	for i in 0..8i16 {
@@ -164,8 +172,8 @@ fn extract_file_and_notfound() {
 	write_wav(&path, 2, 48000, &samples).unwrap();
 
 	// Missing file -> NotFound.
-	let missing = std::env::temp_dir().join(format!("quercusaudio_missing_{}.wav", std::process::id()));
-	let _ = std::fs::remove_file(&missing);
+	let missing = env::temp_dir().join(format!("quercusaudio_missing_{}.wav", process::id()));
+	let _ = fs::remove_file(&missing);
 	let missing_c = CString::new(missing.to_str().unwrap()).unwrap();
 	assert!(extract(&missing_c, 0, 4).is_err());
 
@@ -190,7 +198,7 @@ fn extract_file_and_notfound() {
 	assert!((out[3].min - -7000.0 / 32768.0).abs() < eps);
 	assert!((out[3].max - -4000.0 / 32768.0).abs() < eps);
 
-	std::fs::remove_file(&path).ok();
+	fs::remove_file(&path).ok();
 }
 
 /// Overwriting with channel count 0 is a logged no-op (the C ABI's state

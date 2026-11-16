@@ -28,7 +28,8 @@ use quercus_node::input::{flags, Input, ValueHint};
 use quercus_node::keyframe::{Interpolation, Keyframe};
 use quercus_node::node::{Category, NodeBehavior, NodeCore};
 use quercus_node::value::{
-	quercus, AudioParams, NodeValue, NodeValueTable, QuercusNodeValue, SampleBuffer, ValueType, VideoParams,
+	quercus, AudioParams, NodeValue, NodeValueTable, QuercusNodeValue, SampleBuffer, ValueType,
+	VideoParams,
 };
 
 fn float(v: f64) -> NodeValue {
@@ -458,7 +459,8 @@ fn quercusnode_value_pod_roundtrip() {
 	assert_eq!(pod.num, 7);
 	let pod = QuercusNodeValue::from_node_value(ValueType::Combo, &NodeValue::Combo(2)).unwrap();
 	assert_eq!(pod.num, 2);
-	let pod = QuercusNodeValue::from_node_value(ValueType::Boolean, &NodeValue::Boolean(true)).unwrap();
+	let pod =
+		QuercusNodeValue::from_node_value(ValueType::Boolean, &NodeValue::Boolean(true)).unwrap();
 	assert_eq!(pod.num, 1);
 	let pod = QuercusNodeValue::from_node_value(
 		ValueType::Rational,
@@ -471,14 +473,17 @@ fn quercusnode_value_pod_roundtrip() {
 	assert_eq!((pod.num, pod.den), (1, 1));
 	let pod = QuercusNodeValue::from_node_value(ValueType::None, &NodeValue::None).unwrap();
 	assert_eq!(pod.kind, quercus::NONE);
-	let pod =
-		QuercusNodeValue::from_node_value(ValueType::Color, &NodeValue::Color([1.0, 2.0, 3.0, 4.0]))
-			.unwrap();
+	let pod = QuercusNodeValue::from_node_value(
+		ValueType::Color,
+		&NodeValue::Color([1.0, 2.0, 3.0, 4.0]),
+	)
+	.unwrap();
 	assert_eq!(pod.f, [1.0, 2.0, 3.0, 4.0]);
-	let pod = QuercusNodeValue::from_node_value(ValueType::Vec2, &NodeValue::Vec2([1.0, 2.0])).unwrap();
-	assert_eq!((pod.f[0], pod.f[1]), (1.0, 2.0));
 	let pod =
-		QuercusNodeValue::from_node_value(ValueType::Vec3, &NodeValue::Vec3([1.0, 2.0, 3.0])).unwrap();
+		QuercusNodeValue::from_node_value(ValueType::Vec2, &NodeValue::Vec2([1.0, 2.0])).unwrap();
+	assert_eq!((pod.f[0], pod.f[1]), (1.0, 2.0));
+	let pod = QuercusNodeValue::from_node_value(ValueType::Vec3, &NodeValue::Vec3([1.0, 2.0, 3.0]))
+		.unwrap();
 	assert_eq!(pod.f[2], 3.0);
 	let pod =
 		QuercusNodeValue::from_node_value(ValueType::Vec4, &NodeValue::Vec4([1.0, 2.0, 3.0, 4.0]))
@@ -486,7 +491,9 @@ fn quercusnode_value_pod_roundtrip() {
 	assert_eq!(pod.f[3], 4.0);
 	// Error arms: string declared -> Invalid; wrong payload -> Failed;
 	// non-POD declared -> Failed.
-	assert!(QuercusNodeValue::from_node_value(ValueType::Text, &NodeValue::Text("x".into())).is_err());
+	assert!(
+		QuercusNodeValue::from_node_value(ValueType::Text, &NodeValue::Text("x".into())).is_err()
+	);
 	assert!(QuercusNodeValue::from_node_value(ValueType::Color, &float(1.0)).is_err());
 	assert!(QuercusNodeValue::from_node_value(ValueType::Texture, &NodeValue::None).is_err());
 }
@@ -893,13 +900,22 @@ fn handle_boxing_discipline() {
 #[test]
 fn error_codes_map() {
 	assert_eq!(Error::Invalid.code(), QUERCUSNODE_E_INVALID);
-	assert_eq!(Error::State.code(), quercus_node::error::QUERCUSNODE_E_STATE);
+	assert_eq!(
+		Error::State.code(),
+		quercus_node::error::QUERCUSNODE_E_STATE
+	);
 	assert_eq!(
 		Error::Failed("x".to_string()).code(),
 		quercus_node::error::QUERCUSNODE_E_FAILED
 	);
-	assert_eq!(Error::NotFound.code(), quercus_node::error::QUERCUSNODE_E_NOT_FOUND);
-	assert_eq!(Error::NoMem.code(), quercus_node::error::QUERCUSNODE_E_NOMEM);
+	assert_eq!(
+		Error::NotFound.code(),
+		quercus_node::error::QUERCUSNODE_E_NOT_FOUND
+	);
+	assert_eq!(
+		Error::NoMem.code(),
+		quercus_node::error::QUERCUSNODE_E_NOMEM
+	);
 	assert_eq!(quercus_node::error::QUERCUSNODE_OK, 0);
 }
 

@@ -28,6 +28,8 @@
 //! is chosen here on purpose.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 use crate::value::{NodeValue, NodeValueRow, NodeValueTable};
 use quercus_core::Rational;
@@ -81,10 +83,7 @@ impl TextGeneratorV1 {
 	/// here.
 	#[allow(dead_code)] // C++ parity helper; the tests drive it.
 	pub fn layout_request(row: &NodeValueRow, frame_width: i32) -> TextLayoutRequest {
-		let text = row
-			.get(TEXT_INPUT)
-			.map(to_text)
-			.unwrap_or_default();
+		let text = row.get(TEXT_INPUT).map(to_text).unwrap_or_default();
 		let html = matches!(row.get(HTML_INPUT), Some(NodeValue::Boolean(true)));
 		let mut mode = TextLayoutMode::PlainText;
 		let text = if html {
@@ -242,7 +241,7 @@ impl NodeBehavior for TextGeneratorV1 {
 		if !text.is_empty() {
 			table.push(
 				crate::value::ValueType::Texture,
-				NodeValue::Texture(crate::handle::CHandle::null()),
+				NodeValue::Texture(handle::CHandle::null()),
 				None,
 			);
 		}
@@ -263,12 +262,7 @@ impl NodeBehavior for TextGeneratorV1 {
 	/// body is a documented no-op; the layout/measure/offset control flow
 	/// is ported in [`Self::layout_request`], [`Self::draw_offsets`] and
 	/// [`Self::measure_and_layout`], and exercised by the tests.
-	fn generate_frame(
-		&self,
-		core: &NodeCore,
-		frame: &mut crate::handle::CHandle,
-		time: Rational,
-	) {
+	fn generate_frame(&self, core: &NodeCore, frame: &mut handle::CHandle, time: Rational) {
 		let _ = (core, frame, time);
 	}
 
@@ -288,32 +282,32 @@ impl NodeBehavior for TextGeneratorV1 {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		TEXT_INPUT,
 		crate::value::ValueType::Text,
 		NodeValue::Text("Sample Text".to_string()),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		HTML_INPUT,
 		crate::value::ValueType::Boolean,
 		NodeValue::Boolean(false),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Color,
 		NodeValue::Color([1.0, 1.0, 1.0, 1.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		V_ALIGN_INPUT,
 		crate::value::ValueType::Combo,
 		NodeValue::Combo(1),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		FONT_INPUT,
 		crate::value::ValueType::Text,
 		NodeValue::Text(String::new()),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		FONT_SIZE_INPUT,
 		crate::value::ValueType::Float,
 		NodeValue::Float(72.0),

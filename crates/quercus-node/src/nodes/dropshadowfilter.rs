@@ -19,6 +19,9 @@
 //! `olive::DropShadowFilter`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -273,16 +276,18 @@ impl NodeBehavior for DropShadowFilter {
 
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input,
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input,
+				},
+			))),
 			None,
 		);
 	}
@@ -307,33 +312,33 @@ impl NodeBehavior for DropShadowFilter {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	let color = crate::input::Input::new(
+	let color = input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([0.0, 0.0, 0.0, 1.0]),
 	);
 	core.add_input(color);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		DISTANCE_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(10.0),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		ANGLE_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(135.0),
 	));
 
-	let mut softness = crate::input::Input::new(
+	let mut softness = input::Input::new(
 		SOFTNESS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(10.0),
@@ -341,7 +346,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	softness.properties = vec![("min".to_string(), crate::value::NodeValue::Float(0.0))];
 	core.add_input(softness);
 
-	let mut opacity = crate::input::Input::new(
+	let mut opacity = input::Input::new(
 		OPACITY_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -355,7 +360,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(opacity);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		FAST_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -389,12 +394,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -454,8 +459,8 @@ mod tests {
 		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
 		match table.get(ValueType::Texture) {
 			Some(NodeValue::Texture(h)) => {
-				let payload = unsafe { crate::jobs::shader_job(h) }
-					.expect("shader job payload boxed");
+				let payload =
+					unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 				assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.dropshadow");
 				assert_eq!(payload.shader_id, "");
 				assert_eq!(payload.iterations, 3);
@@ -478,8 +483,8 @@ mod tests {
 		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
 		match table.get(ValueType::Texture) {
 			Some(NodeValue::Texture(h)) => {
-				let payload = unsafe { crate::jobs::shader_job(h) }
-					.expect("shader job payload boxed");
+				let payload =
+					unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 				assert_eq!(payload.iterations, 1);
 				assert_eq!(payload.iterative_input, "");
 				// The params row still carries the unconditional

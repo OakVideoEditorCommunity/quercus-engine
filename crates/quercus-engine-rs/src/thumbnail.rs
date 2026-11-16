@@ -2,17 +2,28 @@
 
 use std::ffi::c_void;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_thumbnail_add_ref(thumbnail: *const c_void);
 	fn quercus_thumbnail_release(thumbnail: *const c_void);
 	fn quercus_thumbnail_info(thumbnail: *const c_void, out: *mut ThumbnailInfo) -> bool;
-	fn quercus_thumbnail_copy_pixels(thumbnail: *const c_void, dst: *mut f32, capacity: usize)
-	-> usize;
+	fn quercus_thumbnail_copy_pixels(
+		thumbnail: *const c_void,
+		dst: *mut f32,
+		capacity: usize,
+	) -> usize;
 }
 
 /// Thumbnail dimensions and packed pixel-buffer length.
@@ -91,18 +102,18 @@ impl Drop for Thumbnail {
 
 #[cfg(test)]
 mod tests {
+	use crate::node;
+	use crate::task;
+	use crate::test_support;
+	use crate::types;
+	use std::fs;
 	#[test]
 	fn thumbnail_task_returns_owned_rgba_pixels_once() {
-		let project = crate::node::Project::new();
-		let media = crate::test_support::make_test_clip("thumbnail_task");
+		let project = node::Project::new();
+		let media = test_support::make_test_clip("thumbnail_task");
 		let footage = project.import_footage(&media).expect("footage");
-		let task = crate::task::render_thumbnail(
-			&project,
-			footage,
-			crate::types::Rational::new(0, 1),
-			(16, 12),
-		)
-		.expect("thumbnail task");
+		let task = task::render_thumbnail(&project, footage, types::Rational::new(0, 1), (16, 12))
+			.expect("thumbnail task");
 		assert!(task.title().contains("Rendering Thumbnail"));
 		assert!(task.wait(), "thumbnail render failed: {}", task.error());
 		let thumbnail = task.take_thumbnail().expect("thumbnail result");
@@ -117,6 +128,6 @@ mod tests {
 		assert_eq!(cloned.pixels(), pixels);
 		drop(cloned);
 		assert_eq!(thumbnail.pixels(), pixels);
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(media);
 	}
 }

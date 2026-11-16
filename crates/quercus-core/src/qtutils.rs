@@ -21,6 +21,8 @@
 //! `src/common/c_api/qtutils.cpp`.
 
 use std::ffi::c_void;
+use std::fs;
+use std::time;
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 use std::ffi::{c_char, c_int, CString};
@@ -146,7 +148,7 @@ pub fn get_creation_date(path: &str) -> Result<i64> {
 
 	#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 	{
-		let meta = std::fs::metadata(path).map_err(|_| Error::NotFound)?;
+		let meta = fs::metadata(path).map_err(|_| Error::NotFound)?;
 		// CPP-PARITY: `st_ctime` (metadata change time) has no std::fs
 		// equivalent; fall back to creation then modification time.
 		let t = meta
@@ -154,7 +156,7 @@ pub fn get_creation_date(path: &str) -> Result<i64> {
 			.or_else(|_| meta.modified())
 			.map_err(|_| Error::NotFound)?;
 		let secs = t
-			.duration_since(std::time::UNIX_EPOCH)
+			.duration_since(time::UNIX_EPOCH)
 			.map(|d| d.as_secs() as i64)
 			.unwrap_or(0);
 		if secs == 0 {

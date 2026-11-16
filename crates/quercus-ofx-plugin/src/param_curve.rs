@@ -32,6 +32,7 @@
 /// A curve control point: `key` (parametric position, its domain bounded by
 /// `OfxParamPropParametricRange`), `value` (the evaluation result), and
 /// `slope` (the first derivative at that point, the cubic Hermite tangent).
+use std::str;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlPoint {
 	/// Parametric position (x).
@@ -73,9 +74,7 @@ impl Curve {
 	/// An empty curve (the state after `DeleteAllControlPoints`; evaluation
 	/// degenerates to identity, see [`Curve::evaluate`]).
 	pub fn empty() -> Self {
-		Self {
-			points: Vec::new(),
-		}
+		Self { points: Vec::new() }
 	}
 
 	/// Identity curve: `{(lo, lo), (hi, hi)}` + automatic slopes — the default
@@ -84,10 +83,7 @@ impl Curve {
 	/// `lo`/`hi` come from `OfxParamPropParametricRange` (default (0,1)).
 	pub fn identity(lo: f64, hi: f64) -> Self {
 		let mut c = Self {
-			points: vec![
-				ControlPoint::new(lo, lo),
-				ControlPoint::new(hi, hi),
-			],
+			points: vec![ControlPoint::new(lo, lo), ControlPoint::new(hi, hi)],
 		};
 		c.recompute_slopes();
 		c
@@ -253,8 +249,7 @@ impl Curve {
 /// [`push_num`]; NaN/±Inf get dedicated tokens). The inverse of
 /// [`curves_from_json`]; the output contains no newlines or spaces.
 pub fn curves_to_json(curves: &[Curve]) -> String {
-	let mut out =
-		String::with_capacity(8 + 12 * curves.iter().map(|c| c.len()).sum::<usize>());
+	let mut out = String::with_capacity(8 + 12 * curves.iter().map(|c| c.len()).sum::<usize>());
 	out.push_str("{\"curves\":[");
 	for (ci, c) in curves.iter().enumerate() {
 		if ci > 0 {
@@ -403,7 +398,9 @@ impl<'a> JsonParser<'a> {
 		while self.pos < self.bytes.len() && self.bytes[self.pos] != b'"' {
 			self.pos += 1;
 		}
-		let s = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?.to_string();
+		let s = str::from_utf8(&self.bytes[start..self.pos])
+			.ok()?
+			.to_string();
 		if !self.eat(b'"') {
 			return None;
 		}
@@ -428,14 +425,13 @@ impl<'a> JsonParser<'a> {
 			&& matches!(
 				self.bytes[self.pos],
 				b'-' | b'+' | b'.' | b'0'..=b'9' | b'e' | b'E'
-			)
-		{
+			) {
 			self.pos += 1;
 		}
 		if self.pos == start {
 			return None;
 		}
-		std::str::from_utf8(&self.bytes[start..self.pos])
+		str::from_utf8(&self.bytes[start..self.pos])
 			.ok()?
 			.parse()
 			.ok()
@@ -647,11 +643,7 @@ mod tests {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)]);
 		// 把第 0 点挪到 0.75（原第 1、2 点之前……之后）。
 		c.set_nth(0, 0.75, 0.75).unwrap();
-		let pairs: Vec<(f64, f64)> = c
-			.points
-			.iter()
-			.map(|p| (p.key, p.value))
-			.collect();
+		let pairs: Vec<(f64, f64)> = c.points.iter().map(|p| (p.key, p.value)).collect();
 		assert_eq!(pairs, vec![(0.5, 0.5), (0.75, 0.75), (1.0, 1.0)]);
 		assert_eq!(c.evaluate(0.75), 0.75);
 		// 越界 nth → Err。
@@ -757,7 +749,10 @@ mod tests {
 		let json = curves_to_json(&curves);
 		assert_eq!(json, r#"{"curves":[[],[]]}"#);
 		assert_eq!(curves_from_json(&json).unwrap(), curves);
-		assert_eq!(curves_from_json(r#"{"curves":[]}"#).unwrap(), Vec::<Curve>::new());
+		assert_eq!(
+			curves_from_json(r#"{"curves":[]}"#).unwrap(),
+			Vec::<Curve>::new()
+		);
 	}
 
 	/// JSON parsing: tolerates whitespace and out-of-order fields; mismatch → None (silent path).

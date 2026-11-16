@@ -26,11 +26,20 @@ use quercus_node::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
 
 const TRANSITIONFX: &str = "org.olivevideoeditor.Olive.transitionfx";
 
-fn texture_value(t: Texture) -> NodeValue { NodeValue::Texture(quercus_node::handle::make_owned(t)) }
-fn gpu() -> bool { quercus_core::backend::shared_gpu_or_skip("a transition effect test").is_some() }
+fn texture_value(t: Texture) -> NodeValue {
+	NodeValue::Texture(quercus_node::handle::make_owned(t))
+}
+fn gpu() -> bool {
+	quercus_core::backend::shared_gpu_or_skip("a transition effect test").is_some()
+}
 fn filled_frame(size: (i32, i32), rgba: [f32; 4]) -> Texture {
-	let mut f = quercus_render::eval::generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
-	for px in f.data.chunks_exact_mut(16) { for (c, v) in px.chunks_exact_mut(4).zip(rgba) { c.copy_from_slice(&v.to_le_bytes()); } }
+	let mut f =
+		quercus_render::eval::generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
+	for px in f.data.chunks_exact_mut(16) {
+		for (c, v) in px.chunks_exact_mut(4).zip(rgba) {
+			c.copy_from_slice(&v.to_le_bytes());
+		}
+	}
 	Texture::wrap_frame(f)
 }
 /// An 8x8 frame whose red channel carries each column's centre `u`
@@ -38,11 +47,14 @@ fn filled_frame(size: (i32, i32), rgba: [f32; 4]) -> Texture {
 /// `u`: the slide tests use it to tell which part of the picture landed
 /// where.
 fn gradient_frame_x(size: (i32, i32)) -> Texture {
-	let mut f = quercus_render::eval::generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
+	let mut f =
+		quercus_render::eval::generate_frame(Rational::new(0, 1), size, PixelFormat::F32).unwrap();
 	let w = size.0 as usize;
 	for (i, px) in f.data.chunks_exact_mut(16).enumerate() {
 		let u = ((i % w) as f32 + 0.5) / w as f32;
-		for (c, v) in px.chunks_exact_mut(4).zip([u, 0.0, 0.0, 1.0]) { c.copy_from_slice(&v.to_le_bytes()); }
+		for (c, v) in px.chunks_exact_mut(4).zip([u, 0.0, 0.0, 1.0]) {
+			c.copy_from_slice(&v.to_le_bytes());
+		}
 	}
 	Texture::wrap_frame(f)
 }
@@ -50,7 +62,9 @@ fn pixel_at(frame: &quercus_core::texture::Frame, x: usize, y: usize) -> [f32; 4
 	let stride = frame.linesize_bytes();
 	let at = y * stride + x * 16;
 	let mut out = [0f32; 4];
-	for c in 0..4 { out[c] = f32::from_le_bytes(frame.data[at + c*4..at + c*4 + 4].try_into().unwrap()); }
+	for c in 0..4 {
+		out[c] = f32::from_le_bytes(frame.data[at + c * 4..at + c * 4 + 4].try_into().unwrap());
+	}
 	out
 }
 /// Evaluate one node row. `layer_progress` is the adjustment-layer sweep
@@ -64,17 +78,27 @@ fn eval_node_row(
 	layer_progress: Option<f64>,
 ) -> quercus_core::texture::Frame {
 	use quercus_node::traverser::RenderHooks;
-	let (core, behavior) = quercus_node::factory::Factory::global().create_any(type_id).expect("node type registered");
+	let (core, behavior) = quercus_node::factory::Factory::global()
+		.create_any(type_id)
+		.expect("node type registered");
 	let mut table = NodeValueTable::default();
 	behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
 	let mut hooks = quercus_render::eval::RenderEvalHooks::new();
 	hooks.frame_size = frame_size;
 	hooks.layer_progress = layer_progress;
 	hooks.resolve(quercus_node::id::NodeId::INVALID, &inputs, &mut table);
-	let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else { panic!("{type_id}: no texture produced") };
-	if handle.ctx.is_null() { panic!("{type_id}: null texture produced"); }
-	let tex = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }.expect("resolved texture");
-	assert!(matches!(tex, Texture::Gpu { .. }), "{type_id}: must render on the GPU");
+	let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
+		panic!("{type_id}: no texture produced")
+	};
+	if handle.ctx.is_null() {
+		panic!("{type_id}: null texture produced");
+	}
+	let tex =
+		unsafe { quercus_node::handle::get_checked::<Texture>(handle) }.expect("resolved texture");
+	assert!(
+		matches!(tex, Texture::Gpu { .. }),
+		"{type_id}: must render on the GPU"
+	);
 	tex.to_frame().expect("readback")
 }
 
@@ -92,8 +116,14 @@ fn assert_pixel(px: [f32; 4], want: [f32; 4], what: &str) {
 /// `blend_in` (To), each painted over the whole 8x8 frame.
 fn transition_row(tex: [f32; 4], blend: [f32; 4]) -> NodeValueRow {
 	let mut row = NodeValueRow::new();
-	row.insert("tex_in".to_string(), texture_value(filled_frame((8, 8), tex)));
-	row.insert("blend_in".to_string(), texture_value(filled_frame((8, 8), blend)));
+	row.insert(
+		"tex_in".to_string(),
+		texture_value(filled_frame((8, 8), tex)),
+	);
+	row.insert(
+		"blend_in".to_string(),
+		texture_value(filled_frame((8, 8), blend)),
+	);
 	row
 }
 
@@ -105,17 +135,27 @@ fn style(row: &mut NodeValueRow, index: i64) {
 /// Halfway cross dissolve lerps red and green to olive.
 #[test]
 fn crossdissolve_half_progress_blends() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let mut row = transition_row([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
 	row.insert("progress_in".to_string(), NodeValue::Float(0.5));
 	let frame = eval_node_row(TRANSITIONFX, row, Some((8, 8)), None);
-	assert_pixel(pixel_at(&frame, 2, 2), [0.5, 0.5, 0.0, 1.0], "cross dissolve 0.5");
+	assert_pixel(
+		pixel_at(&frame, 2, 2),
+		[0.5, 0.5, 0.0, 1.0],
+		"cross dissolve 0.5",
+	);
 }
 
 /// Progress 0 and 1 are the two pictures untouched.
 #[test]
 fn crossdissolve_ends_are_the_inputs() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	for (progress, want, what) in [
 		(0.0, [1.0, 0.0, 0.0, 1.0], "cross dissolve 0"),
 		(1.0, [0.0, 1.0, 0.0, 1.0], "cross dissolve 1"),
@@ -135,7 +175,10 @@ fn crossdissolve_ends_are_the_inputs() {
 /// a colour is transparent black rather than the input's opaque default.
 #[test]
 fn fade_dips_through_the_color() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let cases: [(f64, [f64; 4], [f32; 4]); 3] = [
 		(0.0, [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
 		(0.5, [0.0, 0.0, 1.0, 1.0], [0.5, 0.0, 0.5, 1.0]),
@@ -156,7 +199,10 @@ fn fade_dips_through_the_color() {
 /// entries are the same path (axis and sign are two steps and two mixes).
 #[test]
 fn wipe_directions_place_the_incoming_picture() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let red = [1.0, 0.0, 0.0, 1.0];
 	let green = [0.0, 1.0, 0.0, 1.0];
 	// (direction, pixel, expected) — tex_in is red (From), blend_in green (To).
@@ -191,7 +237,10 @@ fn wipe_directions_place_the_incoming_picture() {
 /// part shows the untouched `tex_in`. The reversed direction mirrors it.
 #[test]
 fn slide_moves_both_pictures_the_named_way() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let red = [1.0, 0.0, 0.0, 1.0];
 	// (direction, pixel, expected red channel) at progress 0.25.
 	let cases: [(i64, (usize, usize), f32); 4] = [
@@ -202,8 +251,14 @@ fn slide_moves_both_pictures_the_named_way() {
 	];
 	for (direction, (x, y), red_channel) in cases {
 		let mut row = NodeValueRow::new();
-		row.insert("tex_in".to_string(), texture_value(filled_frame((8, 8), red)));
-		row.insert("blend_in".to_string(), texture_value(gradient_frame_x((8, 8))));
+		row.insert(
+			"tex_in".to_string(),
+			texture_value(filled_frame((8, 8), red)),
+		);
+		row.insert(
+			"blend_in".to_string(),
+			texture_value(gradient_frame_x((8, 8))),
+		);
 		style(&mut row, 3);
 		row.insert("progress_in".to_string(), NodeValue::Float(0.25));
 		row.insert("direction_in".to_string(), NodeValue::Combo(direction));
@@ -222,20 +277,38 @@ fn slide_moves_both_pictures_the_named_way() {
 /// uniform would stay 0 and both calls would be pure `tex_in`.
 #[test]
 fn progress_is_filled_from_the_adjustment_layer() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let row = transition_row([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
 	let frame = eval_node_row(TRANSITIONFX, row.clone(), Some((8, 8)), Some(0.5));
-	assert_pixel(pixel_at(&frame, 4, 4), [0.5, 0.5, 0.0, 1.0], "auto progress 0.5");
+	assert_pixel(
+		pixel_at(&frame, 4, 4),
+		[0.5, 0.5, 0.0, 1.0],
+		"auto progress 0.5",
+	);
 	let frame = eval_node_row(TRANSITIONFX, row, Some((8, 8)), Some(0.75));
-	assert_pixel(pixel_at(&frame, 4, 4), [0.25, 0.75, 0.0, 1.0], "auto progress 0.75");
+	assert_pixel(
+		pixel_at(&frame, 4, 4),
+		[0.25, 0.75, 0.0, 1.0],
+		"auto progress 0.75",
+	);
 }
 
 /// An explicit `progress_in` on the row wins over the layer sweep.
 #[test]
 fn explicit_progress_beats_the_layer_sweep() {
-	if !gpu() { eprintln!("no adapter; skipping"); return; }
+	if !gpu() {
+		eprintln!("no adapter; skipping");
+		return;
+	}
 	let mut row = transition_row([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
 	row.insert("progress_in".to_string(), NodeValue::Float(0.25));
 	let frame = eval_node_row(TRANSITIONFX, row, Some((8, 8)), Some(0.75));
-	assert_pixel(pixel_at(&frame, 4, 4), [0.75, 0.25, 0.0, 1.0], "explicit progress");
+	assert_pixel(
+		pixel_at(&frame, 4, 4),
+		[0.75, 0.25, 0.0, 1.0],
+		"explicit progress",
+	);
 }

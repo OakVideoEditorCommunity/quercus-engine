@@ -30,6 +30,8 @@
 //!
 //! CPP-PARITY: src/task/src/project/import/import.h
 
+use quercus_codec::decoder;
+use std::fs;
 use std::path::Path;
 
 use quercus_core::configstore::ConfigStore;
@@ -116,7 +118,10 @@ impl ProjectImportTask {
 	/// `Err(Error::NotFound)` if out of range. (The deleted C ABI handed
 	/// out addref'd handles; the domain reference is a plain clone.)
 	pub fn get_imported_footage(&self, index: usize) -> Result<NodeRef> {
-		self.imported_footage.get(index).cloned().ok_or(Error::NotFound)
+		self.imported_footage
+			.get(index)
+			.cloned()
+			.ok_or(Error::NotFound)
 	}
 
 	/// Total number of imported footage entries.
@@ -171,7 +176,7 @@ impl ProjectImportTask {
 
 			if Path::new(file_path).is_dir() {
 				// Create a folder corresponding to the directory and recurse.
-				let entry_list: Vec<String> = match std::fs::read_dir(file_path) {
+				let entry_list: Vec<String> = match fs::read_dir(file_path) {
 					Ok(rd) => rd
 						.filter_map(|e| e.ok())
 						.map(|e| e.path().to_string_lossy().into_owned())
@@ -215,12 +220,7 @@ impl ProjectImportTask {
 					nodeops::set_node_label(&self.project, footage, &basename_of(file_path));
 
 					// See if this footage is an image sequence.
-					self.validate_image_sequence(
-						task,
-						(self.project.clone(), footage),
-						entries,
-						i,
-					);
+					self.validate_image_sequence(task, (self.project.clone(), footage), entries, i);
 
 					// Create the undoable command that adds the item.
 					self.add_item_to_folder(
@@ -236,8 +236,7 @@ impl ProjectImportTask {
 					// Remove the invalid footage from the graph; the remove
 					// command takes ownership on redo and deletes the node
 					// when the command is destroyed.
-					let mut remove =
-						nodeops::remove_node_command(self.project.clone(), footage);
+					let mut remove = nodeops::remove_node_command(self.project.clone(), footage);
 					remove.redo_now();
 				}
 
@@ -287,7 +286,7 @@ impl ProjectImportTask {
 		}
 
 		// Direct quercuscodec calls (single-lib unification).
-		let digit_count = quercus_codec::decoder::get_image_sequence_digit_count(&filename);
+		let digit_count = decoder::get_image_sequence_digit_count(&filename);
 		if digit_count <= 0 {
 			return;
 		}
@@ -304,8 +303,7 @@ impl ProjectImportTask {
 			return;
 		}
 
-		let Some(mut video_stream) = nodeops::footage_video_params(&footage.0, footage.1, 0)
-		else {
+		let Some(mut video_stream) = nodeops::footage_video_params(&footage.0, footage.1, 0) else {
 			return;
 		};
 
@@ -313,7 +311,7 @@ impl ProjectImportTask {
 		let height = video_stream.height();
 
 		// Direct quercuscodec call (single-lib unification).
-		let seq_index = quercus_codec::decoder::get_image_sequence_index(&filename);
+		let seq_index = decoder::get_image_sequence_index(&filename);
 
 		let prev_fn = transform_sequence_filename(&filename, seq_index - 1, digit_count);
 		let next_fn = transform_sequence_filename(&filename, seq_index + 1, digit_count);

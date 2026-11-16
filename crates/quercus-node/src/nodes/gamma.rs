@@ -32,6 +32,9 @@
 //! minimum so the reciprocal exponent never divides by zero.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -144,16 +147,18 @@ impl NodeBehavior for GammaNode {
 
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -176,12 +181,12 @@ impl NodeBehavior for GammaNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
 	add_float_input(&mut core, GAMMA_INPUT, 1.0, 0.0, 4.0);
@@ -195,7 +200,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 /// Add a float input with its default and `min`/`max`/`view`
 /// properties.
 fn add_float_input(core: &mut NodeCore, id: &str, default: f64, min: f64, max: f64) {
-	let mut input = crate::input::Input::new(
+	let mut input = input::Input::new(
 		id,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(default),
@@ -227,113 +232,115 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
-    fn input_names() {
-        let n = GammaNode;
-        assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
-        assert_eq!(n.input_name(GAMMA_INPUT), "Gamma");
-        assert_eq!(n.input_name("other_in"), "other_in");
-    }
+	#[test]
+	fn input_names() {
+		let n = GammaNode;
+		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
+		assert_eq!(n.input_name(GAMMA_INPUT), "Gamma");
+		assert_eq!(n.input_name("other_in"), "other_in");
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.gamma");
-        assert_eq!(behavior.name(), "Gamma");
-        assert_eq!(behavior.categories(), &[Category::Color]);
-        let tex = core.get_input(TEXTURE_INPUT).unwrap();
-        assert_ne!(tex.flags & crate::input::flags::NOT_KEYFRAMABLE, 0);
-        assert_eq!(
-            core.get_input(GAMMA_INPUT).unwrap().default,
-            NodeValue::Float(1.0)
-        );
-        assert_eq!(core.effect_input, TEXTURE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.gamma");
+		assert_eq!(behavior.name(), "Gamma");
+		assert_eq!(behavior.categories(), &[Category::Color]);
+		let tex = core.get_input(TEXTURE_INPUT).unwrap();
+		assert_ne!(tex.flags & crate::input::flags::NOT_KEYFRAMABLE, 0);
+		assert_eq!(
+			core.get_input(GAMMA_INPUT).unwrap().default,
+			NodeValue::Float(1.0)
+		);
+		assert_eq!(core.effect_input, TEXTURE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn create_sets_control_range() {
-        let (core, _) = create();
-        let gamma = core.get_input(GAMMA_INPUT).unwrap();
-        assert_eq!(gamma.properties[0].1, NodeValue::Float(0.0));
-        assert_eq!(gamma.properties[1].1, NodeValue::Float(4.0));
-    }
+	#[test]
+	fn create_sets_control_range() {
+		let (core, _) = create();
+		let gamma = core.get_input(GAMMA_INPUT).unwrap();
+		assert_eq!(gamma.properties[0].1, NodeValue::Float(0.0));
+		assert_eq!(gamma.properties[1].1, NodeValue::Float(4.0));
+	}
 
-    #[test]
-    fn value_no_texture_pushes_nothing() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &crate::value::NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        assert!(table.is_empty());
-    }
+	#[test]
+	fn value_no_texture_pushes_nothing() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&crate::value::NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		assert!(table.is_empty());
+	}
 
-    #[test]
-    fn value_with_texture_pushes_shader_job_with_resolved_params() {
-        let (core, behavior) = create();
-        let inputs = crate::value::NodeValueRow::from([(
-            TEXTURE_INPUT.to_string(),
-            NodeValue::Texture(crate::handle::CHandle::null()),
-        )]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
-            panic!("expected a texture-typed value");
-        };
-        let payload =
-            unsafe { crate::jobs::shader_job(handle) }
-                .expect("shader job pushed");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.gamma");
-        assert_eq!(payload.effect_input, TEXTURE_INPUT);
-        assert_eq!(payload.params.get(GAMMA_INPUT), Some(&NodeValue::Float(1.0)));
-    }
+	#[test]
+	fn value_with_texture_pushes_shader_job_with_resolved_params() {
+		let (core, behavior) = create();
+		let inputs = crate::value::NodeValueRow::from([(
+			TEXTURE_INPUT.to_string(),
+			NodeValue::Texture(crate::handle::CHandle::null()),
+		)]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
+			panic!("expected a texture-typed value");
+		};
+		let payload = unsafe { crate::jobs::shader_job(handle) }.expect("shader job pushed");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.gamma");
+		assert_eq!(payload.effect_input, TEXTURE_INPUT);
+		assert_eq!(
+			payload.params.get(GAMMA_INPUT),
+			Some(&NodeValue::Float(1.0))
+		);
+	}
 
-    #[test]
-    fn value_row_values_win_over_defaults() {
-        let (mut core, behavior) = create();
-        core.set_standard_value(GAMMA_INPUT, -1, NodeValue::Float(3.0));
-        let inputs = crate::value::NodeValueRow::from([
-            (
-                TEXTURE_INPUT.to_string(),
-                NodeValue::Texture(crate::handle::CHandle::null()),
-            ),
-            (GAMMA_INPUT.to_string(), NodeValue::Float(2.0)),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
-            panic!("expected a texture-typed value");
-        };
-        let payload =
-            unsafe { crate::jobs::shader_job(handle) }
-                .expect("shader job pushed");
-        assert_eq!(payload.params.get(GAMMA_INPUT), Some(&NodeValue::Float(2.0)));
-    }
+	#[test]
+	fn value_row_values_win_over_defaults() {
+		let (mut core, behavior) = create();
+		core.set_standard_value(GAMMA_INPUT, -1, NodeValue::Float(3.0));
+		let inputs = crate::value::NodeValueRow::from([
+			(
+				TEXTURE_INPUT.to_string(),
+				NodeValue::Texture(crate::handle::CHandle::null()),
+			),
+			(GAMMA_INPUT.to_string(), NodeValue::Float(2.0)),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
+			panic!("expected a texture-typed value");
+		};
+		let payload = unsafe { crate::jobs::shader_job(handle) }.expect("shader job pushed");
+		assert_eq!(
+			payload.params.get(GAMMA_INPUT),
+			Some(&NodeValue::Float(2.0))
+		);
+	}
 
-    #[test]
-    fn shader_declares_uniforms_and_avoids_switch() {
-        let code = GammaNode.shader_code("").unwrap();
-        for uniform in ["tex_in", GAMMA_INPUT] {
-            assert!(code.contains(uniform), "uniform {uniform} declared");
-        }
-        assert!(code.contains("ove_texcoord"));
-        assert!(code.contains("frag_color"));
-        assert!(!code.contains("switch"), "naga rejects GLSL switch");
-    }
+	#[test]
+	fn shader_declares_uniforms_and_avoids_switch() {
+		let code = GammaNode.shader_code("").unwrap();
+		for uniform in ["tex_in", GAMMA_INPUT] {
+			assert!(code.contains(uniform), "uniform {uniform} declared");
+		}
+		assert!(code.contains("ove_texcoord"));
+		assert!(code.contains("frag_color"));
+		assert!(!code.contains("switch"), "naga rejects GLSL switch");
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Gamma");
-        assert_eq!(dup.type_id(), "org.olivevideoeditor.Olive.gamma");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Gamma");
+		assert_eq!(dup.type_id(), "org.olivevideoeditor.Olive.gamma");
+	}
 }

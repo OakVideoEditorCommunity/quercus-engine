@@ -1,10 +1,13 @@
 //! Domain-side construction of detached sequence and clip-context graph snapshots.
 
+use crate::effect;
 use quercus_node::graph::Graph;
 use quercus_node::id::NodeId;
+use quercus_node::input;
 use quercus_node::node::ENABLED_INPUT;
 use quercus_node::nodes::graphendpoints::{GRAPH_INPUT_TYPE_ID, GRAPH_OUTPUT_TYPE_ID};
 use quercus_node::value::{NodeValue, ValueType};
+use quercus_undo::global;
 
 use crate::editor_commands::ProjectRef;
 
@@ -166,7 +169,10 @@ fn role(type_id: &str) -> GraphRole {
 /// Tracks, track lists, gaps and transitions remain in the project but are not
 /// exposed in the node-editor snapshot.
 fn displayed(type_id: &str) -> bool {
-	!matches!(type_id, TYPE_TRACK | TYPE_TRACK_LIST | TYPE_GAP | TYPE_TRANSITION)
+	!matches!(
+		type_id,
+		TYPE_TRACK | TYPE_TRACK_LIST | TYPE_GAP | TYPE_TRANSITION
+	)
 }
 
 /// Read the behavior type id of node `id`, or an empty string when `id` is
@@ -186,7 +192,7 @@ fn type_id(g: &Graph, id: NodeId) -> String {
 /// The sequence and virtual endpoints are intentionally outside this view.
 fn clip_context_nodes(g: &Graph, clip: NodeId) -> Vec<NodeId> {
 	let mut nodes = vec![clip];
-	nodes.extend(crate::effect::chain(g, clip));
+	nodes.extend(effect::chain(g, clip));
 	nodes
 }
 
@@ -234,7 +240,7 @@ fn node_snapshot(g: &Graph, sequence: NodeId, id: NodeId) -> GraphNode {
 		.enumerate()
 		.filter(|(_, input)| {
 			matches!(input.value_type, ValueType::Texture | ValueType::Samples)
-				&& input.flags & quercus_node::input::flags::HIDDEN == 0
+				&& input.flags & input::flags::HIDDEN == 0
 				&& !input.id.is_empty()
 		})
 		.map(|(index, input)| GraphPort {
@@ -245,7 +251,11 @@ fn node_snapshot(g: &Graph, sequence: NodeId, id: NodeId) -> GraphNode {
 				input.display_name.clone()
 			},
 			declaration_index: index,
-			media_type: if input.value_type == ValueType::Samples { 2 } else { 1 },
+			media_type: if input.value_type == ValueType::Samples {
+				2
+			} else {
+				1
+			},
 			connected: g.is_input_connected(id, &input.id, -1),
 			connectable: input.is_connectable(),
 		})
@@ -262,8 +272,14 @@ fn node_snapshot(g: &Graph, sequence: NodeId, id: NodeId) -> GraphNode {
 		type_id,
 		label,
 		role,
-		protected: matches!(role, GraphRole::Sequence | GraphRole::InputEndpoint | GraphRole::OutputEndpoint),
-		enabled: matches!(entry.core.standard_value(ENABLED_INPUT, -1), NodeValue::Boolean(true)),
+		protected: matches!(
+			role,
+			GraphRole::Sequence | GraphRole::InputEndpoint | GraphRole::OutputEndpoint
+		),
+		enabled: matches!(
+			entry.core.standard_value(ENABLED_INPUT, -1),
+			NodeValue::Boolean(true)
+		),
 		position,
 		inputs,
 		has_output: role != GraphRole::OutputEndpoint,
@@ -283,7 +299,7 @@ pub(crate) fn build(
 	sequence: NodeId,
 	clip: Option<NodeId>,
 ) -> Option<GraphSnapshot> {
-	let revision = quercus_undo::global::index().unwrap_or(0);
+	let revision = global::index().unwrap_or(0);
 	let guard = project.lock().unwrap_or_else(|e| e.into_inner());
 	let g = &guard.graph;
 	if !g.is_valid(sequence) || clip.is_some_and(|id| !g.is_valid(id)) {
@@ -350,6 +366,7 @@ pub(crate) fn can_connect(
 	g.get(to)
 		.and_then(|entry| entry.core.get_input(input_id))
 		.is_some_and(|input| {
-			input.is_connectable() && matches!(input.value_type, ValueType::Texture | ValueType::Samples)
+			input.is_connectable()
+				&& matches!(input.value_type, ValueType::Texture | ValueType::Samples)
 		})
 }

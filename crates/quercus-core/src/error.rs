@@ -18,6 +18,7 @@
 //! -MMCCCC scheme (module registry in include/common/error.h), pass-through untranslated.
 
 /// Success.
+use std::result;
 pub const QUERCUSCORE_OK: i32 = 0;
 /// Null handle or invalid argument.
 pub const QUERCUSCORE_E_INVALID: i32 = -10001;
@@ -31,108 +32,106 @@ pub const QUERCUSCORE_E_NOT_FOUND: i32 = -10004;
 pub const QUERCUSCORE_E_NOMEM: i32 = -10005;
 
 /// Crate-internal result type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    /// Null handle or invalid argument.
-    #[error("render: invalid argument")]
-    Invalid,
-    /// Wrong state.
-    #[error("render: invalid state")]
-    State,
-    /// Operation failed (context string is log-only).
-    #[error("render: operation failed: {0}")]
-    Failed(String),
-    /// Not found.
-    #[error("render: not found")]
-    NotFound,
-    /// Out of memory.
-    #[error("render: out of memory")]
-    NoMem,
+	/// Null handle or invalid argument.
+	#[error("render: invalid argument")]
+	Invalid,
+	/// Wrong state.
+	#[error("render: invalid state")]
+	State,
+	/// Operation failed (context string is log-only).
+	#[error("render: operation failed: {0}")]
+	Failed(String),
+	/// Not found.
+	#[error("render: not found")]
+	NotFound,
+	/// Out of memory.
+	#[error("render: out of memory")]
+	NoMem,
 }
 
 impl Error {
-    /// Map to the public error code.
-    pub fn code(&self) -> i32 {
-        match self {
-            Error::Invalid => QUERCUSCORE_E_INVALID,
-            Error::State => QUERCUSCORE_E_STATE,
-            Error::Failed(_) => QUERCUSCORE_E_FAILED,
-            Error::NotFound => QUERCUSCORE_E_NOT_FOUND,
-            Error::NoMem => QUERCUSCORE_E_NOMEM,
-        }
-    }
+	/// Map to the public error code.
+	pub fn code(&self) -> i32 {
+		match self {
+			Error::Invalid => QUERCUSCORE_E_INVALID,
+			Error::State => QUERCUSCORE_E_STATE,
+			Error::Failed(_) => QUERCUSCORE_E_FAILED,
+			Error::NotFound => QUERCUSCORE_E_NOT_FOUND,
+			Error::NoMem => QUERCUSCORE_E_NOMEM,
+		}
+	}
 
-    /// Create a [`Error::Failed`] carrying a context message (log-only).
-    ///
-    /// Convenience constructor used by the OCIO/`image` wrappers in
-    /// `ocioutils.rs` / `oiioutils.rs` when an underlying library call fails.
-    pub fn new(message: impl Into<String>) -> Self {
-        Error::Failed(message.into())
-    }
+	/// Create a [`Error::Failed`] carrying a context message (log-only).
+	///
+	/// Convenience constructor used by the OCIO/`image` wrappers in
+	/// `ocioutils.rs` / `oiioutils.rs` when an underlying library call fails.
+	pub fn new(message: impl Into<String>) -> Self {
+		Error::Failed(message.into())
+	}
 }
 
 impl From<ocio_rs::OcioError> for Error {
-    fn from(e: ocio_rs::OcioError) -> Self {
-        // The Display impl of `OcioError` always produces a non-empty message
-        // (every variant carries text or a fixed phrase); it becomes the
-        // log-only context of `Error::Failed`.
-        Error::Failed(e.to_string())
-    }
+	fn from(e: ocio_rs::OcioError) -> Self {
+		// The Display impl of `OcioError` always produces a non-empty message
+		// (every variant carries text or a fixed phrase); it becomes the
+		// log-only context of `Error::Failed`.
+		Error::Failed(e.to_string())
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    /// Every variant must produce a non-empty `Display` message; the
-    /// `Failed` variant must surface its context string.
-    #[test]
-    fn display_is_non_empty() {
-        for msg in [
-            Error::Invalid.to_string(),
-            Error::State.to_string(),
-            Error::Failed("context".into()).to_string(),
-            Error::NotFound.to_string(),
-            Error::NoMem.to_string(),
-        ] {
-            assert!(!msg.trim().is_empty(), "empty Display message");
-        }
-        assert!(
-            Error::Failed("context".into())
-                .to_string()
-                .contains("context")
-        );
-    }
+	/// Every variant must produce a non-empty `Display` message; the
+	/// `Failed` variant must surface its context string.
+	#[test]
+	fn display_is_non_empty() {
+		for msg in [
+			Error::Invalid.to_string(),
+			Error::State.to_string(),
+			Error::Failed("context".into()).to_string(),
+			Error::NotFound.to_string(),
+			Error::NoMem.to_string(),
+		] {
+			assert!(!msg.trim().is_empty(), "empty Display message");
+		}
+		assert!(Error::Failed("context".into())
+			.to_string()
+			.contains("context"));
+	}
 
-    /// `Error` must be usable behind a trait object.
-    #[test]
-    fn error_is_object_safe() {
-        let errs: Vec<Box<dyn std::error::Error>> = vec![
-            Box::new(Error::Invalid),
-            Box::new(Error::State),
-            Box::new(Error::Failed("context".into())),
-            Box::new(Error::NotFound),
-            Box::new(Error::NoMem),
-        ];
-        assert_eq!(errs.len(), 5);
-    }
+	/// `Error` must be usable behind a trait object.
+	#[test]
+	fn error_is_object_safe() {
+		let errs: Vec<Box<dyn std::error::Error>> = vec![
+			Box::new(Error::Invalid),
+			Box::new(Error::State),
+			Box::new(Error::Failed("context".into())),
+			Box::new(Error::NotFound),
+			Box::new(Error::NoMem),
+		];
+		assert_eq!(errs.len(), 5);
+	}
 
-    /// No variant wraps a downstream error, so `source()` stays `None`.
-    #[test]
-    fn source_is_none() {
-        assert!(std::error::Error::source(&Error::Failed("context".into())).is_none());
-    }
+	/// No variant wraps a downstream error, so `source()` stays `None`.
+	#[test]
+	fn source_is_none() {
+		assert!(std::error::Error::source(&Error::Failed("context".into())).is_none());
+	}
 
-    /// The `code()` mapping must be unchanged by the `Error` trait impl.
-    #[test]
-    fn code_mapping_unchanged() {
-        assert_eq!(Error::Invalid.code(), QUERCUSCORE_E_INVALID);
-        assert_eq!(Error::State.code(), QUERCUSCORE_E_STATE);
-        assert_eq!(Error::Failed("context".into()).code(), QUERCUSCORE_E_FAILED);
-        assert_eq!(Error::NotFound.code(), QUERCUSCORE_E_NOT_FOUND);
-        assert_eq!(Error::NoMem.code(), QUERCUSCORE_E_NOMEM);
-    }
+	/// The `code()` mapping must be unchanged by the `Error` trait impl.
+	#[test]
+	fn code_mapping_unchanged() {
+		assert_eq!(Error::Invalid.code(), QUERCUSCORE_E_INVALID);
+		assert_eq!(Error::State.code(), QUERCUSCORE_E_STATE);
+		assert_eq!(Error::Failed("context".into()).code(), QUERCUSCORE_E_FAILED);
+		assert_eq!(Error::NotFound.code(), QUERCUSCORE_E_NOT_FOUND);
+		assert_eq!(Error::NoMem.code(), QUERCUSCORE_E_NOMEM);
+	}
 }

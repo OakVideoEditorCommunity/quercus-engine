@@ -9,6 +9,8 @@
 //! unavailable.
 
 use std::cell::RefCell;
+use std::ptr;
+use std::slice;
 
 use quercus_ofx_plugin::gl_bridge::{self, GlGuard};
 use quercus_ofx_plugin::render::{PIXEL_FORMAT_F32, VideoParams};
@@ -115,7 +117,7 @@ pub unsafe extern "C" fn quercus_ofx_gl_create_input_texture(
 		return -1;
 	}
 	let len = width as usize * height as usize * 4;
-	let bytes = unsafe { std::slice::from_raw_parts(pixels as *const u8, len * 4) };
+	let bytes = unsafe { slice::from_raw_parts(pixels as *const u8, len * 4) };
 	gl_bridge::create_input_texture(width, height, bytes).unwrap_or(-1)
 }
 
@@ -233,8 +235,8 @@ pub unsafe extern "C" fn quercus_ofx_gl_read_pixels_f32(
 	if !out.is_null() {
 		let src = image.pixels();
 		let floats = needed.min(out_capacity).min(src.len() / 4);
-		let src = unsafe { std::slice::from_raw_parts(src.as_ptr() as *const f32, floats) };
-		unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), out, floats) };
+		let src = unsafe { slice::from_raw_parts(src.as_ptr() as *const f32, floats) };
+		unsafe { ptr::copy_nonoverlapping(src.as_ptr(), out, floats) };
 	}
 	needed as i32
 }

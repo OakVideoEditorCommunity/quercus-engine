@@ -28,13 +28,17 @@
 //! right — and exposes the upstream intensity choice as a two-way
 //! `standard_in` combo (75% / 100%).
 
+use super::generatorwithmerge;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Base texture input id (the shared generator-with-merge base). Type:
 /// texture; flags: not-keyframable; this is the generator's effect input.
-pub const BASE_INPUT: &str = super::generatorwithmerge::BASE_INPUT;
+pub const BASE_INPUT: &str = generatorwithmerge::BASE_INPUT;
 
 /// Standard input id (upstream `kParamBarIntensity` "Bar intensity",
 /// default 75 IRE). Type: combo; default 0; combo strings: 0 = "SMPTE
@@ -200,8 +204,8 @@ impl NodeBehavior for ColorBarsNode {
 			);
 		}
 
-		let job = crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(Job::ShaderJob(ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
@@ -210,7 +214,7 @@ impl NodeBehavior for ColorBarsNode {
 			params,
 			iterative_input: String::new(),
 		}));
-		super::generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
+		generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
 	}
 
 	/// Shader code request: `"colorbars"` returns this node's shader; the
@@ -219,7 +223,7 @@ impl NodeBehavior for ColorBarsNode {
 	fn shader_code(&self, request: &str) -> Option<String> {
 		match request {
 			"colorbars" => Some(Self::shader_frag().to_string()),
-			"mrg" => Some(super::generatorwithmerge::merge_shader_frag().to_string()),
+			"mrg" => Some(generatorwithmerge::merge_shader_frag().to_string()),
 			_ => None,
 		}
 	}
@@ -237,15 +241,15 @@ impl NodeBehavior for ColorBarsNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut base = crate::input::Input::new(
+	let mut base = input::Input::new(
 		BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		STANDARD_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(0),
@@ -279,127 +283,130 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
-    fn input_names_and_combo_strings() {
-        let n = ColorBarsNode;
-        assert_eq!(n.input_name(STANDARD_INPUT), "Standard");
-        assert_eq!(
-            n.input_name(super::super::generatorwithmerge::BASE_INPUT),
-            "Base"
-        );
-        assert_eq!(n.input_combo_strings(STANDARD_INPUT), vec!["SMPTE 75%", "Full 100%"]);
-        assert!(n.input_combo_strings("other_in").is_empty());
-    }
+	#[test]
+	fn input_names_and_combo_strings() {
+		let n = ColorBarsNode;
+		assert_eq!(n.input_name(STANDARD_INPUT), "Standard");
+		assert_eq!(
+			n.input_name(super::super::generatorwithmerge::BASE_INPUT),
+			"Base"
+		);
+		assert_eq!(
+			n.input_combo_strings(STANDARD_INPUT),
+			vec!["SMPTE 75%", "Full 100%"]
+		);
+		assert!(n.input_combo_strings("other_in").is_empty());
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.colorbars");
-        assert_eq!(
-            core.get_input(STANDARD_INPUT).unwrap().default,
-            NodeValue::Combo(0)
-        );
-        assert_eq!(behavior.input_combo_strings(STANDARD_INPUT).len(), 2);
-        assert_eq!(core.effect_input, BASE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.colorbars");
+		assert_eq!(
+			core.get_input(STANDARD_INPUT).unwrap().default,
+			NodeValue::Combo(0)
+		);
+		assert_eq!(behavior.input_combo_strings(STANDARD_INPUT).len(), 2);
+		assert_eq!(core.effect_input, BASE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_pushes_generator_job() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.colorbars");
-        assert_eq!(payload.shader_id, "colorbars");
-        assert_eq!(payload.iterations, 1);
-        assert_eq!(payload.effect_input, BASE_INPUT);
-        assert_eq!(payload.iterative_input, "");
-        assert_eq!(
-            payload.params.get(STANDARD_INPUT),
-            Some(&NodeValue::Combo(0))
-        );
-    }
+	#[test]
+	fn value_pushes_generator_job() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.colorbars");
+		assert_eq!(payload.shader_id, "colorbars");
+		assert_eq!(payload.iterations, 1);
+		assert_eq!(payload.effect_input, BASE_INPUT);
+		assert_eq!(payload.iterative_input, "");
+		assert_eq!(
+			payload.params.get(STANDARD_INPUT),
+			Some(&NodeValue::Combo(0))
+		);
+	}
 
-    #[test]
-    fn value_row_standard_wins_over_the_node_default() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([(STANDARD_INPUT.to_string(), NodeValue::Combo(1))]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(
-            payload.params.get(STANDARD_INPUT),
-            Some(&NodeValue::Combo(1))
-        );
-    }
+	#[test]
+	fn value_row_standard_wins_over_the_node_default() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([(STANDARD_INPUT.to_string(), NodeValue::Combo(1))]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(
+			payload.params.get(STANDARD_INPUT),
+			Some(&NodeValue::Combo(1))
+		);
+	}
 
-    #[test]
-    fn value_with_base_merges_nested_job() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([(
-            BASE_INPUT.to_string(),
-            NodeValue::Texture(crate::handle::CHandle::null()),
-        )]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let merge = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("merge job payload expected");
-        assert_eq!(merge.shader_id, "mrg");
-        assert_eq!(merge.effect_input, BASE_INPUT);
-        match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
-            Some(NodeValue::Texture(blend)) => {
-                let nested = unsafe { crate::jobs::shader_job(blend) }
-                    .expect("nested job payload boxed");
-                assert_eq!(nested.shader_id, "colorbars");
-            }
-            _ => panic!("nested blend job expected"),
-        }
-    }
+	#[test]
+	fn value_with_base_merges_nested_job() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([(
+			BASE_INPUT.to_string(),
+			NodeValue::Texture(crate::handle::CHandle::null()),
+		)]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let merge =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("merge job payload expected");
+		assert_eq!(merge.shader_id, "mrg");
+		assert_eq!(merge.effect_input, BASE_INPUT);
+		match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
+			Some(NodeValue::Texture(blend)) => {
+				let nested =
+					unsafe { crate::jobs::shader_job(blend) }.expect("nested job payload boxed");
+				assert_eq!(nested.shader_id, "colorbars");
+			}
+			_ => panic!("nested blend job expected"),
+		}
+	}
 
-    #[test]
-    fn shader_code_dispatches() {
-        let n = ColorBarsNode;
-        let code = n.shader_code("colorbars").unwrap();
-        assert!(code.contains("uniform int standard_in;"));
-        assert!(code.contains("uniform vec2 resolution_in;"));
-        assert!(code.contains("float level = 0.75;"));
-        assert!(!code.contains("switch"));
-        assert!(n
-            .shader_code("mrg")
-            .unwrap()
-            .contains("base_col *= 1.0 - blend_col.a;"));
-        assert!(n.shader_code("other").is_none());
-    }
+	#[test]
+	fn shader_code_dispatches() {
+		let n = ColorBarsNode;
+		let code = n.shader_code("colorbars").unwrap();
+		assert!(code.contains("uniform int standard_in;"));
+		assert!(code.contains("uniform vec2 resolution_in;"));
+		assert!(code.contains("float level = 0.75;"));
+		assert!(!code.contains("switch"));
+		assert!(n
+			.shader_code("mrg")
+			.unwrap()
+			.contains("base_col *= 1.0 - blend_col.a;"));
+		assert!(n.shader_code("other").is_none());
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Color Bars");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Color Bars");
+	}
 }

@@ -26,6 +26,7 @@
 //! yields an empty cue list and never panics. HTML style tags are preserved
 //! verbatim, and `subparse` trims surrounding whitespace from each text line.
 
+use std::iter;
 use subparse::timetypes::{TimePoint, TimeSpan};
 use subparse::{SrtFile, SubtitleFileInterface};
 
@@ -83,7 +84,7 @@ fn cue_blocks(text: &str) -> Vec<String> {
 	let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
 	let mut blocks = Vec::new();
 	let mut block: Vec<&str> = Vec::new();
-	for line in normalized.lines().chain(std::iter::once("")) {
+	for line in normalized.lines().chain(iter::once("")) {
 		if line.trim().is_empty() {
 			if !block.is_empty() {
 				blocks.push(block.join("\n"));

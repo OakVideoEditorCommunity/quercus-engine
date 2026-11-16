@@ -43,6 +43,7 @@
 //! is `tex_out`.
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
 
@@ -203,12 +204,8 @@ impl NodeBehavior for GraphOutputNode {
 /// and not an item.
 pub fn create_graph_input() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	let mut feed = crate::input::Input::new(
-		GRAPH_INPUT_FEED_INPUT,
-		ValueType::Texture,
-		NodeValue::None,
-	);
-	feed.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	let mut feed = input::Input::new(GRAPH_INPUT_FEED_INPUT, ValueType::Texture, NodeValue::None);
+	feed.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(feed);
 	core.flags |= crate::node::flags::DONT_SHOW_IN_CREATE_MENU;
 	(core, Box::new(GraphInputNode))
@@ -219,12 +216,8 @@ pub fn create_graph_input() -> (NodeCore, Box<dyn NodeBehavior>) {
 /// create-menu hiding flag. See [`create_graph_input`].
 pub fn create_graph_output() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	let mut tex = crate::input::Input::new(
-		GRAPH_OUTPUT_INPUT,
-		ValueType::Texture,
-		NodeValue::None,
-	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	let mut tex = input::Input::new(GRAPH_OUTPUT_INPUT, ValueType::Texture, NodeValue::None);
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 	core.flags |= crate::node::flags::DONT_SHOW_IN_CREATE_MENU;
 	(core, Box::new(GraphOutputNode))
@@ -276,7 +269,10 @@ mod tests {
 		let feed = core.get_input(GRAPH_INPUT_FEED_INPUT).expect("feed_in");
 		assert_eq!(feed.value_type, ValueType::Texture);
 		assert_eq!(feed.default, NodeValue::None);
-		assert_eq!(feed.flags & input_flags::NOT_KEYFRAMABLE, input_flags::NOT_KEYFRAMABLE);
+		assert_eq!(
+			feed.flags & input_flags::NOT_KEYFRAMABLE,
+			input_flags::NOT_KEYFRAMABLE
+		);
 		assert!(feed.is_connectable(), "the data entrance accepts edges");
 		assert!(core.get_input(crate::node::ENABLED_INPUT).is_some());
 		assert_ne!(core.flags & node_flags::DONT_SHOW_IN_CREATE_MENU, 0);
@@ -340,14 +336,23 @@ mod tests {
 		let (core, behavior) = create_graph_input();
 		let tex = NodeValue::Texture(crate::handle::CHandle::null());
 		let row = NodeValueRow::from([
-			(crate::node::ENABLED_INPUT.to_string(), NodeValue::Boolean(true)),
+			(
+				crate::node::ENABLED_INPUT.to_string(),
+				NodeValue::Boolean(true),
+			),
 			(GRAPH_INPUT_FEED_INPUT.to_string(), tex),
 		]);
 		let mut table = NodeValueTable::default();
 		behavior.value(&core, &row, quercus_core::Rational::new(0, 1), &mut table);
 		assert_eq!(table.count(), 2);
-		assert_eq!(table.get(ValueType::Boolean), Some(&NodeValue::Boolean(true)));
-		assert!(matches!(table.get(ValueType::Texture), Some(NodeValue::Texture(_))));
+		assert_eq!(
+			table.get(ValueType::Boolean),
+			Some(&NodeValue::Boolean(true))
+		);
+		assert!(matches!(
+			table.get(ValueType::Texture),
+			Some(NodeValue::Texture(_))
+		));
 	}
 
 	#[test]
@@ -362,10 +367,7 @@ mod tests {
 		);
 		assert!(table.is_empty(), "no row entries -> nothing forwarded");
 
-		let row = NodeValueRow::from([(
-			GRAPH_INPUT_FEED_INPUT.to_string(),
-			NodeValue::None,
-		)]);
+		let row = NodeValueRow::from([(GRAPH_INPUT_FEED_INPUT.to_string(), NodeValue::None)]);
 		behavior.value(&core, &row, quercus_core::Rational::new(0, 1), &mut table);
 		assert!(table.is_empty(), "a None value is not forwarded");
 	}

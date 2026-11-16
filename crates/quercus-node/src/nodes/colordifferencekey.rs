@@ -19,6 +19,9 @@
 //! `olive::ColorDifferenceKeyNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -199,16 +202,18 @@ impl NodeBehavior for ColorDifferenceKeyNode {
 		}
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params: inputs.clone(),
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params: inputs.clone(),
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -234,25 +239,25 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
 	let mut texture_input = |id: &str| {
-		let mut input = crate::input::Input::new(
+		let mut input = input::Input::new(
 			id,
 			crate::value::ValueType::Texture,
 			crate::value::NodeValue::None,
 		);
-		input.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+		input.flags |= input::flags::NOT_KEYFRAMABLE;
 		core.add_input(input);
 	};
 	texture_input(TEXTURE_INPUT);
 	texture_input(GARBAGE_MATTE_INPUT);
 	texture_input(CORE_MATTE_INPUT);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(0),
 	));
 
-	let mut highlights = crate::input::Input::new(
+	let mut highlights = input::Input::new(
 		HIGHLIGHTS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -263,7 +268,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(highlights);
 
-	let mut shadows = crate::input::Input::new(
+	let mut shadows = input::Input::new(
 		SHADOWS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -274,7 +279,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(shadows);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		MASK_ONLY_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -304,11 +309,11 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = ColorDifferenceKeyNode;
 		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
@@ -386,9 +391,11 @@ mod tests {
 			panic!("expected a texture-typed value");
 		};
 		let payload =
-			unsafe { crate::jobs::shader_job(handle) }
-				.expect("payload boxed behind the handle");
-		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.colordifferencekey");
+			unsafe { crate::jobs::shader_job(handle) }.expect("payload boxed behind the handle");
+		assert_eq!(
+			payload.type_id,
+			"org.olivevideoeditor.Olive.colordifferencekey"
+		);
 		assert_eq!(payload.iterations, 1);
 		assert_eq!(payload.effect_input, TEXTURE_INPUT);
 		assert!(payload.params.contains_key(TEXTURE_INPUT));

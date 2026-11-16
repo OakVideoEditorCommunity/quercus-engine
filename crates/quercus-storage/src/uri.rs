@@ -26,6 +26,7 @@
 /// - a bare path (`/abs/path.ove`, `rel/path.ove`) — normalized to a
 ///   `file://` URI so C++ callers that pass plain filenames keep working
 ///   (M10 §2.2 note).
+use crate::error;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageUri {
 	/// Scheme ("file", "quercusdb", …).
@@ -41,9 +42,9 @@ impl StorageUri {
 	/// `Err(Error::Invalid)` for an empty string. A scheme is recognized
 	/// only in the `scheme://` form (`[a-zA-Z][a-zA-Z0-9+.-]*` per RFC
 	/// 3986 §3.1); anything else is a bare path.
-	pub fn parse(s: &str) -> crate::error::Result<StorageUri> {
+	pub fn parse(s: &str) -> error::Result<StorageUri> {
 		if s.is_empty() {
-			return Err(crate::error::Error::Invalid);
+			return Err(error::Error::Invalid);
 		}
 		match s.find("://") {
 			Some(pos) if is_scheme(&s[..pos]) => Ok(StorageUri {
@@ -177,8 +178,14 @@ mod tests {
 			StorageUri::parse("file:///x/y.ove").unwrap().local_path(),
 			Some("/x/y.ove")
 		);
-		assert_eq!(StorageUri::parse("/x/y.ove").unwrap().local_path(), Some("/x/y.ove"));
-		assert_eq!(StorageUri::parse("quercusdb://c").unwrap().local_path(), None);
+		assert_eq!(
+			StorageUri::parse("/x/y.ove").unwrap().local_path(),
+			Some("/x/y.ove")
+		);
+		assert_eq!(
+			StorageUri::parse("quercusdb://c").unwrap().local_path(),
+			None
+		);
 	}
 
 	#[test]

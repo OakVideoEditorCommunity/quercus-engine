@@ -8,6 +8,7 @@
 //! observer hook functional plugins use as the "project modified"
 //! signal.
 
+use quercus_undo::global;
 use std::ffi::c_void;
 use std::sync::Mutex;
 
@@ -18,13 +19,13 @@ use quercus_undo::undocommand::UndoCommand;
 /// False on failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_undo_jump(index: i64) -> bool {
-	quercus_undo::global::jump(index).is_ok()
+	global::jump(index).is_ok()
 }
 
 /// Clears the undo stack. False on failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_undo_clear() -> bool {
-	quercus_undo::global::clear().is_ok()
+	global::clear().is_ok()
 }
 
 /// Take ownership of one boxed undo command and record it on the process-wide
@@ -67,7 +68,7 @@ pub unsafe extern "C" fn quercus_undo_push_owned(
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
 		return false;
 	};
-	quercus_undo::global::push(*command, name).is_ok()
+	global::push(*command, name).is_ok()
 }
 
 /// Write the display name of history row `row` into `buf`, snprintf-style.
@@ -91,7 +92,7 @@ pub unsafe extern "C" fn quercus_undo_push_owned(
 /// the call; a non-null `buf` with `buf_len == 0` is accepted and writes nothing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_undo_command_name(row: i64, buf: *mut u8, buf_len: usize) -> i32 {
-	match quercus_undo::global::command_name(row) {
+	match global::command_name(row) {
 		Ok(name) => copy_str_out(&name, buf, buf_len),
 		Err(_) => -1,
 	}
@@ -101,7 +102,7 @@ pub unsafe extern "C" fn quercus_undo_command_name(row: i64, buf: *mut u8, buf_l
 /// when out of range.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_undo_command_done(row: i64) -> i32 {
-	match quercus_undo::global::command_done(row) {
+	match global::command_done(row) {
 		Ok(done) => done as i32,
 		Err(_) => -1,
 	}
@@ -160,7 +161,7 @@ pub unsafe extern "C" fn quercus_undo_add_observer(
 		return;
 	};
 	TRAMPOLINE_ONCE.call_once(|| {
-		quercus_undo::global::add_observer(dispatch_observers);
+		global::add_observer(dispatch_observers);
 	});
 	OBSERVERS
 		.lock()

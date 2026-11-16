@@ -7,9 +7,13 @@
 //! thread-safe.
 
 use quercus_core::colormath::{self, OutputColorSpec, WorkingColorSpace};
-use quercus_core::colormath::{PRIMARIES_AP1, PRIMARIES_BT2020, PRIMARIES_DISPLAY_P3, PRIMARIES_SRGB};
+use quercus_core::colormath::{
+	PRIMARIES_AP1, PRIMARIES_BT2020, PRIMARIES_DISPLAY_P3, PRIMARIES_SRGB,
+};
 use quercus_core::filefunctions::{FileFunctions, default_disk_cache_path};
 use quercus_core::lut::Lut3d;
+use std::ptr;
+use std::slice;
 
 use crate::codec::{copy_str_out, str_arg};
 use crate::handle::NativeMirror;
@@ -77,7 +81,7 @@ pub unsafe extern "C" fn quercus_core_colormath_working_to_display_target(
 	let samples = if data.is_null() {
 		&mut []
 	} else {
-		unsafe { std::slice::from_raw_parts_mut(data, len) }
+		unsafe { slice::from_raw_parts_mut(data, len) }
 	};
 	colormath::working_to_display_target(
 		samples,
@@ -127,16 +131,15 @@ pub unsafe extern "C" fn quercus_core_colormath_output_spec_to_xyz_d65(
 	if data.is_null() && len > 0 {
 		return false;
 	}
-	let (Some(gamut), Some(transfer)) = (
-		unsafe { str_arg(gamut, gamut_len) },
-		unsafe { str_arg(transfer, transfer_len) },
-	) else {
+	let (Some(gamut), Some(transfer)) = (unsafe { str_arg(gamut, gamut_len) }, unsafe {
+		str_arg(transfer, transfer_len)
+	}) else {
 		return false;
 	};
 	let samples = if data.is_null() {
 		&mut []
 	} else {
-		unsafe { std::slice::from_raw_parts_mut(data, len) }
+		unsafe { slice::from_raw_parts_mut(data, len) }
 	};
 	colormath::output_spec_to_xyz_d65(samples, OutputColorSpec::from_settings(gamut, transfer));
 	true
@@ -345,8 +348,8 @@ pub unsafe extern "C" fn quercus_core_lut_display_domain(lo: *mut f32, hi: *mut 
 		return false;
 	}
 	unsafe {
-		std::ptr::copy_nonoverlapping(Lut3d::DISPLAY_LO.as_ptr(), lo, 3);
-		std::ptr::copy_nonoverlapping(Lut3d::DISPLAY_HI.as_ptr(), hi, 3);
+		ptr::copy_nonoverlapping(Lut3d::DISPLAY_LO.as_ptr(), lo, 3);
+		ptr::copy_nonoverlapping(Lut3d::DISPLAY_HI.as_ptr(), hi, 3);
 	}
 	true
 }
@@ -471,10 +474,9 @@ pub unsafe extern "C" fn quercus_core_file_ensure_filename_extension(
 	buf: *mut u8,
 	buf_len: usize,
 ) -> i32 {
-	let (Some(filename), Some(extension)) = (
-		unsafe { str_arg(filename, filename_len) },
-		unsafe { str_arg(extension, extension_len) },
-	) else {
+	let (Some(filename), Some(extension)) = (unsafe { str_arg(filename, filename_len) }, unsafe {
+		str_arg(extension, extension_len)
+	}) else {
 		return -1;
 	};
 	match FileFunctions::new().ensure_filename_extension(filename, extension) {
@@ -658,10 +660,9 @@ pub unsafe extern "C" fn quercus_core_file_rename_file_allow_overwrite(
 	to: *const u8,
 	to_len: usize,
 ) -> bool {
-	let (Some(from), Some(to)) = (
-		unsafe { str_arg(from, from_len) },
-		unsafe { str_arg(to, to_len) },
-	) else {
+	let (Some(from), Some(to)) = (unsafe { str_arg(from, from_len) }, unsafe {
+		str_arg(to, to_len)
+	}) else {
 		return false;
 	};
 	FileFunctions::new().rename_file_allow_overwrite(from, to)
@@ -694,11 +695,18 @@ mod tests {
 		for v in [0.0f32, 0.18, 0.5, 1.0] {
 			let rt = quercus_core_colormath_srgb_eotf(quercus_core_colormath_srgb_oetf(v));
 			assert!((rt - v).abs() < 1e-5, "sRGB roundtrip failed for {v}");
-			let rt = quercus_core_colormath_gamma_eotf(quercus_core_colormath_gamma_oetf(v, 2.2), 2.2);
+			let rt =
+				quercus_core_colormath_gamma_eotf(quercus_core_colormath_gamma_oetf(v, 2.2), 2.2);
 			assert!((rt - v).abs() < 1e-5, "gamma roundtrip failed for {v}");
 		}
-		assert!((quercus_core_colormath_pq_eotf(quercus_core_colormath_pq_oetf(0.5)) - 0.5).abs() < 1e-5);
-		assert!((quercus_core_colormath_hlg_eotf(quercus_core_colormath_hlg_oetf(0.5)) - 0.5).abs() < 1e-5);
+		assert!(
+			(quercus_core_colormath_pq_eotf(quercus_core_colormath_pq_oetf(0.5)) - 0.5).abs()
+				< 1e-5
+		);
+		assert!(
+			(quercus_core_colormath_hlg_eotf(quercus_core_colormath_hlg_oetf(0.5)) - 0.5).abs()
+				< 1e-5
+		);
 	}
 
 	#[test]
@@ -766,8 +774,14 @@ mod tests {
 		let mut lo = [0.0f32; 3];
 		let mut hi = [0.0f32; 3];
 		unsafe {
-			assert!(quercus_core_lut_display_domain(lo.as_mut_ptr(), hi.as_mut_ptr()));
-			assert!(!quercus_core_lut_display_domain(std::ptr::null_mut(), hi.as_mut_ptr()));
+			assert!(quercus_core_lut_display_domain(
+				lo.as_mut_ptr(),
+				hi.as_mut_ptr()
+			));
+			assert!(!quercus_core_lut_display_domain(
+				std::ptr::null_mut(),
+				hi.as_mut_ptr()
+			));
 		}
 		assert_eq!(lo, [-0.25, -0.25, -0.25]);
 		assert_eq!(hi, [4.0, 4.0, 4.0]);

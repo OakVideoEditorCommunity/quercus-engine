@@ -255,10 +255,8 @@ mod tests {
 
 	/// Unique temp cache dir per test (proxy files persist across runs).
 	fn temp_cache(name: &str) -> String {
-		let dir = std::env::temp_dir().join(format!(
-			"quercusengine_proxy_{name}_{}",
-			std::process::id()
-		));
+		let dir =
+			std::env::temp_dir().join(format!("quercusengine_proxy_{name}_{}", std::process::id()));
 		let _ = std::fs::create_dir_all(&dir);
 		dir.to_string_lossy().into_owned()
 	}
@@ -389,7 +387,10 @@ mod tests {
 			unsafe { quercus_codec_proxy_get_state(path.as_ptr(), path.len()) },
 			0
 		);
-		assert_eq!(unsafe { quercus_codec_proxy_get_state(std::ptr::null(), 0) }, 0);
+		assert_eq!(
+			unsafe { quercus_codec_proxy_get_state(std::ptr::null(), 0) },
+			0
+		);
 	}
 
 	#[test]
@@ -433,9 +434,11 @@ mod tests {
 			)
 		};
 		assert!(n > 0);
-		assert!(std::str::from_utf8(&buf[..n as usize])
-			.unwrap()
-			.ends_with(".working.mp4"));
+		assert!(
+			std::str::from_utf8(&buf[..n as usize])
+				.unwrap()
+				.ends_with(".working.mp4")
+		);
 
 		// Null source: error, not a panic.
 		assert_eq!(

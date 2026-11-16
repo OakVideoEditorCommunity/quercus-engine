@@ -17,8 +17,13 @@
 //! Bin folders (C++ `olive::Folder`): tree structure over `NodeId`s.
 
 use crate::factory::NodeMeta;
+use crate::graph;
 use crate::id::NodeId;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::serializer;
+use crate::value;
+use std::any;
 
 /// A folder node behavior: children are folder-tree members (folders
 /// and footage), not graph edges.
@@ -77,7 +82,7 @@ impl FolderBehavior {
 
 	/// True when `child` is contained recursively (C++
 	/// `Folder::has_child_recursive`).
-	pub fn has_child_recursive(&self, child: NodeId, graph: &crate::graph::Graph) -> bool {
+	pub fn has_child_recursive(&self, child: NodeId, graph: &graph::Graph) -> bool {
 		for c in &self.children {
 			if *c == child {
 				return true;
@@ -105,12 +110,12 @@ impl NodeBehavior for FolderBehavior {
 	}
 
 	/// Concrete downcast for the folder family.
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		Some(self)
 	}
 
 	/// Concrete downcast for the folder family.
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		Some(self)
 	}
 
@@ -137,7 +142,7 @@ impl NodeBehavior for FolderBehavior {
 	/// through the `child_in` input connections; the Rust model keeps
 	/// them in [`FolderBehavior::children`], so the custom segment is
 	/// the persistence channel — old readers skip it).
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = core;
 		if !self.children.is_empty() {
 			writer.start_element("children");
@@ -151,11 +156,7 @@ impl NodeBehavior for FolderBehavior {
 	/// Custom project load; the child references resolve in the
 	/// serializer's post-load pass (which also folds in `child_in`
 	/// connections from C++ files).
-	fn load_custom(
-		&mut self,
-		_core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, _core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		while reader.next_start_element() {
 			match reader.name() {
 				"children" => {
@@ -163,7 +164,7 @@ impl NodeBehavior for FolderBehavior {
 					while reader.next_start_element() {
 						if reader.name() == "child" {
 							if let Some(id) =
-								crate::serializer::parse_node_ref(&reader.read_element_text())
+								serializer::parse_node_ref(&reader.read_element_text())
 							{
 								self.children.push(id);
 							}
@@ -186,12 +187,8 @@ pub fn create(name: &str) -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::empty();
 	// Bin item (C++ `folder.cpp:38` `set_flag(k_is_item)`).
 	core.flags |= crate::node::flags::IS_ITEM;
-	let mut child = crate::input::Input::new(
-		"child_in",
-		crate::value::ValueType::None,
-		crate::value::NodeValue::None,
-	);
-	child.flags |= crate::input::flags::ARRAY | crate::input::flags::NOT_KEYFRAMABLE;
+	let mut child = input::Input::new("child_in", value::ValueType::None, value::NodeValue::None);
+	child.flags |= input::flags::ARRAY | input::flags::NOT_KEYFRAMABLE;
 	core.add_input(child);
 	(core, Box::new(FolderBehavior::new(name)))
 }

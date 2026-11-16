@@ -19,6 +19,9 @@
 //! `olive::RippleDistortNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, Gizmo, NodeBehavior, NodeCore};
 
@@ -180,16 +183,18 @@ impl NodeBehavior for RippleDistortNode {
 			// main texture inside the params row.
 			table.push(
 				crate::value::ValueType::Texture,
-				crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
-					time,
-					iterations: 1,
-					type_id: self.type_id().to_string(),
-					shader_id: String::new(),
-					effect_input: core.effect_input.clone(),
-					params: inputs.clone(),
-					iterative_input: String::new(),
-				}))),
+				crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+					ShaderJobPayload {
+						node_id: id::NodeId::INVALID,
+						time,
+						iterations: 1,
+						type_id: self.type_id().to_string(),
+						shader_id: String::new(),
+						effect_input: core.effect_input.clone(),
+						params: inputs.clone(),
+						iterative_input: String::new(),
+					},
+				))),
 				None,
 			);
 		} else {
@@ -244,26 +249,26 @@ impl NodeBehavior for RippleDistortNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		EVOLUTION_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		INTENSITY_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(100.0),
 	));
 
-	let mut frequency = crate::input::Input::new(
+	let mut frequency = input::Input::new(
 		FREQUENCY_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -271,12 +276,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	frequency.properties = vec![("base".to_string(), crate::value::NodeValue::Float(0.01))];
 	core.add_input(frequency);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		POSITION_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		STRETCH_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -321,12 +326,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 

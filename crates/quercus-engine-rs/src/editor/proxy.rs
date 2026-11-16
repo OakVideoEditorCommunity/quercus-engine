@@ -9,11 +9,19 @@ use crate::task::Task;
 
 use super::EditorSession;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_editor_proxy_generate(
 		session: *const c_void,
@@ -108,23 +116,27 @@ impl EditorSession {
 	/// or node behavior types through the SDK.
 	pub fn proxy_status(&self, footage: NodeId) -> Option<ProxyStatus> {
 		let mut raw = RawProxyStatus::default();
-		unsafe { quercus_editor_proxy_status(self.ptr, footage.raw(), &mut raw) }.then(|| ProxyStatus {
-			state: match raw.state {
-				1 => ProxyState::Generating,
-				2 => ProxyState::Ready,
-				3 => ProxyState::Failed,
-				_ => ProxyState::Missing,
-			},
-			enabled: raw.enabled,
-			has_custom_params: raw.has_custom_params,
-			can_generate: raw.can_generate,
-			has_proxy: raw.has_proxy,
+		unsafe { quercus_editor_proxy_status(self.ptr, footage.raw(), &mut raw) }.then(|| {
+			ProxyStatus {
+				state: match raw.state {
+					1 => ProxyState::Generating,
+					2 => ProxyState::Ready,
+					3 => ProxyState::Failed,
+					_ => ProxyState::Missing,
+				},
+				enabled: raw.enabled,
+				has_custom_params: raw.has_custom_params,
+				can_generate: raw.can_generate,
+				has_proxy: raw.has_proxy,
+			}
 		})
 	}
 
 	/// Returns the recorded proxy filename, or `None` for invalid footage.
 	pub fn proxy_path(&self, footage: NodeId) -> Option<String> {
-		string_out(|buf, len| unsafe { quercus_editor_proxy_path(self.ptr, footage.raw(), buf, len) })
+		string_out(|buf, len| unsafe {
+			quercus_editor_proxy_path(self.ptr, footage.raw(), buf, len)
+		})
 	}
 
 	/// Deletes the final and working proxy files and clears the association.
@@ -146,23 +158,28 @@ impl EditorSession {
 #[cfg(test)]
 mod tests {
 	use crate::codec::{ProxyState, proxy_get_filename};
+	use crate::edit;
 	use crate::editor::EditorSession;
+	use crate::node;
 	use crate::task::TaskState;
+	use crate::test_support;
+	use std::env;
+	use std::fs;
+	use std::path;
+	use std::process;
 
 	#[test]
 	fn proxy_generation_progress_completion_enable_disable_and_delete() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
-		let media = crate::test_support::make_test_clip("sdk_proxy_lifecycle");
+		let media = test_support::make_test_clip("sdk_proxy_lifecycle");
 		let footage = session.project().import_footage(&media).expect("footage");
-		let cache = std::env::temp_dir()
-			.join(format!("quercus_sdk_proxy_{}", std::process::id()))
+		let cache = env::temp_dir()
+			.join(format!("quercus_sdk_proxy_{}", process::id()))
 			.to_string_lossy()
 			.into_owned();
-		let _ = std::fs::remove_dir_all(&cache);
-		std::fs::create_dir_all(&cache).expect("cache directory");
+		let _ = fs::remove_dir_all(&cache);
+		fs::create_dir_all(&cache).expect("cache directory");
 
 		let initial = session.proxy_status(footage).expect("initial status");
 		assert_eq!(initial.state, ProxyState::Missing);
@@ -173,7 +190,7 @@ mod tests {
 		custom.height = 32;
 		custom.divider = 1;
 		session
-			.execute(crate::edit::EditCommand::SetFootageProxyParams {
+			.execute(edit::EditCommand::SetFootageProxyParams {
 				footage,
 				params: custom,
 			})
@@ -209,21 +226,21 @@ mod tests {
 			session.proxy_path(footage).as_deref(),
 			Some(expected_path.as_str())
 		);
-		assert!(std::path::Path::new(&expected_path).is_file());
+		assert!(path::Path::new(&expected_path).is_file());
 		session.set_proxy_enabled(footage, false).expect("disable");
 		assert!(!session.proxy_status(footage).unwrap().enabled);
 		session.set_proxy_enabled(footage, true).expect("enable");
 		assert!(session.proxy_status(footage).unwrap().enabled);
 
 		session.delete_proxy(footage).expect("delete proxy");
-		assert!(!std::path::Path::new(&expected_path).exists());
+		assert!(!path::Path::new(&expected_path).exists());
 		let deleted = session.proxy_status(footage).expect("deleted status");
 		assert_eq!(deleted.state, ProxyState::Missing);
 		assert!(!deleted.has_proxy);
-		assert!(session.delete_proxy(crate::node::NodeId::INVALID).is_err());
+		assert!(session.delete_proxy(node::NodeId::INVALID).is_err());
 
 		drop(task);
-		std::fs::remove_file(&media).expect("remove source before failed generation");
+		fs::remove_file(&media).expect("remove source before failed generation");
 		let failed = session
 			.generate_proxy(footage, &cache)
 			.expect("missing input still starts an asynchronous task");
@@ -231,8 +248,11 @@ mod tests {
 		assert_eq!(failed.state(), TaskState::Failed);
 		assert!(!failed.error().is_empty());
 		assert!(session.complete_proxy(footage, &failed, false));
-		assert_eq!(session.proxy_status(footage).unwrap().state, ProxyState::Failed);
+		assert_eq!(
+			session.proxy_status(footage).unwrap().state,
+			ProxyState::Failed
+		);
 		drop(failed);
-		let _ = std::fs::remove_dir_all(cache);
+		let _ = fs::remove_dir_all(cache);
 	}
 }

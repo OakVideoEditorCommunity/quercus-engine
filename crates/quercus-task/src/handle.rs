@@ -26,6 +26,7 @@
 //! `get`/`get_mut`). The borrowed-handle and panic-guard helpers had no
 //! in-crate callers and were removed.
 
+use std::ffi;
 use std::sync::atomic::AtomicU32;
 
 /// ABI version stamped into every handle.
@@ -59,7 +60,7 @@ pub use quercus_core::handle::CHandle;
 /// When non-null, `ctx` must point to a live `RefBox<T>` previously handed out
 /// by [`make_owned`] (or another handle helper for the same `T`) with a count of
 /// at least one; the caller must own a reference to add.
-unsafe extern "C" fn owned_addref<T: 'static>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn owned_addref<T: 'static>(ctx: *mut ffi::c_void) {
 	if !ctx.is_null() {
 		// CPP-PARITY: src/task/c_api/taskhandle.h (task_addref)
 		unsafe {
@@ -84,7 +85,7 @@ unsafe extern "C" fn owned_addref<T: 'static>(ctx: *mut std::ffi::c_void) {
 /// by [`make_owned`] (or another handle helper for the same `T`) with a count of
 /// at least one. It must not be released twice, and the value must not be used
 /// after the count reaches zero.
-unsafe extern "C" fn owned_release<T: 'static>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn owned_release<T: 'static>(ctx: *mut ffi::c_void) {
 	if ctx.is_null() {
 		return;
 	}
@@ -113,7 +114,7 @@ pub fn make_owned<T: Send + 'static>(value: T) -> CHandle {
 		value,
 	});
 	CHandle {
-		ctx: Box::into_raw(b) as *mut std::ffi::c_void,
+		ctx: Box::into_raw(b) as *mut ffi::c_void,
 		addref: Some(owned_addref::<T>),
 		release: Some(owned_release::<T>),
 		abi_version: QUERCUSTASK_ABI_VERSION,

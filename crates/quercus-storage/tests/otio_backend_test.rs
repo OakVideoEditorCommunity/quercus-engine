@@ -19,6 +19,11 @@
 //! a rich multi-sequence round trip (collection root, gap, transition,
 //! missing media reference), the empty-project shape, and load errors.
 
+use quercus_storage::error;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -35,22 +40,19 @@ use quercus_storage::backends::otio::OtioBackend;
 use quercus_storage::nodeutil::{make_project_owned, project_arc};
 use quercus_storage::uri::StorageUri;
 
-fn work_path(tag: &str, ext: &str) -> std::path::PathBuf {
-	let path = std::env::temp_dir().join(format!(
-		"quercusstorage_otio_{tag}_{}.{ext}",
-		std::process::id()
-	));
-	let _ = std::fs::remove_file(&path);
+fn work_path(tag: &str, ext: &str) -> path::PathBuf {
+	let path = env::temp_dir().join(format!("quercusstorage_otio_{tag}_{}.{ext}", process::id()));
+	let _ = fs::remove_file(&path);
 	path
 }
 
-fn file_uri(path: &std::path::Path) -> StorageUri {
+fn file_uri(path: &path::Path) -> StorageUri {
 	StorageUri::parse(&format!("file://{}", path.display())).expect("file uri")
 }
 
 /// A synthetic media path: the OTIO backend only carries the filename, it
 /// never opens/probes the media, so no real file is needed.
-fn media_path(tag: &str) -> std::path::PathBuf {
+fn media_path(tag: &str) -> path::PathBuf {
 	work_path(tag, "mp4")
 }
 
@@ -200,8 +202,10 @@ fn build_project(media: Option<&str>, count: usize) -> Arc<Mutex<Project>> {
 		let mut p = project.lock().unwrap();
 		p.initialize().expect("root folder");
 
-		let footage =
-			media.map(|media| p.graph.add_node(NodeCore::new(), Box::new(FootageBehavior::new(media))));
+		let footage = media.map(|media| {
+			p.graph
+				.add_node(NodeCore::new(), Box::new(FootageBehavior::new(media)))
+		});
 
 		for index in 0..count {
 			let (core, behavior) = SequenceBehavior::create();
@@ -211,16 +215,17 @@ fn build_project(media: Option<&str>, count: usize) -> Arc<Mutex<Project>> {
 			}
 			if index == 0 {
 				let video = add_track(&mut p, TrackType::Video);
-				add_clip(&mut p, video, footage, Rational::new(0, 1), Rational::new(1, 1));
+				add_clip(
+					&mut p,
+					video,
+					footage,
+					Rational::new(0, 1),
+					Rational::new(1, 1),
+				);
 				// A discontinuity before this block exercises the implicit-gap
 				// export path (block in 2 > position 1).
 				add_gap(&mut p, video, Rational::new(2, 1), Rational::new(3, 1));
-				add_transition(
-					&mut p,
-					video,
-					Rational::new(1, 2),
-					Rational::new(1, 4),
-				);
+				add_transition(&mut p, video, Rational::new(1, 2), Rational::new(1, 4));
 				// No footage and no edge: exports a MissingReference.
 				add_clip(
 					&mut p,
@@ -232,7 +237,13 @@ fn build_project(media: Option<&str>, count: usize) -> Arc<Mutex<Project>> {
 				attach_list(&mut p, seq, TrackType::Video, vec![video]);
 
 				let audio = add_track(&mut p, TrackType::Audio);
-				add_clip(&mut p, audio, footage, Rational::new(0, 1), Rational::new(1, 1));
+				add_clip(
+					&mut p,
+					audio,
+					footage,
+					Rational::new(0, 1),
+					Rational::new(1, 1),
+				);
 				attach_list(&mut p, seq, TrackType::Audio, vec![audio]);
 			}
 		}
@@ -254,11 +265,14 @@ impl Drop for Loaded {
 	}
 }
 
-fn load(uri: &StorageUri) -> quercus_storage::error::Result<Loaded> {
+fn load(uri: &StorageUri) -> error::Result<Loaded> {
 	let backend = OtioBackend::new();
 	let result = backend.load(uri)?;
 	let arc = unsafe { project_arc(&result.project)? };
-	Ok(Loaded { project: arc, result })
+	Ok(Loaded {
+		project: arc,
+		result,
+	})
 }
 
 /// Sequence labels present in `project`.
@@ -286,10 +300,10 @@ fn backend_metadata_and_can_handle() {
 	let backend = OtioBackend::new();
 	assert_eq!(backend.name(), "otio");
 	assert_eq!(backend.uri_scheme(), "file");
-	assert!(backend.can_handle(&file_uri(std::path::Path::new("/tmp/a.otio"))));
-	assert!(backend.can_handle(&file_uri(std::path::Path::new("/tmp/a.fcpxml"))));
-	assert!(!backend.can_handle(&file_uri(std::path::Path::new("/tmp/a.ove"))));
-	assert!(!backend.can_handle(&file_uri(std::path::Path::new("/tmp/a"))));
+	assert!(backend.can_handle(&file_uri(path::Path::new("/tmp/a.otio"))));
+	assert!(backend.can_handle(&file_uri(path::Path::new("/tmp/a.fcpxml"))));
+	assert!(!backend.can_handle(&file_uri(path::Path::new("/tmp/a.ove"))));
+	assert!(!backend.can_handle(&file_uri(path::Path::new("/tmp/a"))));
 }
 
 #[test]
@@ -332,7 +346,7 @@ fn otio_collection_round_trip_preserves_sequences_tracks_and_blocks() {
 	}
 
 	let loaded = load(&file_uri(&out)).expect("load");
-	assert_eq!(loaded.result.version_info, quercus_storage::error::QUERCUSSTORAGE_OK);
+	assert_eq!(loaded.result.version_info, error::QUERCUSSTORAGE_OK);
 	assert_eq!(
 		sequence_labels(&loaded.project),
 		vec!["Seq0".to_string(), "Seq1".to_string()]
@@ -381,7 +395,7 @@ fn otio_collection_round_trip_preserves_sequences_tracks_and_blocks() {
 	assert_eq!(transitions, 1);
 
 	drop(guard);
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 }
 
 #[test]
@@ -446,7 +460,7 @@ fn fcpxml_round_trip_preserves_sequences_tracks_and_blocks() {
 	assert_eq!(transitions, 1);
 
 	drop(guard);
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 }
 
 #[test]
@@ -460,8 +474,11 @@ fn empty_project_exports_one_empty_timeline() {
 
 	let loaded = load(&file_uri(&out)).expect("load empty project");
 	// The export names the placeholder "Timeline"; the import carries it.
-	assert_eq!(sequence_labels(&loaded.project), vec!["Timeline".to_string()]);
-	let _ = std::fs::remove_file(&out);
+	assert_eq!(
+		sequence_labels(&loaded.project),
+		vec!["Timeline".to_string()]
+	);
+	let _ = fs::remove_file(&out);
 }
 
 #[test]
@@ -474,20 +491,25 @@ fn load_reports_missing_corrupt_and_unrooted_documents() {
 
 	// Malformed JSON.
 	let corrupt = work_path("corrupt", "otio");
-	std::fs::write(&corrupt, b"{ not json").expect("write");
+	fs::write(&corrupt, b"{ not json").expect("write");
 	assert!(backend.load(&file_uri(&corrupt)).is_err());
-	let _ = std::fs::remove_file(&corrupt);
+	let _ = fs::remove_file(&corrupt);
 
 	// Valid JSON whose root is neither a timeline nor a collection.
 	let raw = work_path("raw", "otio");
-	std::fs::write(&raw, br#"{"OTIO_SCHEMA":"RationalTime.1","value":1,"rate":24}"#)
-		.expect("write");
-	let err = backend.load(&file_uri(&raw)).expect_err("raw root must fail");
+	fs::write(
+		&raw,
+		br#"{"OTIO_SCHEMA":"RationalTime.1","value":1,"rate":24}"#,
+	)
+	.expect("write");
+	let err = backend
+		.load(&file_uri(&raw))
+		.expect_err("raw root must fail");
 	assert!(
 		format!("{err}").contains("no timeline or collection root"),
 		"{err}"
 	);
-	let _ = std::fs::remove_file(&raw);
+	let _ = fs::remove_file(&raw);
 
 	// Missing FCPXML and no-extension URIs.
 	let missing_xml = work_path("missing", "fcpxml");

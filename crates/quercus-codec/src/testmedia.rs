@@ -35,16 +35,17 @@
 //! H.264/H.265 is lossy, so assertions downstream should use generous
 //! tolerances (channel dominance rather than exact values).
 
+use std::f32;
 use std::path::Path;
 
 use quercus_core::ocioutils::PixelFormat as QuercusPixelFormat;
 use quercus_core::videoparams::VideoParams;
 use quercus_core::{PixelFormat, Rational, SampleFormat};
 
-use crate::encodingparams::EncodingParams;
 use crate::encoder::create_from_params;
-use crate::frame::Frame;
+use crate::encodingparams::EncodingParams;
 use crate::error::{Error, Result};
+use crate::frame::Frame;
 
 /// Encode `frame_count` frames of the known pattern into `out` (an MP4 at
 /// `fps` frames per second, `width`x`height`, H.264).
@@ -79,7 +80,7 @@ pub fn write_test_clip(
 	let rate = 48000u32;
 	let mut tone: Vec<f32> = Vec::with_capacity(rate as usize * 2);
 	for i in 0..rate {
-		let v = (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.5;
+		let v = (i as f32 * 440.0 * f32::consts::TAU / rate as f32).sin() * 0.5;
 		tone.push(v);
 		tone.push(v);
 	}

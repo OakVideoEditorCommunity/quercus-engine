@@ -6,7 +6,7 @@ use quercus_node::keyframe::{Interpolation, Keyframe, KeyframeTrack};
 use quercus_node::value::QuercusNodeValue;
 
 use super::prelude::*;
-use super::{push, push_command, project::lock};
+use super::{project::lock, push, push_command};
 
 /// Looks up the declared value type of a node input.
 ///
@@ -19,7 +19,11 @@ use super::{push, push_command, project::lock};
 /// # Errors
 ///
 /// Returns a message when the node is unknown or does not declare `input`.
-fn input_type(p: &ProjectRef, node: NodeId, input: &str) -> Result<quercus_node::value::ValueType, String> {
+fn input_type(
+	p: &ProjectRef,
+	node: NodeId,
+	input: &str,
+) -> Result<quercus_node::value::ValueType, String> {
 	let guard = lock(p);
 	guard
 		.graph
@@ -52,7 +56,8 @@ fn restore_track_command(
 			},
 			move || {
 				if let Some(entry) = lock(&undo_project).graph.get_mut(node) {
-					*entry.core.keyframe_track_mut(&undo_input, element) = old.clone().unwrap_or_default();
+					*entry.core.keyframe_track_mut(&undo_input, element) =
+						old.clone().unwrap_or_default();
 				}
 			},
 		),
@@ -136,8 +141,16 @@ pub fn set_value_at_time(
 		.map_err(|_| "parameter: incompatible POD value".to_string())?;
 	let command = {
 		let guard = lock(p);
-		quercus_node::ops::set_value_at_time_command(p, &guard.graph, node, input, element, time, &value)
-			.map_err(|e| e.to_string())?
+		quercus_node::ops::set_value_at_time_command(
+			p,
+			&guard.graph,
+			node,
+			input,
+			element,
+			time,
+			&value,
+		)
+		.map_err(|e| e.to_string())?
 	};
 	push(command, "Set Parameter at Time")
 }
@@ -169,7 +182,13 @@ pub fn push_button(p: &ProjectRef, node: NodeId, input: &str) -> Result<(), Stri
 
 /// Sets a string-carried static input while preserving its declared text subtype.
 /// Non-string inputs are rejected; undo restores the previous value verbatim.
-pub fn set_text_value(p: &ProjectRef, node: NodeId, input: &str, element: i32, value: &str) -> Result<(), String> {
+pub fn set_text_value(
+	p: &ProjectRef,
+	node: NodeId,
+	input: &str,
+	element: i32,
+	value: &str,
+) -> Result<(), String> {
 	let declared = input_type(p, node, input)?;
 	if !declared.is_string() {
 		return Err(format!("set parameter: \"{input}\" is not string-valued"));
@@ -198,7 +217,9 @@ pub fn set_text_value(p: &ProjectRef, node: NodeId, input: &str, element: i32, v
 			},
 			move || {
 				if let Some(entry) = lock(&undo_project).graph.get_mut(node) {
-					entry.core.set_standard_value(&undo_input, element, old.clone());
+					entry
+						.core
+						.set_standard_value(&undo_input, element, old.clone());
 				}
 			},
 		),

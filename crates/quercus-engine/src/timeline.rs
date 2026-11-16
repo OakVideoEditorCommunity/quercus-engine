@@ -126,7 +126,8 @@ pub unsafe extern "C" fn quercus_timeline_split_preserving_links(
 	}
 	let times = vec![point; refs.len()];
 	push(
-		quercus_timeline::undosplit::BlockSplitPreservingLinksCommand::new(refs, times).to_command(),
+		quercus_timeline::undosplit::BlockSplitPreservingLinksCommand::new(refs, times)
+			.to_command(),
 		"Split Clips",
 	)
 }
@@ -626,7 +627,9 @@ mod tests {
 
 			let block = crate::node::quercus_block_create_clip(project);
 			assert!(crate::node::quercus_node_id_is_valid(block));
-			assert!(crate::node::quercus_track_append_block(project, track, block));
+			assert!(crate::node::quercus_track_append_block(
+				project, track, block
+			));
 			assert!(crate::node::quercus_block_set_length(
 				project,
 				block,

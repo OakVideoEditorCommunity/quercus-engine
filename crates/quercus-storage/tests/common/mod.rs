@@ -33,7 +33,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use sea_orm::entity::prelude::*;
 use quercus_core::Rational;
 use quercus_node::block::ClipBlockBehavior;
 use quercus_node::footage::FootageBehavior;
@@ -51,6 +50,7 @@ use quercus_storage::error::QUERCUSSTORAGE_OK;
 use quercus_storage::handle::CHandle;
 use quercus_storage::nodeutil::{make_project_owned, project_arc};
 use quercus_storage::uri::StorageUri;
+use sea_orm::entity::prelude::*;
 
 // ---------------------------------------------------------------------------
 // URIs and paths
@@ -58,7 +58,8 @@ use quercus_storage::uri::StorageUri;
 
 /// A fresh, unique temp directory for one test.
 pub(crate) fn temp_dir(tag: &str) -> PathBuf {
-	let dir = std::env::temp_dir().join(format!("quercusstorage_db_{}_{}", std::process::id(), tag));
+	let dir =
+		std::env::temp_dir().join(format!("quercusstorage_db_{}_{}", std::process::id(), tag));
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(&dir).unwrap();
 	dir
@@ -117,7 +118,12 @@ pub(crate) fn load_project(backend: &DatabaseBackend, uri: &str) -> (String, Arc
 }
 
 /// Load the state at `seq` (undo to any point).
-pub(crate) fn load_at(backend: &DatabaseBackend, uri: &str, uuid: &str, seq: i64) -> Arc<Mutex<Project>> {
+pub(crate) fn load_at(
+	backend: &DatabaseBackend,
+	uri: &str,
+	uuid: &str,
+	seq: i64,
+) -> Arc<Mutex<Project>> {
 	let parsed = StorageUri::parse(uri).unwrap();
 	let handle = backend.load_at(&parsed, uuid, seq).unwrap();
 	let loaded = unsafe { project_arc(&handle) }.unwrap();
@@ -139,7 +145,10 @@ pub(crate) fn assert_close(a: f64, b: f64) {
 
 /// Open a raw sea-orm SQLite connection to `path` and drive one future
 /// against it on a private current-thread runtime.
-pub(crate) fn inspect_sqlite<R, Fut>(path: &Path, f: impl FnOnce(sea_orm::DatabaseConnection) -> Fut) -> R
+pub(crate) fn inspect_sqlite<R, Fut>(
+	path: &Path,
+	f: impl FnOnce(sea_orm::DatabaseConnection) -> Fut,
+) -> R
 where
 	Fut: std::future::Future<Output = R>,
 {
@@ -241,13 +250,17 @@ pub(crate) fn build_full_project() -> Arc<Mutex<Project>> {
 	let mut p = project.lock().unwrap();
 	p.initialize().unwrap();
 
-	let (core, behavior) = (quercus_node::factory::Factory::global().find(MATH).unwrap().create)();
+	let (core, behavior) = (quercus_node::factory::Factory::global()
+		.find(MATH)
+		.unwrap()
+		.create)();
 	let a = p.graph.add_node(core, behavior);
 	{
 		let e = p.graph.get_mut(a).unwrap();
 		e.core.label = "Math A".to_string();
 		e.core.override_color = 2;
-		e.core.set_standard_value("param_a_in", -1, NodeValue::Float(2.5));
+		e.core
+			.set_standard_value("param_a_in", -1, NodeValue::Float(2.5));
 		e.core
 			.keyframe_track_mut("param_a_in", -1)
 			.set_key(Keyframe {
@@ -267,7 +280,10 @@ pub(crate) fn build_full_project() -> Arc<Mutex<Project>> {
 				bezier_out: (0.3, 0.4),
 			});
 	}
-	let (core, behavior) = (quercus_node::factory::Factory::global().find(MATH).unwrap().create)();
+	let (core, behavior) = (quercus_node::factory::Factory::global()
+		.find(MATH)
+		.unwrap()
+		.create)();
 	let b = p.graph.add_node(core, behavior);
 	p.graph
 		.get_mut(b)
@@ -526,7 +542,8 @@ pub(crate) fn build_named_project(name: &str) -> Arc<Mutex<Project>> {
 	{
 		let mut p = project.lock().unwrap();
 		p.initialize().unwrap();
-		p.settings.insert("projectname".to_string(), name.to_string());
+		p.settings
+			.insert("projectname".to_string(), name.to_string());
 	}
 	project
 }

@@ -77,9 +77,7 @@ fn make_project() -> Arc<Mutex<Project>> {
 }
 
 /// The sequence and its video track list of `project`.
-fn sequence_and_list(
-	project: &Arc<Mutex<Project>>,
-) -> (NodeRef, NodeRef) {
+fn sequence_and_list(project: &Arc<Mutex<Project>>) -> (NodeRef, NodeRef) {
 	let p = project.lock().unwrap();
 	let mut seq = None;
 	let mut list = None;
@@ -167,16 +165,19 @@ fn add_transition(
 /// The block span of `block` (`None` for a stale node).
 fn span_of(block: &NodeRef) -> Option<(Rational, Rational)> {
 	let p = block.project.lock().unwrap();
-	p.graph.get(block.id).and_then(|e| e.behavior.as_any()).and_then(|a| {
-		[
-			a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
-			a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
-		]
-		.into_iter()
-		.flatten()
-		.next()
-		.map(|core| (core.in_(), core.out()))
-	})
+	p.graph
+		.get(block.id)
+		.and_then(|e| e.behavior.as_any())
+		.and_then(|a| {
+			[
+				a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
+				a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
+			]
+			.into_iter()
+			.flatten()
+			.next()
+			.map(|core| (core.in_(), core.out()))
+		})
 }
 
 /// `TimelineAddTrackCommand` redo appends a track to the list; undo removes
@@ -278,7 +279,11 @@ fn replace_block_with_gap_round_trip() {
 	assert!(block_track(&clip).is_none());
 	assert_eq!(track_block_at(&track, 1).unwrap().id, tail.id);
 	assert_eq!(block_in(&tail), Rational::new(100, 1));
-	assert_eq!(block_out(&tail), Rational::new(150, 1), "the clip after the gap is untouched");
+	assert_eq!(
+		block_out(&tail),
+		Rational::new(150, 1),
+		"the clip after the gap is untouched"
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
@@ -344,7 +349,10 @@ fn ripple_remove_area_round_trip() {
 	assert_eq!(track_block_count(&track), 2);
 	let first = track_block_at(&track, 0).unwrap();
 	assert_eq!(first.id, c1.id);
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(25, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
 	let second = track_block_at(&track, 1).unwrap();
 	assert_eq!(second.id, c3.id);
 	assert_eq!(
@@ -357,7 +365,10 @@ fn ripple_remove_area_round_trip() {
 	assert_eq!(track_block_at(&track, 0).unwrap().id, c1.id);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, c2.id);
 	assert_eq!(track_block_at(&track, 2).unwrap().id, c3.id);
-	assert_eq!(span_of(&c1), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&c1),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 	assert_eq!(
 		span_of(&c2),
 		Some((Rational::new(50, 1), Rational::new(100, 1)))
@@ -398,12 +409,7 @@ fn move_block_round_trip() {
 	let clip = add_clip(&track, Rational::new(0, 1), Rational::new(50, 1));
 	let tail = add_clip(&track, Rational::new(50, 1), Rational::new(100, 1));
 
-	let mut cmd = TrackMoveBlockCommand::new(
-		list,
-		0,
-		clip.clone(),
-		Rational::new(150, 1),
-	);
+	let mut cmd = TrackMoveBlockCommand::new(list, 0, clip.clone(), Rational::new(150, 1));
 	cmd.redo();
 	// Layout: a gap fills the clip's old spot [0,50), the tail stays at
 	// [50,100), a bridging gap covers [100,150) and the moved clip is
@@ -412,7 +418,10 @@ fn move_block_round_trip() {
 	assert_eq!(block_in(&clip), Rational::new(150, 1));
 	assert_eq!(block_length(&clip), Rational::new(50, 1));
 	let first = track_block_at(&track, 0).unwrap();
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, tail.id);
 	let third = track_block_at(&track, 2).unwrap();
 	assert_eq!(
@@ -425,8 +434,14 @@ fn move_block_round_trip() {
 	assert_eq!(track_block_count(&track), 2);
 	assert_eq!(track_block_at(&track, 0).unwrap().id, clip.id);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, tail.id);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&tail), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&tail),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// The `Command` trait dispatch (used by the quercusundo command values)
@@ -542,7 +557,10 @@ fn place_block_from_empty_space_overwrites_the_overlapped_clip() {
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&head), Some((Rational::new(0, 1), Rational::new(40, 1))));
+	assert_eq!(
+		span_of(&head),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
 	assert_eq!(
 		span_of(&tail),
 		Some((Rational::new(100, 1), Rational::new(200, 1)))
@@ -559,12 +577,11 @@ fn insert_gaps_round_trip() {
 	let track = TimelineAddTrackCommand::run_immediately(list.clone());
 	let clip = add_clip(&track, Rational::new(0, 1), Rational::new(100, 1));
 
-	let mut cmd =
-		quercus_timeline::undogeneral::TrackListInsertGaps::new(
-			list.clone(),
-			Rational::new(40, 1),
-			Rational::new(20, 1),
-		);
+	let mut cmd = quercus_timeline::undogeneral::TrackListInsertGaps::new(
+		list.clone(),
+		Rational::new(40, 1),
+		Rational::new(20, 1),
+	);
 	cmd.prepare();
 	cmd.redo();
 	// clip split to [0,40) + [40,100), gap [40,60) inserted after the
@@ -572,7 +589,10 @@ fn insert_gaps_round_trip() {
 	assert_eq!(track_block_count(&track), 3);
 	let first = track_block_at(&track, 0).unwrap();
 	assert_eq!(first.id, clip.id);
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(40, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
 	let gap = track_block_at(&track, 1).unwrap();
 	assert_eq!(
 		span_of(&gap),

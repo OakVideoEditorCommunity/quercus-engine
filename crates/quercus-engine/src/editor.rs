@@ -5,15 +5,23 @@
 //! In particular, consumers never recover the `Arc<Mutex<Project>>` that
 //! the engine and write-through backend share.
 
+use crate::editor_commands;
+use crate::storage;
+use quercus_core::Rational;
+use quercus_core::TimeRange;
+use quercus_storage::error;
+use quercus_storage::writethrough;
+use serde_json::Value;
 use std::collections::HashMap;
+use std::ptr;
 use std::sync::{Arc, Mutex};
+pub mod audio;
 pub mod auxiliary;
+pub mod multicam;
 pub mod notify;
 pub mod proxy;
-pub mod sync;
-pub mod multicam;
-pub mod audio;
 pub mod subtitles;
+pub mod sync;
 
 use quercus_core::handle::CHandle;
 use quercus_node::id::NodeId;
@@ -25,7 +33,7 @@ use quercus_timeline::marker::TimelineMarkerList;
 use quercus_timeline::workarea::TimelineWorkArea;
 
 use crate::codec::{copy_str_out, str_arg};
-use crate::node::{QUERCUS_NODE_ID_INVALID, ProjectHandle};
+use crate::node::{ProjectHandle, QUERCUS_NODE_ID_INVALID};
 
 /// Mutable runtime context owned by one [`EditorSessionHandle`].
 ///
@@ -47,7 +55,7 @@ pub(crate) struct SessionState {
 	pub(crate) markers: Arc<Mutex<TimelineMarkerList>>,
 	pub(crate) workarea: Arc<Mutex<TimelineWorkArea>>,
 	/// Owned clips captured by the most recent copy operation.
-	pub(crate) clipboard: Vec<crate::editor_commands::ClipboardClip>,
+	pub(crate) clipboard: Vec<editor_commands::ClipboardClip>,
 	/// Handle used to flush and detach write-through storage on unbind/session drop.
 	pub(crate) storage: Option<CHandle>,
 	/// Session-local edit callbacks cloned before notification.
@@ -86,7 +94,7 @@ impl SessionState {
 	/// before `EditorSessionHandle::drop`.
 	fn unbind(&mut self) {
 		if let Some(handle) = self.storage.take() {
-			quercus_storage::writethrough::unbind_project(handle);
+			writethrough::unbind_project(handle);
 			nodeutil::release_project(handle);
 		}
 	}
@@ -106,7 +114,7 @@ fn rational_from_json(value: &serde_json::Value) -> Option<quercus_core::Rationa
 	let array = value.as_array()?;
 	let num = array.first()?.as_i64()?;
 	let den = array.get(1)?.as_i64()?;
-	Some(quercus_core::Rational::new(num, den))
+	Some(Rational::new(num, den))
 }
 
 /// Write the session's markers/work area into the project's settings map so
@@ -133,7 +141,7 @@ fn sync_auxiliary_to_settings(session: &EditorSessionHandle) {
 				}));
 			}
 		}
-		serde_json::Value::Array(out).to_string()
+		Value::Array(out).to_string()
 	};
 	let workarea = {
 		let area = workarea.lock().unwrap_or_else(|e| e.into_inner());
@@ -146,7 +154,9 @@ fn sync_auxiliary_to_settings(session: &EditorSessionHandle) {
 	};
 	let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 	guard.settings.insert(MARKERS_SETTING.to_string(), markers);
-	guard.settings.insert(WORKAREA_SETTING.to_string(), workarea);
+	guard
+		.settings
+		.insert(WORKAREA_SETTING.to_string(), workarea);
 }
 
 /// Restores markers/work area from a project's settings after load.
@@ -176,7 +186,7 @@ fn restore_auxiliary_from_settings(session: &EditorSessionHandle) {
 		)
 	};
 	if let Some(text) = marker_json {
-		if let Ok(serde_json::Value::Array(items)) = serde_json::from_str(&text) {
+		if let Ok(Value::Array(items)) = serde_json::from_str(&text) {
 			let mut list = markers.lock().unwrap_or_else(|e| e.into_inner());
 			*list = TimelineMarkerList::new();
 			for item in items {
@@ -190,7 +200,7 @@ fn restore_auxiliary_from_settings(session: &EditorSessionHandle) {
 				let color = item.get("color").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 				list.add_marker(quercus_timeline::marker::TimelineMarker::with_time(
 					color,
-					quercus_core::TimeRange::new(in_, out),
+					TimeRange::new(in_, out),
 					name,
 				));
 			}
@@ -204,10 +214,13 @@ fn restore_auxiliary_from_settings(session: &EditorSessionHandle) {
 			) else {
 				return;
 			};
-			let enabled = value.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+			let enabled = value
+				.get("enabled")
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false);
 			let mut area = workarea.lock().unwrap_or_else(|e| e.into_inner());
 			area.set_enabled(enabled);
-			area.set_range(quercus_core::TimeRange::new(in_, out));
+			area.set_range(TimeRange::new(in_, out));
 		}
 	}
 }
@@ -237,7 +250,11 @@ impl Drop for EditorSessionHandle {
 	}
 }
 
-crate::export_handle!(EditorSessionHandle, quercus_editor_add_ref, quercus_editor_release);
+crate::export_handle!(
+	EditorSessionHandle,
+	quercus_editor_add_ref,
+	quercus_editor_release
+);
 
 /// Builds a new opaque session directly from a shared project Arc.
 ///
@@ -257,7 +274,7 @@ fn session_from_project_arc(project: Arc<Mutex<Project>>) -> *mut EditorSessionH
 /// editing target. A null project handle produces a null session handle.
 fn session_from_project_handle(project: *mut ProjectHandle) -> *mut EditorSessionHandle {
 	if project.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let inner = unsafe { &*project }.project().clone();
 	unsafe { crate::node::quercus_project_release(project) };
@@ -303,7 +320,7 @@ pub unsafe extern "C" fn quercus_editor_from_project_handle(
 	project: *mut ProjectHandle,
 ) -> *mut EditorSessionHandle {
 	if project.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	session_from_project_handle(project)
 }
@@ -318,7 +335,7 @@ pub extern "C" fn quercus_editor_new() -> *mut EditorSessionHandle {
 		.initialize()
 		.is_err()
 	{
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	session_from_project_arc(project)
 }
@@ -355,7 +372,7 @@ pub unsafe extern "C" fn quercus_editor_open(
 	uri_len: usize,
 	version_info: *mut i32,
 ) -> *mut EditorSessionHandle {
-	let project = unsafe { crate::storage::quercus_storage_open(uri, uri_len, version_info) };
+	let project = unsafe { storage::quercus_storage_open(uri, uri_len, version_info) };
 	let session = session_from_project_handle(project);
 	if !session.is_null() {
 		if let Some(path) = unsafe { str_arg(uri, uri_len) } {
@@ -377,14 +394,14 @@ pub unsafe extern "C" fn quercus_editor_open(
 /// outcome (no project) reports `E_INVALID`.
 fn open_library_row_uri(uri: &StorageUri, error: *mut i32) -> *mut EditorSessionHandle {
 	let text = uri.to_uri_string();
-	let project = unsafe { crate::storage::quercus_storage_open(text.as_ptr(), text.len(), error) };
+	let project = unsafe { storage::quercus_storage_open(text.as_ptr(), text.len(), error) };
 	if project.is_null() {
 		// A positive version-info code (too old/new/unknown) still means
 		// there is no project to open.
 		if !error.is_null() && unsafe { *error } >= 0 {
-			unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+			unsafe { *error = error::QUERCUSSTORAGE_E_INVALID };
 		}
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	{
 		let inner = unsafe { &*project }.project().clone();
@@ -394,7 +411,7 @@ fn open_library_row_uri(uri: &StorageUri, error: *mut i32) -> *mut EditorSession
 			.set_modified(false);
 	}
 	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_OK };
+		unsafe { *error = error::QUERCUSSTORAGE_OK };
 	}
 	session_from_project_handle(project)
 }
@@ -421,21 +438,21 @@ pub unsafe extern "C" fn quercus_editor_open_project_from_library(
 	error: *mut i32,
 ) -> *mut EditorSessionHandle {
 	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+		unsafe { *error = error::QUERCUSSTORAGE_E_INVALID };
 	}
 	let Some(uuid) = (unsafe { str_arg(uuid, uuid_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	if uuid.is_empty() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
-	let uri = match crate::storage::project_uri(uuid) {
+	let uri = match storage::project_uri(uuid) {
 		Ok(uri) => uri,
 		Err(code) => {
 			if !error.is_null() {
 				unsafe { *error = code };
 			}
-			return std::ptr::null_mut();
+			return ptr::null_mut();
 		}
 	};
 	open_library_row_uri(&uri, error)
@@ -470,22 +487,23 @@ pub unsafe extern "C" fn quercus_editor_open_project_from_library_uri(
 	error: *mut i32,
 ) -> *mut EditorSessionHandle {
 	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+		unsafe { *error = error::QUERCUSSTORAGE_E_INVALID };
 	}
-	let (Some(library_uri), Some(uuid)) = (
-		unsafe { str_arg(library_uri, library_uri_len) },
-		unsafe { str_arg(uuid, uuid_len) },
-	) else {
-		return std::ptr::null_mut();
+	let (Some(library_uri), Some(uuid)) =
+		(unsafe { str_arg(library_uri, library_uri_len) }, unsafe {
+			str_arg(uuid, uuid_len)
+		})
+	else {
+		return ptr::null_mut();
 	};
 	if uuid.is_empty() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let Ok(base) = StorageUri::parse(library_uri) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
-	let Ok(row) = crate::storage::library_row_uri(&base, uuid) else {
-		return std::ptr::null_mut();
+	let Ok(row) = storage::library_row_uri(&base, uuid) else {
+		return ptr::null_mut();
 	};
 	open_library_row_uri(&row, error)
 }
@@ -507,13 +525,13 @@ pub unsafe extern "C" fn quercus_editor_adopt_storage_project_handle(
 	project: quercus_core::handle::CHandle,
 ) -> *mut EditorSessionHandle {
 	if project.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let project = match unsafe { nodeutil::project_arc(&project) } {
 		Ok(project) => project,
 		Err(_) => {
 			nodeutil::release_project(project);
-			return std::ptr::null_mut();
+			return ptr::null_mut();
 		}
 	};
 	session_from_project_handle(ProjectHandle::from_arc(project))
@@ -550,56 +568,55 @@ pub unsafe extern "C" fn quercus_editor_create_library(
 	error: *mut i32,
 ) -> *mut EditorSessionHandle {
 	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_E_INVALID };
+		unsafe { *error = error::QUERCUSSTORAGE_E_INVALID };
 	}
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	if name.trim().is_empty() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
-	let uri = match crate::storage::default_library() {
+	let uri = match storage::default_library() {
 		Ok(uri) => uri,
 		Err(code) => {
 			if !error.is_null() {
 				unsafe { *error = code };
 			}
-			return std::ptr::null_mut();
+			return ptr::null_mut();
 		}
 	};
 	let project = Project::new();
 	let uuid = {
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 		if guard.initialize().is_err() {
-			return std::ptr::null_mut();
+			return ptr::null_mut();
 		}
 		guard
 			.settings
 			.insert("projectname".into(), name.trim().into());
 		guard.uuid.clone()
 	};
-	let row = match crate::storage::library_row_uri(&uri, &uuid) {
+	let row = match storage::library_row_uri(&uri, &uuid) {
 		Ok(row) => row,
 		Err(code) => {
 			if !error.is_null() {
 				unsafe { *error = code };
 			}
-			return std::ptr::null_mut();
+			return ptr::null_mut();
 		}
 	};
 	let text = row.to_uri_string();
 	let handle = ProjectHandle::from_arc(project.clone());
-	let saved =
-		unsafe { crate::storage::quercus_storage_save(handle, text.as_ptr(), text.len(), 0) };
+	let saved = unsafe { storage::quercus_storage_save(handle, text.as_ptr(), text.len(), 0) };
 	unsafe { crate::node::quercus_project_release(handle) };
-	if saved != quercus_storage::error::QUERCUSSTORAGE_OK {
+	if saved != error::QUERCUSSTORAGE_OK {
 		if !error.is_null() {
 			unsafe { *error = saved };
 		}
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	if !error.is_null() {
-		unsafe { *error = quercus_storage::error::QUERCUSSTORAGE_OK };
+		unsafe { *error = error::QUERCUSSTORAGE_OK };
 	}
 	session_from_project_arc(project)
 }
@@ -623,7 +640,7 @@ pub unsafe extern "C" fn quercus_editor_project(
 	session: *const EditorSessionHandle,
 ) -> *mut ProjectHandle {
 	if session.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	ProjectHandle::from_arc(unsafe { &*session }.project())
 }
@@ -661,19 +678,19 @@ pub unsafe extern "C" fn quercus_editor_save(
 	options: u32,
 ) -> i32 {
 	if session.is_null() {
-		return quercus_storage::error::QUERCUSSTORAGE_E_INVALID;
+		return error::QUERCUSSTORAGE_E_INVALID;
 	}
 	let Some(path) = (unsafe { str_arg(path, path_len) }) else {
-		return quercus_storage::error::QUERCUSSTORAGE_E_INVALID;
+		return error::QUERCUSSTORAGE_E_INVALID;
 	};
 	// Markers/work area live in the session, not the node graph; stash them
 	// in the project settings so the storage serializer writes them.
 	sync_auxiliary_to_settings(unsafe { &*session });
 	let project = unsafe { quercus_editor_project(session) };
 	let code =
-		unsafe { crate::storage::quercus_storage_save(project, path.as_ptr(), path.len(), options) };
+		unsafe { storage::quercus_storage_save(project, path.as_ptr(), path.len(), options) };
 	unsafe { crate::node::quercus_project_release(project) };
-	if code == quercus_storage::error::QUERCUSSTORAGE_OK {
+	if code == error::QUERCUSSTORAGE_OK {
 		let project = unsafe { &*session }.project();
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 		guard.set_filename(path);
@@ -716,8 +733,8 @@ pub unsafe extern "C" fn quercus_editor_bind_project_to_library(
 		return true;
 	}
 	let handle = nodeutil::make_project_owned(project);
-	quercus_storage::writethrough::bind_project(handle);
-	let bound = quercus_storage::writethrough::is_bound(handle);
+	writethrough::bind_project(handle);
+	let bound = writethrough::is_bound(handle);
 	let mut state = unsafe { &*session }
 		.inner
 		.lock()
@@ -749,7 +766,7 @@ pub unsafe extern "C" fn quercus_editor_storage_bound(session: *const EditorSess
 		.unwrap_or_else(|e| e.into_inner());
 	state
 		.storage
-		.is_some_and(|handle| quercus_storage::writethrough::is_bound(handle))
+		.is_some_and(|handle| writethrough::is_bound(handle))
 }
 
 /// Flushes pending writes and closes the write-through library binding.
@@ -809,10 +826,7 @@ pub unsafe extern "C" fn quercus_editor_storage_last_error(
 		.inner
 		.lock()
 		.unwrap_or_else(|e| e.into_inner());
-	match state
-		.storage
-		.and_then(quercus_storage::writethrough::last_error)
-	{
+	match state.storage.and_then(writethrough::last_error) {
 		Some(error) => copy_str_out(&error, buf, buf_len),
 		None => -1,
 	}
@@ -885,7 +899,9 @@ pub unsafe extern "C" fn quercus_editor_set_current_sequence(
 /// `session` must be null or a live handle from this ABI; it is dereferenced
 /// for the duration of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_editor_current_sequence(session: *const EditorSessionHandle) -> u64 {
+pub unsafe extern "C" fn quercus_editor_current_sequence(
+	session: *const EditorSessionHandle,
+) -> u64 {
 	if session.is_null() {
 		return QUERCUS_NODE_ID_INVALID;
 	}
@@ -979,7 +995,7 @@ pub unsafe extern "C" fn quercus_editor_set_clip_pan(
 	let Some((project, clip)) = (unsafe { editor_audio_clip(session, clip) }) else {
 		return false;
 	};
-	crate::editor_commands::set_clip_pan(&project, clip, pan).is_ok()
+	editor_commands::set_clip_pan(&project, clip, pan).is_ok()
 }
 
 /// Sets a clip's linear fade-in/fade-out durations as one undo entry.
@@ -1017,9 +1033,9 @@ pub unsafe extern "C" fn quercus_editor_set_clip_fade(
 	let Some((project, clip)) = (unsafe { editor_audio_clip(session, clip) }) else {
 		return false;
 	};
-	let fade_in = quercus_core::Rational::new(fade_in_num, fade_in_den);
-	let fade_out = quercus_core::Rational::new(fade_out_num, fade_out_den);
-	crate::editor_commands::set_clip_fade(&project, clip, fade_in, fade_out).is_ok()
+	let fade_in = Rational::new(fade_in_num, fade_in_den);
+	let fade_out = Rational::new(fade_out_num, fade_out_den);
+	editor_commands::set_clip_fade(&project, clip, fade_in, fade_out).is_ok()
 }
 
 /// Attaches an audio effect (`type_id`) to a clip's audio chain at
@@ -1058,7 +1074,7 @@ pub unsafe extern "C" fn quercus_editor_add_clip_audio_effect(
 	let Ok(index) = usize::try_from(index) else {
 		return false;
 	};
-	crate::editor_commands::add_clip_audio_effect(&project, clip, type_id, index).is_ok()
+	editor_commands::add_clip_audio_effect(&project, clip, type_id, index).is_ok()
 }
 
 /// Removes one entry of a clip's audio effect chain as one undo entry.
@@ -1089,7 +1105,7 @@ pub unsafe extern "C" fn quercus_editor_remove_clip_audio_effect(
 	let Ok(index) = usize::try_from(index) else {
 		return false;
 	};
-	crate::editor_commands::remove_clip_audio_effect(&project, clip, index).is_ok()
+	editor_commands::remove_clip_audio_effect(&project, clip, index).is_ok()
 }
 
 /// Enables or disables one entry of a clip's audio effect chain.
@@ -1122,7 +1138,7 @@ pub unsafe extern "C" fn quercus_editor_set_clip_audio_effect_enabled(
 	let Ok(index) = usize::try_from(index) else {
 		return false;
 	};
-	crate::editor_commands::set_clip_audio_effect_enabled(&project, clip, index, enabled).is_ok()
+	editor_commands::set_clip_audio_effect_enabled(&project, clip, index, enabled).is_ok()
 }
 
 /// Sets one static float parameter of one entry in a clip's audio effect
@@ -1163,10 +1179,7 @@ pub unsafe extern "C" fn quercus_editor_set_clip_audio_effect_param(
 	let Ok(index) = usize::try_from(index) else {
 		return false;
 	};
-	crate::editor_commands::set_clip_audio_effect_param(
-		&project, clip, index, input_id, value,
-	)
-	.is_ok()
+	editor_commands::set_clip_audio_effect_param(&project, clip, index, input_id, value).is_ok()
 }
 
 #[cfg(test)]
@@ -1192,13 +1205,21 @@ mod tests {
 			assert_eq!(marker.time.in_.num, 1);
 			assert_eq!(marker.time.out.num, 2);
 			let mut name_buf = [0u8; 16];
-			let name_len =
-				auxiliary::quercus_editor_marker_name_at(session, 0, name_buf.as_mut_ptr(), name_buf.len());
+			let name_len = auxiliary::quercus_editor_marker_name_at(
+				session,
+				0,
+				name_buf.as_mut_ptr(),
+				name_buf.len(),
+			);
 			assert_eq!(
 				std::str::from_utf8(&name_buf[..name_len as usize]).unwrap(),
 				"Marker"
 			);
-			assert!(!auxiliary::quercus_editor_marker_at(session, 99, &mut marker));
+			assert!(!auxiliary::quercus_editor_marker_at(
+				session,
+				99,
+				&mut marker
+			));
 			assert_eq!(
 				auxiliary::quercus_editor_marker_name_at(session, 99, name_buf.as_mut_ptr(), 16),
 				-1
@@ -1291,5 +1312,4 @@ mod tests {
 			let _ = std::fs::remove_file(&path);
 		}
 	}
-
 }

@@ -30,9 +30,10 @@
 //! timestamp and time base alongside the raw pixel rows, so a buffer can be
 //! turned back into an equivalent [`Frame`] without any external state.
 
+use crate::error;
+use crate::frame::Frame;
 use quercus_core::ocioutils::PixelFormat as QuercusPixelFormat;
 use quercus_core::videoparams::VideoParams;
-use crate::frame::Frame;
 use quercus_core::Rational;
 use std::ffi::c_int;
 
@@ -105,16 +106,16 @@ impl OiioBufferHeader {
 	/// Parse a header from the start of `bytes`, validating the magic and
 	/// version and requiring at least `HEADER_LEN` bytes. Returns the decoded
 	/// header and the number of bytes consumed (`HEADER_LEN`).
-	fn from_bytes(bytes: &[u8]) -> crate::error::Result<(Self, usize)> {
+	fn from_bytes(bytes: &[u8]) -> error::Result<(Self, usize)> {
 		if bytes.len() < HEADER_LEN {
-			return Err(crate::error::Error::Invalid);
+			return Err(error::Error::Invalid);
 		}
 		if &bytes[0..4] != MAGIC {
-			return Err(crate::error::Error::Invalid);
+			return Err(error::Error::Invalid);
 		}
 		let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
 		if version != VERSION {
-			return Err(crate::error::Error::Invalid);
+			return Err(error::Error::Invalid);
 		}
 		let header = OiioBufferHeader {
 			version,
@@ -142,8 +143,8 @@ impl OiioBufferHeader {
 /// rows (see the header docs for the exact layout). The frame must already be
 /// allocated ([`Frame::allocate`]); otherwise this returns
 /// [`crate::error::Error::State`].
-pub fn oiio_frame_to_buffer(frame: &Frame) -> crate::error::Result<Vec<u8>> {
-	let data = frame.data().ok_or(crate::error::Error::State)?;
+pub fn oiio_frame_to_buffer(frame: &Frame) -> error::Result<Vec<u8>> {
+	let data = frame.data().ok_or(error::Error::State)?;
 	let width = frame.width();
 	let height = frame.height();
 	let format = frame.format() as i32;
@@ -189,21 +190,21 @@ pub fn oiio_frame_to_buffer(frame: &Frame) -> crate::error::Result<Vec<u8>> {
 /// [`crate::error::Error::Invalid`] when the magic/version is wrong, the
 /// header is truncated, or `pixel_len` is inconsistent with the declared
 /// `linesize_bytes * height` / the bytes actually present.
-pub fn oiio_buffer_to_frame(buffer: &[u8]) -> crate::error::Result<Frame> {
+pub fn oiio_buffer_to_frame(buffer: &[u8]) -> error::Result<Frame> {
 	let (header, consumed) = OiioBufferHeader::from_bytes(buffer)?;
 	let pixels = &buffer[consumed..];
 
 	// `pixel_len` must be consistent with the header geometry and the bytes
 	// actually present (checked, so a corrupt header can't panic later).
 	if header.linesize_bytes < 0 || header.height < 0 {
-		return Err(crate::error::Error::Invalid);
+		return Err(error::Error::Invalid);
 	}
 	let expected = (header.linesize_bytes as u64).checked_mul(header.height as u64);
 	if expected != Some(header.pixel_len) {
-		return Err(crate::error::Error::Invalid);
+		return Err(error::Error::Invalid);
 	}
 	if pixels.len() != header.pixel_len as usize {
-		return Err(crate::error::Error::Invalid);
+		return Err(error::Error::Invalid);
 	}
 
 	// Build the params from the header, then hand ownership to the frame.
@@ -232,7 +233,7 @@ pub fn oiio_buffer_to_frame(buffer: &[u8]) -> crate::error::Result<Frame> {
 		// Reconstructed params should produce exactly `pixel_len` bytes; if
 		// the geometry in the header disagreed with the format's line size,
 		// refuse rather than copy a mismatched slice.
-		_ => Err(crate::error::Error::Invalid),
+		_ => Err(error::Error::Invalid),
 	}
 }
 

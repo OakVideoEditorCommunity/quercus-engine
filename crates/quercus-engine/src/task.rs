@@ -13,9 +13,21 @@
 //! The app-side TaskManager (the task panel's job list) is host
 //! infrastructure and intentionally not exported.
 
+use crate::audio_analysis;
+use crate::preview_audio;
+use crate::preview_video;
+use crate::render;
+use crate::thumbnail;
+use quercus_codec::proxymanager;
+use quercus_core::cancelatom;
+use quercus_task::error;
+use quercus_task::proxy;
 use std::collections::{HashMap, VecDeque};
+use std::env;
+use std::ptr;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread;
 
 use quercus_node::id::NodeId;
 use quercus_task::export::{EncodingParams, ExportTask};
@@ -122,20 +134,20 @@ struct TaskEntry {
 	progress: AtomicU64,
 	state: AtomicI32,
 	error: Mutex<Option<String>>,
-	cancel: Arc<quercus_core::cancelatom::CancelAtom>,
+	cancel: Arc<cancelatom::CancelAtom>,
 	/// Signals `wait`/`release` when the worker has published the final state.
 	done: Condvar,
 	done_mutex: Mutex<()>,
 	/// A load task's produced-project slot (shared with the behavior).
 	project_slot: Option<Arc<Mutex<Option<Arc<Mutex<quercus_node::project::Project>>>>>>,
 	/// Successful waveform extraction result, transferred once to the caller.
-	waveform_slot: Option<Arc<Mutex<Option<crate::audio_analysis::WaveformData>>>>,
+	waveform_slot: Option<Arc<Mutex<Option<audio_analysis::WaveformData>>>>,
 	/// Successful thumbnail render result, transferred once to the caller.
-	thumbnail_slot: Option<Arc<Mutex<Option<crate::thumbnail::ThumbnailData>>>>,
+	thumbnail_slot: Option<Arc<Mutex<Option<thumbnail::ThumbnailData>>>>,
 	/// Successful audio mix result, transferred once to the caller.
-	audio_slot: Option<Arc<Mutex<Option<crate::preview_audio::AudioBufferData>>>>,
+	audio_slot: Option<Arc<Mutex<Option<preview_audio::AudioBufferData>>>>,
 	/// Successful video render result, transferred once to the caller.
-	video_slot: Option<Arc<Mutex<Option<crate::preview_video::VideoBufferData>>>>,
+	video_slot: Option<Arc<Mutex<Option<preview_video::VideoBufferData>>>>,
 }
 
 static TASKS: OnceLock<Mutex<HashMap<u64, Arc<TaskEntry>>>> = OnceLock::new();
@@ -167,10 +179,10 @@ fn spawn_task(
 	title: String,
 	behavior: Box<dyn TaskBehavior + Send>,
 	project_slot: Option<Arc<Mutex<Option<Arc<Mutex<quercus_node::project::Project>>>>>>,
-	waveform_slot: Option<Arc<Mutex<Option<crate::audio_analysis::WaveformData>>>>,
-	thumbnail_slot: Option<Arc<Mutex<Option<crate::thumbnail::ThumbnailData>>>>,
-	audio_slot: Option<Arc<Mutex<Option<crate::preview_audio::AudioBufferData>>>>,
-	video_slot: Option<Arc<Mutex<Option<crate::preview_video::VideoBufferData>>>>,
+	waveform_slot: Option<Arc<Mutex<Option<audio_analysis::WaveformData>>>>,
+	thumbnail_slot: Option<Arc<Mutex<Option<thumbnail::ThumbnailData>>>>,
+	audio_slot: Option<Arc<Mutex<Option<preview_audio::AudioBufferData>>>>,
+	video_slot: Option<Arc<Mutex<Option<preview_video::VideoBufferData>>>>,
 ) -> u64 {
 	let foreground = video_slot.is_some() || audio_slot.is_some();
 	let mut task = Task::new(&title, None);
@@ -204,15 +216,20 @@ fn spawn_task(
 		// also lets the preview window withdraw frames before the pool
 		// reaches them.
 		if worker_entry.cancel.is_cancelled() {
-			let _done = worker_entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
-			worker_entry.state.store(QUERCUS_TASK_CANCELLED, Ordering::SeqCst);
+			let _done = worker_entry
+				.done_mutex
+				.lock()
+				.unwrap_or_else(|e| e.into_inner());
+			worker_entry
+				.state
+				.store(QUERCUS_TASK_CANCELLED, Ordering::SeqCst);
 			worker_entry.done.notify_all();
 			return;
 		}
 		let result = task.start();
 		let state = match &result {
 			Ok(()) => QUERCUS_TASK_SUCCEEDED,
-			Err(quercus_task::error::Error::Cancelled) => QUERCUS_TASK_CANCELLED,
+			Err(error::Error::Cancelled) => QUERCUS_TASK_CANCELLED,
 			Err(_) => QUERCUS_TASK_FAILED,
 		};
 		if let Err(e) = &result {
@@ -221,7 +238,10 @@ fn spawn_task(
 		// Publish the terminal state under the same mutex `wait_for_task`
 		// holds while checking it; otherwise a notify between the state load
 		// and the condvar wait would be lost and the waiter would hang.
-		let _done = worker_entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
+		let _done = worker_entry
+			.done_mutex
+			.lock()
+			.unwrap_or_else(|e| e.into_inner());
 		worker_entry.state.store(state, Ordering::SeqCst);
 		worker_entry.done.notify_all();
 	});
@@ -266,7 +286,9 @@ impl TaskPool {
 			&self.background
 		};
 		let (lock, cv) = &**queue;
-		lock.lock().unwrap_or_else(|e| e.into_inner()).push_back(job);
+		lock.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.push_back(job);
 		cv.notify_one();
 	}
 }
@@ -282,7 +304,7 @@ static TASK_POOL: OnceLock<TaskPool> = OnceLock::new();
 /// initialized once, so later environment changes have no effect.
 fn task_pool() -> &'static TaskPool {
 	TASK_POOL.get_or_init(|| {
-		let workers = std::env::var("QUERCUS_TASK_THREADS")
+		let workers = env::var("QUERCUS_TASK_THREADS")
 			.ok()
 			.and_then(|v| v.parse::<usize>().ok())
 			.filter(|n| *n > 0)
@@ -291,37 +313,41 @@ fn task_pool() -> &'static TaskPool {
 		let foreground = Arc::new((Mutex::new(VecDeque::<Job>::new()), Condvar::new()));
 		for index in 0..workers {
 			let queue = queue.clone();
-			let _ = std::thread::Builder::new()
+			let _ = thread::Builder::new()
 				.name(format!("quercus-task-{index}"))
-				.spawn(move || loop {
-					let job = {
-						let (lock, cv) = &*queue;
-						let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-						while guard.is_empty() {
-							guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+				.spawn(move || {
+					loop {
+						let job = {
+							let (lock, cv) = &*queue;
+							let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+							while guard.is_empty() {
+								guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+							}
+							guard.pop_front()
+						};
+						if let Some(job) = job {
+							job();
 						}
-						guard.pop_front()
-					};
-					if let Some(job) = job {
-						job();
 					}
 				});
 		}
 		for index in 0..2 {
 			let queue = foreground.clone();
-			let _ = std::thread::Builder::new()
+			let _ = thread::Builder::new()
 				.name(format!("quercus-foreground-{index}"))
-				.spawn(move || loop {
-					let job = {
-						let (lock, cv) = &*queue;
-						let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-						while guard.is_empty() {
-							guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+				.spawn(move || {
+					loop {
+						let job = {
+							let (lock, cv) = &*queue;
+							let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+							while guard.is_empty() {
+								guard = cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+							}
+							guard.pop_front()
+						};
+						if let Some(job) = job {
+							job();
 						}
-						guard.pop_front()
-					};
-					if let Some(job) = job {
-						job();
 					}
 				});
 		}
@@ -335,10 +361,7 @@ fn task_pool() -> &'static TaskPool {
 fn wait_for_task(entry: &TaskEntry) {
 	let mut guard = entry.done_mutex.lock().unwrap_or_else(|e| e.into_inner());
 	while entry.state.load(Ordering::SeqCst) == QUERCUS_TASK_RUNNING {
-		guard = entry
-			.done
-			.wait(guard)
-			.unwrap_or_else(|e| e.into_inner());
+		guard = entry.done.wait(guard).unwrap_or_else(|e| e.into_inner());
 	}
 }
 
@@ -352,7 +375,7 @@ pub(crate) fn spawn_proxy(
 	source_filename: &str,
 	output_filename: &str,
 	stream_index: i32,
-	params: &quercus_codec::proxymanager::ProxyParams,
+	params: &proxymanager::ProxyParams,
 ) -> u64 {
 	fn text(field: &[u8]) -> String {
 		let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
@@ -374,7 +397,7 @@ pub(crate) fn spawn_proxy(
 		proxy_width,
 		proxy_height,
 	};
-	let task_params = quercus_task::proxy::ProxyParams {
+	let task_params = proxy::ProxyParams {
 		width: params.width,
 		height: params.height,
 		divider: params.divider,
@@ -386,7 +409,7 @@ pub(crate) fn spawn_proxy(
 	};
 	spawn_task(
 		format!("Generating Proxy {source_filename}"),
-		Box::new(quercus_task::proxy::ProxyTask::new(&request, task_params)),
+		Box::new(proxy::ProxyTask::new(&request, task_params)),
 		None,
 		None,
 		None,
@@ -403,16 +426,16 @@ struct VideoRenderBehavior {
 	time: quercus_core::Rational,
 	width: i32,
 	height: i32,
-	pixel_format: crate::preview_video::VideoPixelFormat,
-	slot: Arc<Mutex<Option<crate::preview_video::VideoBufferData>>>,
+	pixel_format: preview_video::VideoPixelFormat,
+	slot: Arc<Mutex<Option<preview_video::VideoBufferData>>>,
 }
 
 impl TaskBehavior for VideoRenderBehavior {
-	fn run(&mut self, task: &mut Task) -> quercus_task::error::Result<()> {
+	fn run(&mut self, task: &mut Task) -> error::Result<()> {
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
-		let frame = crate::preview_video::render_video(
+		let frame = preview_video::render_video(
 			self.project.clone(),
 			self.viewer,
 			self.track,
@@ -422,9 +445,9 @@ impl TaskBehavior for VideoRenderBehavior {
 			self.height,
 			self.pixel_format,
 		)
-		.map_err(quercus_task::error::Error::Failed)?;
+		.map_err(error::Error::Failed)?;
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
 		*self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame);
 		Ok(())
@@ -437,24 +460,24 @@ struct AudioRenderBehavior {
 	range: quercus_core::TimeRange,
 	sample_rate: i32,
 	channel_layout: u64,
-	slot: Arc<Mutex<Option<crate::preview_audio::AudioBufferData>>>,
+	slot: Arc<Mutex<Option<preview_audio::AudioBufferData>>>,
 }
 
 impl TaskBehavior for AudioRenderBehavior {
-	fn run(&mut self, task: &mut Task) -> quercus_task::error::Result<()> {
+	fn run(&mut self, task: &mut Task) -> error::Result<()> {
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
-		let audio = crate::preview_audio::render_audio(
+		let audio = preview_audio::render_audio(
 			self.project.clone(),
 			self.viewer,
 			self.range,
 			self.sample_rate,
 			self.channel_layout,
 		)
-		.map_err(quercus_task::error::Error::Failed)?;
+		.map_err(error::Error::Failed)?;
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
 		*self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(audio);
 		Ok(())
@@ -467,31 +490,30 @@ struct ThumbnailRenderBehavior {
 	time: quercus_core::Rational,
 	width: i32,
 	height: i32,
-	slot: Arc<Mutex<Option<crate::thumbnail::ThumbnailData>>>,
+	slot: Arc<Mutex<Option<thumbnail::ThumbnailData>>>,
 }
 
 impl TaskBehavior for ThumbnailRenderBehavior {
-	fn run(&mut self, task: &mut Task) -> quercus_task::error::Result<()> {
+	fn run(&mut self, task: &mut Task) -> error::Result<()> {
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
-		let pixels = crate::render::render_frame_f32_data(
+		let pixels = render::render_frame_f32_data(
 			self.project.clone(),
 			self.viewer,
 			self.time,
 			self.width,
 			self.height,
 		)
-		.map_err(quercus_task::error::Error::Failed)?;
+		.map_err(error::Error::Failed)?;
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
-		*self.slot.lock().unwrap_or_else(|e| e.into_inner()) =
-			Some(crate::thumbnail::ThumbnailData {
-				width: self.width,
-				height: self.height,
-				pixels,
-			});
+		*self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(thumbnail::ThumbnailData {
+			width: self.width,
+			height: self.height,
+			pixels,
+		});
 		Ok(())
 	}
 }
@@ -500,22 +522,22 @@ struct WaveformExtractBehavior {
 	filename: String,
 	stream_index: i32,
 	samples_per_point: i32,
-	slot: Arc<Mutex<Option<crate::audio_analysis::WaveformData>>>,
+	slot: Arc<Mutex<Option<audio_analysis::WaveformData>>>,
 }
 
 impl TaskBehavior for WaveformExtractBehavior {
-	fn run(&mut self, task: &mut Task) -> quercus_task::error::Result<()> {
+	fn run(&mut self, task: &mut Task) -> error::Result<()> {
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
-		let waveform = crate::audio_analysis::extract_waveform(
+		let waveform = audio_analysis::extract_waveform(
 			&self.filename,
 			self.stream_index,
 			self.samples_per_point,
 		)
-		.map_err(quercus_task::error::Error::Failed)?;
+		.map_err(error::Error::Failed)?;
 		if task.is_cancelled() {
-			return Err(quercus_task::error::Error::Cancelled);
+			return Err(error::Error::Cancelled);
 		}
 		*self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(waveform);
 		Ok(())
@@ -629,7 +651,7 @@ pub(crate) fn spawn_video_render(
 	time: quercus_core::Rational,
 	width: i32,
 	height: i32,
-	pixel_format: crate::preview_video::VideoPixelFormat,
+	pixel_format: preview_video::VideoPixelFormat,
 ) -> u64 {
 	if width <= 0 || height <= 0 {
 		return 0;
@@ -660,7 +682,7 @@ pub(crate) fn spawn_video_render(
 /// Returns the configured upper bound for simultaneous proxy workers.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_task_proxy_max_concurrent() -> i32 {
-	quercus_task::proxy::ProxyTask::proxy_max_concurrent()
+	proxy::ProxyTask::proxy_max_concurrent()
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +787,7 @@ struct LoadBehavior {
 }
 
 impl TaskBehavior for LoadBehavior {
-	fn run(&mut self, task: &mut Task) -> quercus_task::error::Result<()> {
+	fn run(&mut self, task: &mut Task) -> error::Result<()> {
 		let result = self.inner.run(task);
 		if result.is_ok() {
 			*self.slot.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -874,7 +896,8 @@ pub unsafe extern "C" fn quercus_task_thumbnail_render(
 	width: i32,
 	height: i32,
 ) -> u64 {
-	let (Some(project), Some(viewer)) = (unsafe { project.as_ref() }, NodeId::from_identity(viewer))
+	let (Some(project), Some(viewer)) =
+		(unsafe { project.as_ref() }, NodeId::from_identity(viewer))
 	else {
 		return 0;
 	};
@@ -951,8 +974,8 @@ pub unsafe extern "C" fn quercus_task_video_render(
 		return 0;
 	};
 	let pixel_format = match pixel_format {
-		1 => crate::preview_video::VideoPixelFormat::Bgra8,
-		_ => crate::preview_video::VideoPixelFormat::F32Rgba,
+		1 => preview_video::VideoPixelFormat::Bgra8,
+		_ => preview_video::VideoPixelFormat::F32Rgba,
 	};
 	spawn_video_render(
 		project.project().clone(),
@@ -998,8 +1021,8 @@ pub unsafe extern "C" fn quercus_task_video_render_playback(
 		return 0;
 	};
 	let pixel_format = match pixel_format {
-		1 => crate::preview_video::VideoPixelFormat::Bgra8,
-		_ => crate::preview_video::VideoPixelFormat::F32Rgba,
+		1 => preview_video::VideoPixelFormat::Bgra8,
+		_ => preview_video::VideoPixelFormat::F32Rgba,
 	};
 	spawn_video_render(
 		project.project().clone(),
@@ -1045,8 +1068,8 @@ pub unsafe extern "C" fn quercus_task_video_render_track(
 		return 0;
 	};
 	let pixel_format = match pixel_format {
-		1 => crate::preview_video::VideoPixelFormat::Bgra8,
-		_ => crate::preview_video::VideoPixelFormat::F32Rgba,
+		1 => preview_video::VideoPixelFormat::Bgra8,
+		_ => preview_video::VideoPixelFormat::F32Rgba,
 	};
 	spawn_video_render(
 		project.project().clone(),
@@ -1172,17 +1195,17 @@ pub extern "C" fn quercus_task_release(id: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_task_take_project(id: u64) -> *mut ProjectHandle {
 	let Some(entry) = task(id) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	if entry.state.load(Ordering::SeqCst) != QUERCUS_TASK_SUCCEEDED {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let Some(slot) = &entry.project_slot else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
 		Some(inner) => ProjectHandle::from_arc(inner),
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -1192,75 +1215,73 @@ pub extern "C" fn quercus_task_take_project(id: u64) -> *mut ProjectHandle {
 /// `quercus_waveform_release`. Null means unknown/wrong task type, unfinished or
 /// failed task, or that the result was already taken.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_task_take_waveform(
-	id: u64,
-) -> *const crate::audio_analysis::WaveformHandle {
+pub extern "C" fn quercus_task_take_waveform(id: u64) -> *const audio_analysis::WaveformHandle {
 	let Some(entry) = task(id) else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	if entry.state.load(Ordering::SeqCst) != QUERCUS_TASK_SUCCEEDED {
-		return std::ptr::null();
+		return ptr::null();
 	}
 	let data = entry
 		.waveform_slot
 		.as_ref()
 		.and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
-	data.map(crate::audio_analysis::WaveformHandle::from_data)
-		.unwrap_or(std::ptr::null())
+	data.map(audio_analysis::WaveformHandle::from_data)
+		.unwrap_or(ptr::null())
 }
 
 /// Transfers a successful thumbnail result out of the task registry.
 /// The caller owns one reference and releases it with `quercus_thumbnail_release`.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_task_take_thumbnail(id: u64) -> *const crate::thumbnail::ThumbnailHandle {
+pub extern "C" fn quercus_task_take_thumbnail(id: u64) -> *const thumbnail::ThumbnailHandle {
 	let Some(entry) = task(id) else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	if entry.state.load(Ordering::SeqCst) != QUERCUS_TASK_SUCCEEDED {
-		return std::ptr::null();
+		return ptr::null();
 	}
 	let data = entry
 		.thumbnail_slot
 		.as_ref()
 		.and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
-	data.map(crate::thumbnail::ThumbnailHandle::from_data)
-		.unwrap_or(std::ptr::null())
+	data.map(thumbnail::ThumbnailHandle::from_data)
+		.unwrap_or(ptr::null())
 }
 
 /// Transfers a successful audio mix out of the task registry. The caller owns
 /// one reference and releases it with `quercus_audio_buffer_release`.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_task_take_audio(id: u64) -> *const crate::preview_audio::AudioBufferHandle {
+pub extern "C" fn quercus_task_take_audio(id: u64) -> *const preview_audio::AudioBufferHandle {
 	let Some(entry) = task(id) else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	if entry.state.load(Ordering::SeqCst) != QUERCUS_TASK_SUCCEEDED {
-		return std::ptr::null();
+		return ptr::null();
 	}
 	let data = entry
 		.audio_slot
 		.as_ref()
 		.and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
-	data.map(crate::preview_audio::AudioBufferHandle::from_data)
-		.unwrap_or(std::ptr::null())
+	data.map(preview_audio::AudioBufferHandle::from_data)
+		.unwrap_or(ptr::null())
 }
 
 /// Transfers a successful video frame out of the task registry. The caller owns
 /// one reference and releases it with `quercus_video_buffer_release`.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_task_take_video(id: u64) -> *const crate::preview_video::VideoBufferHandle {
+pub extern "C" fn quercus_task_take_video(id: u64) -> *const preview_video::VideoBufferHandle {
 	let Some(entry) = task(id) else {
-		return std::ptr::null();
+		return ptr::null();
 	};
 	if entry.state.load(Ordering::SeqCst) != QUERCUS_TASK_SUCCEEDED {
-		return std::ptr::null();
+		return ptr::null();
 	}
 	let data = entry
 		.video_slot
 		.as_ref()
 		.and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take());
-	data.map(crate::preview_video::VideoBufferHandle::from_data)
-		.unwrap_or(std::ptr::null())
+	data.map(preview_video::VideoBufferHandle::from_data)
+		.unwrap_or(ptr::null())
 }
 
 #[cfg(test)]
@@ -1296,7 +1317,9 @@ mod tests {
 				clip,
 				crate::coretypes::QuercusRational { num: 2, den: 1 }
 			));
-			assert!(crate::node::quercus_track_append_block(project, track, clip));
+			assert!(crate::node::quercus_track_append_block(
+				project, track, clip
+			));
 
 			let (f, fl) = (path.as_ptr(), path.len());
 			let save = quercus_task_project_save_otio(project, f, fl);
@@ -1387,9 +1410,15 @@ mod tests {
 			quercus_task_release(id);
 
 			// Invalid input fails closed.
-			assert_eq!(quercus_task_export(std::ptr::null(), seq, f, fl, &params), 0);
+			assert_eq!(
+				quercus_task_export(std::ptr::null(), seq, f, fl, &params),
+				0
+			);
 			assert_eq!(quercus_task_export(project, u64::MAX, f, fl, &params), 0);
-			assert_eq!(quercus_task_export(project, seq, f, fl, std::ptr::null()), 0);
+			assert_eq!(
+				quercus_task_export(project, seq, f, fl, std::ptr::null()),
+				0
+			);
 
 			crate::node::quercus_project_release(project);
 			let _ = std::fs::remove_file(&path);

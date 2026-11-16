@@ -24,8 +24,16 @@
 //! the first settings access (the tests never call `ConfigStore::save`, so
 //! nothing persists).
 
+use quercus_core::configstore;
+use quercus_node::folder;
+use quercus_storage::error;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_node::project::Project;
@@ -46,19 +54,19 @@ fn isolated_config() -> MutexGuard<'static, ()> {
 	static INIT: OnceLock<()> = OnceLock::new();
 	let guard = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	INIT.get_or_init(|| {
-		let dir = std::env::temp_dir().join(format!(
+		let dir = env::temp_dir().join(format!(
 			"quercusstorage_writethrough_config_{}",
-			std::process::id()
+			process::id()
 		));
-		let _ = std::fs::remove_dir_all(&dir);
-		let _ = std::fs::create_dir_all(&dir);
-		std::env::set_var("QUERCUS_CONFIG_DIR", &dir);
+		let _ = fs::remove_dir_all(&dir);
+		let _ = fs::create_dir_all(&dir);
+		env::set_var("QUERCUS_CONFIG_DIR", &dir);
 	});
 	guard
 }
 
-fn set_storage_config(backend: &str, sqlite_path: Option<&std::path::Path>, pg_url: Option<&str>) {
-	let store = quercus_core::configstore::ConfigStore::instance();
+fn set_storage_config(backend: &str, sqlite_path: Option<&path::Path>, pg_url: Option<&str>) {
+	let store = configstore::ConfigStore::instance();
 	store.set(Some("Storage"), "Backend", backend);
 	// Every test starts from the legacy derivation unless it opts into
 	// an explicit library uri.
@@ -77,16 +85,16 @@ fn set_storage_config(backend: &str, sqlite_path: Option<&std::path::Path>, pg_u
 /// Set (or clear, with an empty string) the explicit
 /// `Storage/LibraryUri` override.
 fn set_library_uri(uri: &str) {
-	quercus_core::configstore::ConfigStore::instance().set(Some("Storage"), "LibraryUri", uri);
+	configstore::ConfigStore::instance().set(Some("Storage"), "LibraryUri", uri);
 }
 
-fn work_dir(tag: &str) -> std::path::PathBuf {
-	let dir = std::env::temp_dir().join(format!(
+fn work_dir(tag: &str) -> path::PathBuf {
+	let dir = env::temp_dir().join(format!(
 		"quercusstorage_writethrough_{tag}_{}",
-		std::process::id()
+		process::id()
 	));
-	let _ = std::fs::remove_dir_all(&dir);
-	std::fs::create_dir_all(&dir).expect("work dir");
+	let _ = fs::remove_dir_all(&dir);
+	fs::create_dir_all(&dir).expect("work dir");
 	dir
 }
 
@@ -132,25 +140,16 @@ impl StorageBackend for MockLibraryBackend {
 		uri.scheme == self.scheme
 	}
 
-	fn load(&self, _uri: &StorageUri) -> quercus_storage::error::Result<LoadResult> {
+	fn load(&self, _uri: &StorageUri) -> error::Result<LoadResult> {
 		Ok(LoadResult::success(CHandle::null()))
 	}
 
-	fn save(
-		&self,
-		_project: CHandle,
-		_uri: &StorageUri,
-		_options: u32,
-	) -> quercus_storage::error::Result<()> {
+	fn save(&self, _project: CHandle, _uri: &StorageUri, _options: u32) -> error::Result<()> {
 		self.saves.fetch_add(1, Ordering::SeqCst);
 		Ok(())
 	}
 
-	fn library_snapshot(
-		&self,
-		_uri: &StorageUri,
-		_uuid: &str,
-	) -> quercus_storage::error::Result<()> {
+	fn library_snapshot(&self, _uri: &StorageUri, _uuid: &str) -> error::Result<()> {
 		self.snapshots.fetch_add(1, Ordering::SeqCst);
 		Ok(())
 	}
@@ -168,7 +167,7 @@ impl StorageBackend for MockLibraryBackend {
 /// `(scheme, name, mock)`. The caller unregisters `name` at the end.
 fn register_mock(tag: &str) -> (String, String, Arc<MockLibraryBackend>) {
 	let scheme = format!("mockp0c{tag}");
-	let name = format!("mock-p0c-{tag}-{}", std::process::id());
+	let name = format!("mock-p0c-{tag}-{}", process::id());
 	let mock = Arc::new(MockLibraryBackend {
 		name: name.clone(),
 		scheme: scheme.clone(),
@@ -192,7 +191,7 @@ fn wait_until(timeout: Duration, step: Duration, mut cond: impl FnMut() -> bool)
 		if Instant::now() >= deadline {
 			return false;
 		}
-		std::thread::sleep(step);
+		thread::sleep(step);
 	}
 }
 
@@ -249,7 +248,7 @@ fn backend_enabled_by_config_binds_and_round_trips() {
 	// Add real state so the round trip carries more than an empty row.
 	let original_uuid = {
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
-		let (core, behavior) = quercus_node::folder::create("Written Through");
+		let (core, behavior) = folder::create("Written Through");
 		guard.graph.add_node(core, behavior);
 		guard.uuid.clone()
 	};
@@ -269,7 +268,7 @@ fn backend_enabled_by_config_binds_and_round_trips() {
 		db.display()
 	);
 	assert!(
-		std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0) > 0,
+		fs::metadata(&db).map(|m| m.len()).unwrap_or(0) > 0,
 		"the sqlite library file is non-empty"
 	);
 
@@ -312,7 +311,7 @@ fn backend_enabled_by_config_binds_and_round_trips() {
 	assert_eq!(writethrough::last_error(handle), None);
 
 	release(handle);
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -335,7 +334,7 @@ fn write_through_failure_is_recorded_in_last_error() {
 	writethrough::flush_all();
 	writethrough::unbind_project(handle);
 	release(handle);
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -349,11 +348,7 @@ fn library_uri_resolves_sqlite_and_pg_configurations() {
 	assert!(uri.ends_with("lib.db"), "{uri}");
 
 	// PostgreSQL: the postgres:// scheme is stripped into the quercusdb body.
-	set_storage_config(
-		"pg",
-		None,
-		Some("postgres://user:pass@host:5432/db"),
-	);
+	set_storage_config("pg", None, Some("postgres://user:pass@host:5432/db"));
 	assert_eq!(
 		writethrough::library_uri().as_deref(),
 		Some("quercusdb+pg://user:pass@host:5432/db")
@@ -369,7 +364,7 @@ fn library_uri_resolves_sqlite_and_pg_configurations() {
 	set_storage_config("pg", None, None);
 	assert_eq!(writethrough::library_uri(), None);
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -377,7 +372,7 @@ fn default_library_path_honors_the_config_directory() {
 	let _guard = isolated_config();
 	let path = writethrough::default_library_path();
 	assert!(path.ends_with("library.db"), "{path}");
-	let config_dir = std::env::var("QUERCUS_CONFIG_DIR").expect("test isolation set it");
+	let config_dir = env::var("QUERCUS_CONFIG_DIR").expect("test isolation set it");
 	assert!(
 		path.starts_with(&config_dir),
 		"{path} must live under {config_dir}"
@@ -387,11 +382,7 @@ fn default_library_path_honors_the_config_directory() {
 #[test]
 fn note_command_without_bindings_is_a_no_op() {
 	let _guard = isolated_config();
-	set_storage_config(
-		"sqlite",
-		Some(&work_dir("none").join("lib.db")),
-		None,
-	);
+	set_storage_config("sqlite", Some(&work_dir("none").join("lib.db")), None);
 	// No project is bound in this process (the other tests' bindings are
 	// dropped before they return): the notification must not panic.
 	writethrough::note_command();
@@ -453,7 +444,7 @@ fn library_uri_overrides_legacy_config_and_off_still_disables() {
 	writethrough::unbind_project(handle);
 	release(handle);
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 // ---- policy: COALESCED -------------------------------------------------
@@ -469,7 +460,7 @@ fn coalesced_backend_writes_after_debounce_not_on_the_edit_thread() {
 	// sqlite path must never be touched.
 	set_storage_config("sqlite", Some(&legacy), None);
 	set_library_uri(&uri);
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	store.set_int(Some("Storage"), "WriteDebounceMs", 200);
 	store.set_int(Some("Storage"), "SnapshotIntervalSec", 600);
 	assert_eq!(writethrough::library_uri().as_deref(), Some(uri.as_str()));
@@ -494,7 +485,7 @@ fn coalesced_backend_writes_after_debounce_not_on_the_edit_thread() {
 		"the coalesced write must land after the debounce"
 	);
 	// No duplicate writes while the project stays quiet.
-	std::thread::sleep(Duration::from_millis(400));
+	thread::sleep(Duration::from_millis(400));
 	assert_eq!(mock.saves.load(Ordering::SeqCst), 1);
 
 	// The exit flush snapshots the written head but must not re-save a
@@ -521,7 +512,7 @@ fn coalesced_backend_writes_after_debounce_not_on_the_edit_thread() {
 	Registry::global()
 		.unregister(&name)
 		.expect("unregister mock");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -534,11 +525,7 @@ fn coalesced_flush_and_unbind_force_a_save() {
 	set_library_uri(&uri);
 	// Keep the background thread out of the way: this test drives the
 	// flush paths explicitly.
-	quercus_core::configstore::ConfigStore::instance().set_int(
-		Some("Storage"),
-		"WriteDebounceMs",
-		60_000,
-	);
+	configstore::ConfigStore::instance().set_int(Some("Storage"), "WriteDebounceMs", 60_000);
 
 	let (handle, _project) = project_handle();
 	writethrough::bind_project(handle);
@@ -570,5 +557,5 @@ fn coalesced_flush_and_unbind_force_a_save() {
 	Registry::global()
 		.unregister(&name)
 		.expect("unregister mock");
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }

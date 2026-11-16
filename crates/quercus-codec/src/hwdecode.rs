@@ -77,25 +77,19 @@ pub static HW_SURFACES: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// Hardware frames successfully imported without a CPU transfer.
 pub static HW_IMPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// `get_format` chose a software format even though a hardware device was attached.
-pub static HW_FORMAT_FALLBACKS: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_FORMAT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Hardware decode errors observed on a session (frame-level; the L1 policy's
 /// input). Distinct from [`HW_OPEN_FAILURES`] (device/session creation).
-pub static HW_DECODE_FAILURES: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_DECODE_FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Hardware session restarts performed by the L1 retry policy.
-pub static HW_SESSION_RESTARTS: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_SESSION_RESTARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Frames decoded through the per-frame software fallback while the hardware
 /// session stayed alive (L1).
-pub static HW_FRAME_FALLBACKS: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_FRAME_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Streams pinned to software by the L2 policy.
-pub static HW_STREAM_PINS: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_STREAM_PINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Formats degraded by the L3 ratio breaker.
-pub static HW_FORMAT_DEGRADES: std::sync::atomic::AtomicU64 =
-	std::sync::atomic::AtomicU64::new(0);
+pub static HW_FORMAT_DEGRADES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The config key of the hardware-decode switch (1 = prefer hardware,
 /// 0 = force software). Default ON by user mandate.
@@ -113,7 +107,7 @@ pub const CONFIG_KEY_HARDWARE_DECODING: &str = "HardwareDecoding";
 /// entirely. The slot count is generous: `AVHWDeviceType` values are small
 /// non-negative enumerants (< 32), 64 covers them all.
 static UNAVAILABLE_DEVICES: [std::sync::atomic::AtomicBool; 64] =
-    [const { std::sync::atomic::AtomicBool::new(false) }; 64];
+	[const { std::sync::atomic::AtomicBool::new(false) }; 64];
 
 #[cfg(test)]
 thread_local! {
@@ -150,10 +144,10 @@ fn reset_creation_attempts() {
 /// Whether `device_type` is known unavailable — a device-context
 /// creation failed once earlier in this process.
 pub fn device_unavailable(device_type: sys::AVHWDeviceType) -> bool {
-    UNAVAILABLE_DEVICES
-        .get(device_type as usize)
-        .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-        .unwrap_or(false)
+	UNAVAILABLE_DEVICES
+		.get(device_type as usize)
+		.map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+		.unwrap_or(false)
 }
 
 /// Record that `device_type`'s device context failed to create (sticky
@@ -164,9 +158,9 @@ pub fn device_unavailable(device_type: sys::AVHWDeviceType) -> bool {
 /// A frame-level decode error is a property of the (device, format) pair —
 /// see [`HwFormatKey`] and [`note_format_attempt`].
 pub fn mark_device_unavailable(device_type: sys::AVHWDeviceType) {
-    if let Some(f) = UNAVAILABLE_DEVICES.get(device_type as usize) {
-        f.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+	if let Some(f) = UNAVAILABLE_DEVICES.get(device_type as usize) {
+		f.store(true, std::sync::atomic::Ordering::Relaxed);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +230,9 @@ pub const FORMAT_DEGRADED_TTL: Duration = Duration::from_secs(600);
 /// to software) — the field escape hatch for a machine where retrying costs
 /// more than falling back.
 pub fn hw_retry_enabled() -> bool {
-	std::env::var("QUERCUS_HW_RETRY").map(|value| value != "0").unwrap_or(true)
+	std::env::var("QUERCUS_HW_RETRY")
+		.map(|value| value != "0")
+		.unwrap_or(true)
 }
 
 /// Identity of one hardware decode configuration: the device plus the codec
@@ -266,7 +262,12 @@ impl HwFormatKey {
 		profile: i32,
 		pixel_format: i32,
 	) -> Self {
-		Self { device: device as i32, codec_id, profile, pixel_format }
+		Self {
+			device: device as i32,
+			codec_id,
+			profile,
+			pixel_format,
+		}
 	}
 }
 
@@ -281,7 +282,11 @@ struct FormatHealth {
 
 impl Default for FormatHealth {
 	fn default() -> Self {
-		Self { attempts: 0, successes: 0, degraded_until: None }
+		Self {
+			attempts: 0,
+			successes: 0,
+			degraded_until: None,
+		}
 	}
 }
 
@@ -536,7 +541,10 @@ pub fn stats_snapshot() -> HwDecodeStats {
 
 #[cfg(test)]
 fn reset_format_health() {
-	format_health().lock().unwrap_or_else(|e| e.into_inner()).clear();
+	format_health()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.clear();
 	import_unsupported_counts()
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
@@ -551,8 +559,10 @@ fn reset_format_health() {
 /// expiry path can be exercised without sleeping.
 #[cfg(test)]
 fn expire_format(key: &HwFormatKey) {
-	if let Some(entry) =
-		format_health().lock().unwrap_or_else(|e| e.into_inner()).get_mut(key)
+	if let Some(entry) = format_health()
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.get_mut(key)
 	{
 		let past = Instant::now()
 			.checked_sub(Duration::from_secs(1))
@@ -569,15 +579,14 @@ fn expire_format(key: &HwFormatKey) {
 /// hardware decode entirely (a diagnostic escape hatch on machines where
 /// probing the device is slow or noisy).
 pub fn hardware_decoding_enabled() -> bool {
-    if let Ok(v) = std::env::var("QUERCUS_HWACCEL") {
-        return v != "0";
-    }
-    match quercus_core::configstore::ConfigStore::instance()
-        .get(None, CONFIG_KEY_HARDWARE_DECODING)
-    {
-        Ok(value) => value != "false",
-        Err(_) => true,
-    }
+	if let Ok(v) = std::env::var("QUERCUS_HWACCEL") {
+		return v != "0";
+	}
+	match quercus_core::configstore::ConfigStore::instance().get(None, CONFIG_KEY_HARDWARE_DECODING)
+	{
+		Ok(value) => value != "false",
+		Err(_) => true,
+	}
 }
 
 /// The hardware device types to try, most preferred first. On a machine
@@ -647,7 +656,9 @@ pub(crate) fn hw_pixel_format(device_type: sys::AVHWDeviceType) -> Option<sys::A
 	use sys::AVHWDeviceType;
 	use sys::AVPixelFormat;
 	match device_type {
-		AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX => Some(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX),
+		AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX => {
+			Some(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
+		}
 		AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI => Some(AVPixelFormat::AV_PIX_FMT_VAAPI),
 		AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA => Some(AVPixelFormat::AV_PIX_FMT_CUDA),
 		AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA => Some(AVPixelFormat::AV_PIX_FMT_D3D11),
@@ -703,79 +714,78 @@ unsafe extern "C" fn select_hw_format(
 	formats: *const sys::AVPixelFormat,
 ) -> sys::AVPixelFormat {
 	unsafe {
-	use sys::AVPixelFormat;
-	if avctx.is_null() || formats.is_null() {
-		return AVPixelFormat::AV_PIX_FMT_NONE;
-	}
-	let mut first = AVPixelFormat::AV_PIX_FMT_NONE;
-	let mut cursor = formats;
-	while *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
-		if first == AVPixelFormat::AV_PIX_FMT_NONE {
-			first = *cursor;
-		}
-		cursor = cursor.add(1);
-	}
-	let device = (*avctx).hw_device_ctx;
-	if device.is_null() || (*device).data.is_null() {
-		return first_software_format(formats);
-	}
-	let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
-	let ctx_type = (*device_ctx).type_;
-	let Some(hw_fmt) = hw_pixel_format(ctx_type) else {
-		return first_software_format(formats);
-	};
-	if std::env::var_os("OAK_DEBUG_HW").is_some() {
-		eprintln!("[hwfmt] ctx_type={ctx_type:?} hw_fmt={hw_fmt:?} first={first:?}");
-	}
-	let mut offered = formats;
-	while *offered != AVPixelFormat::AV_PIX_FMT_NONE {
-		if *offered == hw_fmt {
-			let mut frames: *mut sys::AVBufferRef = std::ptr::null_mut();
-			let rc = sys::avcodec_get_hw_frames_parameters(avctx, device, hw_fmt, &mut frames);
-			if rc >= 0 && !frames.is_null() {
-				let frames_started = std::time::Instant::now();
-				let init = sys::av_hwframe_ctx_init(frames);
-				if std::env::var_os("OAK_DEBUG_HW").is_some() {
-					eprintln!(
-						"[hwfmt] frames init {hw_fmt:?} took {}ms rc={init}",
-						frames_started.elapsed().as_millis()
-					);
-				}
-				if init >= 0 {
-					// Ownership transfers to the codec context; libavcodec
-					// unrefs it after decoding / on close.
-					(*avctx).hw_frames_ctx = frames;
-					if std::env::var_os("OAK_DEBUG_HW").is_some() {
-						eprintln!("[hwfmt] selected {hw_fmt:?}");
-					}
-					return hw_fmt;
-				}
-				if std::env::var_os("OAK_DEBUG_HW").is_some() {
-					eprintln!("[hwfmt] frames init failed rc={init} for {hw_fmt:?}");
-				}
-				sys::av_buffer_unref(&mut frames);
-			}
-			HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-			// Do NOT return `first`: it may be another hardware format
-			// (commonly CUDA offered before VAAPI) while `hw_device_ctx`
-			// is VAAPI. Returning it makes libavcodec abort with
-			// "format cuda does not match the device context". Returning
-			// NONE forces the first-frame hardware fallback, which can
-			// retry the next device type before settling on software.
+		use sys::AVPixelFormat;
+		if avctx.is_null() || formats.is_null() {
 			return AVPixelFormat::AV_PIX_FMT_NONE;
 		}
-		offered = offered.add(1);
+		let mut first = AVPixelFormat::AV_PIX_FMT_NONE;
+		let mut cursor = formats;
+		while *cursor != AVPixelFormat::AV_PIX_FMT_NONE {
+			if first == AVPixelFormat::AV_PIX_FMT_NONE {
+				first = *cursor;
+			}
+			cursor = cursor.add(1);
+		}
+		let device = (*avctx).hw_device_ctx;
+		if device.is_null() || (*device).data.is_null() {
+			return first_software_format(formats);
+		}
+		let device_ctx = (*device).data as *mut sys::AVHWDeviceContext;
+		let ctx_type = (*device_ctx).type_;
+		let Some(hw_fmt) = hw_pixel_format(ctx_type) else {
+			return first_software_format(formats);
+		};
+		if std::env::var_os("OAK_DEBUG_HW").is_some() {
+			eprintln!("[hwfmt] ctx_type={ctx_type:?} hw_fmt={hw_fmt:?} first={first:?}");
+		}
+		let mut offered = formats;
+		while *offered != AVPixelFormat::AV_PIX_FMT_NONE {
+			if *offered == hw_fmt {
+				let mut frames: *mut sys::AVBufferRef = std::ptr::null_mut();
+				let rc = sys::avcodec_get_hw_frames_parameters(avctx, device, hw_fmt, &mut frames);
+				if rc >= 0 && !frames.is_null() {
+					let frames_started = std::time::Instant::now();
+					let init = sys::av_hwframe_ctx_init(frames);
+					if std::env::var_os("OAK_DEBUG_HW").is_some() {
+						eprintln!(
+							"[hwfmt] frames init {hw_fmt:?} took {}ms rc={init}",
+							frames_started.elapsed().as_millis()
+						);
+					}
+					if init >= 0 {
+						// Ownership transfers to the codec context; libavcodec
+						// unrefs it after decoding / on close.
+						(*avctx).hw_frames_ctx = frames;
+						if std::env::var_os("OAK_DEBUG_HW").is_some() {
+							eprintln!("[hwfmt] selected {hw_fmt:?}");
+						}
+						return hw_fmt;
+					}
+					if std::env::var_os("OAK_DEBUG_HW").is_some() {
+						eprintln!("[hwfmt] frames init failed rc={init} for {hw_fmt:?}");
+					}
+					sys::av_buffer_unref(&mut frames);
+				}
+				HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+				// Do NOT return `first`: it may be another hardware format
+				// (commonly CUDA offered before VAAPI) while `hw_device_ctx`
+				// is VAAPI. Returning it makes libavcodec abort with
+				// "format cuda does not match the device context". Returning
+				// NONE forces the first-frame hardware fallback, which can
+				// retry the next device type before settling on software.
+				return AVPixelFormat::AV_PIX_FMT_NONE;
+			}
+			offered = offered.add(1);
+		}
+		// The device is attached but the decoder does not offer its hardware
+		// pixel format for this stream (e.g. VAAPI has no 10-bit 4:2:2 H.264
+		// config. Returning software here would silently keep the hardware
+		// session but decode on the CPU. Force the first-frame fallback instead;
+		// it marks this device unavailable and retries the next candidate
+		// (NVDEC/CUDA), finally settling on software only if none works.
+		HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		AVPixelFormat::AV_PIX_FMT_NONE
 	}
-	// The device is attached but the decoder does not offer its hardware
-	// pixel format for this stream (e.g. VAAPI has no 10-bit 4:2:2 H.264
-	// config. Returning software here would silently keep the hardware
-	// session but decode on the CPU. Force the first-frame fallback instead;
-	// it marks this device unavailable and retries the next candidate
-	// (NVDEC/CUDA), finally settling on software only if none works.
-	HW_FORMAT_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-	AVPixelFormat::AV_PIX_FMT_NONE
-	}
-
 }
 
 fn attach_hw_get_format(avctx: *mut sys::AVCodecContext) {
@@ -809,7 +819,11 @@ pub fn open_hw_accel(
 	let device_started = std::time::Instant::now();
 	let rc = if device_type == sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA {
 		device = shared_cuda_device().unwrap_or(std::ptr::null_mut());
-		if device.is_null() { -1 } else { 0 }
+		if device.is_null() {
+			-1
+		} else {
+			0
+		}
 	} else {
 		// SAFETY: `device` is a valid out-pointer; on success it owns the
 		// device reference, which is handed to the codec context below.
@@ -839,7 +853,9 @@ pub fn open_hw_accel(
 	// SAFETY: `hw_device_ctx` takes ownership of the reference; the codec
 	// context frees it with the context.
 	unsafe { (*context.as_mut_ptr()).hw_device_ctx = device };
-	unsafe { attach_hw_get_format(context.as_mut_ptr()); }
+	unsafe {
+		attach_hw_get_format(context.as_mut_ptr());
+	}
 	let mut opts = Dictionary::new();
 	opts.set("threads", "1");
 	let decoder_started = std::time::Instant::now();
@@ -930,266 +946,4 @@ pub fn transfer_to_cpu(frame: &ffmpeg::frame::Video) -> Result<ffmpeg::frame::Vi
 }
 
 #[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// The current platform has at least one hardware device candidate
-	/// (hardware decode is the mandated default on every supported
-	/// platform).
-	#[test]
-	fn platform_has_a_hardware_candidate() {
-		assert!(
-			!device_type_candidates().is_empty(),
-			"no hardware decode candidate on this platform"
-		);
-	}
-
-	/// Device types round-trip through their display names.
-	#[test]
-	fn device_type_names_are_stable() {
-		assert_eq!(
-			device_type_name(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX),
-			"videotoolbox"
-		);
-		assert_eq!(device_type_name(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI), "vaapi");
-		assert_eq!(device_type_name(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA), "cuda/nvdec");
-		assert_eq!(
-			device_type_name(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA),
-			"d3d11va"
-		);
-	}
-
-	/// Software and hardware pixel formats are classified correctly.
-	#[test]
-	fn hw_format_classification() {
-		assert!(is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX));
-		assert!(is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_VAAPI));
-		assert!(is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_CUDA));
-		assert!(is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_D3D11VA_VLD));
-		assert!(!is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_YUV420P));
-		assert!(!is_hw_format(sys::AVPixelFormat::AV_PIX_FMT_NV12));
-	}
-
-	/// On macOS the VideoToolbox device context must be creatable (the
-	/// mandated default decode path) and the H.264 demo must open with
-	/// the hwaccel attached.
-	#[cfg(target_os = "macos")]
-	#[test]
-	fn videotoolbox_device_opens_for_h264() {
-		let mut input = ffmpeg::format::input(&"../../testdata/demo.mp4".to_string())
-			.expect("open demo.mp4");
-		let fstream = input.stream(0).expect("stream 0");
-		let params = fstream.parameters();
-		let codec = ffmpeg::decoder::find(params.id()).expect("software h264 codec");
-		let opened = open_hw_accel(
-			&params,
-			codec,
-			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-		);
-		let Some((opened, _device)) = opened else {
-			// Headless runners and FFmpeg builds without VideoToolbox support
-			// use the mandated software fallback; there is no device to assert.
-			return;
-		};
-		assert_eq!(
-			unsafe { (*opened.as_ptr()).thread_count },
-			1,
-			"hardware decoding stays single-threaded"
-		);
-	}
-
-	/// A device type marked unavailable is short-circuited before any
-	/// FFmpeg call: `open_hw_accel` returns None without attempting device
-	/// creation (which is what used to log
-	/// `[VAAPI @ ...] Failed to initialise VAAPI connection` every time on
-	/// boxes without the driver).
-	#[test]
-	fn negative_cache_skips_marked_device() {
-		// Serialize with the media tests that hold the shared test lock
-		// (the counter itself is thread-local, but the negative cache is
-		// process-wide).
-		let _lock = crate::lock_tests();
-		// VDPAU is not a candidate on any supported platform, so marking
-		// it cannot disturb the platform tests in this process (e.g. the
-		// macOS VideoToolbox test above).
-		let dev = sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU;
-		mark_device_unavailable(dev);
-		assert!(device_unavailable(dev));
-
-		let input = ffmpeg::format::input(&"../../testdata/demo.mp4".to_string())
-			.expect("open demo.mp4");
-		let fstream = input.stream(0).expect("stream 0");
-		let params = fstream.parameters();
-		let codec = ffmpeg::decoder::find(params.id()).expect("software h264 codec");
-
-		reset_creation_attempts();
-		let opened = open_hw_accel(&params, codec, dev);
-		assert!(opened.is_none(), "marked device must not open");
-		assert_eq!(
-			creation_attempts(),
-			0,
-			"marked device must be skipped before any creation attempt"
-		);
-
-		// Restore so the (non-candidate) type stays clean for other tests.
-		UNAVAILABLE_DEVICES[dev as usize].store(false, std::sync::atomic::Ordering::Relaxed);
-	}
-
-	/// A device type never tried before is not cached as unavailable
-	/// (only a failed creation marks it). DXVA2 is not a candidate on any
-	/// supported platform (Windows uses D3D11VA/CUDA), so it is never
-	/// touched by other tests in this process.
-	#[test]
-	fn unmarked_device_type_is_not_unavailable() {
-		let dev = sys::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2;
-		assert!(!device_unavailable(dev));
-	}
-
-	#[cfg(target_os = "linux")]
-	#[test]
-	fn cuda_device_context_is_shared_by_reference() {
-		let Some(mut first) = shared_cuda_device() else {
-			eprintln!("no CUDA device; skipping shared-context test");
-			return;
-		};
-		let Some(mut second) = shared_cuda_device() else {
-			panic!("second CUDA device reference failed");
-		};
-		unsafe {
-			assert_eq!((*first).buffer, (*second).buffer);
-		}
-		unsafe {
-			sys::av_buffer_unref(&mut first);
-			sys::av_buffer_unref(&mut second);
-		}
-	}
-
-	/// L1: restarts are admitted inside the failure-streak budget; once the
-	/// streak is exhausted the per-frame fallback takes over instead of
-	/// pinning the whole stream.
-	#[test]
-	fn restart_budget_then_frame_fallback() {
-		let mut health = HwStreamHealth::new();
-		for _ in 0..(MAX_CONSECUTIVE_DECODE_FAILURES - 1) {
-			health.note_decode_failure();
-			assert!(health.admit_restart(), "a restart is admitted inside the budget");
-		}
-		health.note_decode_failure();
-		assert!(!health.admit_restart(), "the failure streak stops restarts");
-		assert!(health.admit_frame_fallback(), "the frame fallback still applies");
-		assert!(!health.pinned(), "a burst of failures alone must not pin the stream");
-	}
-
-	/// L1: the per-frame fallback budget is bounded; once spent, the caller
-	/// pins the stream.
-	#[test]
-	fn frame_fallback_budget_is_bounded() {
-		let mut health = HwStreamHealth::new();
-		for _ in 0..MAX_FRAME_FALLBACKS_PER_STREAM {
-			assert!(health.admit_frame_fallback());
-		}
-		assert_eq!(health.frame_fallbacks(), MAX_FRAME_FALLBACKS_PER_STREAM);
-		assert!(!health.admit_frame_fallback());
-		health.pin();
-		assert!(!health.admit_frame_fallback());
-		assert!(!health.admit_restart());
-		assert!(!health.hardware_allowed());
-	}
-
-	/// A decoded hardware frame clears the failure streak, so an isolated
-	/// reconfig (the VideoToolbox 4:2:2 10-bit case) does not exhaust the
-	/// retry budget.
-	#[test]
-	fn stream_health_success_resets_the_streak() {
-		let mut health = HwStreamHealth::new();
-		health.note_decode_failure();
-		health.on_decode_success();
-		assert_eq!(health.consecutive_failures(), 0);
-		health.note_decode_failure();
-		assert!(health.admit_restart());
-		assert!(!health.pinned());
-	}
-
-	/// The restart budget rolls over after a healthy window, so a long healthy
-	/// session cannot accumulate restarts until it stops retrying.
-	#[test]
-	fn stream_health_restart_budget_rolls_over() {
-		let mut health = HwStreamHealth::new();
-		health.note_decode_failure();
-		assert!(health.admit_restart());
-		assert_eq!(health.session_restarts(), 1);
-		for _ in 0..HW_RESTART_WINDOW_FRAMES {
-			health.on_decode_success();
-		}
-		assert_eq!(health.session_restarts(), 0, "the window resets the restart counter");
-		health.note_decode_failure();
-		assert!(health.admit_restart());
-	}
-
-	/// L3: a format whose hardware attempts mostly fail is degraded, and the
-	/// degradation expires so the format is probed again.
-	#[test]
-	fn format_health_degrades_and_expires() {
-		let _lock = crate::lock_tests();
-		reset_format_health();
-		// VDPAU is not a platform candidate, so this key cannot disturb the
-		// real decode tests in this process.
-		let key =
-			HwFormatKey::new(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU, 27, 122, 0);
-		for _ in 0..FORMAT_WINDOW_ATTEMPTS {
-			note_format_attempt(&key, false);
-		}
-		assert!(format_degraded(&key));
-		expire_format(&key);
-		assert!(!format_degraded(&key), "an expired degradation must be probed again");
-		reset_format_health();
-	}
-
-	/// 4:2:2 10-bit heuristic: a stream whose hardware frames keep failing
-	/// the GPU import switches to software; other formats are unaffected.
-	#[test]
-	fn unimportable_hw_frames_prefer_software() {
-		let _lock = crate::lock_tests();
-		reset_format_health();
-		let key = HwFormatKey::new(
-			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
-			27,
-			122,
-			sys::AVPixelFormat::AV_PIX_FMT_YUV422P10LE as i32,
-		);
-		assert!(!prefer_software_for(&key));
-		note_hw_import_unsupported(&key);
-		assert!(!prefer_software_for(&key), "one failure is not enough");
-		note_hw_import_unsupported(&key);
-		assert!(prefer_software_for(&key), "repeated import failures flip the format");
-
-		// 4:2:0 8-bit hardware frames are not flipped by the heuristic.
-		let other = HwFormatKey::new(
-			sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VDPAU,
-			27,
-			100,
-			sys::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
-		);
-		note_hw_import_unsupported(&other);
-		note_hw_import_unsupported(&other);
-		assert!(!prefer_software_for(&other));
-		reset_format_health();
-	}
-
-	/// L3: a format whose hardware attempts mostly succeed is never degraded.
-	#[test]
-	fn format_health_keeps_healthy_format() {
-		let _lock = crate::lock_tests();
-		reset_format_health();
-		let key = HwFormatKey::new(sys::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2, 27, 100, 0);
-		let half = FORMAT_WINDOW_ATTEMPTS / 2;
-		for _ in 0..half {
-			note_format_attempt(&key, false);
-		}
-		for _ in 0..(FORMAT_WINDOW_ATTEMPTS - half) {
-			note_format_attempt(&key, true);
-		}
-		assert!(!format_degraded(&key));
-		reset_format_health();
-	}
-}
+mod tests;

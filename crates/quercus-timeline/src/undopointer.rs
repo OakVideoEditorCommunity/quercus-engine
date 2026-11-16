@@ -34,9 +34,9 @@ use crate::undocommon::{
 use crate::util::{
 	block_add_to_graph, block_gap_create, block_in, block_kind, block_length, block_next,
 	block_out, block_previous, block_remove_from_graph, block_set_in,
-	block_set_length_and_media_out, block_set_length_keeping_out, block_track,
-	track_append_block, track_insert_block_after, track_insert_block_before, track_length,
-	track_ripple_remove_block, tracklist_track_at, tracklist_track_count, BlockKind, NodeRef,
+	block_set_length_and_media_out, block_set_length_keeping_out, block_track, track_append_block,
+	track_insert_block_after, track_insert_block_before, track_length, track_ripple_remove_block,
+	tracklist_track_at, tracklist_track_count, BlockKind, NodeRef,
 };
 
 use super::undogeneral::{TimelineAddTrackCommand, TrackReplaceBlockWithGapCommand};
@@ -152,7 +152,11 @@ impl BlockTrimCommand {
 		if self.needs_adjacent_ {
 			// If we're trimming shorter, we need an adjacent, so check if we have a
 			// viable one
-			let adjacent_kind = self.adjacent_.as_ref().map(block_kind).unwrap_or(BlockKind::Other);
+			let adjacent_kind = self
+				.adjacent_
+				.as_ref()
+				.map(block_kind)
+				.unwrap_or(BlockKind::Other);
 			self.we_created_adjacent_ = self.trim_diff_ > Rational::new(0, 1)
 				&& (self.adjacent_.is_none()
 					|| (adjacent_kind != BlockKind::Gap && !self.trim_is_a_roll_edit_));
@@ -176,8 +180,7 @@ impl BlockTrimCommand {
 				}
 			} else if let Some(adjacent) = &self.adjacent_ {
 				// Determine if we're removing the adjacent
-				self.we_removed_adjacent_ =
-					(block_length(adjacent) + self.trim_diff_).is_null();
+				self.we_removed_adjacent_ = (block_length(adjacent) + self.trim_diff_).is_null();
 			}
 		}
 	}
@@ -388,7 +391,10 @@ impl TrackSlideCommand {
 				// A created out adjacent only makes sense when sliding right
 				// (movement > 0): the gap fills [last_out, last_out + movement)
 				// after the last block.
-				block_set_in(gap, block_out(self.blocks.last().expect("non-empty blocks")));
+				block_set_in(
+					gap,
+					block_out(self.blocks.last().expect("non-empty blocks")),
+				);
 				block_set_length_and_media_out(gap, self.movement);
 			}
 			self.we_created_out_adjacent_ = true;
@@ -432,10 +438,7 @@ impl TrackSlideCommand {
 				self.we_removed_in_adjacent_ = true;
 			} else {
 				// Simply resize the adjacent
-				block_set_length_and_media_out(
-					adjacent,
-					block_length(adjacent) + self.movement,
-				);
+				block_set_length_and_media_out(adjacent, block_length(adjacent) + self.movement);
 			}
 		}
 
@@ -495,10 +498,7 @@ impl TrackSlideCommand {
 				track_insert_block_before(&self.track, adjacent, &self.blocks[0]);
 			} else {
 				// Simply resize the adjacent
-				block_set_length_and_media_out(
-					adjacent,
-					block_length(adjacent) - self.movement,
-				);
+				block_set_length_and_media_out(adjacent, block_length(adjacent) - self.movement);
 			}
 		}
 

@@ -25,6 +25,8 @@
 
 /// Position input id (C++ `k_position_input`). Type: vec2; default
 /// `(0, 0)`.
+use crate::node;
+use crate::value;
 pub const POSITION_INPUT: &str = "pos_in";
 
 /// Size input id (C++ `k_size_input`). Type: vec2; default
@@ -79,10 +81,7 @@ impl ShapeNodeBase {
 	/// therefore not representable here (`// CPP-PARITY:
 	/// shapenodebase.cpp` `update_gizmo_positions`).
 	#[allow(dead_code)] // C++ parity helpers; covered by the no-op tests.
-	pub fn update_gizmo_positions(
-		core: &mut crate::node::NodeCore,
-		row: &crate::value::NodeValueRow,
-	) {
+	pub fn update_gizmo_positions(core: &mut node::NodeCore, row: &value::NodeValueRow) {
 		let _ = (core, row);
 	}
 
@@ -95,7 +94,7 @@ impl ShapeNodeBase {
 	/// crate's data model, so the writes are not representable here
 	/// (`// CPP-PARITY: shapenodebase.cpp` `set_rect`).
 	#[allow(dead_code)]
-	pub fn set_rect(core: &mut crate::node::NodeCore, rect: (f64, f64, f64, f64)) {
+	pub fn set_rect(core: &mut node::NodeCore, rect: (f64, f64, f64, f64)) {
 		let _ = (core, rect);
 	}
 
@@ -114,7 +113,7 @@ impl ShapeNodeBase {
 	/// representable here (`// CPP-PARITY: shapenodebase.cpp`
 	/// `gizmo_drag_move`).
 	#[allow(dead_code)]
-	pub fn gizmo_drag_move(core: &mut crate::node::NodeCore, x: f64, y: f64, modifiers: u32) {
+	pub fn gizmo_drag_move(core: &mut node::NodeCore, x: f64, y: f64, modifiers: u32) {
 		let _ = (core, x, y, modifiers);
 	}
 }

@@ -20,6 +20,7 @@
 //! `QUERCUSTASK_E_CANCELLED` (see include/task/error.h).
 
 /// Success.
+use std::result;
 pub const QUERCUSTASK_OK: i32 = 0;
 /// Null handle or invalid argument.
 pub const QUERCUSTASK_E_INVALID: i32 = -80001;
@@ -35,7 +36,7 @@ pub const QUERCUSTASK_E_NOMEM: i32 = -80005;
 pub const QUERCUSTASK_E_CANCELLED: i32 = -80006;
 
 /// Crate-internal result type; the FFI layer maps it to the codes.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, thiserror::Error)]

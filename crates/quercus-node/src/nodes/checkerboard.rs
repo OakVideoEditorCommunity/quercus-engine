@@ -25,13 +25,17 @@
 //! the plain two-color checkerboard only (`color1_in`/`color2_in`, the
 //! upstream `color1`/`color2`).
 
+use super::generatorwithmerge;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Base texture input id (the shared generator-with-merge base). Type:
 /// texture; flags: not-keyframable; this is the generator's effect input.
-pub const BASE_INPUT: &str = super::generatorwithmerge::BASE_INPUT;
+pub const BASE_INPUT: &str = generatorwithmerge::BASE_INPUT;
 
 /// Box size input id (upstream `kParamBoxSize` "Box Size"). Type: vec2;
 /// default `[64.0, 64.0]`; properties: `min = [0.0, 0.0]`; units: pixels
@@ -153,8 +157,8 @@ impl NodeBehavior for CheckerBoardNode {
 			}
 		}
 
-		let job = crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(Job::ShaderJob(ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
@@ -163,7 +167,7 @@ impl NodeBehavior for CheckerBoardNode {
 			params,
 			iterative_input: String::new(),
 		}));
-		super::generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
+		generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
 	}
 
 	/// Shader code request: `"checkerboard"` returns this node's shader;
@@ -172,7 +176,7 @@ impl NodeBehavior for CheckerBoardNode {
 	fn shader_code(&self, request: &str) -> Option<String> {
 		match request {
 			"checkerboard" => Some(Self::shader_frag().to_string()),
-			"mrg" => Some(super::generatorwithmerge::merge_shader_frag().to_string()),
+			"mrg" => Some(generatorwithmerge::merge_shader_frag().to_string()),
 			_ => None,
 		}
 	}
@@ -190,15 +194,15 @@ impl NodeBehavior for CheckerBoardNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut base = crate::input::Input::new(
+	let mut base = input::Input::new(
 		BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	let mut size = crate::input::Input::new(
+	let mut size = input::Input::new(
 		SIZE_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([64.0, 64.0]),
@@ -206,7 +210,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	size.properties = vec![("min".to_string(), crate::value::NodeValue::Vec2([0.0, 0.0]))];
 	core.add_input(size);
 
-	let mut color1 = crate::input::Input::new(
+	let mut color1 = input::Input::new(
 		COLOR1_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([0.1, 0.1, 0.1, 1.0]),
@@ -217,7 +221,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	)];
 	core.add_input(color1);
 
-	let mut color2 = crate::input::Input::new(
+	let mut color2 = input::Input::new(
 		COLOR2_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([0.5, 0.5, 0.5, 1.0]),
@@ -255,165 +259,174 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
-    fn input_names() {
-        let n = CheckerBoardNode;
-        assert_eq!(n.input_name(SIZE_INPUT), "Box Size");
-        assert_eq!(n.input_name(COLOR1_INPUT), "Color 1");
-        assert_eq!(n.input_name(COLOR2_INPUT), "Color 2");
-        assert_eq!(
-            n.input_name(super::super::generatorwithmerge::BASE_INPUT),
-            "Base"
-        );
-    }
+	#[test]
+	fn input_names() {
+		let n = CheckerBoardNode;
+		assert_eq!(n.input_name(SIZE_INPUT), "Box Size");
+		assert_eq!(n.input_name(COLOR1_INPUT), "Color 1");
+		assert_eq!(n.input_name(COLOR2_INPUT), "Color 2");
+		assert_eq!(
+			n.input_name(super::super::generatorwithmerge::BASE_INPUT),
+			"Base"
+		);
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.checkerboard");
-        assert_eq!(
-            core.get_input(SIZE_INPUT).unwrap().default,
-            NodeValue::Vec2([64.0, 64.0])
-        );
-        assert_eq!(
-            core.get_input(COLOR1_INPUT).unwrap().default,
-            NodeValue::Color([0.1, 0.1, 0.1, 1.0])
-        );
-        assert_eq!(
-            core.get_input(COLOR2_INPUT).unwrap().default,
-            NodeValue::Color([0.5, 0.5, 0.5, 1.0])
-        );
-        assert!(core.get_input(COLOR1_INPUT).unwrap().properties.iter().any(
-            |(k, v)| k == "view" && *v == NodeValue::Text("color".into())
-        ));
-        assert_eq!(core.effect_input, BASE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(
+			behavior.type_id(),
+			"org.olivevideoeditor.Olive.checkerboard"
+		);
+		assert_eq!(
+			core.get_input(SIZE_INPUT).unwrap().default,
+			NodeValue::Vec2([64.0, 64.0])
+		);
+		assert_eq!(
+			core.get_input(COLOR1_INPUT).unwrap().default,
+			NodeValue::Color([0.1, 0.1, 0.1, 1.0])
+		);
+		assert_eq!(
+			core.get_input(COLOR2_INPUT).unwrap().default,
+			NodeValue::Color([0.5, 0.5, 0.5, 1.0])
+		);
+		assert!(core
+			.get_input(COLOR1_INPUT)
+			.unwrap()
+			.properties
+			.iter()
+			.any(|(k, v)| k == "view" && *v == NodeValue::Text("color".into())));
+		assert_eq!(core.effect_input, BASE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_pushes_generator_job() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.checkerboard");
-        assert_eq!(payload.shader_id, "checkerboard");
-        assert_eq!(payload.iterations, 1);
-        assert_eq!(payload.effect_input, BASE_INPUT);
-        assert_eq!(payload.iterative_input, "");
-        // The unconnected inputs resolve from the node defaults.
-        assert_eq!(
-            payload.params.get(SIZE_INPUT),
-            Some(&NodeValue::Vec2([64.0, 64.0]))
-        );
-        assert_eq!(
-            payload.params.get(COLOR1_INPUT),
-            Some(&NodeValue::Color([0.1, 0.1, 0.1, 1.0]))
-        );
-        assert_eq!(
-            payload.params.get(COLOR2_INPUT),
-            Some(&NodeValue::Color([0.5, 0.5, 0.5, 1.0]))
-        );
-    }
+	#[test]
+	fn value_pushes_generator_job() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.checkerboard");
+		assert_eq!(payload.shader_id, "checkerboard");
+		assert_eq!(payload.iterations, 1);
+		assert_eq!(payload.effect_input, BASE_INPUT);
+		assert_eq!(payload.iterative_input, "");
+		// The unconnected inputs resolve from the node defaults.
+		assert_eq!(
+			payload.params.get(SIZE_INPUT),
+			Some(&NodeValue::Vec2([64.0, 64.0]))
+		);
+		assert_eq!(
+			payload.params.get(COLOR1_INPUT),
+			Some(&NodeValue::Color([0.1, 0.1, 0.1, 1.0]))
+		);
+		assert_eq!(
+			payload.params.get(COLOR2_INPUT),
+			Some(&NodeValue::Color([0.5, 0.5, 0.5, 1.0]))
+		);
+	}
 
-    #[test]
-    fn value_row_values_win_over_the_node_defaults() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([
-            (SIZE_INPUT.to_string(), NodeValue::Vec2([4.0, 4.0])),
-            (COLOR1_INPUT.to_string(), NodeValue::Color([1.0, 0.0, 0.0, 1.0])),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(
-            payload.params.get(SIZE_INPUT),
-            Some(&NodeValue::Vec2([4.0, 4.0]))
-        );
-        assert_eq!(
-            payload.params.get(COLOR1_INPUT),
-            Some(&NodeValue::Color([1.0, 0.0, 0.0, 1.0]))
-        );
-    }
+	#[test]
+	fn value_row_values_win_over_the_node_defaults() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([
+			(SIZE_INPUT.to_string(), NodeValue::Vec2([4.0, 4.0])),
+			(
+				COLOR1_INPUT.to_string(),
+				NodeValue::Color([1.0, 0.0, 0.0, 1.0]),
+			),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(
+			payload.params.get(SIZE_INPUT),
+			Some(&NodeValue::Vec2([4.0, 4.0]))
+		);
+		assert_eq!(
+			payload.params.get(COLOR1_INPUT),
+			Some(&NodeValue::Color([1.0, 0.0, 0.0, 1.0]))
+		);
+	}
 
-    #[test]
-    fn value_with_base_merges_nested_job() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([(
-            BASE_INPUT.to_string(),
-            NodeValue::Texture(crate::handle::CHandle::null()),
-        )]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let merge = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("merge job payload expected");
-        assert_eq!(merge.shader_id, "mrg");
-        assert_eq!(merge.iterations, 1);
-        assert_eq!(merge.effect_input, BASE_INPUT);
-        assert!(merge.params.contains_key(BASE_INPUT));
-        // The generator's own parameters travel with the nested job; the
-        // merge payload carries only the base and the blend input.
-        assert!(!merge.params.contains_key(COLOR1_INPUT));
-        // The checkerboard job is nested as the merge's blend texture.
-        match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
-            Some(NodeValue::Texture(blend)) => {
-                let nested = unsafe { crate::jobs::shader_job(blend) }
-                    .expect("nested job payload boxed");
-                assert_eq!(nested.shader_id, "checkerboard");
-                assert_eq!(
-                    nested.params.get(COLOR1_INPUT),
-                    Some(&NodeValue::Color([0.1, 0.1, 0.1, 1.0]))
-                );
-            }
-            _ => panic!("nested blend job expected"),
-        }
-    }
+	#[test]
+	fn value_with_base_merges_nested_job() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([(
+			BASE_INPUT.to_string(),
+			NodeValue::Texture(crate::handle::CHandle::null()),
+		)]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let merge =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("merge job payload expected");
+		assert_eq!(merge.shader_id, "mrg");
+		assert_eq!(merge.iterations, 1);
+		assert_eq!(merge.effect_input, BASE_INPUT);
+		assert!(merge.params.contains_key(BASE_INPUT));
+		// The generator's own parameters travel with the nested job; the
+		// merge payload carries only the base and the blend input.
+		assert!(!merge.params.contains_key(COLOR1_INPUT));
+		// The checkerboard job is nested as the merge's blend texture.
+		match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
+			Some(NodeValue::Texture(blend)) => {
+				let nested =
+					unsafe { crate::jobs::shader_job(blend) }.expect("nested job payload boxed");
+				assert_eq!(nested.shader_id, "checkerboard");
+				assert_eq!(
+					nested.params.get(COLOR1_INPUT),
+					Some(&NodeValue::Color([0.1, 0.1, 0.1, 1.0]))
+				);
+			}
+			_ => panic!("nested blend job expected"),
+		}
+	}
 
-    #[test]
-    fn shader_code_dispatches() {
-        let n = CheckerBoardNode;
-        let code = n.shader_code("checkerboard").unwrap();
-        assert!(code.contains("uniform vec2 size_in;"));
-        assert!(code.contains("uniform vec4 color1_in;"));
-        assert!(code.contains("uniform vec4 color2_in;"));
-        assert!(code.contains("uniform vec2 resolution_in;"));
-        assert!(code.contains("float parity = s - 2.0 * floor(s * 0.5);"));
-        assert!(!code.contains("switch"));
-        assert!(n
-            .shader_code("mrg")
-            .unwrap()
-            .contains("base_col *= 1.0 - blend_col.a;"));
-        assert!(n.shader_code("other").is_none());
-    }
+	#[test]
+	fn shader_code_dispatches() {
+		let n = CheckerBoardNode;
+		let code = n.shader_code("checkerboard").unwrap();
+		assert!(code.contains("uniform vec2 size_in;"));
+		assert!(code.contains("uniform vec4 color1_in;"));
+		assert!(code.contains("uniform vec4 color2_in;"));
+		assert!(code.contains("uniform vec2 resolution_in;"));
+		assert!(code.contains("float parity = s - 2.0 * floor(s * 0.5);"));
+		assert!(!code.contains("switch"));
+		assert!(n
+			.shader_code("mrg")
+			.unwrap()
+			.contains("base_col *= 1.0 - blend_col.a;"));
+		assert!(n.shader_code("other").is_none());
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Checkerboard");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Checkerboard");
+	}
 }

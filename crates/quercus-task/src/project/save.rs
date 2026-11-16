@@ -25,6 +25,8 @@
 //!
 //! CPP-PARITY: src/task/src/project/save/save.h
 
+use quercus_node::serializer;
+use std::fs;
 use std::sync::{Arc, Mutex};
 
 use quercus_node::project::Project;
@@ -80,9 +82,7 @@ impl TaskBehavior for ProjectSaveTask {
 			));
 		}
 
-		let xml = match quercus_node::serializer::save(
-			&self.project.lock().unwrap_or_else(|e| e.into_inner()),
-		) {
+		let xml = match serializer::save(&self.project.lock().unwrap_or_else(|e| e.into_inner())) {
 			Ok(xml) => xml,
 			Err(e) => {
 				let _ = e;
@@ -91,7 +91,7 @@ impl TaskBehavior for ProjectSaveTask {
 			}
 		};
 
-		if let Err(e) = std::fs::write(&using_filename, xml) {
+		if let Err(e) = fs::write(&using_filename, xml) {
 			task.set_error(&format!("Failed to open file for writing: {e}"));
 			return Err(Error::Failed("Failed to save project".to_string()));
 		}

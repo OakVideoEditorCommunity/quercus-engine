@@ -23,6 +23,7 @@
 //! out-of-range returns kOfxStatErrBadIndex, a type mismatch returns
 //! kOfxStatErrBadHandle).
 
+use std::ffi;
 use std::sync::Mutex;
 
 use crate::error::{Error, Result};
@@ -36,9 +37,9 @@ pub enum Value {
 	/// Double precision.
 	Double(f64),
 	/// UTF-8 string (a NUL-terminated `char*` on the OFX side).
-	String(std::ffi::CString),
+	String(ffi::CString),
 	/// Opaque pointer (e.g. `OfxImageEffectHandle` cross-references).
-	Pointer(*mut std::ffi::c_void),
+	Pointer(*mut ffi::c_void),
 }
 
 // 裸指针默认禁 Send/Sync；但属性集语义把指针当作**不透明令牌**：

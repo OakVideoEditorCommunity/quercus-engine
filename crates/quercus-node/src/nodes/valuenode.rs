@@ -18,6 +18,7 @@
 //! `src/node/src/input/value/valuenode.{h,cpp}`, `olive::ValueNode`).
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 use crate::value::ValueType;
 
@@ -152,20 +153,20 @@ impl NodeBehavior for ValueNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut type_input = crate::input::Input::new(
+	let mut type_input = input::Input::new(
 		TYPE_INPUT,
 		ValueType::Combo,
 		crate::value::NodeValue::Combo(0),
 	);
-	type_input.flags |= crate::input::flags::NOT_CONNECTABLE | crate::input::flags::NOT_KEYFRAMABLE;
+	type_input.flags |= input::flags::NOT_CONNECTABLE | input::flags::NOT_KEYFRAMABLE;
 	core.add_input(type_input);
 
-	let mut value_input = crate::input::Input::new(
+	let mut value_input = input::Input::new(
 		VALUE_INPUT,
 		SUPPORTED_TYPES[0],
 		crate::value::NodeValue::None,
 	);
-	value_input.flags |= crate::input::flags::NOT_CONNECTABLE;
+	value_input.flags |= input::flags::NOT_CONNECTABLE;
 	core.add_input(value_input);
 
 	(core, Box::new(ValueNode))

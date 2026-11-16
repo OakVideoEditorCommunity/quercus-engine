@@ -20,6 +20,9 @@
 //! upstream code copied).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -124,7 +127,10 @@ impl NodeBehavior for PositionNode {
 		time: quercus_core::Rational,
 		table: &mut crate::value::NodeValueTable,
 	) {
-		if !matches!(inputs.get(TEXTURE_INPUT), Some(crate::value::NodeValue::Texture(_))) {
+		if !matches!(
+			inputs.get(TEXTURE_INPUT),
+			Some(crate::value::NodeValue::Texture(_))
+		) {
 			return;
 		}
 
@@ -141,16 +147,18 @@ impl NodeBehavior for PositionNode {
 
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: TEXTURE_INPUT.to_string(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: TEXTURE_INPUT.to_string(),
+				},
+			))),
 			None,
 		);
 	}
@@ -173,15 +181,15 @@ impl NodeBehavior for PositionNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		OFFSET_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
@@ -213,115 +221,115 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
-        NodeValue::Texture(crate::handle::CHandle::null())
-    }
+	fn tex() -> NodeValue {
+		NodeValue::Texture(crate::handle::CHandle::null())
+	}
 
-    #[test]
-    fn input_names() {
-        let n = PositionNode;
-        assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
-        assert_eq!(n.input_name(OFFSET_INPUT), "Translate");
-        assert_eq!(n.input_name("other_in"), "other_in");
-    }
+	#[test]
+	fn input_names() {
+		let n = PositionNode;
+		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
+		assert_eq!(n.input_name(OFFSET_INPUT), "Translate");
+		assert_eq!(n.input_name("other_in"), "other_in");
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.position");
-        assert_eq!(
-            core.get_input(OFFSET_INPUT).unwrap().default,
-            NodeValue::Vec2([0.0, 0.0])
-        );
-        assert_ne!(
-            core.get_input(TEXTURE_INPUT).unwrap().flags & crate::input::flags::NOT_KEYFRAMABLE,
-            0
-        );
-        assert_eq!(core.effect_input, TEXTURE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.position");
+		assert_eq!(
+			core.get_input(OFFSET_INPUT).unwrap().default,
+			NodeValue::Vec2([0.0, 0.0])
+		);
+		assert_ne!(
+			core.get_input(TEXTURE_INPUT).unwrap().flags & crate::input::flags::NOT_KEYFRAMABLE,
+			0
+		);
+		assert_eq!(core.effect_input, TEXTURE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_no_texture_pushes_nothing() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        assert!(table.is_empty());
-    }
+	#[test]
+	fn value_no_texture_pushes_nothing() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		assert!(table.is_empty());
+	}
 
-    #[test]
-    fn value_pushes_shader_job_payload() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([(TEXTURE_INPUT.to_string(), tex())]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.position");
-        assert_eq!(payload.shader_id, "");
-        assert_eq!(payload.iterations, 1);
-        assert_eq!(payload.effect_input, TEXTURE_INPUT);
-        assert_eq!(payload.iterative_input, TEXTURE_INPUT);
-        assert_eq!(payload.time, Rational::new(0, 1));
-        assert!(payload.params.contains_key(TEXTURE_INPUT));
-        // The offset is not in the row: it resolves from the node default.
-        assert_eq!(
-            payload.params.get(OFFSET_INPUT),
-            Some(&NodeValue::Vec2([0.0, 0.0]))
-        );
-    }
+	#[test]
+	fn value_pushes_shader_job_payload() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([(TEXTURE_INPUT.to_string(), tex())]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.position");
+		assert_eq!(payload.shader_id, "");
+		assert_eq!(payload.iterations, 1);
+		assert_eq!(payload.effect_input, TEXTURE_INPUT);
+		assert_eq!(payload.iterative_input, TEXTURE_INPUT);
+		assert_eq!(payload.time, Rational::new(0, 1));
+		assert!(payload.params.contains_key(TEXTURE_INPUT));
+		// The offset is not in the row: it resolves from the node default.
+		assert_eq!(
+			payload.params.get(OFFSET_INPUT),
+			Some(&NodeValue::Vec2([0.0, 0.0]))
+		);
+	}
 
-    #[test]
-    fn value_row_offset_wins_over_the_node_value() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([
-            (TEXTURE_INPUT.to_string(), tex()),
-            (OFFSET_INPUT.to_string(), NodeValue::Vec2([3.0, 2.0])),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(
-            payload.params.get(OFFSET_INPUT),
-            Some(&NodeValue::Vec2([3.0, 2.0]))
-        );
-    }
+	#[test]
+	fn value_row_offset_wins_over_the_node_value() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([
+			(TEXTURE_INPUT.to_string(), tex()),
+			(OFFSET_INPUT.to_string(), NodeValue::Vec2([3.0, 2.0])),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(
+			payload.params.get(OFFSET_INPUT),
+			Some(&NodeValue::Vec2([3.0, 2.0]))
+		);
+	}
 
-    #[test]
-    fn shader_declares_the_uniforms_it_reads() {
-        let code = PositionNode.shader_code("").unwrap();
-        assert!(code.contains("uniform sampler2D tex_in;"));
-        assert!(code.contains("uniform vec2 offset_in;"));
-        assert!(code.contains("uniform vec2 resolution_in;"));
-        assert!(code.contains("vec2 uv = (px - offset + half_res) / resolution_in;"));
-        // Off-frame samples are masked to transparent, not clamped.
-        assert!(code.contains("frag_color = col * inside;"));
-        assert!(!code.contains("switch"));
-    }
+	#[test]
+	fn shader_declares_the_uniforms_it_reads() {
+		let code = PositionNode.shader_code("").unwrap();
+		assert!(code.contains("uniform sampler2D tex_in;"));
+		assert!(code.contains("uniform vec2 offset_in;"));
+		assert!(code.contains("uniform vec2 resolution_in;"));
+		assert!(code.contains("vec2 uv = (px - offset + half_res) / resolution_in;"));
+		// Off-frame samples are masked to transparent, not clamped.
+		assert!(code.contains("frag_color = col * inside;"));
+		assert!(!code.contains("switch"));
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Position");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Position");
+	}
 }

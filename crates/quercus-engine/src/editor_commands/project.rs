@@ -7,8 +7,9 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{editing::*, generators::*, media::*, moving::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	editing::*, generators::*, media::*, moving::*, sequence::*, tracks::*, transitions::*,
+};
 
 /// Lock a project, recovering from a poisoned lock (a panicking command
 /// body must not wedge every later edit).
@@ -127,7 +128,8 @@ pub fn create_project() -> ProjectRef {
 pub fn load_ove(path: &Path) -> Result<ProjectRef, String> {
 	let xml = std::fs::read_to_string(path)
 		.map_err(|e| format!("failed to read \"{}\": {e}", path.display()))?;
-	let project = quercus_node::serializer::load(&xml).map_err(|e| format!("failed to parse: {e}"))?;
+	let project =
+		quercus_node::serializer::load(&xml).map_err(|e| format!("failed to parse: {e}"))?;
 	let abs = if path.is_absolute() {
 		path.to_path_buf()
 	} else {
@@ -243,8 +245,11 @@ pub fn create_sequence_with_params(
 	// Mount the sequence under the root folder. Not pushed to the undo
 	// stack: like the default track layout below, it is part of the
 	// sequence's creation, not an undoable edit.
-	quercus_task::nodeops::folder_add_child_command((project.clone(), root), (project.clone(), seq))
-		.redo_now();
+	quercus_task::nodeops::folder_add_child_command(
+		(project.clone(), root),
+		(project.clone(), seq),
+	)
+	.redo_now();
 	// A new sequence starts with the default 2 video + 2 audio track
 	// layout (user-mandated NLE default: V1, V2 on top, A1, A2 below).
 	// Driven directly through the add-track commands' redo — NOT pushed
@@ -280,8 +285,10 @@ pub fn create_folder(project: &ProjectRef, name: &str) -> Result<NodeId, String>
 		let mut guard = lock(project);
 		guard.graph.add_node(core, behavior)
 	};
-	let cmd =
-		quercus_task::nodeops::folder_add_child_command((project.clone(), root), (project.clone(), id));
+	let cmd = quercus_task::nodeops::folder_add_child_command(
+		(project.clone(), root),
+		(project.clone(), id),
+	);
 	quercus_undo::global::push(cmd, "New Folder").map_err(|e| e.to_string())?;
 	Ok(id)
 }
@@ -411,8 +418,11 @@ pub fn ensure_sequences_mounted(project: &ProjectRef) {
 		(root, orphans)
 	};
 	for id in orphans {
-		quercus_task::nodeops::folder_add_child_command((project.clone(), root), (project.clone(), id))
-			.redo_now();
+		quercus_task::nodeops::folder_add_child_command(
+			(project.clone(), root),
+			(project.clone(), id),
+		)
+		.redo_now();
 	}
 }
 

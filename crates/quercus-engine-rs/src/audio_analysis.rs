@@ -1,12 +1,21 @@
 //! Safe, owned audio-analysis DTOs over the engine C ABI.
 
+use crate::types;
 use std::ffi::c_void;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_waveform_add_ref(waveform: *const c_void);
 	fn quercus_waveform_release(waveform: *const c_void);
@@ -53,10 +62,10 @@ unsafe extern "C" {
 	fn quercus_audio_place_by_source_time(
 		reference: *const SourceClip,
 		candidate: *const SourceClip,
-		reference_timeline_in: crate::types::Rational,
+		reference_timeline_in: types::Rational,
 	) -> SyncPlacement;
 	fn quercus_audio_place_by_waveform_offset(
-		reference_timeline_in: crate::types::Rational,
+		reference_timeline_in: types::Rational,
 		candidate_offset_samples: i64,
 		sample_rate: i32,
 	) -> SyncPlacement;
@@ -67,9 +76,9 @@ unsafe extern "C" {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SourceClip {
 	/// The `source_start_time` field.
-	pub source_start_time: crate::types::Rational,
+	pub source_start_time: types::Rational,
 	/// The `media_in` field.
-	pub media_in: crate::types::Rational,
+	pub media_in: types::Rational,
 	/// The `has_source_start_time` field.
 	pub has_source_start_time: bool,
 }
@@ -79,7 +88,7 @@ pub struct SourceClip {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SyncPlacement {
 	/// The `timeline_in` field.
-	pub timeline_in: crate::types::Rational,
+	pub timeline_in: types::Rational,
 	/// The `valid` field.
 	pub valid: bool,
 }
@@ -88,7 +97,7 @@ pub struct SyncPlacement {
 pub fn place_by_source_time(
 	reference: &SourceClip,
 	candidate: &SourceClip,
-	reference_timeline_in: crate::types::Rational,
+	reference_timeline_in: types::Rational,
 ) -> SyncPlacement {
 	unsafe { quercus_audio_place_by_source_time(reference, candidate, reference_timeline_in) }
 }
@@ -112,7 +121,7 @@ pub fn place_by_source_time(
 /// The computed placement; `valid = false` with the default rational when
 /// `sample_rate <= 0` or the computed time is NaN.
 pub fn place_by_waveform_offset(
-	reference_timeline_in: crate::types::Rational,
+	reference_timeline_in: types::Rational,
 	candidate_offset_samples: i64,
 	sample_rate: i32,
 ) -> SyncPlacement {
@@ -380,37 +389,38 @@ impl Drop for Waveform {
 
 #[cfg(test)]
 mod tests {
+	use crate::task;
+	use crate::test_support;
+	use crate::types;
+	use std::f64;
+	use std::fs;
 	#[test]
 	fn source_time_and_waveform_placement_are_validated() {
 		let reference = super::SourceClip {
-			source_start_time: crate::types::Rational::new(10, 1),
-			media_in: crate::types::Rational::new(2, 1),
+			source_start_time: types::Rational::new(10, 1),
+			media_in: types::Rational::new(2, 1),
 			has_source_start_time: true,
 		};
 		let candidate = super::SourceClip {
-			source_start_time: crate::types::Rational::new(12, 1),
-			media_in: crate::types::Rational::new(0, 1),
+			source_start_time: types::Rational::new(12, 1),
+			media_in: types::Rational::new(0, 1),
 			has_source_start_time: true,
 		};
 		let placement =
-			super::place_by_source_time(&reference, &candidate, crate::types::Rational::new(5, 1));
+			super::place_by_source_time(&reference, &candidate, types::Rational::new(5, 1));
 		assert!(placement.valid);
-		assert_eq!(placement.timeline_in, crate::types::Rational::new(5, 1));
+		assert_eq!(placement.timeline_in, types::Rational::new(5, 1));
 		let invalid = super::SourceClip {
 			has_source_start_time: false,
 			..candidate
 		};
 		assert!(
-			!super::place_by_source_time(&reference, &invalid, crate::types::Rational::new(5, 1))
-				.valid
+			!super::place_by_source_time(&reference, &invalid, types::Rational::new(5, 1)).valid
 		);
-		let placement =
-			super::place_by_waveform_offset(crate::types::Rational::new(5, 1), 4_800, 48_000);
+		let placement = super::place_by_waveform_offset(types::Rational::new(5, 1), 4_800, 48_000);
 		assert!(placement.valid);
 		assert!((placement.timeline_in.to_f64() - 5.1).abs() < 1e-9);
-		assert!(
-			!super::place_by_waveform_offset(crate::types::Rational::new(5, 1), 4_800, 0).valid
-		);
+		assert!(!super::place_by_waveform_offset(types::Rational::new(5, 1), 4_800, 0).valid);
 	}
 
 	#[test]
@@ -429,7 +439,7 @@ mod tests {
 		);
 
 		let reference: Vec<f64> = (0..10)
-			.map(|index| (2.0 * std::f64::consts::PI * 0.7 * index as f64).sin())
+			.map(|index| (2.0 * f64::consts::PI * 0.7 * index as f64).sin())
 			.collect();
 		let mut stretched = Vec::new();
 		for index in 0..reference.len() {
@@ -491,11 +501,11 @@ mod tests {
 
 	#[test]
 	fn waveform_task_transfers_real_metadata_and_peaks_once() {
-		let media = crate::test_support::make_test_clip_with_audio("waveform_task");
-		let task = crate::task::extract_waveform(&media, 0, 256).expect("waveform task");
+		let media = test_support::make_test_clip_with_audio("waveform_task");
+		let task = task::extract_waveform(&media, 0, 256).expect("waveform task");
 		assert!(task.title().contains("Analyzing Audio"));
 		assert!(task.wait(), "waveform extraction failed: {}", task.error());
-		assert_eq!(task.state(), crate::task::TaskState::Succeeded);
+		assert_eq!(task.state(), task::TaskState::Succeeded);
 		let waveform = task.take_waveform().expect("owned waveform");
 		assert!(
 			task.take_waveform().is_none(),
@@ -516,11 +526,11 @@ mod tests {
 		drop(cloned);
 		assert_eq!(waveform.info(), info);
 
-		let missing = crate::task::extract_waveform("/nonexistent/quercus-waveform-input.mp4", 0, 256)
+		let missing = task::extract_waveform("/nonexistent/quercus-waveform-input.mp4", 0, 256)
 			.expect("invalid media fails asynchronously");
 		assert!(!missing.wait());
 		assert!(!missing.error().is_empty());
 		assert!(missing.take_waveform().is_none());
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(media);
 	}
 }

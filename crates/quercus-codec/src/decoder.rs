@@ -23,6 +23,11 @@
 //! buffers matching the C ABI, not `quercus_core::SampleBuffer` (which the
 //! crate does not export).
 
+use crate::error;
+use crate::ffmpeg;
+use crate::mediaio;
+use crate::oiio;
+use quercus_core::texture;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -215,11 +220,7 @@ impl CodecStream {
 	/// return false), and `block` is the opaque timeline-block token that
 	/// this type only stores and compares. Read the parts back with
 	/// [`Self::filename`], [`Self::stream`] and [`Self::block`].
-	pub fn with_block(
-		filename: String,
-		stream: i32,
-		block: Option<QuercusNodeBlock>,
-	) -> Self {
+	pub fn with_block(filename: String, stream: i32, block: Option<QuercusNodeBlock>) -> Self {
 		CodecStream {
 			filename,
 			stream,
@@ -235,7 +236,7 @@ impl CodecStream {
 	/// The file exists: either on disk or through the installed media-I/O
 	/// provider (a custom source need not map to a local path).
 	pub fn exists(&self) -> bool {
-		if crate::mediaio::provider_handles(&self.filename) {
+		if mediaio::provider_handles(&self.filename) {
 			return true;
 		}
 		Path::new(&self.filename).exists()
@@ -289,23 +290,19 @@ pub trait Decoder: Send + Sync {
 	}
 
 	/// Whether this decoder can read the given file (static probe).
-	fn probe(
-		&self,
-		filename: &str,
-		cancelled: Option<&CancelAtom>,
-	) -> Option<FootageDescription>;
+	fn probe(&self, filename: &str, cancelled: Option<&CancelAtom>) -> Option<FootageDescription>;
 
 	/// Open `stream` for decoding. Thread-safe.
-	fn open(&self, stream: &CodecStream) -> crate::error::Result<()>;
+	fn open(&self, stream: &CodecStream) -> error::Result<()>;
 
 	/// Close the currently open stream (safe when closed).
-	fn close(&self) -> crate::error::Result<()>;
+	fn close(&self) -> error::Result<()>;
 
 	/// The currently open stream (locked accessor).
 	fn stream(&self) -> CodecStream;
 
 	/// Retrieve a video frame into CPU memory.
-	fn retrieve_video_frame(&self, p: &RetrieveVideoParams) -> crate::error::Result<Arc<Frame>>;
+	fn retrieve_video_frame(&self, p: &RetrieveVideoParams) -> error::Result<Arc<Frame>>;
 
 	/// Retrieve a video frame as an imported GPU planar texture (M5 zero
 	/// copy). `Ok(None)` when the frame is not an importable hardware
@@ -317,13 +314,13 @@ pub trait Decoder: Send + Sync {
 	fn retrieve_video_frame_gpu(
 		&self,
 		p: &RetrieveVideoParams,
-	) -> crate::error::Result<Option<quercus_core::texture::Texture>> {
+	) -> error::Result<Option<texture::Texture>> {
 		let _ = p;
 		Ok(None)
 	}
 
 	/// Retrieve a video frame as a render texture (owned by caller).
-	fn retrieve_video(&self, p: &RetrieveVideoParams) -> crate::error::Result<QuercusRenderTexture>;
+	fn retrieve_video(&self, p: &RetrieveVideoParams) -> error::Result<QuercusRenderTexture>;
 
 	/// Retrieve interleaved audio covering `range` into `dest` (floats).
 	fn retrieve_audio(
@@ -332,7 +329,7 @@ pub trait Decoder: Send + Sync {
 		range: &TimeRange,
 		sample_rate: i32,
 		channel_layout: u64,
-	) -> crate::error::Result<RetrieveAudioStatus>;
+	) -> error::Result<RetrieveAudioStatus>;
 
 	/// Conform the open stream's audio into per-channel pcm files.
 	///
@@ -348,7 +345,7 @@ pub trait Decoder: Send + Sync {
 		channel_layout: u64,
 		sample_format: i32,
 		cancelled: Option<&CancelAtom>,
-	) -> crate::error::Result<()>;
+	) -> error::Result<()>;
 
 	/// Unless the media requires it, prefer hardware over software (e.g. the
 	/// FFmpeg decoder's platform hwaccel). The decode-session cache evicts
@@ -434,8 +431,8 @@ pub fn receive_list_of_all_decoders() -> Vec<Arc<dyn Decoder>> {
 		}
 	}
 	vec![
-		Arc::new(crate::oiio::OIIODecoder::new()),
-		Arc::new(crate::ffmpeg::FFmpegDecoder::new()),
+		Arc::new(oiio::OIIODecoder::new()),
+		Arc::new(ffmpeg::FFmpegDecoder::new()),
 	]
 }
 
@@ -806,7 +803,10 @@ mod tests_builtin {
 		assert!(!d.supports_audio());
 		assert!(!d.hardware_decoding());
 		assert_eq!(d.get_audio_start_offset(), Rational::new(0, 1));
-		assert!(d.retrieve_video_frame_gpu(&test_params()).unwrap().is_none());
+		assert!(d
+			.retrieve_video_frame_gpu(&test_params())
+			.unwrap()
+			.is_none());
 	}
 
 	#[test]

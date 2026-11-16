@@ -26,7 +26,9 @@
 //! whole frames).
 
 use std::cell::RefCell;
+use std::env;
 use std::sync::Arc;
+use std::time;
 
 use crate::previewdevice::PreviewAudioDevice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -39,7 +41,7 @@ const FRAMES_PER_BUFFER: u32 = 512;
 /// QUERCUS_DEBUG_AUDIO-gated diagnostics for the output stream.
 fn stream_dbg_enabled() -> bool {
 	static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-	*ENABLED.get_or_init(|| std::env::var_os("QUERCUS_DEBUG_AUDIO").is_some())
+	*ENABLED.get_or_init(|| env::var_os("QUERCUS_DEBUG_AUDIO").is_some())
 }
 
 /// An open (or openable) cpal output stream.
@@ -124,7 +126,7 @@ impl PortAudioOutput {
 		// QUERCUS_DEBUG_AUDIO: true device-side request rate (callbacks/s and
 		// frames/s), aggregated once per second — this is the ground truth
 		// for production/consumption mismatch hunts.
-		let dbg_stats = RefCell::new((0u64, 0u64, std::time::Instant::now()));
+		let dbg_stats = RefCell::new((0u64, 0u64, time::Instant::now()));
 		let callback = move |out: &mut [f32], _info: &cpal::OutputCallbackInfo| {
 			let total = out.len();
 			if stream_dbg_enabled() {
@@ -132,7 +134,7 @@ impl PortAudioOutput {
 				st.0 += total as u64;
 				st.1 += 1;
 				let el = st.2.elapsed();
-				if el >= std::time::Duration::from_secs(1) {
+				if el >= time::Duration::from_secs(1) {
 					let secs = el.as_secs_f64();
 					eprintln!(
 						"[audio-stream] callback: {:.1} calls/s, {:.0} samples/s ({} ch)",
@@ -142,7 +144,7 @@ impl PortAudioOutput {
 					);
 					st.0 = 0;
 					st.1 = 0;
-					st.2 = std::time::Instant::now();
+					st.2 = time::Instant::now();
 				}
 			}
 			let mut scratch = scratch.borrow_mut();

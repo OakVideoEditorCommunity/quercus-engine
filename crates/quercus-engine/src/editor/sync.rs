@@ -1,5 +1,6 @@
 //! Read-only clip metadata used by synchronization eligibility and placement.
 
+use crate::editor_commands;
 use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
 
@@ -58,11 +59,11 @@ pub unsafe extern "C" fn quercus_editor_clip_sync_info(
 	let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
 	let project = state.project.lock().unwrap_or_else(|e| e.into_inner());
 	let Some((timeline_in, timeline_out, media_in)) =
-		crate::editor_commands::clip_range(&project.graph, clip)
+		editor_commands::clip_range(&project.graph, clip)
 	else {
 		return false;
 	};
-	let source = crate::editor_commands::find_input_footage(&project.graph, clip)
+	let source = editor_commands::find_input_footage(&project.graph, clip)
 		.and_then(|footage| project.graph.get(footage))
 		.and_then(|entry| entry.behavior.as_any())
 		.and_then(|behavior| behavior.downcast_ref::<FootageBehavior>());
@@ -106,7 +107,7 @@ pub unsafe extern "C" fn quercus_editor_clip_media_filename(
 	};
 	let project = session.project();
 	let guard = project.lock().unwrap_or_else(|e| e.into_inner());
-	crate::editor_commands::clip_media_filename(&guard.graph, clip)
+	editor_commands::clip_media_filename(&guard.graph, clip)
 		.map(|filename| copy_str_out(&filename, buf, buf_len))
 		.unwrap_or(-1)
 }

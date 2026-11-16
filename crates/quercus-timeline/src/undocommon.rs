@@ -72,7 +72,10 @@ impl Command for RemoveNodeCommand {
 /// `node_can_be_removed(Node)`: true when the node has no output
 /// connections (timelineundocommon.h).
 pub fn node_can_be_removed(node: &NodeRef) -> bool {
-	let p = node.project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+	let p = node
+		.project
+		.lock()
+		.unwrap_or_else(|poisoned| poisoned.into_inner());
 	p.graph.output_connections(node.id).is_empty()
 }
 

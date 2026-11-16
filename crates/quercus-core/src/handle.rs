@@ -27,6 +27,7 @@
 //! unaffected.
 
 use std::ffi::c_void;
+use std::ptr;
 
 /// ABI value handle mirroring the C handle struct
 /// (`{ctx, addref, release, abi_version}`) from `include/common/handle.h`.
@@ -67,7 +68,7 @@ impl CHandle {
 	/// The empty handle.
 	pub const fn null() -> Self {
 		CHandle {
-			ctx: std::ptr::null_mut(),
+			ctx: ptr::null_mut(),
 			addref: None,
 			release: None,
 			abi_version: 0,

@@ -27,7 +27,10 @@
 use crate::factory::NodeMeta;
 use crate::graph::Graph;
 use crate::id::NodeId;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::serializer;
+use std::any;
 
 /// Reference to an input of a node inside the group's context
 /// (C++ `NodeInput`: node pointer + input id + array element).
@@ -80,7 +83,7 @@ impl NodeGroup {
 		core: &mut NodeCore,
 		input: InnerInput,
 		force_id: &str,
-		descriptor: &crate::input::Input,
+		descriptor: &input::Input,
 	) -> String {
 		for (id, inner) in &self.input_passthroughs {
 			if inner == &input {
@@ -101,7 +104,7 @@ impl NodeGroup {
 			force_id.to_string()
 		};
 
-		core.add_input(crate::input::Input {
+		core.add_input(input::Input {
 			id: id.clone(),
 			value_type: descriptor.value_type,
 			default: descriptor.default.clone(),
@@ -248,7 +251,7 @@ impl NodeBehavior for NodeGroup {
 	/// target, per-input name/flags/properties) requires a graph the
 	/// trait signature does not carry, so only the core-visible
 	/// passthrough data is written: id, input and element.
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = core;
 		writer.start_element("inputpassthroughs");
 		for (id, inner) in &self.input_passthroughs {
@@ -266,11 +269,7 @@ impl NodeBehavior for NodeGroup {
 	/// the C++ defers the node references into `SerializedData` and
 	/// resolves them in `PostLoadEvent`, a channel this crate's
 	/// serializer does not drive — `post_load` is therefore a no-op.
-	fn load_custom(
-		&mut self,
-		_core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, _core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		while reader.next_start_element() {
 			match reader.name() {
 				"inputpassthroughs" => {
@@ -318,12 +317,12 @@ impl NodeBehavior for NodeGroup {
 	}
 
 	/// Downcast (C++ `dynamic_cast<NodeGroup *>`).
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		Some(self)
 	}
 
 	/// See [`NodeBehavior::as_any`].
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		Some(self)
 	}
 }
@@ -335,7 +334,7 @@ impl NodeBehavior for NodeGroup {
 /// `k_dont_show_in_create_menu = 0x8` = [`crate::input::flags::HIDDEN`]).
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	core.flags |= crate::input::flags::HIDDEN as u64;
+	core.flags |= input::flags::HIDDEN as u64;
 	(
 		core,
 		Box::new(NodeGroup {

@@ -18,6 +18,7 @@
 //! `olive::TimeRemapNode`).
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 use crate::value::{NodeValue, NodeValueRow, NodeValueTable};
 use quercus_core::{Rational, TimeRange};
@@ -175,12 +176,12 @@ impl NodeBehavior for TimeRemapNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut time_input = crate::input::Input::new(
+	let mut time_input = input::Input::new(
 		TIME_INPUT,
 		crate::value::ValueType::Rational,
 		NodeValue::Rational(Rational::new(0, 1)),
 	);
-	time_input.flags |= crate::input::flags::NOT_CONNECTABLE;
+	time_input.flags |= input::flags::NOT_CONNECTABLE;
 	time_input.properties = vec![
 		("view".to_string(), NodeValue::Text("time".to_string())),
 		("viewlock".to_string(), NodeValue::Boolean(true)),
@@ -188,8 +189,8 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	core.add_input(time_input);
 
 	let mut input_input =
-		crate::input::Input::new(INPUT_INPUT, crate::value::ValueType::None, NodeValue::None);
-	input_input.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+		input::Input::new(INPUT_INPUT, crate::value::ValueType::None, NodeValue::None);
+	input_input.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(input_input);
 
 	(core, Box::new(TimeRemapNode))

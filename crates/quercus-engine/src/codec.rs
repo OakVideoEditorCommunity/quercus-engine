@@ -1,11 +1,16 @@
 //! C ABI bindings for quercus-codec: proxy manager, export format/codec
 //! enumerations, and the background-task submit lane.
 
+use std::ptr;
+use std::slice;
+use std::str;
+#[cfg(test)]
+use std::sync;
 pub(crate) mod decoder;
 mod encoder;
 mod exportcodec;
-mod frame;
 mod exportformat;
+mod frame;
 mod proxymanager;
 mod task;
 
@@ -18,7 +23,7 @@ pub(crate) fn copy_str_out(s: &str, buf: *mut u8, buf_len: usize) -> i32 {
 	if !buf.is_null() && buf_len > 0 {
 		let n = bytes.len().min(buf_len - 1);
 		unsafe {
-			std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
+			ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n);
 			*buf.add(n) = 0;
 		}
 	}
@@ -42,14 +47,14 @@ pub(crate) unsafe fn str_arg<'a>(ptr: *const u8, len: usize) -> Option<&'a str> 
 	if ptr.is_null() {
 		return None;
 	}
-	let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-	std::str::from_utf8(bytes).ok()
+	let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+	str::from_utf8(bytes).ok()
 }
 
 /// Serializes tests that touch the process-global task-submit registry
 /// (the codec task tests and the proxy get_or_start tests).
 #[cfg(test)]
-pub(crate) static TASK_REG_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TASK_REG_SERIAL: sync::Mutex<()> = sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

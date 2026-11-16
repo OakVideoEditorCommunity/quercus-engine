@@ -4,8 +4,11 @@
 //! crate-private so safe SDK users never handle operation-specific pointer slots.
 //! Keep opcode order and every field synchronized with the engine definitions.
 
+use crate::codec;
 use crate::node::{NodeId, NodeValue};
 use crate::types::{Rational, TimeRange};
+use std::ffi;
+use std::ptr;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
@@ -151,7 +154,7 @@ pub(crate) struct QuercusEditParams {
 	pub bezier_in_y: f64,
 	pub bezier_out_x: f64,
 	pub bezier_out_y: f64,
-	pub proxy_params: crate::codec::ProxyParams,
+	pub proxy_params: codec::ProxyParams,
 	pub name: *const u8,
 	pub name_len: usize,
 	pub path: *const u8,
@@ -200,22 +203,22 @@ impl Default for QuercusEditParams {
 			bezier_in_y: 0.0,
 			bezier_out_x: 0.0,
 			bezier_out_y: 0.0,
-			proxy_params: crate::codec::ProxyParams::default(),
-			name: std::ptr::null(),
+			proxy_params: codec::ProxyParams::default(),
+			name: ptr::null(),
 			name_len: 0,
-			path: std::ptr::null(),
+			path: ptr::null(),
 			path_len: 0,
-			input_id: std::ptr::null(),
+			input_id: ptr::null(),
 			input_id_len: 0,
-			ids: std::ptr::null(),
+			ids: ptr::null(),
 			ids_len: 0,
-			placements: std::ptr::null(),
+			placements: ptr::null(),
 			placements_len: 0,
-			values: std::ptr::null(),
+			values: ptr::null(),
 			values_len: 0,
-			result_ids: std::ptr::null_mut(),
+			result_ids: ptr::null_mut(),
 			result_ids_capacity: 0,
-			result_clipboard: std::ptr::null_mut(),
+			result_clipboard: ptr::null_mut(),
 			result_clipboard_capacity: 0,
 		}
 	}
@@ -233,12 +236,22 @@ pub(crate) struct QuercusEditResult {
 	pub clipboard_len: usize,
 }
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	/// Executes the operation once. Returns 0, or a negative engine error code.
 	pub(crate) fn quercus_editor_edit(
-		session: *mut std::ffi::c_void,
+		session: *mut ffi::c_void,
 		op: u32,
 		params: *const QuercusEditParams,
 		result: *mut QuercusEditResult,

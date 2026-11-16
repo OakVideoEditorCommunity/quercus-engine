@@ -23,7 +23,9 @@
 use std::collections::BTreeMap;
 use std::ffi::CStr;
 
-use quercus_codec::decoder::{receive_list_of_all_decoders, CodecStream, Decoder as _, RetrieveAudioStatus};
+use quercus_codec::decoder::{
+	receive_list_of_all_decoders, CodecStream, Decoder as _, RetrieveAudioStatus,
+};
 use quercus_codec::ffmpeg::FFmpegDecoder;
 use quercus_codec::footagedescription::FootageDescription;
 use quercus_core::{Rational, TimeRange};
@@ -828,21 +830,20 @@ pub fn extract(
 	// rate/layout; the C++ path ran the decode through an identity
 	// fb_audio_graph to obtain planar f32).
 	let decoder = FFmpegDecoder::new();
-	let stream = CodecStream::with_block(
-		filename_str.into_owned(),
-		container_stream_index,
-		None,
-	);
+	let stream = CodecStream::with_block(filename_str.into_owned(), container_stream_index, None);
 	if let Err(e) = decoder.open(&stream) {
-		return Err(Box::new(Error::Failed(format!("failed to open decoder: {e:?}"))));
+		return Err(Box::new(Error::Failed(format!(
+			"failed to open decoder: {e:?}"
+		))));
 	}
 
 	if time_base_num <= 0 || time_base_den <= 0 || duration_ts <= 0 {
 		let _ = decoder.close();
-		return Err(Box::new(Error::Failed("invalid audio stream duration".to_string())));
+		return Err(Box::new(Error::Failed(
+			"invalid audio stream duration".to_string(),
+		)));
 	}
-	let duration_sec =
-		duration_ts as f64 * f64::from(time_base_num) / f64::from(time_base_den);
+	let duration_sec = duration_ts as f64 * f64::from(time_base_num) / f64::from(time_base_den);
 	let total_frames = (duration_sec * f64::from(sample_rate)).round() as i64;
 	let layout_mask = if channel_layout != 0 {
 		channel_layout
@@ -877,11 +878,15 @@ pub fn extract(
 				);
 			}
 			Ok(status) => {
-				result = Err(Box::new(Error::Failed(format!("audio retrieve failed: {status:?}"))));
+				result = Err(Box::new(Error::Failed(format!(
+					"audio retrieve failed: {status:?}"
+				))));
 				break;
 			}
 			Err(e) => {
-				result = Err(Box::new(Error::Failed(format!("audio retrieve failed: {e:?}"))));
+				result = Err(Box::new(Error::Failed(format!(
+					"audio retrieve failed: {e:?}"
+				))));
 				break;
 			}
 		}

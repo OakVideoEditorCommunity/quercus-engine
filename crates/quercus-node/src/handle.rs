@@ -31,6 +31,7 @@
 //! guard layer).
 
 use std::any::Any;
+use std::ffi;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// ABI version stamped into every handle.
@@ -82,7 +83,7 @@ pub use quercus_core::handle::CHandle;
 /// `ctx` must be a non-null pointer to a live `RefBox<T>` whose count has not
 /// reached zero yet. Once the last release has run, the pointer dangles and
 /// must not be passed here.
-unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut ffi::c_void) {
 	unsafe {
 		let rb = ctx as *const RefBox<T>;
 		// Caller guarantees the handle is alive (ctx non-null and not
@@ -105,7 +106,7 @@ unsafe extern "C" fn refbox_addref<T: Any + Send>(ctx: *mut std::ffi::c_void) {
 /// [`make_owned`] with a count of at least 1. The same reference must not be
 /// released twice, and no other reference may be used after the call that drops
 /// the count to zero — that call invalidates `ctx`.
-unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut std::ffi::c_void) {
+unsafe extern "C" fn refbox_release_owned<T: Any + Send>(ctx: *mut ffi::c_void) {
 	unsafe {
 		let rb = ctx as *mut RefBox<T>;
 		// AcqRel: the zeroing side must observe every write from the last
@@ -137,7 +138,7 @@ pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 		value,
 	}));
 	CHandle {
-		ctx: rb as *mut std::ffi::c_void,
+		ctx: rb as *mut ffi::c_void,
 		addref: Some(refbox_addref::<T>),
 		release: Some(refbox_release_owned::<T>),
 		abi_version: QUERCUSNODE_ABI_VERSION,
@@ -169,7 +170,7 @@ pub fn make_owned<T: Any + Send>(value: T) -> CHandle {
 /// reference, or assume the payload has no destructor work left to do.
 pub fn make_owned_with<T: Any + Send>(
 	value: T,
-	release: unsafe extern "C" fn(*mut std::ffi::c_void),
+	release: unsafe extern "C" fn(*mut ffi::c_void),
 ) -> CHandle {
 	let rb = Box::into_raw(Box::new(RefBox {
 		refs: AtomicU32::new(1),
@@ -177,7 +178,7 @@ pub fn make_owned_with<T: Any + Send>(
 		value,
 	}));
 	CHandle {
-		ctx: rb as *mut std::ffi::c_void,
+		ctx: rb as *mut ffi::c_void,
 		addref: Some(refbox_addref::<T>),
 		release: Some(release),
 		abi_version: QUERCUSNODE_ABI_VERSION,

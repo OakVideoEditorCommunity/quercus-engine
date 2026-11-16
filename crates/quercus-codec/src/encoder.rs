@@ -22,6 +22,9 @@
 //! write_video/audio/subtitle → flush. The trait mirrors the C++ virtual
 //! surface.
 
+use crate::error;
+use crate::ffmpeg;
+use crate::oiio;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use quercus_core::{PixelFormat, SampleFormat};
@@ -62,30 +65,25 @@ pub trait Encoder: Send + Sync {
 	}
 
 	/// Configure the encoder (per-codec options like `crf`).
-	fn configure(&self, params: &EncodingParams) -> crate::error::Result<()>;
+	fn configure(&self, params: &EncodingParams) -> error::Result<()>;
 
 	/// Open the output file and write headers.
-	fn open(&self) -> crate::error::Result<()>;
+	fn open(&self) -> error::Result<()>;
 
 	/// Close the output (write trailer); idempotent.
-	fn close(&self) -> crate::error::Result<()>;
+	fn close(&self) -> error::Result<()>;
 
 	/// Encode one video frame (converts delivery pixel format internally).
-	fn write_video(&self, frame: &Frame) -> crate::error::Result<()>;
+	fn write_video(&self, frame: &Frame) -> error::Result<()>;
 
 	/// Encode interleaved float audio samples.
-	fn write_audio(&self, samples: &[f32], frame_count: i32) -> crate::error::Result<()>;
+	fn write_audio(&self, samples: &[f32], frame_count: i32) -> error::Result<()>;
 
 	/// Encode one subtitle entry (times in seconds).
-	fn write_subtitle(
-		&self,
-		text: &str,
-		in_seconds: f64,
-		out_seconds: f64,
-	) -> crate::error::Result<()>;
+	fn write_subtitle(&self, text: &str, in_seconds: f64, out_seconds: f64) -> error::Result<()>;
 
 	/// Flush encoders, write the trailer, close the file.
-	fn flush(&self) -> crate::error::Result<()>;
+	fn flush(&self) -> error::Result<()>;
 
 	/// The pixel format the encoder wants frames in (or `None`).
 	fn desired_pixel_format(&self) -> Option<PixelFormat>;
@@ -165,10 +163,10 @@ pub fn create_from_params(params: &EncodingParams) -> Option<Arc<dyn Encoder>> {
 		}
 	}
 	match encoder_type_from_format(params.format) {
-		Some(EncoderType::FFmpeg) => Some(Arc::new(crate::ffmpeg::FFmpegEncoder::with_params(
-			params.clone(),
-		))),
-		Some(EncoderType::OIIO) => Some(Arc::new(crate::oiio::OIIOEncoder {
+		Some(EncoderType::FFmpeg) => {
+			Some(Arc::new(ffmpeg::FFmpegEncoder::with_params(params.clone())))
+		}
+		Some(EncoderType::OIIO) => Some(Arc::new(oiio::OIIOEncoder {
 			params: params.clone(),
 		})),
 		None => None,

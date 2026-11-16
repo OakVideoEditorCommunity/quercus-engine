@@ -36,14 +36,14 @@
 //! - `hwdecode::HW_TRANSFERS` — frames downloaded to system memory; a
 //!   zero-copy hardware frame must not move it.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use ffmpeg::ffi as sys;
 use ffmpeg_next as ffmpeg;
-use quercus_core::backend::{GpuContext, YuvTransform};
 #[cfg(target_os = "linux")]
 use quercus_core::backend::ImportGuard;
+use quercus_core::backend::{GpuContext, YuvTransform};
 use quercus_core::colormath::YuvMatrix;
 use quercus_core::texture::{PlanarDescriptor, PlanarFormat};
 
@@ -406,7 +406,10 @@ fn platform_import(
 	if device_type != sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX {
 		return ImportOutcome::Unsupported;
 	}
-	if !platform_import_enabled("QUERCUS_GPU_IMPORT_VIDEOTOOLBOX", CONFIG_KEY_VIDEOTOOLBOX_IMPORT) {
+	if !platform_import_enabled(
+		"QUERCUS_GPU_IMPORT_VIDEOTOOLBOX",
+		CONFIG_KEY_VIDEOTOOLBOX_IMPORT,
+	) {
 		return ImportOutcome::Unsupported;
 	}
 	videotoolbox_import(req, ctx)
@@ -437,7 +440,6 @@ mod drm_fourcc {
 	pub const RG88: u32 = 0x3838_4752; // 'R','G','8','8'
 	pub const RG1616: u32 = 0x3631_4752; // 'R','G','1','6'
 }
-
 
 /// The frame's software layout from its `AVHWFramesContext.sw_format`.
 #[cfg(target_os = "linux")]
@@ -650,6 +652,7 @@ struct HwFramesContextHead {
 #[cfg(target_os = "linux")]
 mod cuda_driver {
 	use std::ffi::{c_char, c_int, c_void};
+	use std::ptr;
 	use std::sync::OnceLock;
 
 	unsafe extern "C" {
@@ -682,7 +685,7 @@ mod cuda_driver {
 				type_: 0,
 				requested_handle_types: 0,
 				location: MemLocation::default(),
-				win32_handle_metadata: std::ptr::null_mut(),
+				win32_handle_metadata: ptr::null_mut(),
 				compression_type: 0,
 				gpu_direct_rdma_capable: 0,
 				usage: 0,
@@ -705,13 +708,10 @@ mod cuda_driver {
 		unsafe extern "C" fn(*mut usize, *const MemAllocationProp, i32) -> i32;
 	pub type CuMemCreate =
 		unsafe extern "C" fn(*mut u64, usize, *const MemAllocationProp, u64) -> i32;
-	pub type CuMemAddressReserve =
-		unsafe extern "C" fn(*mut u64, usize, usize, u64, u64) -> i32;
+	pub type CuMemAddressReserve = unsafe extern "C" fn(*mut u64, usize, usize, u64, u64) -> i32;
 	pub type CuMemMap = unsafe extern "C" fn(u64, usize, u64, u64, u64) -> i32;
-	pub type CuMemSetAccess =
-		unsafe extern "C" fn(u64, usize, *const MemAccessDesc, usize) -> i32;
-	pub type CuMemExportToShareableHandle =
-		unsafe extern "C" fn(*mut c_int, u64, i32, u64) -> i32;
+	pub type CuMemSetAccess = unsafe extern "C" fn(u64, usize, *const MemAccessDesc, usize) -> i32;
+	pub type CuMemExportToShareableHandle = unsafe extern "C" fn(*mut c_int, u64, i32, u64) -> i32;
 	pub type CuMemcpyDtoD = unsafe extern "C" fn(u64, u64, usize) -> i32;
 	pub type CuCtxSynchronize = unsafe extern "C" fn() -> i32;
 	pub type CuMemUnmap = unsafe extern "C" fn(u64, usize) -> i32;
@@ -764,7 +764,9 @@ mod cuda_driver {
 			macro_rules! get {
 				($name:literal) => {{
 					let p = sym(lib, $name);
-					if p.is_null() { return None; }
+					if p.is_null() {
+						return None;
+					}
 					std::mem::transmute::<*mut c_void, _>(p)
 				}};
 			}
@@ -847,8 +849,7 @@ impl Drop for CudaSlotLease {
 		let slot = self.0.clone();
 		let gpu = slot.gpu.clone();
 		gpu.on_submitted_work_done(move || {
-			slot.free
-				.store(true, std::sync::atomic::Ordering::Release);
+			slot.free.store(true, std::sync::atomic::Ordering::Release);
 			if std::env::var_os("OAK_DEBUG_HW").is_some() {
 				eprintln!("[cuda-import] slot marked free");
 			}
@@ -864,7 +865,6 @@ fn cuda_slots() -> &'static std::sync::Mutex<Vec<Arc<CudaVmmSlot>>> {
 	CUDA_SLOTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
 	fn close(fd: i32) -> i32;
@@ -878,7 +878,6 @@ fn close_fd(fd: i32) {
 	}
 }
 
-
 /// Map an FFmpeg software pixel format to the engine's generic descriptor.
 ///
 /// `sw_format` is the hardware frame's software layout
@@ -888,7 +887,7 @@ fn close_fd(fd: i32) {
 /// mapping matches [`av_format_descriptor`] (kept separate for this path).
 #[cfg(target_os = "linux")]
 fn cuda_descriptor(sw_format: sys::AVPixelFormat) -> Option<PlanarDescriptor> {
-	use quercus_core::texture::{ColorModel, PlaneStorage, Subsampling};
+	use quercus_core::texture::{PlaneStorage, Subsampling};
 	use sys::AVPixelFormat as F;
 	let semi = |ss, st| PlanarDescriptor::yuv_semi_planar(ss, st);
 	let planar = |ss, st| PlanarDescriptor::yuv_planar(ss, st);
@@ -991,7 +990,10 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 	let prop = MemAllocationProp {
 		type_: 1,
 		requested_handle_types: 1,
-		location: MemLocation { type_: 1, id: device_id },
+		location: MemLocation {
+			type_: 1,
+			id: device_id,
+		},
 		win32_handle_metadata: std::ptr::null_mut(),
 		compression_type: 0,
 		gpu_direct_rdma_capable: 0,
@@ -999,7 +1001,9 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 		reserved: [0; 38],
 	};
 	unsafe { _ = (driver.granularity)(&mut granularity, &prop, 0) };
-	if granularity == 0 { granularity = 2 * 1024 * 1024; }
+	if granularity == 0 {
+		granularity = 2 * 1024 * 1024;
+	}
 	let slot = {
 		let mut pool = cuda_slots().lock().unwrap_or_else(|e| e.into_inner());
 		let found = pool.iter().position(|slot| {
@@ -1042,7 +1046,10 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 					};
 					if ok {
 						let access = MemAccessDesc {
-							location: MemLocation { type_: 1, id: device_id },
+							location: MemLocation {
+								type_: 1,
+								id: device_id,
+							},
 							flags: 3,
 							pad: 0,
 						};
@@ -1065,8 +1072,12 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 								_ = (driver.unmap)(va, size);
 								_ = (driver.address_free)(va, size);
 							}
-							if handle != 0 { _ = (driver.release)(handle); }
-							if fd >= 0 { close_fd(fd); }
+							if handle != 0 {
+								_ = (driver.release)(handle);
+							}
+							if fd >= 0 {
+								close_fd(fd);
+							}
 						}
 						break;
 					}
@@ -1086,7 +1097,9 @@ fn cuda_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcom
 				} else {
 					unsafe {
 						for plane in planes {
-							if plane.fd >= 0 { close_fd(plane.fd); }
+							if plane.fd >= 0 {
+								close_fd(plane.fd);
+							}
 							_ = (driver.unmap)(plane.va, plane.size);
 							_ = (driver.address_free)(plane.va, plane.size);
 							_ = (driver.release)(plane.handle);
@@ -1230,10 +1243,10 @@ impl Drop for PendingWglRegistration {
 				}
 			}
 			if self.object != 0 {
-				if let Some(unregister) =
-					wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
-						b"wglDXUnregisterObjectNV\0",
-					) {
+				if let Some(unregister) = wgl_function::<
+					unsafe extern "system" fn(usize, usize) -> i32,
+				>(b"wglDXUnregisterObjectNV\0")
+				{
 					unregister(self.device, self.object);
 				}
 			}
@@ -1241,9 +1254,9 @@ impl Drop for PendingWglRegistration {
 				windows::Win32::Graphics::OpenGL::glDeleteTextures(1, &self.name);
 			}
 			if self.device != 0 {
-				if let Some(close) = wgl_function::<unsafe extern "system" fn(usize) -> i32>(
-					b"wglDXCloseDeviceNV\0",
-				) {
+				if let Some(close) =
+					wgl_function::<unsafe extern "system" fn(usize) -> i32>(b"wglDXCloseDeviceNV\0")
+				{
 					close(self.device);
 				}
 			}
@@ -1379,39 +1392,37 @@ fn d3d11_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutco
 /// multi-planar path.
 #[cfg(target_os = "windows")]
 fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOutcome {
+	use windows::core::Interface;
 	use windows::Win32::Graphics::Direct3D11::{
-		D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
-		D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-		D3D11_VIDEO_PROCESSOR_CONTENT_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,
-		D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,
-		D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0, D3D11_VIDEO_PROCESSOR_STREAM,
-		D3D11_VIDEO_USAGE_PLAYBACK_NORMAL, D3D11_VPIV_DIMENSION_TEXTURE2D,
-		D3D11_VPOV_DIMENSION_TEXTURE2D, ID3D11Device, ID3D11DeviceContext,
-		ID3D11Texture2D, ID3D11VideoContext, ID3D11VideoContext1, ID3D11VideoDevice,
+		ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11VideoContext,
+		ID3D11VideoContext1, ID3D11VideoDevice, D3D11_BIND_RENDER_TARGET, D3D11_TEX2D_VPIV,
+		D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+		D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
+		D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
+		D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
+		D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
+		D3D11_VPIV_DIMENSION_TEXTURE2D, D3D11_VPOV_DIMENSION_TEXTURE2D,
 	};
 	use windows::Win32::Graphics::Dxgi::Common::{
-		DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_FORMAT_R8G8B8A8_UNORM,
 		DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020,
 		DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601, DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709,
 		DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601,
-		DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
+		DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT_NV12, DXGI_FORMAT_P010,
+		DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 	};
 	use windows::Win32::Graphics::OpenGL::glGenTextures;
-	use windows::core::Interface;
 
 	let interop_available = ctx.with_wgl_context(|| unsafe {
 		wgl_function::<unsafe extern "system" fn(*mut std::ffi::c_void) -> usize>(
 			b"wglDXOpenDeviceNV\0",
 		)
+		.is_some() && wgl_function::<unsafe extern "system" fn(usize) -> i32>(
+			b"wglDXCloseDeviceNV\0",
+		)
+		.is_some() && wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
+			b"wglDXUnregisterObjectNV\0",
+		)
 		.is_some()
-			&& wgl_function::<unsafe extern "system" fn(usize) -> i32>(
-				b"wglDXCloseDeviceNV\0",
-			)
-			.is_some()
-			&& wgl_function::<unsafe extern "system" fn(usize, usize) -> i32>(
-				b"wglDXUnregisterObjectNV\0",
-			)
-			.is_some()
 	});
 	match interop_available {
 		Ok(true) => {}
@@ -1524,7 +1535,8 @@ fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOu
 		let mut output = None;
 		unsafe { device.CreateTexture2D(&output_desc, None, Some(&mut output)) }
 			.map_err(|e| gl_failed(format!("CreateTexture2D(RGBA8): {e}")))?;
-		let output: ID3D11Texture2D = output.ok_or_else(|| gl_failed("null RGBA output texture"))?;
+		let output: ID3D11Texture2D =
+			output.ok_or_else(|| gl_failed("null RGBA output texture"))?;
 		let input_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
 			FourCC: 0,
 			ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
@@ -1562,7 +1574,8 @@ fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOu
 			)
 		}
 		.map_err(|e| gl_failed(format!("CreateVideoProcessorOutputView: {e}")))?;
-		let output_view = output_view.ok_or_else(|| gl_failed("null video processor output view"))?;
+		let output_view =
+			output_view.ok_or_else(|| gl_failed("null video processor output view"))?;
 		let stream = D3D11_VIDEO_PROCESSOR_STREAM {
 			Enable: true.into(),
 			pInputSurface: std::mem::ManuallyDrop::new(Some(input)),
@@ -1574,13 +1587,8 @@ fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOu
 
 		let registered = ctx.with_wgl_context(|| -> GlImportResult<(usize, usize, u32)> {
 			type OpenDevice = unsafe extern "system" fn(*mut std::ffi::c_void) -> usize;
-			type RegisterObject = unsafe extern "system" fn(
-				usize,
-				*mut std::ffi::c_void,
-				u32,
-				u32,
-				u32,
-			) -> usize;
+			type RegisterObject =
+				unsafe extern "system" fn(usize, *mut std::ffi::c_void, u32, u32, u32) -> usize;
 			type LockObjects = unsafe extern "system" fn(usize, i32, *const usize) -> i32;
 			let open = unsafe { wgl_function::<OpenDevice>(b"wglDXOpenDeviceNV\0") }
 				.ok_or_else(|| gl_unsupported("WGL_NV_DX_interop is unavailable"))?;
@@ -1624,7 +1632,11 @@ fn d3d11_gl_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> ImportOu
 		});
 		let (wgl_device, wgl_object, texture_name) = match registered {
 			Ok(result) => result?,
-			Err(error) => return Err(gl_unsupported(format!("WGL context unavailable: {error:?}"))),
+			Err(error) => {
+				return Err(gl_unsupported(format!(
+					"WGL context unavailable: {error:?}"
+				)))
+			}
 		};
 		ctx.import_d3d11_gl_texture(
 			wgl_device,
@@ -1722,10 +1734,11 @@ fn videotoolbox_import(req: &HwImportRequest<'_>, ctx: &Arc<GpuContext>) -> Impo
 		};
 		// SAFETY: `surface` is the CVPixelBuffer's IOSurface; plane slots
 		// follow the YUV plane order of the descriptor.
-		match unsafe { ctx.import_iosurface_plane(surface, plane as u32, pw as u32, ph as u32, format) } {
+		match unsafe {
+			ctx.import_iosurface_plane(surface, plane as u32, pw as u32, ph as u32, format)
+		} {
 			Ok(token) => planes.push(token),
-			Err(quercus_core::error::Error::State)
-			| Err(quercus_core::error::Error::Invalid) => {
+			Err(quercus_core::error::Error::State) | Err(quercus_core::error::Error::Invalid) => {
 				for token in planes.drain(..) {
 					ctx.destroy_texture(token);
 				}
@@ -1761,7 +1774,10 @@ mod tests {
 		ffmpeg::frame::Video::empty()
 	}
 
-	fn request(frame: &ffmpeg::frame::Video, device_type: sys::AVHWDeviceType) -> HwImportRequest<'_> {
+	fn request(
+		frame: &ffmpeg::frame::Video,
+		device_type: sys::AVHWDeviceType,
+	) -> HwImportRequest<'_> {
 		HwImportRequest {
 			frame: unsafe { frame.as_ptr() },
 			_marker: std::marker::PhantomData,
@@ -1919,7 +1935,9 @@ mod tests {
 			quercus_core::backend::BackendKind::Metal
 		);
 		#[cfg(target_os = "windows")]
-		assert!(import_backend_supported(quercus_core::backend::BackendKind::Gl));
+		assert!(import_backend_supported(
+			quercus_core::backend::BackendKind::Gl
+		));
 	}
 
 	/// Plane layouts carry the expansion depth the YUV transform needs.

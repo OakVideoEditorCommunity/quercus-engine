@@ -22,6 +22,7 @@
 //! (`QUERCUS_TIMELINE_THUMBNAIL_*` / `QUERCUS_TIMELINE_WAVEFORMS_*`); the deleted C
 //! ABI export layer used to map between them mechanically.
 
+use crate::util;
 use quercus_core::Rational;
 
 /// `Timeline::MovementMode` (timelinecommon.h).
@@ -97,9 +98,9 @@ pub enum WaveformMode {
 /// used a null handle).
 pub struct EditToInfo {
 	/// Owning track of the nearest block.
-	pub track: Option<crate::util::NodeRef>,
+	pub track: Option<util::NodeRef>,
 	/// Nearest edit point time.
 	pub nearest_time: Rational,
 	/// Nearest block.
-	pub nearest_block: Option<crate::util::NodeRef>,
+	pub nearest_block: Option<util::NodeRef>,
 }

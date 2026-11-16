@@ -18,12 +18,14 @@
 //! `configstore` and `filefunctions` (the former `bridge/common.rs`,
 //! moved here from quercus-render with the backend/color merge).
 
+use crate::configstore;
+use crate::filefunctions;
 use std::sync::Mutex;
 
 /// Read a config string via the domain store
 /// (`ConfigStore::get(group, key)`); `None` when missing or empty.
 pub fn config_get_string(group: Option<&str>, key: &str) -> Option<String> {
-	crate::configstore::ConfigStore::instance()
+	configstore::ConfigStore::instance()
 		.get(group, key)
 		.ok()
 		.filter(|s| !s.is_empty())
@@ -40,14 +42,14 @@ pub fn config_get_string(group: Option<&str>, key: &str) -> Option<String> {
 /// are returned as `i32`; a stored 64-bit value is narrowed with `as i32`, so
 /// out-of-range values wrap.
 pub fn config_get_int(group: Option<&str>, key: &str, default: i32) -> i32 {
-	crate::configstore::ConfigStore::instance().get_int(group, key, default)
+	configstore::ConfigStore::instance().get_int(group, key, default)
 }
 
 /// The configuration directory — `filefunctions`' implementation
 /// (`FileFunctions::get_configuration_location`, honoring `QUERCUS_CONFIG_DIR`
 /// and the platform fallbacks).
 pub fn configuration_location() -> String {
-	crate::filefunctions::FileFunctions::new()
+	filefunctions::FileFunctions::new()
 		.get_configuration_location()
 		.unwrap_or_default()
 }
@@ -59,7 +61,7 @@ pub static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// The default disk cache directory (C++ `DiskManager::
 /// get_default_disk_cache_path`): `<configuration_location>/mediacache`.
 pub fn default_disk_cache_path() -> String {
-	crate::filefunctions::default_disk_cache_path()
+	filefunctions::default_disk_cache_path()
 }
 
 #[cfg(test)]

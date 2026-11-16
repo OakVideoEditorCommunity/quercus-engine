@@ -5,17 +5,28 @@ use std::ffi::c_void;
 use crate::audio::LevelStats;
 use crate::types::TimeRange;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_audio_buffer_add_ref(audio: *const c_void);
 	fn quercus_audio_buffer_release(audio: *const c_void);
 	fn quercus_audio_buffer_info(audio: *const c_void, out: *mut AudioBlockInfo) -> bool;
-	fn quercus_audio_buffer_copy_samples(audio: *const c_void, dst: *mut f32, capacity: usize)
-	-> usize;
+	fn quercus_audio_buffer_copy_samples(
+		audio: *const c_void,
+		dst: *mut f32,
+		capacity: usize,
+	) -> usize;
 }
 
 /// Timing, output layout and interleaved-element count of an audio block.
@@ -72,8 +83,9 @@ impl AudioBlock {
 	pub fn samples(&self) -> Vec<f32> {
 		let info = self.info();
 		let mut samples = vec![0.0; info.sample_count];
-		let written =
-			unsafe { quercus_audio_buffer_copy_samples(self.ptr, samples.as_mut_ptr(), samples.len()) };
+		let written = unsafe {
+			quercus_audio_buffer_copy_samples(self.ptr, samples.as_mut_ptr(), samples.len())
+		};
 		if written == samples.len() {
 			samples
 		} else {
@@ -117,19 +129,24 @@ impl Drop for AudioBlock {
 
 #[cfg(test)]
 mod tests {
+	use crate::edit;
 	use crate::editor::EditorSession;
+	use crate::node;
+	use crate::preview;
+	use crate::test_support;
+	use std::fs;
+	use std::thread;
+	use std::time;
 
 	#[test]
 	fn source_program_audio_blocks_levels_and_muted_tracks() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
 		let sequence = session.create_sequence("Audio").expect("sequence");
-		let media = crate::test_support::make_test_clip_with_audio("preview_audio");
+		let media = test_support::make_test_clip_with_audio("preview_audio");
 		let footage = session.project().import_footage(&media).expect("footage");
 		session
-			.execute(crate::edit::EditCommand::PlaceFootageClip {
+			.execute(edit::EditCommand::PlaceFootageClip {
 				footage,
 				kind: crate::editor::TrackKind::Audio,
 				track_index: 0,
@@ -143,11 +160,10 @@ mod tests {
 			EditorSession::from_project(session.project()).expect("source session");
 		let program_session =
 			EditorSession::from_project(session.project()).expect("program session");
-		let source = crate::preview::PreviewSession::source(source_session, footage, (16, 16))
+		let source = preview::PreviewSession::source(source_session, footage, (16, 16))
 			.expect("source preview");
-		let mut program =
-			crate::preview::PreviewSession::program(program_session, sequence, (16, 16))
-				.expect("program preview");
+		let mut program = preview::PreviewSession::program(program_session, sequence, (16, 16))
+			.expect("program preview");
 		let source_request = source.request_audio(0.25).expect("source audio request");
 		assert_eq!(source_request.generation(), source.generation());
 		assert!(source_request.wait(), "source audio failed");
@@ -167,10 +183,10 @@ mod tests {
 				.push_audio_output(&program_block)
 				.expect("push audio");
 			program.play().expect("play with audio clock");
-			std::thread::sleep(std::time::Duration::from_millis(20));
+			thread::sleep(time::Duration::from_millis(20));
 			program.tick(0.02).expect("audio clock tick");
-			let _ = crate::preview::PreviewSession::audio_output_seconds();
-			let _ = crate::preview::PreviewSession::audio_output_levels();
+			let _ = preview::PreviewSession::audio_output_seconds();
+			let _ = preview::PreviewSession::audio_output_levels();
 			program.pause().expect("pause output");
 			program.stop_audio_output().expect("stop output");
 		} else {
@@ -190,16 +206,16 @@ mod tests {
 			.expect("audio track")
 			.id;
 		session
-			.execute(crate::edit::EditCommand::SetTrackMuted { track, muted: true })
+			.execute(edit::EditCommand::SetTrackMuted { track, muted: true })
 			.expect("mute");
 		let muted_session = EditorSession::from_project(session.project()).expect("muted session");
-		let muted = crate::preview::PreviewSession::program(muted_session, sequence, (16, 16))
+		let muted = preview::PreviewSession::program(muted_session, sequence, (16, 16))
 			.expect("muted preview");
 		let request = muted.request_audio(0.25).expect("muted request");
 		assert!(request.wait());
 		let block = request.take().expect("muted block").block;
 		assert!(block.samples().iter().all(|sample| *sample == 0.0));
 		assert!(block.levels().silence);
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(media);
 	}
 }

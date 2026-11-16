@@ -29,6 +29,10 @@
 //! `quercusrender_color_processor_create_grading_primary` call.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
+use crate::jobs;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 use crate::nodes::ociobase::OcioBase;
@@ -156,11 +160,7 @@ fn to_vec4(v: crate::value::NodeValue) -> [f64; 4] {
 /// f(channel[i], master)`.
 fn channel_merge(v: [f64; 4], f: impl Fn(f64, f64) -> f64) -> crate::value::NodeValue {
 	let m = v[0];
-	crate::value::NodeValue::Vec3([
-		f(v[1], m),
-		f(v[2], m),
-		f(v[3], m),
-	])
+	crate::value::NodeValue::Vec3([f(v[1], m), f(v[2], m), f(v[3], m)])
 }
 
 /// Set or replace an input property (C++ `set_input_property`).
@@ -345,7 +345,7 @@ impl NodeBehavior for OCIOGradingTransformLogNode {
 		core: &mut NodeCore,
 		input: &str,
 		element: i32,
-		source: crate::id::NodeId,
+		source: id::NodeId,
 	) {
 		let _ = (element, source);
 		// C++ forwards to the base class first; OCIOBaseNode does not
@@ -363,7 +363,7 @@ impl NodeBehavior for OCIOGradingTransformLogNode {
 		core: &mut NodeCore,
 		input: &str,
 		element: i32,
-		source: crate::id::NodeId,
+		source: id::NodeId,
 	) {
 		let _ = (element, source);
 		// See [`NodeBehavior::input_connected`].
@@ -410,14 +410,8 @@ impl NodeBehavior for OCIOGradingTransformLogNode {
 		let lift = to_vec4(row_or_standard(core, inputs, LIFT_INPUT, time));
 		let gain = to_vec4(row_or_standard(core, inputs, GAIN_INPUT, time));
 		let gamma = to_vec4(row_or_standard(core, inputs, GAMMA_INPUT, time));
-		params.insert(
-			uniform_name(LIFT_INPUT),
-			channel_merge(lift, |c, m| c + m),
-		);
-		params.insert(
-			uniform_name(GAIN_INPUT),
-			channel_merge(gain, |c, m| c * m),
-		);
+		params.insert(uniform_name(LIFT_INPUT), channel_merge(lift, |c, m| c + m));
+		params.insert(uniform_name(GAIN_INPUT), channel_merge(gain, |c, m| c * m));
 		params.insert(
 			uniform_name(GAMMA_INPUT),
 			channel_merge(gamma, |c, m| c * m),
@@ -445,14 +439,12 @@ impl NodeBehavior for OCIOGradingTransformLogNode {
 
 		// Clamps: enabled -> the value, disabled -> the OCIO sentinels
 		// (NoClampBlack -1 / NoClampWhite 2 keep the GPU clamp a no-op).
-		let black_enabled = row_or_standard(core, inputs, CLAMP_BLACK_ENABLE_INPUT, time)
-			.to_double() != 0.0;
-		let white_enabled = row_or_standard(core, inputs, CLAMP_WHITE_ENABLE_INPUT, time)
-			.to_double() != 0.0;
-		let black =
-			row_or_standard(core, inputs, CLAMP_BLACK_INPUT, time).to_double();
-		let mut white =
-			row_or_standard(core, inputs, CLAMP_WHITE_INPUT, time).to_double();
+		let black_enabled =
+			row_or_standard(core, inputs, CLAMP_BLACK_ENABLE_INPUT, time).to_double() != 0.0;
+		let white_enabled =
+			row_or_standard(core, inputs, CLAMP_WHITE_ENABLE_INPUT, time).to_double() != 0.0;
+		let black = row_or_standard(core, inputs, CLAMP_BLACK_INPUT, time).to_double();
+		let mut white = row_or_standard(core, inputs, CLAMP_WHITE_INPUT, time).to_double();
 		if black_enabled && white_enabled {
 			// ocio::GradingPrimary::validate: white > black (per frame,
 			// when the static UI minimum cannot follow animated values).
@@ -471,8 +463,8 @@ impl NodeBehavior for OCIOGradingTransformLogNode {
 			crate::value::NodeValue::Boolean(false),
 		);
 
-		let job = crate::handle::make_owned(crate::jobs::Job::ShaderJob(crate::jobs::ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(jobs::Job::ShaderJob(jobs::ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
@@ -534,12 +526,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
 	// OCIOBaseNode base constructor.
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		crate::nodes::ociobase::TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 	core.effect_input = crate::nodes::ociobase::TEXTURE_INPUT.to_string();
 	core.flags |= crate::node::flags::VIDEO_EFFECT;
@@ -563,7 +555,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 		),
 	];
 
-	let mut lift = crate::input::Input::new(
+	let mut lift = input::Input::new(
 		LIFT_INPUT,
 		crate::value::ValueType::Vec4,
 		crate::value::NodeValue::Vec4([0.0, 0.0, 0.0, 0.0]),
@@ -572,7 +564,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	lift.properties.extend(component_colors.clone());
 	core.add_input(lift);
 
-	let mut gain = crate::input::Input::new(
+	let mut gain = input::Input::new(
 		GAIN_INPUT,
 		crate::value::ValueType::Vec4,
 		crate::value::NodeValue::Vec4([1.0, 1.0, 1.0, 1.0]),
@@ -581,7 +573,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	gain.properties.extend(component_colors.clone());
 	core.add_input(gain);
 
-	let mut gamma = crate::input::Input::new(
+	let mut gamma = input::Input::new(
 		GAMMA_INPUT,
 		crate::value::ValueType::Vec4,
 		crate::value::NodeValue::Vec4([1.0, 1.0, 1.0, 1.0]),
@@ -590,7 +582,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	gamma.properties.extend(component_colors);
 	core.add_input(gamma);
 
-	let mut saturation = crate::input::Input::new(
+	let mut saturation = input::Input::new(
 		SATURATION_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -604,7 +596,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(saturation);
 
-	let mut pivot = crate::input::Input::new(
+	let mut pivot = input::Input::new(
 		PIVOT_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(-0.2),
@@ -612,12 +604,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	pivot.properties = vec![("base".to_string(), crate::value::NodeValue::Float(0.01))];
 	core.add_input(pivot);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		CLAMP_BLACK_ENABLE_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
 	));
-	let mut clamp_black = crate::input::Input::new(
+	let mut clamp_black = input::Input::new(
 		CLAMP_BLACK_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
@@ -634,12 +626,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(clamp_black);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		CLAMP_WHITE_ENABLE_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
 	));
-	let mut clamp_white = crate::input::Input::new(
+	let mut clamp_white = input::Input::new(
 		CLAMP_WHITE_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -686,12 +678,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::keyframe::{Interpolation, Keyframe};
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::keyframe::{Interpolation, Keyframe};
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn node() -> OCIOGradingTransformLogNode {
+	fn node() -> OCIOGradingTransformLogNode {
 		OCIOGradingTransformLogNode {
 			base: OcioBase::new(),
 		}
@@ -898,9 +890,18 @@ mod tests {
 				crate::nodes::ociobase::TEXTURE_INPUT.to_string(),
 				NodeValue::Texture(crate::handle::CHandle::null()),
 			),
-			(LIFT_INPUT.to_string(), NodeValue::Vec4([0.25, -0.125, 0.0, 0.125])),
-			(GAIN_INPUT.to_string(), NodeValue::Vec4([0.5, 0.25, 0.5, 0.75])),
-			(GAMMA_INPUT.to_string(), NodeValue::Vec4([2.0, 1.0, 1.5, 2.0])),
+			(
+				LIFT_INPUT.to_string(),
+				NodeValue::Vec4([0.25, -0.125, 0.0, 0.125]),
+			),
+			(
+				GAIN_INPUT.to_string(),
+				NodeValue::Vec4([0.5, 0.25, 0.5, 0.75]),
+			),
+			(
+				GAMMA_INPUT.to_string(),
+				NodeValue::Vec4([2.0, 1.0, 1.5, 2.0]),
+			),
 		]);
 		let mut table = NodeValueTable::default();
 		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
@@ -908,10 +909,7 @@ mod tests {
 		let NodeValue::Texture(handle) = tex else {
 			panic!("pushed value is not a texture handle");
 		};
-		let job = unsafe {
-			crate::jobs::shader_job(handle)
-		}
-		.expect("real shader job");
+		let job = unsafe { crate::jobs::shader_job(handle) }.expect("real shader job");
 		assert_eq!(job.shader_id, "rgb");
 		assert_eq!(
 			job.type_id,

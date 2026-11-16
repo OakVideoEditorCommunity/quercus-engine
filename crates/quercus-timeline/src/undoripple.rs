@@ -32,12 +32,12 @@
 
 use quercus_core::{Rational, TimeRange};
 use quercus_node::graph::NodeEntry;
+use quercus_node::track;
 use quercus_undo::undocommand::UndoCommand;
+use std::cmp;
 
 use crate::common::MovementMode;
-use crate::undocommon::{
-	block_can_be_removed, box_command, create_block_remove_command, Command,
-};
+use crate::undocommon::{block_can_be_removed, box_command, create_block_remove_command, Command};
 use crate::util::{
 	block_add_to_graph, block_gap_create, block_in, block_kind, block_length, block_next,
 	block_out, block_previous, block_remove_from_graph, block_set_in,
@@ -130,9 +130,9 @@ fn track_is_locked(track: &NodeRef) -> bool {
 fn sequence_track_lists(timeline: &NodeRef) -> Vec<NodeRef> {
 	let mut lists = Vec::new();
 	for kind in [
-		quercus_node::track::TrackType::Video,
-		quercus_node::track::TrackType::Audio,
-		quercus_node::track::TrackType::Subtitle,
+		track::TrackType::Video,
+		track::TrackType::Audio,
+		track::TrackType::Subtitle,
 	] {
 		if let Some(list) = sequence_track_list(timeline, kind) {
 			lists.push(list);
@@ -404,8 +404,7 @@ impl TrackRippleRemoveAreaCommand {
 			// like `trim_in_` below; an in-anchored setter would leave the
 			// half covering the cleared area).
 			if let Some(split) = cmd.new_block() {
-				let new_len =
-					block_length(&split) - (self.range.out() - block_in(&split));
+				let new_len = block_length(&split) - (self.range.out() - block_in(&split));
 				block_set_length_keeping_out(&split, new_len);
 
 				// The graph copy that produced the second half carries no
@@ -821,9 +820,7 @@ impl TrackListRippleToolCommand {
 					// first block).
 					let before = block_previous(&b);
 					match before {
-						Some(prev) => {
-							track_insert_block_after(&track_copy, &gap, Some(&prev))
-						}
+						Some(prev) => track_insert_block_after(&track_copy, &gap, Some(&prev)),
 						None => track_prepend_block(&track_copy, &gap),
 					}
 
@@ -835,9 +832,7 @@ impl TrackListRippleToolCommand {
 						wd.created_gap_entry = block_remove_from_graph(gap);
 					}
 				}
-			} else if (redo && new_block_length.is_null())
-				|| (!redo && block_track(&b).is_none())
-			{
+			} else if (redo && new_block_length.is_null()) || (!redo && block_track(&b).is_none()) {
 				// The ripple is the length of this block. We assume that for this to
 				// happen, it must have been a gap that we will now remove.
 				if redo {
@@ -852,11 +847,7 @@ impl TrackListRippleToolCommand {
 				} else if let Some(gap) = &wd.removed_gap {
 					// Restore gap to graph and track
 					block_add_to_graph(gap, wd.removed_gap_entry.take());
-					track_insert_block_after(
-						&track_copy,
-						gap,
-						wd.removed_gap_after.as_ref(),
-					);
+					track_insert_block_after(&track_copy, gap, wd.removed_gap_after.as_ref());
 
 					// The earliest point changes will happen is at the start of this block
 					wd.earliest_point_of_change = block_in(gap);
@@ -1035,9 +1026,9 @@ impl TimelineRippleDeleteGapsAtRegionsCommand {
 			for (_track, gaps_on_track) in &requested_gaps {
 				if gap_index < gaps_on_track.len() {
 					let gap = &gaps_on_track[gap_index];
-					earliest_point = std::cmp::min(earliest_point, gap.range.in_());
-					ripple_length = std::cmp::min(ripple_length, gap.range.length());
-					latest_point = std::cmp::max(latest_point, gap.range.out());
+					earliest_point = cmp::min(earliest_point, gap.range.in_());
+					ripple_length = cmp::min(ripple_length, gap.range.length());
+					latest_point = cmp::max(latest_point, gap.range.out());
 				}
 			}
 
@@ -1103,7 +1094,7 @@ impl TimelineRippleDeleteGapsAtRegionsCommand {
 					}
 
 					if let Some((_, len)) = gap_lengths.iter().find(|(b, _)| b.id == g.id) {
-						ripple_length = std::cmp::min(ripple_length, *len);
+						ripple_length = cmp::min(ripple_length, *len);
 					}
 				}
 
@@ -1123,8 +1114,7 @@ impl TimelineRippleDeleteGapsAtRegionsCommand {
 					if g_len == ripple_length {
 						if let Some(track) = block_track(&g) {
 							self.commands_.push(
-								TrackRippleRemoveBlockCommand::new(track, g.clone())
-									.to_command(),
+								TrackRippleRemoveBlockCommand::new(track, g.clone()).to_command(),
 							);
 						}
 					} else {

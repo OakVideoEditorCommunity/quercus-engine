@@ -32,7 +32,9 @@
 //! across a join in the C ABI paths (joins happen lock-free via
 //! [`TaskManager::drain_finished`] / [`TaskManager::take_thread_by_ptr`]).
 
+use std::ptr;
 use std::sync::Mutex;
+use std::thread;
 
 use crate::error::{Error, Result};
 use crate::task::Task;
@@ -44,7 +46,7 @@ pub struct TaskManager {
 	/// Live tasks, most-recently-added last (mirrors the C++ `task_list_`).
 	tasks: Vec<Box<dyn TaskBox>>,
 	/// Worker threads, parallel to `tasks` (moved out before joining).
-	threads: Vec<Option<std::thread::JoinHandle<()>>>,
+	threads: Vec<Option<thread::JoinHandle<()>>>,
 	/// Whether the embedding application registered the codec task
 	/// submitter (`crate::codecbridge::register_codec_task_submitter`).
 	/// Pure bookkeeping on the manager: [`TaskManager::init`] never
@@ -163,7 +165,7 @@ impl TaskManager {
 		// The worker only touches the task through the raw pointer; it never
 		// reaches the manager, so the box stays alive in `self.tasks`.
 		let ptr_usize = ptr as usize;
-		let handle = std::thread::spawn(move || {
+		let handle = thread::spawn(move || {
 			unsafe {
 				// The manager tracks success/failure through the task's own
 				// finished state; the Result is intentionally ignored.
@@ -250,7 +252,7 @@ impl TaskManager {
 	/// [`TaskManager::cancel_task_by_ptr`] and
 	/// [`TaskManager::take_thread_by_ptr`].
 	pub fn find_index(&self, ptr: *const Task) -> Option<usize> {
-		self.tasks.iter().position(|t| std::ptr::eq(t.task(), ptr))
+		self.tasks.iter().position(|t| ptr::eq(t.task(), ptr))
 	}
 
 	/// Cancel the task owning the address `ptr`, silently doing nothing when
@@ -272,7 +274,7 @@ impl TaskManager {
 
 	/// Move the worker thread of the task with the given address out of the
 	/// list so the caller can join it without holding the manager lock.
-	pub fn take_thread_by_ptr(&mut self, ptr: *const Task) -> Option<std::thread::JoinHandle<()>> {
+	pub fn take_thread_by_ptr(&mut self, ptr: *const Task) -> Option<thread::JoinHandle<()>> {
 		let index = self.find_index(ptr)?;
 		self.threads.get_mut(index).and_then(|h| h.take())
 	}
@@ -280,7 +282,7 @@ impl TaskManager {
 	/// Remove every finished task (and its worker thread) from the list,
 	/// returning the task boxes and thread handles so the caller can join
 	/// them lock-free (the boxes must stay alive until the threads exit).
-	pub fn drain_finished(&mut self) -> Vec<(Box<dyn TaskBox>, std::thread::JoinHandle<()>)> {
+	pub fn drain_finished(&mut self) -> Vec<(Box<dyn TaskBox>, thread::JoinHandle<()>)> {
 		let mut out = Vec::new();
 		let mut i = 0;
 		while i < self.tasks.len() {

@@ -23,6 +23,7 @@
 //! is `#[repr(C)]`; `params`/`clips` elements are boxed (a Vec reallocation
 //! does not move the objects).
 
+use crate::host;
 use std::ffi::CString;
 
 use crate::param::ParamDef;
@@ -93,8 +94,8 @@ impl ClipDescriptor {
 		// ofxColour（M11 §4）：clip 色彩空间属性族。Colourspace 由宿主
 		// 在实例化时写入（输入 clip = 工作空间 ACEScg）；Preferred 由
 		// 插件在 GetClipPreferences 写（宿主侧预置空数组）。
-		props.set_one(crate::host::PROP_CLIP_COLOURSPACE, Value::String(cs("")));
-		props.define(crate::host::PROP_CLIP_PREFERRED_COLOURSPACES, vec![]);
+		props.set_one(host::PROP_CLIP_COLOURSPACE, Value::String(cs("")));
+		props.define(host::PROP_CLIP_PREFERRED_COLOURSPACES, vec![]);
 		Self {
 			props,
 			name: name.to_string(),

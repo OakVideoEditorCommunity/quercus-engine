@@ -49,13 +49,11 @@
 //! Load always builds a fresh project (`initialize()` + one sequence
 //! per timeline); save exports every sequence of the project.
 
+use crate::handle;
 use std::collections::HashSet;
+use std::fs;
 
 use quercus_core::Rational;
-use quercus_otio::model::{
-	Composable, ExternalReference, Gap, MediaReference, MissingReference, Serializable,
-	SerializableCollection, Timeline, TimeRange, Track, Transition,
-};
 use quercus_node::block::{ClipBlockBehavior, GapBlockBehavior, TransitionBlockBehavior};
 use quercus_node::footage::FootageBehavior;
 use quercus_node::graph::NodeEntry;
@@ -64,11 +62,15 @@ use quercus_node::node::NodeCore;
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
 use quercus_node::track::{TrackBehavior, TrackListBehavior, TrackType};
+use quercus_otio::model::{
+	Composable, ExternalReference, Gap, MediaReference, MissingReference, Serializable,
+	SerializableCollection, TimeRange, Timeline, Track, Transition,
+};
 
 use crate::backend::LoadResult;
+use crate::error::{Error, Result};
 use crate::nodeutil as node;
 use crate::nodeutil::ProjectArc;
-use crate::error::{Error, Result};
 use crate::uri::StorageUri;
 
 /// The otio backend (`file://` + `.otio` / `.fcpxml`).
@@ -106,16 +108,14 @@ impl OtioBackend {
 					// friendliest shape for a fresh import.
 					Serializable::Timeline(Timeline::new("Timeline"))
 				} else {
-					let children: Vec<Serializable> = timelines
-						.into_iter()
-						.map(Serializable::Timeline)
-						.collect();
+					let children: Vec<Serializable> =
+						timelines.into_iter().map(Serializable::Timeline).collect();
 					Serializable::SerializableCollection(SerializableCollection::new(
-						"quercus",
-						children,
+						"quercus", children,
 					))
 				};
-				root.to_json_file(&path).map_err(|e| Error::Io(e.to_string()))
+				root.to_json_file(&path)
+					.map_err(|e| Error::Io(e.to_string()))
 			}
 			"fcpxml" => quercus_otio::to_fcpxml_file(&timelines, &path)
 				.map_err(|e| Error::Io(e.to_string())),
@@ -149,7 +149,7 @@ impl crate::backend::StorageBackend for OtioBackend {
 
 		let timelines: Vec<Timeline> = match ext.as_str() {
 			"otio" => {
-				let text = std::fs::read_to_string(&path).map_err(|e| Error::Io(e.to_string()))?;
+				let text = fs::read_to_string(&path).map_err(|e| Error::Io(e.to_string()))?;
 				let root = quercus_otio::from_json_string(&text)
 					.map_err(|e| Error::Format(e.to_string()))?;
 				match root {
@@ -186,12 +186,7 @@ impl crate::backend::StorageBackend for OtioBackend {
 		Ok(LoadResult::success(node::make_project_owned(project)))
 	}
 
-	fn save(
-		&self,
-		project: crate::handle::CHandle,
-		uri: &StorageUri,
-		options: u32,
-	) -> Result<()> {
+	fn save(&self, project: handle::CHandle, uri: &StorageUri, options: u32) -> Result<()> {
 		// Facade boundary: convert the project handle to the boxed
 		// project, then run the Rust-typed save.
 		let arc = unsafe { node::project_arc(&project)? };
@@ -260,7 +255,9 @@ fn project_to_timelines(project: &Project) -> Vec<Timeline> {
 					Some(t) => t,
 					None => continue,
 				};
-				timeline.tracks_mut().append_child(export_track(graph, track, fps));
+				timeline
+					.tracks_mut()
+					.append_child(export_track(graph, track, fps));
 			}
 		}
 		timelines.push(timeline);
@@ -307,10 +304,7 @@ fn export_track(graph: &quercus_node::graph::Graph, track: &TrackBehavior, fps: 
 					.map(|fname| media_ref::external(&fname))
 					.unwrap_or_else(media_ref::missing);
 				clip.set_media_reference(reference);
-				clip.set_source_range(TimeRange::new(
-					to_rt(media_in, fps),
-					to_rt(length, fps),
-				));
+				clip.set_source_range(TimeRange::new(to_rt(media_in, fps), to_rt(length, fps)));
 				out.append_child(Composable::Clip(clip));
 			}
 			BlockKind::Gap => {
@@ -434,9 +428,7 @@ fn clip_footage(
 /// `media_in` and `length` from it (see [`export_track`]). `Other` is the
 /// "skip this block" signal — it carries no position information, so an
 /// export cannot represent it.
-fn classify_block(
-	entry: &NodeEntry,
-) -> (BlockKind, Option<&quercus_node::block::BlockCore>) {
+fn classify_block(entry: &NodeEntry) -> (BlockKind, Option<&quercus_node::block::BlockCore>) {
 	entry
 		.behavior
 		.as_any()
@@ -637,7 +629,9 @@ fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 		track_behavior.track_list = Some(list_id);
 		track_behavior.index = track_count_by_list[list_index];
 		track_count_by_list[list_index] += 1;
-		let track_id = project.graph.add_node(NodeCore::new(), Box::new(track_behavior));
+		let track_id = project
+			.graph
+			.add_node(NodeCore::new(), Box::new(track_behavior));
 
 		// Blocks (positions accumulate; gaps/offsets keep the span).
 		let mut block_ids = Vec::new();
@@ -670,10 +664,9 @@ fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 						clip.footage = None;
 						let id = project.graph.add_node(core, behavior);
 						if let Some(fname) = filename {
-							let foot_id = project.graph.add_node(
-								NodeCore::new(),
-								Box::new(FootageBehavior::new(&fname)),
-							);
+							let foot_id = project
+								.graph
+								.add_node(NodeCore::new(), Box::new(FootageBehavior::new(&fname)));
 							if let Some(e) = project.graph.get_mut(id) {
 								if let Some(c) = e
 									.behavior

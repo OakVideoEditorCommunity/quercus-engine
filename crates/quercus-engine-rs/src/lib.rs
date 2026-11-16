@@ -14,9 +14,9 @@ pub mod audio_analysis;
 pub mod codec;
 pub mod color;
 pub mod core;
-pub mod effect;
-pub mod editor;
 pub mod edit;
+pub mod editor;
+pub mod effect;
 pub mod mediaio;
 pub mod node;
 pub mod ofx;
@@ -33,8 +33,8 @@ pub mod thumbnail;
 pub mod timeline;
 pub mod types;
 pub mod utils;
-pub mod worker;
 pub mod vecs;
+pub mod worker;
 
 #[cfg(feature = "engine-rlib")]
 #[used]

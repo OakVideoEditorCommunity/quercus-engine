@@ -20,26 +20,29 @@
 //!
 //! Media comes from `quercus_codec::testmedia`, so the tests run headless.
 
+use quercus_codec::testmedia;
 use quercus_node::folder::FolderBehavior;
 use quercus_node::id::NodeId;
 use quercus_node::project::Project;
+use quercus_task::error;
 use quercus_task::nodeops::{self, ProjectRef};
 use quercus_task::project::import::ProjectImportTask;
 use quercus_task::task::{Task, TaskBehavior};
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 
-fn work_dir(tag: &str) -> std::path::PathBuf {
-	let path = std::env::temp_dir().join(format!(
-		"quercustask_import_{tag}_{}",
-		std::process::id()
-	));
-	let _ = std::fs::remove_dir_all(&path);
-	std::fs::create_dir_all(&path).expect("work dir");
+fn work_dir(tag: &str) -> path::PathBuf {
+	let path = env::temp_dir().join(format!("quercustask_import_{tag}_{}", process::id()));
+	let _ = fs::remove_dir_all(&path);
+	fs::create_dir_all(&path).expect("work dir");
 	path
 }
 
-fn write_clip(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+fn write_clip(dir: &path::Path, name: &str) -> path::PathBuf {
 	let path = dir.join(name);
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
 	path
 }
 
@@ -54,10 +57,7 @@ fn project() -> (ProjectRef, NodeId) {
 	(project, root)
 }
 
-fn run_import(
-	task: &mut ProjectImportTask,
-	driver: &mut Task,
-) -> quercus_task::error::Result<()> {
+fn run_import(task: &mut ProjectImportTask, driver: &mut Task) -> error::Result<()> {
 	task.run(driver)
 }
 
@@ -101,7 +101,10 @@ fn import_mixes_valid_and_invalid_files() {
 	assert!(task.get_imported_footage(1).is_err(), "out of range");
 
 	let (project_ref, footage) = task.get_imported_footage(0).expect("footage");
-	assert_eq!(nodeops::footage_filename(&project_ref, footage), media.to_string_lossy());
+	assert_eq!(
+		nodeops::footage_filename(&project_ref, footage),
+		media.to_string_lossy()
+	);
 	assert!(nodeops::footage_is_valid(&project_ref, footage));
 
 	// The task's command adds the footage to the destination folder; undo
@@ -113,7 +116,7 @@ fn import_mixes_valid_and_invalid_files() {
 	cmd.undo_now();
 	assert!(folder_children(&project, root).is_empty());
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -136,14 +139,14 @@ fn import_duplicate_paths_create_one_footage_each() {
 	assert_eq!(task.get_file_count(), 2, "each entry imports");
 	assert_eq!(task.get_invalid_file_count(), 0);
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn import_directory_creates_a_labeled_folder_recursively() {
 	let dir = work_dir("directory");
 	let sub = dir.join("Shots");
-	std::fs::create_dir_all(&sub).expect("subdir");
+	fs::create_dir_all(&sub).expect("subdir");
 	write_clip(&sub, "a.mp4");
 	write_clip(&sub, "b.mp4");
 
@@ -173,14 +176,14 @@ fn import_directory_creates_a_labeled_folder_recursively() {
 	cmd.undo_now();
 	assert!(folder_children(&project, root).is_empty());
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn import_empty_directory_imports_nothing() {
 	let dir = work_dir("empty");
 	let empty = dir.join("Nothing");
-	std::fs::create_dir_all(&empty).expect("empty dir");
+	fs::create_dir_all(&empty).expect("empty dir");
 
 	let (project, root) = project();
 	let mut task = ProjectImportTask::new(
@@ -195,9 +198,12 @@ fn import_empty_directory_imports_nothing() {
 	assert!(run_import(&mut task, &mut driver).is_ok());
 	assert_eq!(task.get_file_count(), 0);
 	assert_eq!(task.get_invalid_file_count(), 0);
-	assert!(task.take_command().is_ok(), "an (empty) command is still produced");
+	assert!(
+		task.take_command().is_ok(),
+		"an (empty) command is still produced"
+	);
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -218,12 +224,15 @@ fn import_cancel_reports_cancelled_and_yields_no_command() {
 	driver.cancel();
 	let result = run_import(&mut task, &mut driver);
 	assert!(
-		matches!(result, Err(quercus_task::error::Error::Cancelled)),
+		matches!(result, Err(error::Error::Cancelled)),
 		"a cancelled import must fail with Cancelled: {result:?}"
 	);
-	assert!(task.take_command().is_err(), "no command after cancellation");
+	assert!(
+		task.take_command().is_err(),
+		"no command after cancellation"
+	);
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

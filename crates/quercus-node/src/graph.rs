@@ -290,13 +290,11 @@ impl Graph {
 	/// is the behavior's `type_id()` string (e.g.
 	/// `org.olivevideoeditor.Olive.graphinput`), not a node id.
 	fn endpoint_of_type(&self, type_id: &str) -> Option<NodeId> {
-		self.node_ids()
-			.into_iter()
-			.find(|&id| {
-				self.get(id)
-					.map(|e| e.behavior.type_id() == type_id)
-					.unwrap_or(false)
-			})
+		self.node_ids().into_iter().find(|&id| {
+			self.get(id)
+				.map(|e| e.behavior.type_id() == type_id)
+				.unwrap_or(false)
+		})
 	}
 
 	/// Create whichever virtual endpoints the graph is missing and wire the
@@ -322,14 +320,14 @@ impl Graph {
 				self.add_node(core, behavior)
 			}
 		};
-		let output =
-			match self.endpoint_of_type(crate::nodes::graphendpoints::GRAPH_OUTPUT_TYPE_ID) {
-				Some(id) => id,
-				None => {
-					let (core, behavior) = crate::nodes::graphendpoints::create_graph_output();
-					self.add_node(core, behavior)
-				}
-			};
+		let output = match self.endpoint_of_type(crate::nodes::graphendpoints::GRAPH_OUTPUT_TYPE_ID)
+		{
+			Some(id) => id,
+			None => {
+				let (core, behavior) = crate::nodes::graphendpoints::create_graph_output();
+				self.add_node(core, behavior)
+			}
+		};
 		if self
 			.connected_output(output, crate::nodes::graphendpoints::GRAPH_OUTPUT_INPUT, -1)
 			.is_none()
@@ -654,8 +652,14 @@ impl Graph {
 		if a == b || !self.is_valid(a) || !self.is_valid(b) {
 			return false;
 		}
-		let a_has = self.get(a).map(|e| e.core.links.contains(&b)).unwrap_or(false);
-		let b_has = self.get(b).map(|e| e.core.links.contains(&a)).unwrap_or(false);
+		let a_has = self
+			.get(a)
+			.map(|e| e.core.links.contains(&b))
+			.unwrap_or(false);
+		let b_has = self
+			.get(b)
+			.map(|e| e.core.links.contains(&a))
+			.unwrap_or(false);
 		if a_has && b_has {
 			return false;
 		}
@@ -971,7 +975,7 @@ mod tests {
 	use super::*;
 	use crate::input::Input;
 	use crate::nodes::graphendpoints::{
-		GRAPH_INPUT_TYPE_ID, GRAPH_OUTPUT_TYPE_ID, GRAPH_OUTPUT_INPUT,
+		GRAPH_INPUT_TYPE_ID, GRAPH_OUTPUT_INPUT, GRAPH_OUTPUT_TYPE_ID,
 	};
 	use crate::value::{NodeValue, ValueType};
 
@@ -1061,7 +1065,9 @@ mod tests {
 		graph.disconnect(input, output, GRAPH_OUTPUT_INPUT, -1);
 
 		let source = add_plain(&mut graph);
-		graph.connect(source, output, GRAPH_OUTPUT_INPUT, -1).unwrap();
+		graph
+			.connect(source, output, GRAPH_OUTPUT_INPUT, -1)
+			.unwrap();
 
 		// No default edge is forced over the explicit one.
 		assert_eq!(graph.ensure_endpoints(), (input, output));

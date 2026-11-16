@@ -18,7 +18,9 @@
 //! `olive::MathNode`); behavior shared with other binary math nodes
 //! lives in [`super::mathbase`] (C++ `MathNodeBase`).
 
+use super::mathbase;
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Operation/method input id (C++ `k_method_in`). Type: combo;
@@ -55,14 +57,14 @@ impl MathNode {
 
 	/// The operation selected by the `method_in` combo (C++
 	/// `MathNode::get_operation()`).
-	pub fn operation(&self, core: &NodeCore) -> super::mathbase::Operation {
+	pub fn operation(&self, core: &NodeCore) -> mathbase::Operation {
 		let idx = core.standard_value(METHOD_INPUT, -1).to_double() as usize;
 		match idx {
-			0 => super::mathbase::Operation::Add,
-			1 => super::mathbase::Operation::Subtract,
-			2 => super::mathbase::Operation::Multiply,
-			3 => super::mathbase::Operation::Divide,
-			_ => super::mathbase::Operation::Power,
+			0 => mathbase::Operation::Add,
+			1 => mathbase::Operation::Subtract,
+			2 => mathbase::Operation::Multiply,
+			3 => mathbase::Operation::Divide,
+			_ => mathbase::Operation::Power,
 		}
 	}
 }
@@ -138,9 +140,9 @@ impl NodeBehavior for MathNode {
 		let mut bt = crate::value::NodeValueTable::default();
 		bt.push(b.value_type(), b, None);
 
-		let calc = super::mathbase::PairingCalculator::new(&at, &bt);
+		let calc = mathbase::PairingCalculator::new(&at, &bt);
 		if calc.found_most_likely_pairing() {
-			super::mathbase::MathNodeBase::value_internal(
+			mathbase::MathNodeBase::value_internal(
 				self.operation(core),
 				calc.most_likely_pairing,
 				PARAM_A_INPUT,
@@ -180,7 +182,7 @@ impl NodeBehavior for MathNode {
 			},
 		};
 		for index in 0..output.sample_count {
-			super::mathbase::MathNodeBase::process_samples_internal(
+			mathbase::MathNodeBase::process_samples_internal(
 				inputs,
 				self.operation(core),
 				PARAM_A_INPUT,
@@ -200,11 +202,8 @@ impl NodeBehavior for MathNode {
 	/// single-string return carries only the fragment shader
 	/// (`// CPP-PARITY: math.cpp` `get_shader_code`).
 	fn shader_code(&self, request: &str) -> Option<String> {
-		let (frag, _vert) = super::mathbase::MathNodeBase::shader_code_internal(
-			request,
-			PARAM_A_INPUT,
-			PARAM_B_INPUT,
-		);
+		let (frag, _vert) =
+			mathbase::MathNodeBase::shader_code_internal(request, PARAM_A_INPUT, PARAM_B_INPUT);
 		if frag.is_empty() {
 			None
 		} else {
@@ -229,19 +228,19 @@ pub const OPERATION_NAMES: [&str; 5] = ["Add", "Subtract", "Multiply", "Divide",
 /// core and behavior; pairs with [`register`].
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	let mut method = crate::input::Input::new(
+	let mut method = input::Input::new(
 		METHOD_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(0),
 	);
-	method.flags |= crate::input::flags::NOT_CONNECTABLE | crate::input::flags::NOT_KEYFRAMABLE;
+	method.flags |= input::flags::NOT_CONNECTABLE | input::flags::NOT_KEYFRAMABLE;
 	method.properties = vec![(
 		"combobox_strings".to_string(),
 		crate::value::NodeValue::Binary(OPERATION_NAMES.concat().into_bytes()),
 	)];
 	core.add_input(method);
 
-	let mut a = crate::input::Input::new(
+	let mut a = input::Input::new(
 		PARAM_A_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
@@ -255,7 +254,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(a);
 
-	let mut b = crate::input::Input::new(
+	let mut b = input::Input::new(
 		PARAM_B_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
@@ -289,12 +288,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn row(values: &[(&str, NodeValue)]) -> crate::value::NodeValueRow {
+	fn row(values: &[(&str, NodeValue)]) -> crate::value::NodeValueRow {
 		values
 			.iter()
 			.map(|(k, v)| (k.to_string(), v.clone()))
@@ -424,10 +423,8 @@ mod tests {
 			NodeValue::Texture(h) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe {
-			crate::jobs::shader_job(&handle)
-		}
-		.expect("shader job payload boxed in the pushed texture");
+		let payload = unsafe { crate::jobs::shader_job(&handle) }
+			.expect("shader job payload boxed in the pushed texture");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.math");
 		// op=2 (multiply), pairing=8 (texture_number), a=10 (texture),
 		// b=2 (float).
@@ -460,9 +457,7 @@ mod tests {
 			NodeValue::Texture(h) => *h,
 			_ => panic!("texture expected"),
 		};
-		let payload = unsafe {
-			crate::jobs::shader_job(&handle)
-		};
+		let payload = unsafe { crate::jobs::shader_job(&handle) };
 		assert!(payload.is_none(), "no shader job for a null texture");
 	}
 }

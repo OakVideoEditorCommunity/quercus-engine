@@ -1,6 +1,7 @@
 //! Immutable owned thumbnail frames exported by asynchronous render tasks.
 
 use crate::handle::NativeMirror;
+use std::ptr;
 
 /// CPU thumbnail pixels in tight F32 RGBA order.
 #[derive(Clone, Debug)]
@@ -143,7 +144,7 @@ pub unsafe extern "C" fn quercus_thumbnail_copy_pixels(
 		return 0;
 	}
 	unsafe {
-		std::ptr::copy_nonoverlapping(
+		ptr::copy_nonoverlapping(
 			thumbnail.data.pixels.as_ptr(),
 			dst,
 			thumbnail.data.pixels.len(),

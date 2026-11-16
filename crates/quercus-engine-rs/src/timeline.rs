@@ -11,11 +11,19 @@ use std::ffi::c_void;
 use crate::node::{NodeId, Project};
 use crate::types::Rational;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_timeline_block_split(project: *const c_void, block: u64, point: Rational) -> bool;
 	fn quercus_timeline_split_preserving_links(
@@ -24,14 +32,19 @@ unsafe extern "C" {
 		count: usize,
 		point: Rational,
 	) -> bool;
-	fn quercus_timeline_track_split_at(project: *const c_void, track: u64, point: Rational) -> bool;
+	fn quercus_timeline_track_split_at(project: *const c_void, track: u64, point: Rational)
+	-> bool;
 	fn quercus_timeline_ripple_remove_area(
 		project: *const c_void,
 		timeline: u64,
 		in_: Rational,
 		out: Rational,
 	) -> bool;
-	fn quercus_timeline_block_resize(project: *const c_void, block: u64, new_length: Rational) -> bool;
+	fn quercus_timeline_block_resize(
+		project: *const c_void,
+		block: u64,
+		new_length: Rational,
+	) -> bool;
 	fn quercus_timeline_block_resize_media_in(
 		project: *const c_void,
 		block: u64,
@@ -42,7 +55,11 @@ unsafe extern "C" {
 		block: u64,
 		media_in: Rational,
 	) -> bool;
-	fn quercus_timeline_block_set_enabled(project: *const c_void, block: u64, enabled: bool) -> bool;
+	fn quercus_timeline_block_set_enabled(
+		project: *const c_void,
+		block: u64,
+		enabled: bool,
+	) -> bool;
 	fn quercus_timeline_block_trim(
 		project: *const c_void,
 		track: u64,
@@ -84,7 +101,9 @@ pub fn block_split(project: &Project, block: NodeId, point: Rational) -> bool {
 /// linked pairs keep their rear halves linked).
 pub fn split_preserving_links(project: &Project, blocks: &[NodeId], point: Rational) -> bool {
 	let ids: Vec<u64> = blocks.iter().map(|b| b.raw()).collect();
-	unsafe { quercus_timeline_split_preserving_links(project.as_raw(), ids.as_ptr(), ids.len(), point) }
+	unsafe {
+		quercus_timeline_split_preserving_links(project.as_raw(), ids.as_ptr(), ids.len(), point)
+	}
 }
 
 /// Splits every block of a track at `point` into two blocks. One undoable
@@ -220,7 +239,9 @@ pub fn block_trim(
 		TrimMode::TrimIn => 2,
 		TrimMode::TrimOut => 3,
 	};
-	unsafe { quercus_timeline_block_trim(project.as_raw(), track.raw(), block.raw(), new_length, mode) }
+	unsafe {
+		quercus_timeline_block_trim(project.as_raw(), track.raw(), block.raw(), new_length, mode)
+	}
 }
 
 /// Places a block onto track `track_index` of `timeline` at `in_`
@@ -325,7 +346,12 @@ pub fn transition_set_offsets(
 	out_offset: Rational,
 ) -> bool {
 	unsafe {
-		quercus_timeline_transition_set_offsets(project.as_raw(), block.raw(), in_offset, out_offset)
+		quercus_timeline_transition_set_offsets(
+			project.as_raw(),
+			block.raw(),
+			in_offset,
+			out_offset,
+		)
 	}
 }
 

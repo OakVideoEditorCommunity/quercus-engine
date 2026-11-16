@@ -41,18 +41,50 @@ pub(crate) struct KeyframeRaw {
 	pub bezier_out_y: f64,
 }
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	pub(crate) fn quercus_editor_params_snapshot(session: *mut c_void, node: u64) -> *mut c_void;
 	pub(crate) fn quercus_editor_params_release(params: *const c_void);
 	pub(crate) fn quercus_editor_params_revision(params: *const c_void) -> i64;
 	pub(crate) fn quercus_editor_params_count(params: *const c_void) -> i32;
-	pub(crate) fn quercus_editor_params_at(params: *const c_void, index: i32, out: *mut ParamRaw) -> bool;
-	pub(crate) fn quercus_editor_params_input_at(params: *const c_void, index: i32, buf: *mut u8, len: usize) -> i32;
-	pub(crate) fn quercus_editor_params_label_at(params: *const c_void, index: i32, buf: *mut u8, len: usize) -> i32;
-	pub(crate) fn quercus_editor_params_value_element_at(params: *const c_void, param: i32, index: i32) -> i32;
-	pub(crate) fn quercus_editor_params_track_element_at(params: *const c_void, param: i32, index: i32) -> i32;
+	pub(crate) fn quercus_editor_params_at(
+		params: *const c_void,
+		index: i32,
+		out: *mut ParamRaw,
+	) -> bool;
+	pub(crate) fn quercus_editor_params_input_at(
+		params: *const c_void,
+		index: i32,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
+	pub(crate) fn quercus_editor_params_label_at(
+		params: *const c_void,
+		index: i32,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
+	pub(crate) fn quercus_editor_params_value_element_at(
+		params: *const c_void,
+		param: i32,
+		index: i32,
+	) -> i32;
+	pub(crate) fn quercus_editor_params_track_element_at(
+		params: *const c_void,
+		param: i32,
+		index: i32,
+	) -> i32;
 	pub(crate) fn quercus_editor_params_property_at(
 		params: *const c_void,
 		param: i32,
@@ -86,7 +118,11 @@ unsafe extern "C" {
 		buf: *mut u8,
 		len: usize,
 	) -> i32;
-	pub(crate) fn quercus_editor_params_keyframe_count(params: *const c_void, param: i32, element: i32) -> i32;
+	pub(crate) fn quercus_editor_params_keyframe_count(
+		params: *const c_void,
+		param: i32,
+		element: i32,
+	) -> i32;
 	pub(crate) fn quercus_editor_params_keyframe_at(
 		params: *const c_void,
 		param: i32,

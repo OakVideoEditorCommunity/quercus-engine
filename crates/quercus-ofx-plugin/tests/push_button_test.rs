@@ -26,6 +26,11 @@
 //! Skipped when the test plugin was not built (the common convention). The
 //! host singleton is serialized through `common::with_host`.
 
+use quercus_ofx_plugin::node_factory;
+use quercus_ofx_plugin::param;
+use std::env;
+use std::fs;
+use std::process;
 mod common;
 
 use quercus_ofx_plugin::host::Host;
@@ -46,35 +51,35 @@ fn push_button_press_routes_instance_changed() {
 		let inst = Host::global()
 			.create_instance(PLUGIN_ID, None)
 			.expect("实例");
-		let id = quercus_ofx_plugin::node_factory::register_instance(inst.clone());
+		let id = node_factory::register_instance(inst.clone());
 
 		// The C plugin appends one line per instanceChanged("button") to the
 		// marker file; the assertion reads it back.
-		let marker = std::env::temp_dir().join(format!("quercus-push-{}.log", std::process::id()));
-		let _ = std::fs::remove_file(&marker);
-		std::env::set_var("QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER", &marker);
+		let marker = env::temp_dir().join(format!("quercus-push-{}.log", process::id()));
+		let _ = fs::remove_file(&marker);
+		env::set_var("QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER", &marker);
 
 		// The button param exists and is a push button.
 		let p = inst.value.params.find("button").expect("button 参数");
-		assert_eq!(p.def.ofx_type, quercus_ofx_plugin::param::TYPE_PUSHBUTTON);
+		assert_eq!(p.def.ofx_type, param::TYPE_PUSHBUTTON);
 
 		// First press: set + routed to the plugin.
-		assert!(quercus_ofx_plugin::node_factory::push_button_clicked(id, "button"));
+		assert!(node_factory::push_button_clicked(id, "button"));
 		// Unknown / non-button params are rejected without touching the entry.
-		assert!(!quercus_ofx_plugin::node_factory::push_button_clicked(id, "gain"));
-		assert!(!quercus_ofx_plugin::node_factory::push_button_clicked(id, "nope"));
-		assert!(!quercus_ofx_plugin::node_factory::push_button_clicked(u64::MAX, "button"));
+		assert!(!node_factory::push_button_clicked(id, "gain"));
+		assert!(!node_factory::push_button_clicked(id, "nope"));
+		assert!(!node_factory::push_button_clicked(u64::MAX, "button"));
 		// Second press on the real button: routed again.
-		assert!(quercus_ofx_plugin::node_factory::push_button_clicked(id, "button"));
+		assert!(node_factory::push_button_clicked(id, "button"));
 
 		// Exactly the two real presses reached the plugin's instanceChanged.
-		let log = std::fs::read_to_string(&marker).expect("marker 文件应存在");
+		let log = fs::read_to_string(&marker).expect("marker 文件应存在");
 		assert_eq!(log.lines().count(), 2, "marker log:\n{log}");
 		assert!(log.contains("instanceChanged"), "marker log:\n{log}");
 
-		std::env::remove_var("QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER");
-		let _ = std::fs::remove_file(&marker);
-		quercus_ofx_plugin::node_factory::unregister_instance(id);
+		env::remove_var("QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER");
+		let _ = fs::remove_file(&marker);
+		node_factory::unregister_instance(id);
 		Host::global().shutdown();
 	});
 }

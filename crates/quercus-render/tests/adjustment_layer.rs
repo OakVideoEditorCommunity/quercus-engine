@@ -21,6 +21,17 @@
 //! lower tracks, clip boundaries included. A bare block (no effect chain)
 //! has no head to feed and is inert.
 
+use quercus_codec::testmedia;
+use quercus_core::backend;
+use quercus_core::color;
+use quercus_core::colormath;
+use quercus_node::nodes;
+use quercus_node::value;
+use quercus_render::eval;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::texture::Texture;
@@ -37,8 +48,8 @@ mod common;
 
 /// Unique temp path per test (the process id disambiguates parallel test
 /// binaries; the tag separates tests inside one binary).
-fn clip_path(tag: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercusrender_adjust_{tag}_{}.mp4", std::process::id()))
+fn clip_path(tag: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercusrender_adjust_{tag}_{}.mp4", process::id()))
 }
 
 /// These tests verify graph/composite MECHANICS (the adjustment sweep), not
@@ -47,9 +58,9 @@ fn clip_path(tag: &str) -> std::path::PathBuf {
 /// pixel-value assertions hold regardless of the ACEScg default. All tests
 /// in this binary set the same value, so the shared global is race-free.
 fn pin_legacy_working_space() {
-	quercus_core::color::set_pipeline_color_settings(
-		quercus_core::colormath::WorkingColorSpace::SrgbLegacy,
-		quercus_core::colormath::OutputColorSpec::default(),
+	color::set_pipeline_color_settings(
+		colormath::WorkingColorSpace::SrgbLegacy,
+		colormath::OutputColorSpec::default(),
 	);
 }
 
@@ -142,7 +153,7 @@ fn build_project(
 				.range = TimeRange::new(in_, out);
 
 			if let Some(value) = opacity {
-				let (ecore, ebehavior) = quercus_node::nodes::opacity::create();
+				let (ecore, ebehavior) = nodes::opacity::create();
 				let effect = p.graph.add_node(ecore, ebehavior);
 				p.graph
 					.connect(
@@ -153,9 +164,9 @@ fn build_project(
 					)
 					.expect("connect opacity to the adjustment block");
 				p.graph.get_mut(effect).unwrap().core.set_standard_value(
-					quercus_node::nodes::opacity::VALUE_INPUT,
+					nodes::opacity::VALUE_INPUT,
 					-1,
-					quercus_node::value::NodeValue::Float(value),
+					value::NodeValue::Float(value),
 				);
 			}
 
@@ -203,9 +214,8 @@ fn frame_data(texture: &Texture) -> Vec<u8> {
 
 /// Render one 64x64 F32 frame of `seq` at `time` and return its bytes.
 fn render_frame(project: &Arc<Mutex<Project>>, seq: NodeId, time: Rational) -> Vec<u8> {
-	let texture =
-		quercus_render::eval::render_graph_frame(project, seq, time, (64, 64), PixelFormat::F32)
-			.expect("graph render");
+	let texture = eval::render_graph_frame(project, seq, time, (64, 64), PixelFormat::F32)
+		.expect("graph render");
 	frame_data(&texture)
 }
 
@@ -228,16 +238,14 @@ fn channel(data: &[u8], x: usize, y: usize, c: usize) -> f32 {
 /// Skipped (with a note) when no GPU adapter exists.
 #[test]
 fn adjustment_layer_affects_lower_tracks_across_clips() {
-	if quercus_core::backend::shared_gpu_or_skip("adjustment_layer_affects_lower_tracks_across_clips")
-		.is_none()
-	{
+	if backend::shared_gpu_or_skip("adjustment_layer_affects_lower_tracks_across_clips").is_none() {
 		return;
 	}
 	let red = clip_path("across_red");
 	let blue = clip_path("across_blue");
-	quercus_codec::testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
+	testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
 		.expect("red clip generation");
-	quercus_codec::testmedia::write_test_clip_solid(&blue, 64, 64, 10, 10, [0.1, 0.1, 0.9, 1.0])
+	testmedia::write_test_clip_solid(&blue, 64, 64, 10, 10, [0.1, 0.1, 0.9, 1.0])
 		.expect("blue clip generation");
 
 	let red_path = red.to_string_lossy().to_string();
@@ -308,8 +316,8 @@ fn adjustment_layer_affects_lower_tracks_across_clips() {
 		"the sweep must tear its temporary source node back down"
 	);
 
-	let _ = std::fs::remove_file(&red);
-	let _ = std::fs::remove_file(&blue);
+	let _ = fs::remove_file(&red);
+	let _ = fs::remove_file(&blue);
 }
 
 /// A bare adjustment layer (a block with no effect chain) is inert: there
@@ -318,7 +326,7 @@ fn adjustment_layer_affects_lower_tracks_across_clips() {
 #[test]
 fn bare_adjustment_layer_passes_lower_tracks_through() {
 	let red = clip_path("bare_red");
-	quercus_codec::testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
+	testmedia::write_test_clip_solid(&red, 64, 64, 10, 10, [0.9, 0.1, 0.1, 1.0])
 		.expect("red clip generation");
 	let red_path = red.to_string_lossy().to_string();
 	let clips: Vec<(&str, Rational, Rational)> =
@@ -348,5 +356,5 @@ fn bare_adjustment_layer_passes_lower_tracks_through() {
 		"a bare adjustment layer must not grow the graph"
 	);
 
-	let _ = std::fs::remove_file(&red);
+	let _ = fs::remove_file(&red);
 }

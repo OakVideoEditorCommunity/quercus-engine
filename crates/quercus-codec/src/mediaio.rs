@@ -28,6 +28,7 @@
 //! locked long enough to clone the [`Arc`]; [`MediaIoProvider::can_open`]
 //! and [`MediaIoProvider::open`] run outside the lock.
 
+use std::error;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -69,7 +70,7 @@ impl std::fmt::Display for MediaIoError {
 	}
 }
 
-impl std::error::Error for MediaIoError {}
+impl error::Error for MediaIoError {}
 
 /// Readable and seekable byte source for one media resource.
 ///

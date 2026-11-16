@@ -27,6 +27,7 @@
 //! [`crate::suites::set_render_ctx`]).
 
 use std::ffi::{c_double, c_int, c_void};
+use std::panic;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::suites::{render_ctx, status};
@@ -109,7 +110,7 @@ pub struct TimeLineSuiteV1 {
 /// `handle` is only used for the null check, so any value is safe; overall
 /// safety depends on how `f` interprets its own pointer arguments.
 unsafe fn caught(handle: *mut c_void, f: impl FnOnce() -> c_int) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		if handle.is_null() {
 			return status::ERR_BAD_HANDLE;
 		}

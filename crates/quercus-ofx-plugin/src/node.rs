@@ -64,35 +64,35 @@ use quercus_undo::undocommand::UndoCommand;
 /// C ABI handle box `(Arc<Mutex<Project>>, NodeId)`.
 #[derive(Clone)]
 pub struct NodeRef {
-/// Owning project (the node's lifetime follows the project).
+	/// Owning project (the node's lifetime follows the project).
 	pub project: Arc<Mutex<quercus_node::project::Project>>,
-/// The node's id inside project.graph.
+	/// The node's id inside project.graph.
 	pub id: quercus_node::id::NodeId,
 }
 
 /// Values of quercusnode_value_type (node.h:74).
 pub mod node_value_type {
-/// QUERCUSNODE_VALUE_NONE.
+	/// QUERCUSNODE_VALUE_NONE.
 	pub const NONE: i32 = 0;
-/// QUERCUSNODE_VALUE_INT.
+	/// QUERCUSNODE_VALUE_INT.
 	pub const INT: i32 = 1;
-/// QUERCUSNODE_VALUE_FLOAT.
+	/// QUERCUSNODE_VALUE_FLOAT.
 	pub const FLOAT: i32 = 2;
-/// QUERCUSNODE_VALUE_BOOL.
+	/// QUERCUSNODE_VALUE_BOOL.
 	pub const BOOL: i32 = 3;
-/// QUERCUSNODE_VALUE_RATIONAL.
+	/// QUERCUSNODE_VALUE_RATIONAL.
 	pub const RATIONAL: i32 = 4;
-/// QUERCUSNODE_VALUE_COLOR.
+	/// QUERCUSNODE_VALUE_COLOR.
 	pub const COLOR: i32 = 5;
-/// QUERCUSNODE_VALUE_VEC2.
+	/// QUERCUSNODE_VALUE_VEC2.
 	pub const VEC2: i32 = 6;
-/// QUERCUSNODE_VALUE_VEC3.
+	/// QUERCUSNODE_VALUE_VEC3.
 	pub const VEC3: i32 = 7;
-/// QUERCUSNODE_VALUE_VEC4.
+	/// QUERCUSNODE_VALUE_VEC4.
 	pub const VEC4: i32 = 8;
-/// QUERCUSNODE_VALUE_COMBO.
+	/// QUERCUSNODE_VALUE_COMBO.
 	pub const COMBO: i32 = 9;
-/// QUERCUSNODE_VALUE_STRING.
+	/// QUERCUSNODE_VALUE_STRING.
 	pub const STRING: i32 = 10;
 }
 
@@ -100,13 +100,13 @@ pub mod node_value_type {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Value {
-/// Type ([`node_value_type`]).
+	/// Type ([`node_value_type`]).
 	pub r#type: i32,
-/// INT/COMBO value, BOOL 0/1, RATIONAL numerator.
+	/// INT/COMBO value, BOOL 0/1, RATIONAL numerator.
 	pub num: i64,
-/// RATIONAL denominator.
+	/// RATIONAL denominator.
 	pub den: i64,
-/// FLOAT f[0]; VEC2/3/4 f[0..n-1]; COLOR r,g,b,a.
+	/// FLOAT f[0]; VEC2/3/4 f[0..n-1]; COLOR r,g,b,a.
 	pub f: [f64; 4],
 }
 
@@ -248,9 +248,9 @@ impl Value {
 		}
 	}
 
-/// [`quercus_node::value::NodeValue`] → POD (the inverse of
-/// `ValueType::to_quercus`). Types with no POD representation (string
-/// family/texture/sample/matrix, ...) → `None`.
+	/// [`quercus_node::value::NodeValue`] → POD (the inverse of
+	/// `ValueType::to_quercus`). Types with no POD representation (string
+	/// family/texture/sample/matrix, ...) → `None`.
 	pub fn from_node_value(v: &quercus_node::value::NodeValue) -> Option<Value> {
 		use quercus_node::value::NodeValue as NV;
 		Some(match v {
@@ -347,9 +347,7 @@ pub fn unregister_node(identity: u64) {
 /// treats it as "unbound node → no-op".
 pub fn node_from_identity(identity: usize) -> Option<NodeRef> {
 	let (project, id) = {
-		let reg = registry()
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
 		let entry = reg.get(&(identity as u64))?;
 		(entry.project.clone(), entry.id)
 	};
@@ -447,9 +445,7 @@ pub fn set_input_undoable(
 		move || {
 			let mut guard = lock_any(&project_undo);
 			if let Some(entry) = guard.graph.get_mut(id) {
-				entry
-					.core
-					.set_standard_value(&input_undo, -1, old.clone());
+				entry.core.set_standard_value(&input_undo, -1, old.clone());
 			}
 		},
 	))
@@ -471,10 +467,7 @@ pub fn set_input_string_undoable(
 ) -> Result<UndoCommand, NodeBridgeError> {
 	let (old, declared) = {
 		let guard = lock_any(&node.project);
-		let entry = guard
-			.graph
-			.get(node.id)
-			.ok_or(NodeBridgeError::StaleNode)?;
+		let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
 		let declared = entry
 			.core
 			.input_data_type(input)
@@ -482,7 +475,9 @@ pub fn set_input_string_undoable(
 		(entry.core.standard_value(input, -1), declared)
 	};
 	let nv = match declared {
-		quercus_node::value::ValueType::StrCombo => quercus_node::value::NodeValue::StrCombo(value.to_string()),
+		quercus_node::value::ValueType::StrCombo => {
+			quercus_node::value::NodeValue::StrCombo(value.to_string())
+		}
 		quercus_node::value::ValueType::Text | quercus_node::value::ValueType::Parametric => {
 			quercus_node::value::NodeValue::Text(value.to_string())
 		}
@@ -508,9 +503,7 @@ pub fn set_input_string_undoable(
 		move || {
 			let mut guard = lock_any(&project_undo);
 			if let Some(entry) = guard.graph.get_mut(id) {
-				entry
-					.core
-					.set_standard_value(&input_undo, -1, old.clone());
+				entry.core.set_standard_value(&input_undo, -1, old.clone());
 			}
 		},
 	))
@@ -530,7 +523,10 @@ mod tests {
 	}
 
 	/// Build a test node with Text/StrCombo/Float inputs.
-	fn test_project() -> (Arc<Mutex<quercus_node::project::Project>>, quercus_node::id::NodeId) {
+	fn test_project() -> (
+		Arc<Mutex<quercus_node::project::Project>>,
+		quercus_node::id::NodeId,
+	) {
 		let project = quercus_node::project::Project::new();
 		let mut guard = project.lock().unwrap();
 		let id = guard.graph.add_node(
@@ -613,7 +609,10 @@ mod tests {
 				},
 				NV::Rational(quercus_core::Rational::new(3, 2)),
 			),
-			(Value::color(0.1, 0.2, 0.3, 0.4), NV::Color([0.1, 0.2, 0.3, 0.4])),
+			(
+				Value::color(0.1, 0.2, 0.3, 0.4),
+				NV::Color([0.1, 0.2, 0.3, 0.4]),
+			),
 			(Value::vec(&[1.0, 2.0]), NV::Vec2([1.0, 2.0])),
 			(Value::vec(&[1.0, 2.0, 3.0]), NV::Vec3([1.0, 2.0, 3.0])),
 			(

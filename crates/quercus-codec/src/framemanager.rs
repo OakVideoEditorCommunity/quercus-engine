@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use quercus_core::videoparams::VideoParams;
 use crate::frame::Frame;
+use quercus_core::videoparams::VideoParams;
 
 /// `olive::FrameManager`: singleton frame pool with background GC.
 pub struct FrameManager {

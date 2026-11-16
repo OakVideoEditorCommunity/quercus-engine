@@ -7,8 +7,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{editing::*, generators::*, media::*, moving::*, project::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	editing::*, generators::*, media::*, moving::*, project::*, sequence::*, tracks::*,
+	transitions::*,
+};
 
 /// Duplicate `clips` right after the selection's end (undoable
 /// "Duplicate"): clipboard copy + paste anchored at the latest out point
@@ -63,7 +65,10 @@ pub(crate) fn shift_blocks_at_or_after_commands(
 				continue;
 			};
 			for &track in &l.tracks {
-				if track_behavior(&g.graph, track).map(|t| t.locked).unwrap_or(false) {
+				if track_behavior(&g.graph, track)
+					.map(|t| t.locked)
+					.unwrap_or(false)
+				{
 					continue;
 				}
 				let Some(t) = track_behavior(&g.graph, track) else {
@@ -256,7 +261,10 @@ pub fn delete_area(
 				continue;
 			};
 			for &track in &l.tracks {
-				if track_behavior(&g.graph, track).map(|t| t.locked).unwrap_or(false) {
+				if track_behavior(&g.graph, track)
+					.map(|t| t.locked)
+					.unwrap_or(false)
+				{
 					continue;
 				}
 				tracks.push(track);
@@ -333,8 +341,8 @@ pub fn roll_clip_edge_to(
 ) -> Result<(), String> {
 	let (track, blocks, index) = {
 		let g = lock(p);
-		let track = clip_track(&g.graph, clip)
-			.ok_or_else(|| "the clip is not on a track".to_string())?;
+		let track =
+			clip_track(&g.graph, clip).ok_or_else(|| "the clip is not on a track".to_string())?;
 		let blocks = track_behavior(&g.graph, track)
 			.map(|t| t.blocks.clone())
 			.unwrap_or_default();
@@ -360,7 +368,11 @@ pub fn roll_clip_edge_to(
 	if !is_clip(neighbor) {
 		return Ok(());
 	}
-	let (a, b) = if at_in { (neighbor, clip) } else { (clip, neighbor) };
+	let (a, b) = if at_in {
+		(neighbor, clip)
+	} else {
+		(clip, neighbor)
+	};
 	roll_edit(p, track, a, b, frame_ts)
 }
 

@@ -367,16 +367,18 @@ impl NodeBehavior for TransitionFxNode {
 
 				table.push(
 					ValueType::Texture,
-					NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-						node_id: crate::id::NodeId::INVALID,
-						time,
-						iterations: 1,
-						type_id: self.type_id().to_string(),
-						shader_id: shader_id_for(ty).to_string(),
-						effect_input: core.effect_input.clone(),
-						params,
-						iterative_input: String::new(),
-					}))),
+					NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+						ShaderJobPayload {
+							node_id: crate::id::NodeId::INVALID,
+							time,
+							iterations: 1,
+							type_id: self.type_id().to_string(),
+							shader_id: shader_id_for(ty).to_string(),
+							effect_input: core.effect_input.clone(),
+							params,
+							iterative_input: String::new(),
+						},
+					))),
 					None,
 				);
 			}
@@ -528,7 +530,10 @@ mod tests {
 			(TEXTURE_INPUT.to_string(), tex()),
 			(BLEND_INPUT.to_string(), tex()),
 			(PROGRESS_INPUT.to_string(), NodeValue::Float(0.0)),
-			(COLOR_INPUT.to_string(), NodeValue::Color([0.0, 0.0, 0.0, 1.0])),
+			(
+				COLOR_INPUT.to_string(),
+				NodeValue::Color([0.0, 0.0, 0.0, 1.0]),
+			),
 			(DIRECTION_INPUT.to_string(), NodeValue::Combo(0)),
 		])
 	}
@@ -555,7 +560,10 @@ mod tests {
 		assert_eq!(behavior.name(), "Transition FX");
 		assert_eq!(behavior.categories(), &[Category::Effect]);
 		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-		assert_eq!(core.effect_input, TEXTURE_INPUT, "the chain hangs off tex_in");
+		assert_eq!(
+			core.effect_input, TEXTURE_INPUT,
+			"the chain hangs off tex_in"
+		);
 		assert_eq!(
 			core.get_input(TEXTURE_INPUT).map(|i| i.value_type),
 			Some(ValueType::Texture)
@@ -626,7 +634,12 @@ mod tests {
 	fn value_no_texture_pushes_nothing() {
 		let (core, behavior) = create();
 		let mut table = NodeValueTable::default();
-		behavior.value(&core, &NodeValueRow::default(), Rational::new(0, 1), &mut table);
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
 		assert!(table.is_empty());
 	}
 
@@ -655,7 +668,10 @@ mod tests {
 		let (core, _) = create();
 		let payload = run(&core, &both());
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.transitionfx");
-		assert_eq!(payload.shader_id, "crossdissolve", "combo default is index 0");
+		assert_eq!(
+			payload.shader_id, "crossdissolve",
+			"combo default is index 0"
+		);
 		assert_eq!(payload.iterations, 1);
 		assert_eq!(payload.iterative_input, "");
 		assert_eq!(payload.effect_input, TEXTURE_INPUT);
@@ -728,7 +744,10 @@ mod tests {
 			.map(|id| n.shader_code(id).expect("shader source"))
 			.collect();
 		for (i, glsl) in sources.iter().enumerate() {
-			assert!(glsl.contains("uniform sampler2D tex_in;"), "{i} binds tex_in");
+			assert!(
+				glsl.contains("uniform sampler2D tex_in;"),
+				"{i} binds tex_in"
+			);
 			assert!(glsl.contains("uniform bool tex_in_enabled;"), "{i}");
 			assert!(glsl.contains("uniform float progress_in;"), "{i}");
 			assert!(!glsl.contains("switch"));

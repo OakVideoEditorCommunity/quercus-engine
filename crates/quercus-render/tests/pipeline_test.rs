@@ -23,6 +23,9 @@
 //! color processor families live here too (they need a real OCIO config
 //! and a renderer).
 
+use quercus_core::color;
+use quercus_render::eval;
+use std::slice;
 mod common;
 
 use quercus_core::{PixelFormat, Rational};
@@ -36,8 +39,7 @@ use quercus_core::texture::{Frame, Texture};
 #[test]
 fn cpu_path_stays_f32_unclamped() {
 	// The ticket producer renders the pipeline frame: F32 RGBA.
-	let frame =
-		quercus_render::eval::generate_frame(Rational::new(0, 1), (16, 16), PixelFormat::F32).unwrap();
+	let frame = eval::generate_frame(Rational::new(0, 1), (16, 16), PixelFormat::F32).unwrap();
 	assert_eq!(frame.format, PixelFormat::F32);
 	assert_eq!(frame.channels, 4);
 
@@ -45,7 +47,7 @@ fn cpu_path_stays_f32_unclamped() {
 	let mut frame = frame;
 	let n = frame.pixel_count();
 	let f32s: &mut [f32] =
-		unsafe { std::slice::from_raw_parts_mut(frame.data.as_mut_ptr() as *mut f32, n * 4) };
+		unsafe { slice::from_raw_parts_mut(frame.data.as_mut_ptr() as *mut f32, n * 4) };
 	f32s[0] = 2.5; // > 1.0 highlight
 	f32s[1] = -0.5; // < 0.0 shadow
 	f32s[2] = 1.0;
@@ -54,7 +56,7 @@ fn cpu_path_stays_f32_unclamped() {
 	let tex = Texture::wrap_frame(frame);
 	let back = tex.to_frame().unwrap();
 	let back_f32: &[f32] =
-		unsafe { std::slice::from_raw_parts(back.data.as_ptr() as *const f32, n * 4) };
+		unsafe { slice::from_raw_parts(back.data.as_ptr() as *const f32, n * 4) };
 	assert_eq!(back_f32[0], 2.5, "no clamping of HDR values");
 	assert_eq!(back_f32[1], -0.5, "no clamping of sub-black values");
 	assert_eq!(back_f32[2], 1.0);
@@ -64,11 +66,11 @@ fn cpu_path_stays_f32_unclamped() {
 /// (CPU path; the GPU color-managed path is documented-deferred).
 #[test]
 fn blit_applies_ocio_in_float() {
-	let _ = quercus_core::color::set_up_default_config();
-	let processor = quercus_core::color::ColorProcessor::create(
+	let _ = color::set_up_default_config();
+	let processor = color::ColorProcessor::create(
 		"ACEScg",
 		"sRGB Encoded Rec.709 (sRGB)",
-		quercus_core::color::Direction::Normal,
+		color::Direction::Normal,
 	)
 	.expect("handle always returned");
 	if !processor.is_valid() {
@@ -89,7 +91,7 @@ fn blit_applies_ocio_in_float() {
 		unreachable!()
 	};
 	let f32s: &mut [f32] = unsafe {
-		std::slice::from_raw_parts_mut(sf.data.as_mut_ptr() as *mut f32, sf.pixel_count() * 4)
+		slice::from_raw_parts_mut(sf.data.as_mut_ptr() as *mut f32, sf.pixel_count() * 4)
 	};
 	for px in f32s.chunks_exact_mut(4) {
 		px[0] = 0.18;
@@ -105,7 +107,7 @@ fn blit_applies_ocio_in_float() {
 		unreachable!()
 	};
 	let out: &[f32] =
-		unsafe { std::slice::from_raw_parts(df.data.as_ptr() as *const f32, df.pixel_count() * 4) };
+		unsafe { slice::from_raw_parts(df.data.as_ptr() as *const f32, df.pixel_count() * 4) };
 	assert!(
 		(out[0] - 0.18).abs() > 1e-4,
 		"the OCIO transform must actually change the pixel (got {})",
@@ -118,7 +120,7 @@ fn blit_applies_ocio_in_float() {
 		.blit_color_managed(
 			Some(&src),
 			&mut dst,
-			Some(&quercus_core::color::ColorProcessor::pass_through()),
+			Some(&color::ColorProcessor::pass_through()),
 		)
 		.unwrap();
 }
@@ -163,7 +165,7 @@ fn gpu_path_f32_invariants() {
 	frame.set_video_params(pod);
 	frame.allocate();
 	let f32s: &mut [f32] = unsafe {
-		std::slice::from_raw_parts_mut(frame.data.as_mut_ptr() as *mut f32, frame.pixel_count() * 4)
+		slice::from_raw_parts_mut(frame.data.as_mut_ptr() as *mut f32, frame.pixel_count() * 4)
 	};
 	for (i, px) in f32s.chunks_exact_mut(4).enumerate() {
 		px[0] = 0.1 * i as f32;
@@ -174,9 +176,8 @@ fn gpu_path_f32_invariants() {
 
 	ctx.upload(token, &frame).unwrap();
 	let out = ctx.download(token).unwrap();
-	let out_f32: &[f32] = unsafe {
-		std::slice::from_raw_parts(out.data.as_ptr() as *const f32, out.pixel_count() * 4)
-	};
+	let out_f32: &[f32] =
+		unsafe { slice::from_raw_parts(out.data.as_ptr() as *const f32, out.pixel_count() * 4) };
 	for (i, px) in out_f32.chunks_exact(4).enumerate() {
 		assert!(
 			(px[0] - 0.1 * i as f32).abs() < 1e-4,

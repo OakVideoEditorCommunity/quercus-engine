@@ -29,6 +29,8 @@ use quercus_codec::proxymanager::ProxyManager;
 use quercus_codec::task::{
 	set_task_submit_cb, task_submit_is_registered, TaskKind, TaskRequest, TaskSubmitFn,
 };
+use std::ffi;
+use std::ptr;
 
 use crate::conform::ConformTask;
 use crate::error::{Error, Result};
@@ -97,7 +99,7 @@ fn cstr_buf_to_string(buf: &[u8]) -> String {
 /// only see the generic message.
 fn submit_codec_task(
 	req: &TaskRequest,
-	_userdata: *mut std::ffi::c_void,
+	_userdata: *mut ffi::c_void,
 ) -> quercus_codec::error::Result<()> {
 	// Build the concrete task on an outer base so the behavior can be
 	// driven by `start()`; both share the cancellation atom.
@@ -134,13 +136,13 @@ pub fn register_codec_task_submitter() -> Result<()> {
 		return Err(Error::State);
 	}
 	let cb: &'static TaskSubmitFn = Box::leak(Box::new(submit_codec_task));
-	set_task_submit_cb(Some(cb), std::ptr::null_mut());
+	set_task_submit_cb(Some(cb), ptr::null_mut());
 	Ok(())
 }
 
 /// Remove the task-module submitter from quercuscodec. Idempotent.
 pub fn unregister_codec_task_submitter() -> Result<()> {
-	set_task_submit_cb(None, std::ptr::null_mut());
+	set_task_submit_cb(None, ptr::null_mut());
 	Ok(())
 }
 

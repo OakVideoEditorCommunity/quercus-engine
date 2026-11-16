@@ -4,11 +4,17 @@
 //! state is local to the preview; program playhead changes still pass through
 //! the normal session command path. Frame work always runs on engine threads.
 
+use crate::audio;
+use crate::edit;
 use crate::editor::EditorSession;
 use crate::node::{NodeId, NodeKind};
+use crate::preview_audio;
+use crate::preview_video;
 use crate::task::{Task, TaskCancellation, TaskState};
 use crate::types::Rational;
 use crate::types::TimeRange;
+use std::mem;
+use std::ptr;
 
 /// One timestamped audio-block request.
 pub struct PreviewAudioRequest {
@@ -22,7 +28,7 @@ pub struct PreviewAudio {
 	/// The `generation` field.
 	pub generation: u64,
 	/// The `block` field.
-	pub block: crate::preview_audio::AudioBlock,
+	pub block: preview_audio::AudioBlock,
 }
 
 impl PreviewAudioRequest {
@@ -122,7 +128,7 @@ pub struct PreviewFrame {
 	/// The `generation` field.
 	pub generation: u64,
 	/// The `frame` field.
-	pub frame: crate::preview_video::VideoFrame,
+	pub frame: preview_video::VideoFrame,
 }
 
 /// One source/program transport with asynchronous frame production.
@@ -282,11 +288,11 @@ impl PreviewSession {
 	/// Starts audio output and anchors transport to the device's consumption
 	/// clock. The next `tick` follows that clock instead of wall time.
 	pub fn start_audio_output(&mut self) -> Result<(), String> {
-		crate::audio::create_instance().map_err(|error| error.to_string())?;
-		crate::audio::clear_buffered_output().map_err(|error| error.to_string())?;
-		crate::audio::reset_output_clock().map_err(|error| error.to_string())?;
+		audio::create_instance().map_err(|error| error.to_string())?;
+		audio::clear_buffered_output().map_err(|error| error.to_string())?;
+		audio::reset_output_clock().map_err(|error| error.to_string())?;
 		self.audio_output_enabled = true;
-		self.audio_anchor = Some((self.time, crate::audio::seconds().unwrap_or(0.0)));
+		self.audio_anchor = Some((self.time, audio::seconds().unwrap_or(0.0)));
 		Ok(())
 	}
 
@@ -294,18 +300,18 @@ impl PreviewSession {
 	pub fn stop_audio_output(&mut self) -> Result<(), String> {
 		self.audio_anchor = None;
 		self.audio_output_enabled = false;
-		crate::audio::stop_output().map_err(|error| error.to_string())
+		audio::stop_output().map_err(|error| error.to_string())
 	}
 
 	/// Seconds consumed by the output device, if a stream has run.
 	pub fn audio_output_seconds() -> Option<f64> {
-		crate::audio::seconds()
+		audio::seconds()
 	}
 
 	/// Current per-channel output peaks, if the device is running.
 	pub fn audio_output_levels() -> Option<Vec<f32>> {
 		let mut peaks = [0.0f32; 64];
-		let count = crate::audio::output_levels(&mut peaks)?;
+		let count = audio::output_levels(&mut peaks)?;
 		Some(peaks[..count.min(peaks.len())].to_vec())
 	}
 
@@ -315,21 +321,18 @@ impl PreviewSession {
 	/// are converted to little-endian bytes and handed to the audio output in
 	/// F32 format as a borrowed slice. The output layer must already be
 	/// initialized; its failure is returned as the error message string.
-	pub fn push_audio_output(
-		&self,
-		block: &crate::preview_audio::AudioBlock,
-	) -> Result<(), String> {
+	pub fn push_audio_output(&self, block: &preview_audio::AudioBlock) -> Result<(), String> {
 		let info = block.info();
 		let samples = block.samples();
 		let mut bytes = Vec::with_capacity(samples.len() * 4);
 		for sample in samples {
 			bytes.extend_from_slice(&sample.to_le_bytes());
 		}
-		crate::audio::push_to_output(
-			crate::audio::AudioParams::new(
+		audio::push_to_output(
+			audio::AudioParams::new(
 				info.sample_rate,
 				info.channel_layout,
-				crate::audio::SampleFormat::F32,
+				audio::SampleFormat::F32,
 			),
 			&bytes,
 		)
@@ -343,21 +346,21 @@ impl PreviewSession {
 
 	/// Transfers the underlying editor session to a host integration.
 	pub fn into_session(self) -> EditorSession {
-		let mut this = std::mem::ManuallyDrop::new(self);
+		let mut this = mem::ManuallyDrop::new(self);
 		if this.audio_output_enabled {
-			let _ = crate::audio::stop_output();
+			let _ = audio::stop_output();
 			this.audio_output_enabled = false;
 			this.audio_anchor = None;
 		}
 		// SAFETY: `self` is pinned only by value, `session` is not referenced
 		// afterward, and ManuallyDrop prevents a second drop of that field.
-		unsafe { std::ptr::read(&this.session) }
+		unsafe { ptr::read(&this.session) }
 	}
 
 	fn sync_playhead(&self) -> Result<(), String> {
 		if self.kind == PreviewKind::Program {
 			self.session
-				.execute(crate::edit::EditCommand::SetSequencePlayhead {
+				.execute(edit::EditCommand::SetSequencePlayhead {
 					sequence: self.viewer,
 					time: self.time,
 				})
@@ -387,9 +390,9 @@ impl PreviewSession {
 		self.time = time;
 		self.generation = self.generation.wrapping_add(1);
 		if self.audio_output_enabled {
-			crate::audio::clear_buffered_output().map_err(|error| error.to_string())?;
-			crate::audio::reset_output_clock().map_err(|error| error.to_string())?;
-			self.audio_anchor = Some((time, crate::audio::seconds().unwrap_or(0.0)));
+			audio::clear_buffered_output().map_err(|error| error.to_string())?;
+			audio::reset_output_clock().map_err(|error| error.to_string())?;
+			self.audio_anchor = Some((time, audio::seconds().unwrap_or(0.0)));
 		}
 		self.sync_playhead()
 	}
@@ -398,8 +401,8 @@ impl PreviewSession {
 	pub fn play(&mut self) -> Result<(), String> {
 		self.playing = true;
 		if self.audio_output_enabled {
-			crate::audio::reset_output_clock().map_err(|error| error.to_string())?;
-			self.audio_anchor = Some((self.time, crate::audio::seconds().unwrap_or(0.0)));
+			audio::reset_output_clock().map_err(|error| error.to_string())?;
+			self.audio_anchor = Some((self.time, audio::seconds().unwrap_or(0.0)));
 		}
 		self.sync_playhead()
 	}
@@ -409,7 +412,7 @@ impl PreviewSession {
 		self.playing = false;
 		if self.audio_output_enabled {
 			self.audio_anchor = None;
-			crate::audio::stop_output().map_err(|error| error.to_string())?;
+			audio::stop_output().map_err(|error| error.to_string())?;
 		}
 		self.sync_playhead()
 	}
@@ -427,7 +430,7 @@ impl PreviewSession {
 		}
 		self.rate = rate;
 		if self.audio_anchor.is_some() {
-			self.audio_anchor = Some((self.time, crate::audio::seconds().unwrap_or(0.0)));
+			self.audio_anchor = Some((self.time, audio::seconds().unwrap_or(0.0)));
 		}
 		Ok(())
 	}
@@ -451,7 +454,7 @@ impl PreviewSession {
 		}
 		if self.playing {
 			if let Some((anchor_time, anchor_seconds)) = self.audio_anchor {
-				if let Some(seconds) = crate::audio::seconds() {
+				if let Some(seconds) = audio::seconds() {
 					let elapsed = (seconds - anchor_seconds).max(0.0);
 					self.time = anchor_time + Rational::from_f64(elapsed * self.rate);
 				} else {
@@ -472,7 +475,7 @@ impl PreviewSession {
 			self.viewer,
 			self.time,
 			self.size,
-			crate::preview_video::VideoPixelFormat::F32Rgba,
+			preview_video::VideoPixelFormat::F32Rgba,
 		)?;
 		Some(PreviewFrameRequest {
 			task,
@@ -502,7 +505,7 @@ impl Drop for PreviewSession {
 	fn drop(&mut self) {
 		if self.audio_output_enabled {
 			self.audio_anchor = None;
-			let _ = crate::audio::stop_output();
+			let _ = audio::stop_output();
 		}
 	}
 }

@@ -17,14 +17,15 @@
 //! AudioSynchronizer + AudioWaveformSync contract tests
 //! (synchronizer.rs, waveformsync.rs), calling the public Rust API.
 
+use std::f64;
 mod common;
 
-use quercus_core::Rational;
 use quercus_audio::synchronizer::{place_by_source_time, place_by_waveform_offset, SourceClip};
 use quercus_audio::waveformsync::{
 	estimate_envelope_offset, estimate_envelope_offset_valid, estimate_stretch_and_offset,
 	extract_rms_envelope,
 };
+use quercus_core::Rational;
 
 fn clip(source: i64, media_in: i64, has_source: bool) -> SourceClip {
 	SourceClip {
@@ -123,27 +124,13 @@ fn envelope_offset_respects_valid_masks() {
 	// overlap windows, so the estimate is invalid.
 	let mut ref_valid = vec![false; 10];
 	ref_valid[9] = true;
-	let out = estimate_envelope_offset_valid(
-		&reference,
-		&candidate,
-		&ref_valid,
-		&[],
-		100,
-		10,
-	);
+	let out = estimate_envelope_offset_valid(&reference, &candidate, &ref_valid, &[], 100, 10);
 	assert!(!out.valid);
 	assert_eq!(out.confidence, 0.0);
 
 	// Fully-valid masks behave like the unmasked call.
 	let valid = vec![true; 10];
-	let out = estimate_envelope_offset_valid(
-		&reference,
-		&candidate,
-		&valid,
-		&valid,
-		100,
-		10,
-	);
+	let out = estimate_envelope_offset_valid(&reference, &candidate, &valid, &valid, 100, 10);
 	assert!(out.valid);
 	assert_eq!(out.offset_samples, 200);
 }
@@ -156,7 +143,7 @@ fn envelope_offset_respects_valid_masks() {
 #[test]
 fn stretch_offset_recovers_rate() {
 	let reference: Vec<f64> = (0..10)
-		.map(|k| (2.0 * std::f64::consts::PI * 0.7 * k as f64).sin())
+		.map(|k| (2.0 * f64::consts::PI * 0.7 * k as f64).sin())
 		.collect();
 	// Candidate at 2x: even samples are exact, odd samples are midpoints.
 	let mut candidate = Vec::with_capacity(20);
@@ -166,33 +153,13 @@ fn stretch_offset_recovers_rate() {
 			candidate.push((reference[k] + reference[k + 1]) / 2.0);
 		}
 	}
-	let out = estimate_stretch_and_offset(
-		&reference,
-		&candidate,
-		&[],
-		&[],
-		100,
-		10,
-		0.5,
-		3.0,
-		0.1,
-	);
+	let out = estimate_stretch_and_offset(&reference, &candidate, &[], &[], 100, 10, 0.5, 3.0, 0.1);
 	assert!(out.valid);
 	assert!((out.rate - 2.0).abs() < 0.15, "rate = {}", out.rate);
 	assert!(out.confidence > 0.99, "confidence = {}", out.confidence);
 
 	// Invalid rate parameters are rejected (invalid result, defaults).
-	let out = estimate_stretch_and_offset(
-		&reference,
-		&candidate,
-		&[],
-		&[],
-		100,
-		10,
-		0.0,
-		3.0,
-		0.1,
-	);
+	let out = estimate_stretch_and_offset(&reference, &candidate, &[], &[], 100, 10, 0.0, 3.0, 0.1);
 	assert!(!out.valid);
 }
 
@@ -217,7 +184,8 @@ fn crate_level_unmasked_wrappers() {
 	let mut candidate = vec![0.0f64; 10];
 	candidate[2..].copy_from_slice(&reference[..8]);
 
-	let env = quercus_audio::waveformsync::estimate_envelope_offset(&reference, &candidate, 100, 10);
+	let env =
+		quercus_audio::waveformsync::estimate_envelope_offset(&reference, &candidate, 100, 10);
 	assert!(env.valid);
 	assert_eq!(env.offset_samples, 200);
 	assert!((env.confidence - 1.0).abs() < 1e-9);

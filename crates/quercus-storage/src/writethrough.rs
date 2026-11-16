@@ -113,9 +113,16 @@
 //! caller — it is recorded in the binding's `last_error` ([`last_error`])
 //! and the project keeps working (graceful degradation, plan §5).
 
+use crate::error;
+use crate::registry;
+use quercus_core::configstore;
+use quercus_core::filefunctions;
 use std::collections::HashMap;
+use std::env;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_undo::global;
@@ -181,7 +188,7 @@ fn bindings() -> &'static Mutex<HashMap<usize, Binding>> {
 /// Snapshot/coalescing-thread runtime state.
 struct SnapshotRuntime {
 	/// The background thread (None after the exit flush joined it).
-	handle: Option<std::thread::JoinHandle<()>>,
+	handle: Option<thread::JoinHandle<()>>,
 	/// Exit request (set by [`flush_all`]).
 	stop: bool,
 }
@@ -200,8 +207,8 @@ static SNAPSHOT_CV: Condvar = Condvar::new();
 
 /// The backend the registry arbitrates for `uri` (the write-through,
 /// snapshot and library-manager paths all use this one resolution point).
-pub fn library_backend(uri: &StorageUri) -> crate::error::Result<Arc<dyn StorageBackend>> {
-	crate::registry::Registry::global().resolve(uri)
+pub fn library_backend(uri: &StorageUri) -> error::Result<Arc<dyn StorageBackend>> {
+	registry::Registry::global().resolve(uri)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +508,7 @@ fn is_legacy_backend(value: &str) -> bool {
 /// data dir>/library.db` (used once storage is enabled without an
 /// explicit path).
 pub fn storage_enabled() -> bool {
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	let backend = store
 		.get(Some("Storage"), "Backend")
 		.ok()
@@ -519,7 +526,7 @@ pub fn storage_enabled() -> bool {
 
 /// The explicit `Storage/LibraryUri` (empty value = not configured).
 fn configured_library_uri() -> Option<String> {
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	match store.get(Some("Storage"), "LibraryUri") {
 		Ok(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
 		_ => None,
@@ -528,7 +535,7 @@ fn configured_library_uri() -> Option<String> {
 
 /// The configured SQLite library path (empty value = the default).
 fn configured_sqlite_path() -> Option<String> {
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	match store.get(Some("Storage"), "SqlitePath") {
 		Ok(p) if !p.trim().is_empty() => Some(p.trim().to_string()),
 		_ => None,
@@ -538,7 +545,7 @@ fn configured_sqlite_path() -> Option<String> {
 /// The configured PostgreSQL connection string (`Storage/PgUrl`; empty
 /// value = not configured).
 fn configured_pg_url() -> Option<String> {
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	match store.get(Some("Storage"), "PgUrl") {
 		Ok(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
 		_ => None,
@@ -563,9 +570,9 @@ fn pg_library_uri() -> Option<String> {
 /// (`FileFunctions::get_configuration_location`: macOS Application
 /// Support / XDG config, honoring `QUERCUS_CONFIG_DIR` and portable mode).
 pub fn default_library_path() -> String {
-	let dir = quercus_core::filefunctions::FileFunctions::new()
+	let dir = filefunctions::FileFunctions::new()
 		.get_configuration_location()
-		.unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+		.unwrap_or_else(|_| env::temp_dir().to_string_lossy().into_owned());
 	format!("{}/library.db", dir)
 }
 
@@ -580,7 +587,7 @@ pub fn library_uri() -> Option<String> {
 	if let Some(uri) = configured_library_uri() {
 		return Some(uri);
 	}
-	let store = quercus_core::configstore::ConfigStore::instance();
+	let store = configstore::ConfigStore::instance();
 	if store.get(Some("Storage"), "Backend").ok().as_deref() == Some("pg") {
 		return pg_library_uri();
 	}
@@ -588,7 +595,7 @@ pub fn library_uri() -> Option<String> {
 		Some(p) => p,
 		None => default_library_path(),
 	};
-	let abs = std::path::absolute(&path).ok()?;
+	let abs = path::absolute(&path).ok()?;
 	Some(format!("quercusdb+sqlite://{}", abs.display()))
 }
 
@@ -608,7 +615,7 @@ fn ensure_thread() {
 	if !alive {
 		rt.stop = false;
 		rt.handle = Some(
-			std::thread::Builder::new()
+			thread::Builder::new()
 				.name("quercus-storage-snapshot".into())
 				.spawn(snapshot_loop)
 				.expect("snapshot thread spawn"),
@@ -648,7 +655,7 @@ fn snapshot_loop() {
 /// The coalesced-write quiet period: `Storage/WriteDebounceMs` (default
 /// 500), with ≤ 0 treated as "write on the next tick".
 fn write_debounce() -> Duration {
-	let ms = quercus_core::configstore::ConfigStore::instance().get_int(
+	let ms = configstore::ConfigStore::instance().get_int(
 		Some("Storage"),
 		"WriteDebounceMs",
 		DEFAULT_WRITE_DEBOUNCE_MS,
@@ -663,7 +670,7 @@ fn write_debounce() -> Duration {
 /// The snapshot period: `Storage/SnapshotIntervalSec` (default 600), with
 /// ≤ 0 treated as "every tick".
 fn snapshot_interval() -> Duration {
-	let secs = quercus_core::configstore::ConfigStore::instance().get_int(
+	let secs = configstore::ConfigStore::instance().get_int(
 		Some("Storage"),
 		"SnapshotIntervalSec",
 		DEFAULT_SNAPSHOT_INTERVAL_SEC,

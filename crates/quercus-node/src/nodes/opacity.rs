@@ -17,7 +17,11 @@
 //! Opacity effect (C++ `src/node/src/effect/opacity/opacityeffect.{h,cpp}`,
 //! `olive::OpacityEffect`).
 
+use super::math;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -36,7 +40,7 @@ pub struct OpacityEffect {
 	/// the multiply actually runs through `NodeCore`, so the handle is
 	/// never read — kept (with an `allow`) rather than removed.
 	#[allow(dead_code)]
-	math: Box<super::math::MathNode>,
+	math: Box<math::MathNode>,
 }
 
 /// Fragment shader for the plain opacity path (C++ loads the
@@ -146,8 +150,8 @@ impl NodeBehavior for OpacityEffect {
 		// input key locates the main texture inside the params row. `time`
 		// is diagnostics-only (C++ jobs keep the request timestamp).
 		let job = |shader_id: &str| -> crate::value::NodeValue {
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(ShaderJobPayload {
+				node_id: id::NodeId::INVALID,
 				time,
 				iterations: 1,
 				type_id: self.type_id().to_string(),
@@ -198,7 +202,7 @@ impl NodeBehavior for OpacityEffect {
 	/// Deep copy (C++ `copy()`); clones the owned child math node too.
 	fn duplicate(&self, _core: &NodeCore) -> Option<Box<dyn NodeBehavior>> {
 		Some(Box::new(OpacityEffect {
-			math: super::math::MathNode::new(),
+			math: math::MathNode::new(),
 		}))
 	}
 }
@@ -210,15 +214,15 @@ impl NodeBehavior for OpacityEffect {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	let mut opacity = crate::input::Input::new(
+	let mut opacity = input::Input::new(
 		VALUE_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -239,7 +243,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(
 		core,
 		Box::new(OpacityEffect {
-			math: super::math::MathNode::new(),
+			math: math::MathNode::new(),
 		}),
 	)
 }
@@ -268,12 +272,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = OpacityEffect {
 			math: super::super::math::MathNode::new(),
@@ -333,8 +337,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("texture expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job pushed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job pushed");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.opacity");
 		assert_eq!(payload.shader_id, "");
 		assert_eq!(payload.effect_input, TEXTURE_INPUT);
@@ -355,8 +358,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("texture expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job pushed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job pushed");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.opacity");
 		assert_eq!(
 			payload.params.get(VALUE_INPUT),
@@ -397,8 +399,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("texture expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job pushed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job pushed");
 		assert_eq!(payload.shader_id, "rgbmult");
 	}
 

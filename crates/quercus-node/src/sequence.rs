@@ -19,10 +19,15 @@
 //! `// CPP-PARITY: src/node/src/output/viewer/viewer.{h,cpp}`,
 //! `// CPP-PARITY: src/node/src/project/sequence/sequence.{h,cpp}`.
 
+use crate::handle;
 use crate::id::NodeId;
 use crate::input::Input;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::serializer;
 use crate::value::{AudioParams, NodeValue, ValueType, VideoParams};
+use quercus_core::configstore;
+use quercus_core::Rational;
+use std::any;
 
 /// Sequence texture input id (C++ `ViewerOutput::k_texture_input`).
 pub const TEXTURE_INPUT: &str = "tex_in";
@@ -37,10 +42,10 @@ pub struct SequenceBehavior {
 	pub track_lists: Vec<NodeId>,
 	/// Timeline markers handle (quercustimeline, owned; created lazily by
 	/// the facade through the C ABI).
-	pub markers: crate::handle::CHandle,
+	pub markers: handle::CHandle,
 	/// Work area handle (quercustimeline, owned; created lazily by the
 	/// facade through the C ABI).
-	pub workarea: crate::handle::CHandle,
+	pub workarea: handle::CHandle,
 	/// Length cache (C++ last_length_).
 	pub last_length: quercus_core::Rational,
 	/// Autocache toggles.
@@ -60,12 +65,12 @@ impl SequenceBehavior {
 	pub fn new() -> Self {
 		SequenceBehavior {
 			track_lists: Vec::new(),
-			markers: crate::handle::CHandle::null(),
-			workarea: crate::handle::CHandle::null(),
-			last_length: quercus_core::Rational::new(0, 1),
+			markers: handle::CHandle::null(),
+			workarea: handle::CHandle::null(),
+			last_length: Rational::new(0, 1),
 			autocache_video: false,
 			autocache_audio: false,
-			playhead: quercus_core::Rational::new(0, 1),
+			playhead: Rational::new(0, 1),
 			video_params: Vec::new(),
 			audio_params: Vec::new(),
 		}
@@ -125,7 +130,7 @@ impl SequenceBehavior {
 	/// `ViewerOutput::set_default_parameters()`; the config lookups read
 	/// the quercus_core config store directly).
 	pub fn set_default_parameters(&mut self) {
-		let config = quercus_core::configstore::ConfigStore::instance();
+		let config = configstore::ConfigStore::instance();
 		let width = config.get_int(None, "DefaultSequenceWidth", 1920);
 		let height = config.get_int(None, "DefaultSequenceHeight", 1080);
 		let sample_rate = config.get_int(None, "DefaultSequenceAudioFrequency", 48000);
@@ -149,7 +154,7 @@ impl SequenceBehavior {
 		self.video_params = vec![VideoParams {
 			width,
 			height,
-			frame_rate: quercus_core::Rational::new(tb_den, tb_num),
+			frame_rate: Rational::new(tb_den, tb_num),
 			pixel_format: 4, // f32
 			channels: 4,
 			interlaced: false,
@@ -193,7 +198,7 @@ impl SequenceBehavior {
 
 /// Write a rational as the attribute pair `<prefix>_num`/`<prefix>_den`.
 fn write_rational_attributes(
-	writer: &mut dyn crate::serializer::XmlWrite,
+	writer: &mut dyn serializer::XmlWrite,
 	prefix: &str,
 	value: quercus_core::Rational,
 ) {
@@ -206,7 +211,7 @@ fn write_rational_attributes(
 /// Read a rational from the attribute pair `<prefix>_num`/`<prefix>_den`
 /// (a missing denominator falls back to 1, so the value stays valid).
 fn read_rational_attributes(
-	reader: &dyn crate::serializer::XmlRead,
+	reader: &dyn serializer::XmlRead,
 	prefix: &str,
 ) -> quercus_core::Rational {
 	let numerator = format!("{}_num", prefix);
@@ -219,12 +224,12 @@ fn read_rational_attributes(
 		.attribute(&denominator)
 		.and_then(|v| v.trim().parse::<i64>().ok())
 		.unwrap_or(1);
-	quercus_core::Rational::new(num, den)
+	Rational::new(num, den)
 }
 
 /// Read an integer attribute, falling back to `default` when absent or
 /// malformed (the load path never fails on a missing field).
-fn read_i32_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, default: i32) -> i32 {
+fn read_i32_attribute(reader: &dyn serializer::XmlRead, name: &str, default: i32) -> i32 {
 	reader
 		.attribute(name)
 		.and_then(|v| v.trim().parse::<i32>().ok())
@@ -243,7 +248,7 @@ fn read_i32_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, defau
 /// * `name` - attribute name to look up.
 /// * `default` - value used when the attribute is absent or not a valid
 ///   `u64`.
-fn read_u64_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, default: u64) -> u64 {
+fn read_u64_attribute(reader: &dyn serializer::XmlRead, name: &str, default: u64) -> u64 {
 	reader
 		.attribute(name)
 		.and_then(|v| v.trim().parse::<u64>().ok())
@@ -263,7 +268,7 @@ fn read_u64_attribute(reader: &dyn crate::serializer::XmlRead, name: &str, defau
 /// * `reader` - XML source of the current element.
 /// * `name` - attribute name to look up; there is no default value because
 ///   the field is opt-in.
-fn read_bool_attribute(reader: &dyn crate::serializer::XmlRead, name: &str) -> bool {
+fn read_bool_attribute(reader: &dyn serializer::XmlRead, name: &str) -> bool {
 	matches!(
 		reader.attribute(name).as_deref().map(str::trim),
 		Some("1" | "true")
@@ -291,8 +296,8 @@ impl NodeBehavior for SequenceBehavior {
 		// a freshly loaded sequence.
 		Some(Box::new(SequenceBehavior {
 			track_lists: self.track_lists.clone(),
-			markers: crate::handle::CHandle::null(),
-			workarea: crate::handle::CHandle::null(),
+			markers: handle::CHandle::null(),
+			workarea: handle::CHandle::null(),
 			last_length: self.last_length,
 			autocache_video: self.autocache_video,
 			autocache_audio: self.autocache_audio,
@@ -315,7 +320,7 @@ impl NodeBehavior for SequenceBehavior {
 	///              framerate_den="1" format="4" channels="4" interlaced="0"/>
 	/// <audioparams samplerate="48000" layout="3" format="4"/>
 	/// ```
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = core;
 		if !self.track_lists.is_empty() {
 			writer.start_element("tracklists");
@@ -355,11 +360,7 @@ impl NodeBehavior for SequenceBehavior {
 	/// `<audioparams>` elements (every pre-existing project, and the C++
 	/// writer) leaves the constructor defaults untouched. Unknown
 	/// elements are skipped.
-	fn load_custom(
-		&mut self,
-		_core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, _core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		let mut video_params: Vec<VideoParams> = Vec::new();
 		let mut audio_params: Vec<AudioParams> = Vec::new();
 		let mut has_video_params = false;
@@ -370,7 +371,7 @@ impl NodeBehavior for SequenceBehavior {
 					while reader.next_start_element() {
 						if reader.name() == "tracklist" {
 							if let Some(id) =
-								crate::serializer::parse_node_ref(&reader.read_element_text())
+								serializer::parse_node_ref(&reader.read_element_text())
 							{
 								self.track_lists.push(id);
 							}
@@ -414,11 +415,11 @@ impl NodeBehavior for SequenceBehavior {
 		true
 	}
 
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		Some(self)
 	}
 
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		Some(self)
 	}
 }

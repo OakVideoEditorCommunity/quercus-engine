@@ -18,6 +18,8 @@
 //! `TimeRangeList` equivalents).
 
 use crate::rational::{self, Rational};
+use std::cmp;
+use std::mem;
 
 /// Half-open time range [in, out) — mirrors `olive::core::TimeRange`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -100,10 +102,7 @@ impl TimeRange {
 	/// swapped (in > out) range rather than an "empty" marker; we match
 	/// that bit-for-bit.
 	pub fn intersected(&self, other: &TimeRange) -> TimeRange {
-		TimeRange::new(
-			std::cmp::max(self.in_, other.in_),
-			std::cmp::min(self.out, other.out),
-		)
+		TimeRange::new(cmp::max(self.in_, other.in_), cmp::min(self.out, other.out))
 	}
 
 	/// Union that also merges touching ranges (C++ `combined`).
@@ -112,10 +111,7 @@ impl TimeRange {
 	/// (`min(in)`, `max(out)`), including when they only touch at an
 	/// endpoint. The result is normalized by [`Self::new`].
 	pub fn combined(&self, other: &TimeRange) -> TimeRange {
-		TimeRange::new(
-			std::cmp::min(self.in_, other.in_),
-			std::cmp::max(self.out, other.out),
-		)
+		TimeRange::new(cmp::min(self.in_, other.in_), cmp::max(self.out, other.out))
 	}
 
 	/// C++ `set_in` + `normalize`.
@@ -145,7 +141,7 @@ impl TimeRange {
 	/// [`Self::set_out`]; an empty range (`in == out`) is left as is.
 	fn normalize(&mut self) {
 		if self.out < self.in_ {
-			std::mem::swap(&mut self.out, &mut self.in_);
+			mem::swap(&mut self.out, &mut self.in_);
 		}
 	}
 }
@@ -171,9 +167,7 @@ impl TimeRangeList {
 	/// True when any element fully contains `range` (C++
 	/// `TimeRangeList::contains`, inclusive edges).
 	fn contains_range(&self, range: &TimeRange) -> bool {
-		self.0
-			.iter()
-			.any(|r| r.contains_range(range, true, true))
+		self.0.iter().any(|r| r.contains_range(range, true, true))
 	}
 
 	/// Insert a range, merging overlaps and touching neighbors

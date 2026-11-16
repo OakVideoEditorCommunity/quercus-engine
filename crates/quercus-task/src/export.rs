@@ -42,7 +42,10 @@ use std::sync::Arc;
 
 use quercus_codec::encoder::{create_from_params, Encoder};
 use quercus_codec::encodingparams::EncodingParams as CodecEncodingParams;
-use quercus_core::backend::{GpuContext, PackParams, PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ, PACK_TRANSFER_SRGB};
+use quercus_core::backend::{
+	GpuContext, PackParams, PACK_TRANSFER_GAMMA22, PACK_TRANSFER_HLG, PACK_TRANSFER_PQ,
+	PACK_TRANSFER_SRGB,
+};
 use quercus_core::colormath::PRIMARIES_AP1;
 use quercus_core::texture::Texture;
 use quercus_core::videoparams::VideoParams as CommonVideoParams;
@@ -271,7 +274,8 @@ impl ExportTask {
 		// The export dialog's explicit length (seconds) wins over the
 		// viewer's full length. This was previously only forwarded to the
 		// encoder and ignored by the range computation.
-		if self.encoding_params.export_length_num > 0 && self.encoding_params.export_length_den > 0 {
+		if self.encoding_params.export_length_num > 0 && self.encoding_params.export_length_den > 0
+		{
 			let length = Rational::new(
 				i64::from(self.encoding_params.export_length_num),
 				i64::from(self.encoding_params.export_length_den),
@@ -325,7 +329,10 @@ impl ExportTask {
 			quercus_core::colormath::OutputTransfer::Pq => PACK_TRANSFER_PQ,
 			quercus_core::colormath::OutputTransfer::Hlg => PACK_TRANSFER_HLG,
 		};
-		Some(OutputPack { params: PackParams { matrix, transfer }, bit_depth })
+		Some(OutputPack {
+			params: PackParams { matrix, transfer },
+			bit_depth,
+		})
 	}
 
 	/// Convert an F32 codec frame from the pipeline working space to the
@@ -390,7 +397,9 @@ impl ExportTask {
 
 	/// Wrap a CPU frame (F32 working-space, or the GPU pack pass's
 	/// delivery-encoded U8/U16 RGBA) into a codec frame.
-	fn codec_frame_from_cpu(frame: &quercus_core::texture::Frame) -> Result<quercus_codec::frame::Frame> {
+	fn codec_frame_from_cpu(
+		frame: &quercus_core::texture::Frame,
+	) -> Result<quercus_codec::frame::Frame> {
 		let params = CommonVideoParams::new_basic(
 			frame.width,
 			frame.height,
@@ -457,8 +466,10 @@ impl TaskBehavior for ExportTask {
 		self.render
 			.set_video_enabled(self.encoding_params.video_enabled);
 		if self.encoding_params.video_enabled {
-			self.render
-				.set_video_end(Some(nodeops::video_length(&self.viewer_node.0, self.viewer_node.1)));
+			self.render.set_video_end(Some(nodeops::video_length(
+				&self.viewer_node.0,
+				self.viewer_node.1,
+			)));
 		}
 
 		// Force params: force the renderer to the requested output size and
@@ -518,7 +529,16 @@ impl RenderTaskBehavior for ExportTask {
 		// gamut matrix + transfer on the GPU and reads back packed 8-bit or
 		// 16-bit RGBA; otherwise the CPU row-wise transform runs as before.
 		let mut codec_frame = match (self.output_pack, frame) {
-			(Some(pack), Texture::Gpu { token, ctx, width, height, .. }) => {
+			(
+				Some(pack),
+				Texture::Gpu {
+					token,
+					ctx,
+					width,
+					height,
+					..
+				},
+			) => {
 				let packed = ctx
 					.as_any()
 					.and_then(|any| any.downcast_ref::<GpuContext>())

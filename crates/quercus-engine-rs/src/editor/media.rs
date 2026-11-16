@@ -2,17 +2,22 @@
 
 #[cfg(test)]
 mod tests {
+	use crate::codec;
 	use crate::edit::EditCommand;
 	use crate::editor::EditorSession;
+	use crate::node;
+	use crate::test_support;
+	use crate::types;
+	use std::env;
+	use std::fs;
+	use std::process;
 
 	#[test]
 	fn replace_footage_preserves_identity_and_supports_undo_and_reload() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
-		let media_a = crate::test_support::make_test_clip("replace_a");
-		let media_b = crate::test_support::make_test_clip("replace_b");
+		let media_a = test_support::make_test_clip("replace_a");
+		let media_b = test_support::make_test_clip("replace_b");
 		let footage = session.project().import_footage(&media_a).expect("footage");
 		session
 			.execute(EditCommand::ReplaceFootage {
@@ -21,52 +26,59 @@ mod tests {
 			})
 			.expect("replace");
 		let snapshot = session.snapshot();
-		let current = snapshot.footages.iter().find(|item| item.id == footage).expect("footage row");
+		let current = snapshot
+			.footages
+			.iter()
+			.find(|item| item.id == footage)
+			.expect("footage row");
 		assert_eq!(current.filename.as_deref(), Some(media_b.as_str()));
 		assert!(current.video_streams > 0);
-		assert!(crate::node::undo());
+		assert!(node::undo());
 		assert_eq!(
 			session.snapshot().footages[0].filename.as_deref(),
 			Some(media_a.as_str())
 		);
-		assert!(crate::node::redo());
+		assert!(node::redo());
 		assert_eq!(
 			session.snapshot().footages[0].filename.as_deref(),
 			Some(media_b.as_str())
 		);
-		assert!(session
-			.execute(EditCommand::ReplaceFootage {
-				footage,
-				path: "/nonexistent/replacement.mp4".into(),
-			})
-			.is_err());
+		assert!(
+			session
+				.execute(EditCommand::ReplaceFootage {
+					footage,
+					path: "/nonexistent/replacement.mp4".into(),
+				})
+				.is_err()
+		);
 		assert_eq!(
 			session.snapshot().footages[0].filename.as_deref(),
 			Some(media_b.as_str()),
 			"failed probe must not change the current media"
 		);
 
-		let path = std::env::temp_dir()
-			.join(format!("quercus_p4_replace_{}.ove", std::process::id()))
+		let path = env::temp_dir()
+			.join(format!("quercus_p4_replace_{}.ove", process::id()))
 			.to_string_lossy()
 			.into_owned();
 		session.save(&path).expect("save");
 		let opened = EditorSession::open(&path).expect("reload");
 		let reloaded = opened.snapshot();
 		assert_eq!(reloaded.footages[0].id, footage);
-		assert_eq!(reloaded.footages[0].filename.as_deref(), Some(media_b.as_str()));
-		let _ = std::fs::remove_file(path);
-		let _ = std::fs::remove_file(media_a);
-		let _ = std::fs::remove_file(media_b);
+		assert_eq!(
+			reloaded.footages[0].filename.as_deref(),
+			Some(media_b.as_str())
+		);
+		let _ = fs::remove_file(path);
+		let _ = fs::remove_file(media_a);
+		let _ = fs::remove_file(media_b);
 	}
 
 	#[test]
 	fn project_entry_rename_and_delete_use_semantic_commands() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
-		let media = crate::test_support::make_test_clip("entry_delete");
+		let media = test_support::make_test_clip("entry_delete");
 		let footage = session.project().import_footage(&media).expect("footage");
 		session
 			.execute(EditCommand::RenameBlocks {
@@ -80,21 +92,19 @@ mod tests {
 			.expect("delete");
 		assert!(session.snapshot().root.children.is_empty());
 		assert!(session.project().node_kind(footage).is_none());
-		assert!(crate::node::undo());
+		assert!(node::undo());
 		assert!(session.project().node_kind(footage).is_some());
 		assert_eq!(session.snapshot().root.children[0].name, "After");
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(media);
 	}
 
 	#[test]
 	fn proxy_overrides_and_sequence_creation_roundtrip() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
-		let media = crate::test_support::make_test_clip("proxy_override");
+		let media = test_support::make_test_clip("proxy_override");
 		let footage = session.project().import_footage(&media).expect("footage");
-		let mut params = crate::codec::ProxyParams::default();
+		let mut params = codec::ProxyParams::default();
 		params.width = 320;
 		params.height = 180;
 		params.divider = 4;
@@ -103,19 +113,52 @@ mod tests {
 		session
 			.execute(EditCommand::SetFootageProxyParams { footage, params })
 			.expect("set proxy override");
-		let custom = session.project().footage_custom_proxy_params(footage).expect("custom");
-		assert_eq!((custom.width, custom.height, custom.divider, custom.crf), (320, 180, 4, 19));
-		assert_eq!(session.project().footage_effective_proxy_params(footage).unwrap().width, 320);
-		assert!(crate::node::undo());
-		assert!(session.project().footage_custom_proxy_params(footage).is_none());
-		assert!(crate::node::redo());
-		assert!(session.project().footage_custom_proxy_params(footage).is_some());
+		let custom = session
+			.project()
+			.footage_custom_proxy_params(footage)
+			.expect("custom");
+		assert_eq!(
+			(custom.width, custom.height, custom.divider, custom.crf),
+			(320, 180, 4, 19)
+		);
+		assert_eq!(
+			session
+				.project()
+				.footage_effective_proxy_params(footage)
+				.unwrap()
+				.width,
+			320
+		);
+		assert!(node::undo());
+		assert!(
+			session
+				.project()
+				.footage_custom_proxy_params(footage)
+				.is_none()
+		);
+		assert!(node::redo());
+		assert!(
+			session
+				.project()
+				.footage_custom_proxy_params(footage)
+				.is_some()
+		);
 		session
 			.execute(EditCommand::ClearFootageProxyParams { footage })
 			.expect("clear override");
-		assert!(session.project().footage_custom_proxy_params(footage).is_none());
-		assert!(crate::node::undo());
-		assert!(session.project().footage_custom_proxy_params(footage).is_some());
+		assert!(
+			session
+				.project()
+				.footage_custom_proxy_params(footage)
+				.is_none()
+		);
+		assert!(node::undo());
+		assert!(
+			session
+				.project()
+				.footage_custom_proxy_params(footage)
+				.is_some()
+		);
 
 		let sequence = session
 			.execute(EditCommand::CreateSequenceFromFootage {
@@ -126,9 +169,13 @@ mod tests {
 			.primary
 			.expect("sequence id");
 		let snapshot = session.snapshot();
-		let created = snapshot.sequences.iter().find(|item| item.id == sequence).expect("sequence");
+		let created = snapshot
+			.sequences
+			.iter()
+			.find(|item| item.id == sequence)
+			.expect("sequence");
 		assert_eq!((created.width, created.height), (64, 64));
-		assert_eq!(created.frame_rate, crate::types::Rational::new(10, 1));
+		assert_eq!(created.frame_rate, types::Rational::new(10, 1));
 		assert!(session.set_current_sequence(sequence));
 		let nested = session
 			.execute(EditCommand::PlaceNestedSequenceClip {
@@ -141,8 +188,9 @@ mod tests {
 			.primary
 			.expect("nested id");
 		assert!(session.snapshot().sequences.iter().any(|item| {
-			item.id == session.current_sequence().unwrap() && item.tracks[0].clips.iter().any(|clip| clip.id == nested)
+			item.id == session.current_sequence().unwrap()
+				&& item.tracks[0].clips.iter().any(|clip| clip.id == nested)
 		}));
-		let _ = std::fs::remove_file(media);
+		let _ = fs::remove_file(media);
 	}
 }

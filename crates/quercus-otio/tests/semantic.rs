@@ -18,9 +18,10 @@
 //! and assert the values Quercus's C++ load task depends on.
 
 use quercus_otio::{Clip, ExternalReference, MediaReference, Serializable, Timeline};
+use std::fs;
 
 fn golden_timeline() -> Timeline {
-	let text = std::fs::read_to_string(concat!(
+	let text = fs::read_to_string(concat!(
 		env!("CARGO_MANIFEST_DIR"),
 		"/tests/data/golden_timeline.json"
 	))

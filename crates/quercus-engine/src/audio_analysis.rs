@@ -4,8 +4,15 @@
 //! result a stable opaque handle and POD queries, allowing SDK consumers to use
 //! decoded peaks without depending on quercus-audio or codec stream types.
 
+use crate::codec;
+use crate::coretypes;
 use crate::handle::NativeMirror;
+use quercus_audio::synchronizer;
 use quercus_audio::waveform::SamplePerChannel;
+use quercus_audio::waveformsync;
+use std::ffi;
+use std::ptr;
+use std::slice;
 
 /// One channel's amplitude range within one waveform window.
 #[repr(C)]
@@ -75,7 +82,11 @@ pub struct WaveformHandle {
 	pub(crate) data: WaveformData,
 }
 
-crate::export_handle!(WaveformHandle, quercus_waveform_add_ref, quercus_waveform_release);
+crate::export_handle!(
+	WaveformHandle,
+	quercus_waveform_add_ref,
+	quercus_waveform_release
+);
 
 impl WaveformHandle {
 	/// Move `data` into a new reference-counted C handle and return its raw
@@ -103,7 +114,7 @@ pub(crate) fn extract_waveform(
 	if filename.is_empty() || stream_index < 0 || samples_per_point <= 0 {
 		return Err("invalid waveform extraction arguments".into());
 	}
-	let filename_c = std::ffi::CString::new(filename)
+	let filename_c = ffi::CString::new(filename)
 		.map_err(|_| "media filename contains an interior NUL".to_string())?;
 	let outcome = quercus_audio::waveform::extract(&filename_c, stream_index, samples_per_point)
 		.map_err(|e| e.to_string())?;
@@ -141,13 +152,13 @@ pub unsafe extern "C" fn quercus_audio_waveform_extract(
 	stream_index: i32,
 	samples_per_point: i32,
 ) -> *const WaveformHandle {
-	let Some(filename) = (unsafe { crate::codec::str_arg(filename, filename_len) }) else {
-		return std::ptr::null();
+	let Some(filename) = (unsafe { codec::str_arg(filename, filename_len) }) else {
+		return ptr::null();
 	};
 	extract_waveform(filename, stream_index, samples_per_point)
 		.ok()
 		.map(WaveformHandle::from_data)
-		.unwrap_or(std::ptr::null())
+		.unwrap_or(ptr::null())
 }
 
 /// Writes `(channels, sample_rate, samples_per_point, point_count)` metadata.
@@ -263,7 +274,7 @@ pub struct QuercusAudioOffsetEstimate {
 }
 
 impl NativeMirror for QuercusAudioOffsetEstimate {
-	type Native = quercus_audio::waveformsync::OffsetResult;
+	type Native = waveformsync::OffsetResult;
 
 	fn from_native(native: &Self::Native) -> Self {
 		Self {
@@ -297,7 +308,7 @@ pub struct QuercusAudioStretchEstimate {
 }
 
 impl NativeMirror for QuercusAudioStretchEstimate {
-	type Native = quercus_audio::waveformsync::StretchOffsetResult;
+	type Native = waveformsync::StretchOffsetResult;
 
 	fn from_native(native: &Self::Native) -> Self {
 		Self {
@@ -332,7 +343,7 @@ unsafe fn f64_slice<'a>(ptr: *const f64, len: usize) -> Option<&'a [f64]> {
 	if len == 0 {
 		Some(&[])
 	} else {
-		(!ptr.is_null()).then(|| unsafe { std::slice::from_raw_parts(ptr, len) })
+		(!ptr.is_null()).then(|| unsafe { slice::from_raw_parts(ptr, len) })
 	}
 }
 
@@ -351,7 +362,7 @@ unsafe fn bool_slice<'a>(ptr: *const bool, len: usize) -> Option<&'a [bool]> {
 	if len == 0 {
 		Some(&[])
 	} else {
-		(!ptr.is_null()).then(|| unsafe { std::slice::from_raw_parts(ptr, len) })
+		(!ptr.is_null()).then(|| unsafe { slice::from_raw_parts(ptr, len) })
 	}
 }
 
@@ -395,7 +406,7 @@ pub unsafe extern "C" fn quercus_audio_estimate_envelope_offset(
 	if window_samples == 0 {
 		return QuercusAudioOffsetEstimate::default();
 	}
-	let result = quercus_audio::waveformsync::estimate_envelope_offset_valid(
+	let result = waveformsync::estimate_envelope_offset_valid(
 		reference,
 		candidate,
 		reference_valid,
@@ -457,7 +468,7 @@ pub unsafe extern "C" fn quercus_audio_estimate_stretch_offset(
 	{
 		return QuercusAudioStretchEstimate::default();
 	}
-	let result = quercus_audio::waveformsync::estimate_stretch_and_offset(
+	let result = waveformsync::estimate_stretch_and_offset(
 		reference,
 		candidate,
 		reference_valid,
@@ -475,20 +486,18 @@ pub unsafe extern "C" fn quercus_audio_estimate_stretch_offset(
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QuercusAudioSourceClip {
-	pub source_start_time: crate::coretypes::QuercusRational,
-	pub media_in: crate::coretypes::QuercusRational,
+	pub source_start_time: coretypes::QuercusRational,
+	pub media_in: coretypes::QuercusRational,
 	pub has_source_start_time: bool,
 }
 
 impl NativeMirror for QuercusAudioSourceClip {
-	type Native = quercus_audio::synchronizer::SourceClip;
+	type Native = synchronizer::SourceClip;
 
 	fn from_native(native: &Self::Native) -> Self {
 		Self {
-			source_start_time: crate::coretypes::QuercusRational::from_native(
-				&native.source_start_time,
-			),
-			media_in: crate::coretypes::QuercusRational::from_native(&native.media_in),
+			source_start_time: coretypes::QuercusRational::from_native(&native.source_start_time),
+			media_in: coretypes::QuercusRational::from_native(&native.media_in),
 			has_source_start_time: native.has_source_start_time,
 		}
 	}
@@ -506,16 +515,16 @@ impl NativeMirror for QuercusAudioSourceClip {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QuercusAudioSyncPlacement {
-	pub timeline_in: crate::coretypes::QuercusRational,
+	pub timeline_in: coretypes::QuercusRational,
 	pub valid: bool,
 }
 
 impl NativeMirror for QuercusAudioSyncPlacement {
-	type Native = quercus_audio::synchronizer::Placement;
+	type Native = synchronizer::Placement;
 
 	fn from_native(native: &Self::Native) -> Self {
 		Self {
-			timeline_in: crate::coretypes::QuercusRational::from_native(&native.timeline_in),
+			timeline_in: coretypes::QuercusRational::from_native(&native.timeline_in),
 			valid: native.valid,
 		}
 	}
@@ -548,14 +557,14 @@ impl NativeMirror for QuercusAudioSyncPlacement {
 pub unsafe extern "C" fn quercus_audio_place_by_source_time(
 	reference: *const QuercusAudioSourceClip,
 	candidate: *const QuercusAudioSourceClip,
-	reference_timeline_in: crate::coretypes::QuercusRational,
+	reference_timeline_in: coretypes::QuercusRational,
 ) -> QuercusAudioSyncPlacement {
 	let (Some(reference), Some(candidate)) =
 		(unsafe { reference.as_ref() }, unsafe { candidate.as_ref() })
 	else {
 		return QuercusAudioSyncPlacement::default();
 	};
-	QuercusAudioSyncPlacement::from_native(&quercus_audio::synchronizer::place_by_source_time(
+	QuercusAudioSyncPlacement::from_native(&synchronizer::place_by_source_time(
 		&reference.to_native(),
 		&candidate.to_native(),
 		reference_timeline_in.to_native(),
@@ -573,11 +582,11 @@ pub unsafe extern "C" fn quercus_audio_place_by_source_time(
 /// time is NaN.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_audio_place_by_waveform_offset(
-	reference_timeline_in: crate::coretypes::QuercusRational,
+	reference_timeline_in: coretypes::QuercusRational,
 	candidate_offset_samples: i64,
 	sample_rate: i32,
 ) -> QuercusAudioSyncPlacement {
-	QuercusAudioSyncPlacement::from_native(&quercus_audio::synchronizer::place_by_waveform_offset(
+	QuercusAudioSyncPlacement::from_native(&synchronizer::place_by_waveform_offset(
 		reference_timeline_in.to_native(),
 		candidate_offset_samples,
 		sample_rate,

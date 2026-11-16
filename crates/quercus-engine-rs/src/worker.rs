@@ -10,13 +10,21 @@
 //! the installed `quercus-worker` binary. It is public so alternative launchers
 //! and tests can start the same runtime.
 
-use std::ffi::c_void;
+use std::env;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_worker_run(backend: *const u8, backend_len: usize) -> i32;
 	fn quercus_worker_ofx_host(args: *const u8, args_len: usize) -> i32;
@@ -57,7 +65,7 @@ pub fn ofx_host_main(args: &[String]) -> i32 {
 /// The `quercus-worker` process entry point: dispatches `--ofx-host`, otherwise
 /// parses `--backend` and runs the ticket worker. Returns the exit code.
 pub fn main() -> i32 {
-	let args: Vec<String> = std::env::args().collect();
+	let args: Vec<String> = env::args().collect();
 	if args.iter().any(|arg| arg == "--ofx-host") {
 		return ofx_host_main(&args);
 	}

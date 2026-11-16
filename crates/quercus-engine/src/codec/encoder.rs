@@ -6,6 +6,8 @@
 //! their own.
 
 use quercus_codec::encoder;
+use std::ptr;
+use std::slice;
 
 use crate::codec::{copy_str_out, str_arg};
 
@@ -74,7 +76,11 @@ pub unsafe extern "C" fn quercus_codec_encoder_filename_remove_digit_placeholder
 	let Some(filename) = (unsafe { str_arg(filename, filename_len) }) else {
 		return -1;
 	};
-	copy_str_out(&encoder::filename_remove_digit_placeholder(filename), buf, buf_len)
+	copy_str_out(
+		&encoder::filename_remove_digit_placeholder(filename),
+		buf,
+		buf_len,
+	)
 }
 
 #[cfg(test)]
@@ -111,9 +117,11 @@ mod tests {
 				buf.len(),
 			);
 			assert!(n > 0);
-			assert!(!std::str::from_utf8(&buf[..n as usize])
-				.unwrap()
-				.contains('#'));
+			assert!(
+				!std::str::from_utf8(&buf[..n as usize])
+					.unwrap()
+					.contains('#')
+			);
 		}
 	}
 }
@@ -127,8 +135,8 @@ mod tests {
 
 use std::sync::Arc;
 
-use quercus_codec::encoder::Encoder;
 use crate::handle::into_ffi;
+use quercus_codec::encoder::Encoder;
 use quercus_codec::encodingparams::EncodingParams;
 use quercus_codec::frame::Frame;
 
@@ -168,17 +176,17 @@ pub unsafe extern "C" fn quercus_codec_encoder_create(
 	params: *const EncodingParams,
 ) -> *mut EncoderSession {
 	if params.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let params = unsafe { &*params };
 	match encoder::create_from_params(params) {
 		Some(encoder) => {
 			if encoder.configure(params).is_err() {
-				return std::ptr::null_mut();
+				return ptr::null_mut();
 			}
 			into_ffi(EncoderSession { encoder }) as *mut EncoderSession
 		}
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -250,7 +258,7 @@ pub unsafe extern "C" fn quercus_codec_encoder_write_audio(
 	let samples = if samples.is_null() {
 		&[]
 	} else {
-		unsafe { std::slice::from_raw_parts(samples, sample_count) }
+		unsafe { slice::from_raw_parts(samples, sample_count) }
 	};
 	unsafe { &*session }
 		.encoder
@@ -330,7 +338,13 @@ mod session_tests {
 			vp.channel_count = 4;
 			let frame = quercus_codec_frame_with_params(vp);
 			assert!(quercus_codec_frame_allocate(frame));
-			quercus_codec_frame_set_timestamp(frame, QuercusRational { num: i as i64, den: 10 });
+			quercus_codec_frame_set_timestamp(
+				frame,
+				QuercusRational {
+					num: i as i64,
+					den: 10,
+				},
+			);
 			let data = quercus_codec_frame_data(frame);
 			let size = 64 * 64 * 16;
 			for px in 0..size / 16 {
@@ -343,8 +357,8 @@ mod session_tests {
 
 	#[test]
 	fn encode_h264_roundtrip_via_c_abi() {
-		let out = std::env::temp_dir()
-			.join(format!("quercusengine_encode_{}.mp4", std::process::id()));
+		let out =
+			std::env::temp_dir().join(format!("quercusengine_encode_{}.mp4", std::process::id()));
 		let params = h264_params(&out);
 		unsafe {
 			let session = quercus_codec_encoder_create(&params);
@@ -370,8 +384,8 @@ mod session_tests {
 		// (returns Err by design); the binding must forward that as false
 		// without crashing. A positive round-trip lands when the encoder
 		// gains subtitle support.
-		let out = std::env::temp_dir()
-			.join(format!("quercusengine_subs_{}.mp4", std::process::id()));
+		let out =
+			std::env::temp_dir().join(format!("quercusengine_subs_{}.mp4", std::process::id()));
 		let mut params = h264_params(&out);
 		params.subtitles_enabled = 1;
 		params.subtitles_codec = 17; // SRT
@@ -424,7 +438,10 @@ mod session_tests {
 
 			// Null session calls are safe.
 			assert!(!quercus_codec_encoder_open(std::ptr::null_mut()));
-			assert!(!quercus_codec_encoder_write_video(std::ptr::null_mut(), std::ptr::null()));
+			assert!(!quercus_codec_encoder_write_video(
+				std::ptr::null_mut(),
+				std::ptr::null()
+			));
 			assert!(!quercus_codec_encoder_flush(std::ptr::null_mut()));
 			assert!(!quercus_codec_encoder_close(std::ptr::null_mut()));
 			quercus_codec_encoder_release(std::ptr::null());

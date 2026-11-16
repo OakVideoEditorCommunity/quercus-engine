@@ -28,6 +28,8 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
+use std::panic;
+use std::sync;
 
 use crate::suites::status;
 
@@ -38,8 +40,7 @@ pub(crate) type MessageHandler =
 
 /// Message-sink registry (written by the facade, read by the suite; userdata is stored as a usize
 /// to avoid a raw pointer breaking the static's Send/Sync inference).
-static HANDLER: std::sync::Mutex<(Option<MessageHandler>, usize)> =
-	std::sync::Mutex::new((None, 0));
+static HANDLER: sync::Mutex<(Option<MessageHandler>, usize)> = sync::Mutex::new((None, 0));
 
 // ---------------------------------------------------------------------------
 // 持久消息计数（检查器效果卡的徽标数据源，阶段 6b）
@@ -50,11 +51,10 @@ static HANDLER: std::sync::Mutex<(Option<MessageHandler>, usize)> =
 // 地址，见 [`crate::suites::tag`]）为键累计计数；app 检查器经
 // [`crate::node_factory::instance_from_id`] 拿实例后按 props 地址查询。
 
-static PERSISTENT: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, usize>>> =
-	std::sync::OnceLock::new();
+static PERSISTENT: sync::OnceLock<sync::Mutex<HashMap<usize, usize>>> = sync::OnceLock::new();
 
-fn persistent_slot() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
-	PERSISTENT.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+fn persistent_slot() -> &'static sync::Mutex<HashMap<usize, usize>> {
+	PERSISTENT.get_or_init(|| sync::Mutex::new(HashMap::new()))
 }
 
 /// The persistent message count of one instance (the data source for the inspector effect card's badge).
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn quercus_ofx_message_impl(
 	_id: *const c_char,
 	message: *const c_char,
 ) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		if type_.is_null() || message.is_null() {
 			return status::FAILED;
 		}
@@ -240,7 +240,7 @@ extern "C" {
 
 /// Static function-table instance (v1).
 pub fn suite_v1() -> &'static MessageSuiteV1 {
-	static SUITE: std::sync::OnceLock<MessageSuiteV1> = std::sync::OnceLock::new();
+	static SUITE: sync::OnceLock<MessageSuiteV1> = sync::OnceLock::new();
 	SUITE.get_or_init(|| MessageSuiteV1 {
 		message: ofx_message_shim_v1,
 	})
@@ -248,7 +248,7 @@ pub fn suite_v1() -> &'static MessageSuiteV1 {
 
 /// Static function-table instance (v2).
 pub fn suite_v2() -> &'static MessageSuiteV2 {
-	static SUITE: std::sync::OnceLock<MessageSuiteV2> = std::sync::OnceLock::new();
+	static SUITE: sync::OnceLock<MessageSuiteV2> = sync::OnceLock::new();
 	SUITE.get_or_init(|| MessageSuiteV2 {
 		message: ofx_message_shim_v2,
 	})

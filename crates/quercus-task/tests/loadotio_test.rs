@@ -27,6 +27,13 @@
 //! The interchange save path is the production `SaveOTIOTask`; the media
 //! is a generated test clip, so the tests run headless with no fixtures.
 
+use quercus_codec::testmedia;
+use quercus_node::folder;
+use quercus_node::serializer;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{Rational, TimeRange};
@@ -47,13 +54,13 @@ use quercus_task::task::{Task, TaskBehavior};
 /// not race each other.
 static CALLBACK_LOCK: Mutex<()> = Mutex::new(());
 
-fn work_path(tag: &str, ext: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercustask_load_{tag}_{}.{ext}", std::process::id()))
+fn work_path(tag: &str, ext: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercustask_load_{tag}_{}.{ext}", process::id()))
 }
 
-fn write_clip(tag: &str) -> std::path::PathBuf {
+fn write_clip(tag: &str) -> path::PathBuf {
 	let path = work_path(tag, "mp4");
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
 	path
 }
 
@@ -80,7 +87,12 @@ fn add_track_with_clip(
 	let (ccore, cbehavior) = quercus_node::block::clip_create();
 	let clip = p.graph.add_node(ccore, cbehavior);
 	p.graph
-		.connect(footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+		.connect(
+			footage,
+			clip,
+			quercus_node::block::clip_input::TEXTURE_INPUT,
+			-1,
+		)
 		.expect("connect footage to clip");
 	p.graph
 		.get_mut(clip)
@@ -175,7 +187,7 @@ fn build_project(media: &str) -> Arc<Mutex<Project>> {
 			.behavior
 			.as_any_mut()
 			.unwrap()
-			.downcast_mut::<quercus_node::folder::FolderBehavior>()
+			.downcast_mut::<folder::FolderBehavior>()
 			.expect("root folder")
 			.children
 			.push(edited);
@@ -184,7 +196,7 @@ fn build_project(media: &str) -> Arc<Mutex<Project>> {
 }
 
 /// Save `project` through the production interchange task.
-fn save(project: &Arc<Mutex<Project>>, filename: &std::path::Path) {
+fn save(project: &Arc<Mutex<Project>>, filename: &path::Path) {
 	let mut driver = Task::new("Saving project...", None);
 	driver.set_behavior(Box::new(SaveOTIOTask {
 		base: Task::new("Saving project...", None),
@@ -201,7 +213,7 @@ fn save(project: &Arc<Mutex<Project>>, filename: &std::path::Path) {
 }
 
 /// Run the OTIO loader on `filename`; `(task error, stored project)`.
-fn load_otio(filename: &std::path::Path) -> (Option<String>, Option<Arc<Mutex<Project>>>) {
+fn load_otio(filename: &path::Path) -> (Option<String>, Option<Arc<Mutex<Project>>>) {
 	let mut task = Task::new("Loading project...", None);
 	let mut loader = LoadOTIOTask::new(ProjectLoadBaseTask::new(
 		Task::new("Loading project...", None),
@@ -243,7 +255,7 @@ fn otio_round_trip_preserves_the_sequence() {
 	let media = write_clip("otio");
 	let project = build_project(&media.to_string_lossy());
 	let out = work_path("roundtrip", "otio");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 	save(&project, &out);
 
 	let (error, loaded) = load_otio(&out);
@@ -287,8 +299,8 @@ fn otio_round_trip_preserves_the_sequence() {
 		media.to_string_lossy()
 	);
 
-	let _ = std::fs::remove_file(&out);
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
 }
 
 #[test]
@@ -297,7 +309,7 @@ fn fcpxml_round_trip_preserves_the_sequence() {
 	let media = write_clip("fcpxml");
 	let project = build_project(&media.to_string_lossy());
 	let out = work_path("roundtrip", "fcpxml");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 	save(&project, &out);
 
 	let (error, loaded) = load_otio(&out);
@@ -342,8 +354,8 @@ fn fcpxml_round_trip_preserves_the_sequence() {
 		media.to_string_lossy()
 	);
 
-	let _ = std::fs::remove_file(&out);
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
 }
 
 // ---- error contract ---------------------------------------------------
@@ -361,18 +373,18 @@ fn load_otio_rejects_a_missing_file() {
 fn load_otio_rejects_a_corrupt_document() {
 	let _guard = CALLBACK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let path = work_path("corrupt", "otio");
-	std::fs::write(&path, b"{ this is not json").expect("write corrupt file");
+	fs::write(&path, b"{ this is not json").expect("write corrupt file");
 	let (error, loaded) = load_otio(&path);
 	assert!(error.is_some(), "a corrupt document must fail");
 	assert!(loaded.is_none());
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 #[test]
 fn load_otio_rejects_an_unknown_extension() {
 	let _guard = CALLBACK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let path = work_path("unknown", "txt");
-	std::fs::write(&path, b"{}").expect("write file");
+	fs::write(&path, b"{}").expect("write file");
 	let (error, loaded) = load_otio(&path);
 	let error = error.expect("unknown extension must fail");
 	assert!(
@@ -380,7 +392,7 @@ fn load_otio_rejects_an_unknown_extension() {
 		"error names the supported formats: {error}"
 	);
 	assert!(loaded.is_none());
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 #[test]
@@ -393,7 +405,10 @@ fn take_project_before_a_run_reports_state() {
 fn xml_loader_rejects_missing_and_corrupt_documents() {
 	let mut task = Task::new("load", None);
 	let mut load = ProjectLoadTask {
-		base: ProjectLoadBaseTask::new(Task::new("load", None), "/definitely/not/here.quercusproj".into()),
+		base: ProjectLoadBaseTask::new(
+			Task::new("load", None),
+			"/definitely/not/here.quercusproj".into(),
+		),
 	};
 	assert!(load.run(&mut task).is_err());
 	assert!(task
@@ -401,7 +416,7 @@ fn xml_loader_rejects_missing_and_corrupt_documents() {
 		.is_some_and(|e| e.contains("Failed to read file")));
 
 	let path = work_path("corrupt", "quercusproj");
-	std::fs::write(&path, b"<not-quercus>").expect("write corrupt xml");
+	fs::write(&path, b"<not-quercus>").expect("write corrupt xml");
 	let mut task = Task::new("load", None);
 	let mut load = ProjectLoadTask {
 		base: ProjectLoadBaseTask::new(
@@ -413,7 +428,7 @@ fn xml_loader_rejects_missing_and_corrupt_documents() {
 	assert!(task
 		.error()
 		.is_some_and(|e| e.contains("Failed to read XML document")));
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 #[test]
@@ -422,10 +437,10 @@ fn xml_loader_round_trips_a_saved_project() {
 	let project = build_project(&media.to_string_lossy());
 	let xml = {
 		let guard = project.lock().unwrap();
-		quercus_node::serializer::save(&guard).expect("serialize project")
+		serializer::save(&guard).expect("serialize project")
 	};
 	let path = work_path("roundtrip", "quercusproj");
-	std::fs::write(&path, xml).expect("write project");
+	fs::write(&path, xml).expect("write project");
 
 	let mut task = Task::new("load", None);
 	let mut load = ProjectLoadTask {
@@ -442,8 +457,8 @@ fn xml_loader_round_trips_a_saved_project() {
 		assert_eq!(guard.filename(), path.to_string_lossy());
 	}
 
-	let _ = std::fs::remove_file(&path);
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&path);
+	let _ = fs::remove_file(&media);
 }
 
 // ---- import-confirmation callback -------------------------------------
@@ -454,7 +469,7 @@ fn import_confirm_callback_can_reject_and_accept() {
 	let media = write_clip("confirm");
 	let project = build_project(&media.to_string_lossy());
 	let out = work_path("confirm", "otio");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 	save(&project, &out);
 
 	// Rejecting: the task completes but hands no project to the caller.
@@ -478,6 +493,6 @@ fn import_confirm_callback_can_reject_and_accept() {
 	// Reset the global callback so other tests see the headless default.
 	set_import_confirm_callback(None);
 
-	let _ = std::fs::remove_file(&out);
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
 }

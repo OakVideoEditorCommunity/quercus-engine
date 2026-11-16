@@ -56,7 +56,13 @@ impl Default for QuercusClipAudioEffectInfo {
 fn clip_core(
 	session: &EditorSessionHandle,
 	clip: u64,
-) -> Option<(f64, f64, Rational, Rational, Vec<quercus_node::block::ClipAudioEffect>)> {
+) -> Option<(
+	f64,
+	f64,
+	Rational,
+	Rational,
+	Vec<quercus_node::block::ClipAudioEffect>,
+)> {
 	let clip = NodeId::from_identity(clip)?;
 	let project = session.project();
 	let guard = project.lock().unwrap_or_else(|e| e.into_inner());
@@ -227,7 +233,6 @@ pub fn clip_audio_effects(
 	Some(behavior.core.audio_effects.clone())
 }
 
-
 /// C mirror of the loudness measurement result.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -241,7 +246,10 @@ pub struct QuercusLoudness {
 /// The session's current sequence, or `None` when none is selected.
 fn current_sequence(session: &EditorSessionHandle) -> Option<NodeId> {
 	let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
-	state.current_sequence.valid().then_some(state.current_sequence)
+	state
+		.current_sequence
+		.valid()
+		.then_some(state.current_sequence)
 }
 
 /// Measure the current sequence's integrated loudness over `range`.
@@ -452,13 +460,8 @@ pub unsafe extern "C" fn quercus_editor_add_audio_bus_effect(
 	let Some(sequence) = current_sequence(session) else {
 		return false;
 	};
-	crate::editor_commands::add_audio_bus_effect(
-		&session.project(),
-		sequence,
-		type_id,
-		index,
-	)
-	.is_ok()
+	crate::editor_commands::add_audio_bus_effect(&session.project(), sequence, type_id, index)
+		.is_ok()
 }
 
 /// Removes one entry of the current sequence's master-bus effect chain.

@@ -19,7 +19,12 @@
 //! Rust home; this file carries the virtual surface ([`NodeBehavior`])
 //! and the shared data ([`NodeCore`]).
 
+use crate::handle;
+use crate::node;
+use crate::serializer;
 use quercus_core::{Rational, TimeRange};
+use std::any;
+use std::collections;
 
 use crate::id::NodeId;
 use crate::input::{Input, ValueHint};
@@ -102,7 +107,7 @@ pub struct NodeCore {
 	/// Standard (non-keyframed) values keyed by (input id, element);
 	/// falls back to [`Input::default`] (the C++ `NodeInputImmediate`
 	/// `standard_value_` map — `// CPP-PARITY: inputimmediate.h`).
-	pub standard_values: std::collections::HashMap<(String, i32), crate::value::NodeValue>,
+	pub standard_values: collections::HashMap<(String, i32), crate::value::NodeValue>,
 }
 
 /// The always-present "enabled" input id (C++
@@ -145,7 +150,7 @@ impl NodeCore {
 			caches_enabled: true,
 			gizmos: Vec::new(),
 			current_gizmo: None,
-			standard_values: std::collections::HashMap::new(),
+			standard_values: collections::HashMap::new(),
 		}
 	}
 
@@ -509,13 +514,13 @@ impl NodeCore {
 #[derive(Clone)]
 pub struct NodeCaches {
 	/// Video frame hash cache.
-	pub video: crate::handle::CHandle,
+	pub video: handle::CHandle,
 	/// Thumbnail cache.
-	pub thumbnail: crate::handle::CHandle,
+	pub thumbnail: handle::CHandle,
 	/// Audio playback cache.
-	pub audio: crate::handle::CHandle,
+	pub audio: handle::CHandle,
 	/// Waveform cache.
-	pub waveform: crate::handle::CHandle,
+	pub waveform: handle::CHandle,
 }
 
 impl Default for NodeCaches {
@@ -523,10 +528,10 @@ impl Default for NodeCaches {
 	/// enters a project; `// CPP-PARITY: node.cpp:102`).
 	fn default() -> Self {
 		NodeCaches {
-			video: crate::handle::CHandle::null(),
-			thumbnail: crate::handle::CHandle::null(),
-			audio: crate::handle::CHandle::null(),
-			waveform: crate::handle::CHandle::null(),
+			video: handle::CHandle::null(),
+			thumbnail: handle::CHandle::null(),
+			audio: handle::CHandle::null(),
+			waveform: handle::CHandle::null(),
 		}
 	}
 }
@@ -579,7 +584,7 @@ pub trait NodeBehavior: Send {
 	fn input_name<'a>(&self, id: &'a str) -> &'a str {
 		// The standard enabled input displays as "Enabled" on every node
 		// (`// CPP-PARITY: node.cpp:155` retranslate).
-		if id == crate::node::ENABLED_INPUT {
+		if id == node::ENABLED_INPUT {
 			"Enabled"
 		} else {
 			id
@@ -731,12 +736,7 @@ pub trait NodeBehavior: Send {
 
 	/// Direct frame generation (C++ `generate_frame()`; CPU-render
 	/// nodes).
-	fn generate_frame(
-		&self,
-		core: &NodeCore,
-		frame: &mut crate::handle::CHandle,
-		time: Rational,
-	) {
+	fn generate_frame(&self, core: &NodeCore, frame: &mut handle::CHandle, time: Rational) {
 		let _ = (core, frame, time);
 	}
 
@@ -879,11 +879,7 @@ pub trait NodeBehavior: Send {
 	///
 	/// `true` when the segment was consumed; `false` when an implementor could not
 	/// parse it (the default always returns `true`).
-	fn load_custom(
-		&mut self,
-		core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		let _ = core;
 		// The default has no custom state; consume the segment so the
 		// node-body parser continues at the correct depth (the reader is
@@ -899,7 +895,7 @@ pub trait NodeBehavior: Send {
 	/// `core` is the node's data. The default writes nothing; nodes with extra
 	/// serializable state emit child elements here and parse them back in
 	/// `load_custom`.
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = (core, writer);
 	}
 
@@ -923,12 +919,12 @@ pub trait NodeBehavior: Send {
 	/// Downcast to the concrete behavior (used by the timeline families
 	/// to reach `FolderBehavior`/`TrackBehavior`/`SequenceBehavior`
 	/// state). Default `None`; concrete behaviors override.
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		None
 	}
 
 	/// Mutable downcast (see [`NodeBehavior::as_any`]).
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		None
 	}
 }

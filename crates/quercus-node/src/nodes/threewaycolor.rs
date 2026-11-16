@@ -19,6 +19,9 @@
 //! `olive::ThreeWayColorNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -181,16 +184,18 @@ impl NodeBehavior for ThreeWayColorNode {
 		);
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -208,26 +213,26 @@ impl NodeBehavior for ThreeWayColorNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
 	let neutral = crate::value::NodeValue::Color([0.5, 0.5, 0.5, 1.0]);
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		SHADOWS_COLOR_INPUT,
 		crate::value::ValueType::Color,
 		neutral.clone(),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		MIDTONES_COLOR_INPUT,
 		crate::value::ValueType::Color,
 		neutral.clone(),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		HIGHLIGHTS_COLOR_INPUT,
 		crate::value::ValueType::Color,
 		neutral,
@@ -240,21 +245,21 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 			crate::value::NodeValue::Text("percentage".into()),
 		),
 	];
-	let mut shadows_amount = crate::input::Input::new(
+	let mut shadows_amount = input::Input::new(
 		SHADOWS_AMOUNT_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
 	);
 	shadows_amount.properties = amount_props.clone();
 	core.add_input(shadows_amount);
-	let mut midtones_amount = crate::input::Input::new(
+	let mut midtones_amount = input::Input::new(
 		MIDTONES_AMOUNT_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
 	);
 	midtones_amount.properties = amount_props.clone();
 	core.add_input(midtones_amount);
-	let mut highlights_amount = crate::input::Input::new(
+	let mut highlights_amount = input::Input::new(
 		HIGHLIGHTS_AMOUNT_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -286,11 +291,11 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = ThreeWayColorNode;
 		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
@@ -372,8 +377,7 @@ mod tests {
 			panic!("expected a texture-typed value");
 		};
 		let payload =
-			unsafe { crate::jobs::shader_job(handle) }
-				.expect("payload boxed behind the handle");
+			unsafe { crate::jobs::shader_job(handle) }.expect("payload boxed behind the handle");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.threewaycolor");
 		assert_eq!(payload.shader_id, "");
 		assert_eq!(payload.iterations, 1);

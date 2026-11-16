@@ -9,11 +9,16 @@
 //! or `set_params` on the frame, or its last release.
 
 use quercus_codec::frame::Frame;
+use std::ptr;
 
 use crate::coretypes::{QuercusRational, QuercusVideoParams};
 use crate::handle::{NativeMirror, into_ffi};
 
-crate::export_handle!(Frame, quercus_codec_frame_add_ref, quercus_codec_frame_release);
+crate::export_handle!(
+	Frame,
+	quercus_codec_frame_add_ref,
+	quercus_codec_frame_release
+);
 
 /// An empty frame with default (invalid) params, ref count 1.
 #[unsafe(no_mangle)]
@@ -78,11 +83,11 @@ pub unsafe extern "C" fn quercus_codec_frame_is_allocated(this: *const Frame) ->
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn quercus_codec_frame_data(this: *mut Frame) -> *mut u8 {
 	if this.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	match unsafe { &mut *this }.data_mut() {
 		Some(data) => data.as_mut_ptr(),
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -222,7 +227,10 @@ pub unsafe extern "C" fn quercus_codec_frame_get_params(
 /// live reference (the same discipline the C++ `Frame` has): mutating a frame
 /// another owner is reading is not synchronized.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_codec_frame_set_params(this: *mut Frame, params: QuercusVideoParams) {
+pub unsafe extern "C" fn quercus_codec_frame_set_params(
+	this: *mut Frame,
+	params: QuercusVideoParams,
+) {
 	if this.is_null() {
 		return;
 	}
@@ -291,7 +299,10 @@ mod tests {
 			assert!(quercus_codec_frame_allocate(frame));
 			quercus_codec_frame_add_ref(frame);
 			quercus_codec_frame_release(frame);
-			assert!(quercus_codec_frame_is_allocated(frame), "one reference remains");
+			assert!(
+				quercus_codec_frame_is_allocated(frame),
+				"one reference remains"
+			);
 			quercus_codec_frame_release(frame);
 		}
 	}
@@ -308,8 +319,14 @@ mod tests {
 				quercus_codec_frame_timestamp(std::ptr::null()),
 				QuercusRational { num: 0, den: 0 }
 			);
-			quercus_codec_frame_set_timestamp(std::ptr::null_mut(), QuercusRational { num: 1, den: 1 });
-			assert!(!quercus_codec_frame_get_params(std::ptr::null(), std::ptr::null_mut()));
+			quercus_codec_frame_set_timestamp(
+				std::ptr::null_mut(),
+				QuercusRational { num: 1, den: 1 },
+			);
+			assert!(!quercus_codec_frame_get_params(
+				std::ptr::null(),
+				std::ptr::null_mut()
+			));
 			quercus_codec_frame_set_params(std::ptr::null_mut(), test_params(1, 1));
 			quercus_codec_frame_add_ref(std::ptr::null());
 			quercus_codec_frame_release(std::ptr::null());

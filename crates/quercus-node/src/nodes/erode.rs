@@ -140,16 +140,18 @@ impl NodeBehavior for ErodeNode {
 
 		table.push(
 			ValueType::Texture,
-			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: crate::id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -186,7 +188,10 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	);
 	radius.properties = vec![
 		("min".to_string(), crate::value::NodeValue::Float(0.0)),
-		("max".to_string(), crate::value::NodeValue::Float(MAX_RADIUS)),
+		(
+			"max".to_string(),
+			crate::value::NodeValue::Float(MAX_RADIUS),
+		),
 	];
 	core.add_input(radius);
 
@@ -289,8 +294,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("shader job expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.erode");
 		assert_eq!(payload.shader_id, "");
 		assert_eq!(payload.effect_input, TEXTURE_INPUT);
@@ -311,8 +315,7 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("shader job expected");
 		};
-		let payload = unsafe { crate::jobs::shader_job(h) }
-			.expect("shader job payload boxed");
+		let payload = unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 		assert_eq!(
 			payload.params.get(RADIUS_INPUT),
 			Some(&NodeValue::Float(1.0))

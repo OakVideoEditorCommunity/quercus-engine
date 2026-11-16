@@ -19,6 +19,7 @@
 //! `olive::TrigonometryNode`).
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Operation/method input id (C++ `k_method_in`). Type: combo;
@@ -178,19 +179,19 @@ impl TrigonometryNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut method = crate::input::Input::new(
+	let mut method = input::Input::new(
 		METHOD_INPUT,
 		crate::value::ValueType::Combo,
 		crate::value::NodeValue::Combo(0),
 	);
-	method.flags |= crate::input::flags::NOT_CONNECTABLE | crate::input::flags::NOT_KEYFRAMABLE;
+	method.flags |= input::flags::NOT_CONNECTABLE | input::flags::NOT_KEYFRAMABLE;
 	method.properties = vec![(
 		"combobox_strings".to_string(),
 		crate::value::NodeValue::Binary(OPERATION_NAMES.concat().into_bytes()),
 	)];
 	core.add_input(method);
 
-	let x = crate::input::Input::new(
+	let x = input::Input::new(
 		X_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),

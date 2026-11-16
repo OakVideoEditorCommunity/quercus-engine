@@ -17,8 +17,14 @@
 //! * Domain helpers in `editor_commands` own the actual undo semantics. This
 //!   dispatcher must not wrap every operation in another undo group.
 
-use quercus_node::id::NodeId;
+use crate::effect;
+use crate::node;
 use quercus_core::TimeRange;
+use quercus_node::id::NodeId;
+use quercus_node::keyframe;
+use quercus_timeline::marker;
+use quercus_timeline::workarea;
+use std::path;
 
 use crate::editor::SessionState;
 use crate::editor_commands as ops;
@@ -66,7 +72,10 @@ fn empty(result: Result<(), String>) -> Result<EditResult, String> {
 /// Atomicity and undo grouping are the domain command's contract; this layer
 /// never reports success after a failed operation and never replays a command
 /// to make output buffers fit.
-pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Result<EditResult, String> {
+pub(crate) fn execute(
+	session: &mut SessionState,
+	command: EditCommand,
+) -> Result<EditResult, String> {
 	let project = &session.project;
 	let sequence = session.current_sequence;
 	match command {
@@ -89,8 +98,12 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			ops::set_track_height(project, id(track)?, height);
 			Ok(EditResult::default())
 		}
-		EditCommand::SetTrackMuted { track, muted } => empty(ops::set_track_muted(project, id(track)?, muted)),
-		EditCommand::SetTrackLocked { track, locked } => empty(ops::set_track_locked(project, id(track)?, locked)),
+		EditCommand::SetTrackMuted { track, muted } => {
+			empty(ops::set_track_muted(project, id(track)?, muted))
+		}
+		EditCommand::SetTrackLocked { track, locked } => {
+			empty(ops::set_track_locked(project, id(track)?, locked))
+		}
 		EditCommand::CreateSequence {
 			// All four format fields are either present or absent. Mixing a
 			// custom width with default rate/interlacing would be ambiguous,
@@ -138,7 +151,9 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 		}
 		EditCommand::CreateFolder { name } => primary(ops::create_folder(project, &name)),
 		EditCommand::CreateTextFootage => primary(ops::create_text_footage_node(project)),
-		EditCommand::ImportFootage { path } => primary(ops::import_footage(project, std::path::Path::new(&path))),
+		EditCommand::ImportFootage { path } => {
+			primary(ops::import_footage(project, path::Path::new(&path)))
+		}
 		EditCommand::EnsureSequencesMounted => {
 			ops::ensure_sequences_mounted(project);
 			Ok(EditResult::default())
@@ -147,9 +162,17 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			ops::reprobe_unprobed_footage(project);
 			Ok(EditResult::default())
 		}
-		EditCommand::CreateAdjustmentLayer { track, in_ts, out_ts } => {
-			primary(ops::create_adjustment_layer(project, sequence, id(track)?, in_ts, out_ts))
-		}
+		EditCommand::CreateAdjustmentLayer {
+			track,
+			in_ts,
+			out_ts,
+		} => primary(ops::create_adjustment_layer(
+			project,
+			sequence,
+			id(track)?,
+			in_ts,
+			out_ts,
+		)),
 		EditCommand::PlaceFootageClip {
 			footage,
 			kind,
@@ -185,7 +208,14 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			track_index,
 			in_ts,
 			out_ts,
-		} => primary(ops::place_text_clip(project, sequence, id(text)?, track_index, in_ts, out_ts)),
+		} => primary(ops::place_text_clip(
+			project,
+			sequence,
+			id(text)?,
+			track_index,
+			in_ts,
+			out_ts,
+		)),
 		EditCommand::PlaceGeneratorClip {
 			generator,
 			track_index,
@@ -222,7 +252,11 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 				media_in_ts,
 			))
 		}
-		EditCommand::AddTransitionAtSeam { previous, next, half } => primary(ops::add_transition_at_seam(
+		EditCommand::AddTransitionAtSeam {
+			previous,
+			next,
+			half,
+		} => primary(ops::add_transition_at_seam(
 			project,
 			id(previous)?,
 			id(next)?,
@@ -253,7 +287,13 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			frame,
 			length,
 		} => {
-			let clamped = ops::set_transition_length(project, id(clip)?, start_edge, frame.native(), length.native())?;
+			let clamped = ops::set_transition_length(
+				project,
+				id(clip)?,
+				start_edge,
+				frame.native(),
+				length.native(),
+			)?;
 			Ok(EditResult {
 				rational: Some(WireRational {
 					num: clamped.numerator(),
@@ -262,10 +302,12 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 				..EditResult::default()
 			})
 		}
-		EditCommand::SplitClip { clip, time_ts } => primary(ops::split_clip(project, id(clip)?, time_ts)),
-		EditCommand::SplitClipsPreservingLinks { clips, time_ts } => {
-			empty(ops::split_clips_preserving_links(project, &ids(&clips)?, time_ts))
+		EditCommand::SplitClip { clip, time_ts } => {
+			primary(ops::split_clip(project, id(clip)?, time_ts))
 		}
+		EditCommand::SplitClipsPreservingLinks { clips, time_ts } => empty(
+			ops::split_clips_preserving_links(project, &ids(&clips)?, time_ts),
+		),
 		EditCommand::TrimClip {
 			clip,
 			new_in_ts,
@@ -275,21 +317,43 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			clip,
 			start_edge,
 			new_frame,
-		} => empty(ops::ripple_trim_clip(project, id(clip)?, start_edge, new_frame)),
+		} => empty(ops::ripple_trim_clip(
+			project,
+			id(clip)?,
+			start_edge,
+			new_frame,
+		)),
 		EditCommand::RollEdit {
 			track,
 			a,
 			b,
 			new_frame,
-		} => empty(ops::roll_edit(project, id(track)?, id(a)?, id(b)?, new_frame)),
-		EditCommand::SlideClip { clip, new_start } => empty(ops::slide_clip(project, id(clip)?, new_start)),
-		EditCommand::SlipClip { clip, new_media_in } => empty(ops::slip_clip(project, id(clip)?, new_media_in)),
-		EditCommand::MoveClip { clip, new_in_ts } => empty(ops::move_clip(project, id(clip)?, new_in_ts)),
+		} => empty(ops::roll_edit(
+			project,
+			id(track)?,
+			id(a)?,
+			id(b)?,
+			new_frame,
+		)),
+		EditCommand::SlideClip { clip, new_start } => {
+			empty(ops::slide_clip(project, id(clip)?, new_start))
+		}
+		EditCommand::SlipClip { clip, new_media_in } => {
+			empty(ops::slip_clip(project, id(clip)?, new_media_in))
+		}
+		EditCommand::MoveClip { clip, new_in_ts } => {
+			empty(ops::move_clip(project, id(clip)?, new_in_ts))
+		}
 		EditCommand::MoveClipToTrack {
 			clip,
 			track,
 			new_in_ts,
-		} => empty(ops::move_clip_to_track(project, id(clip)?, id(track)?, new_in_ts)),
+		} => empty(ops::move_clip_to_track(
+			project,
+			id(clip)?,
+			id(track)?,
+			new_in_ts,
+		)),
 		EditCommand::MoveClipWithLinks {
 			// `None` means move on the current track; `Some(id)` is a real
 			// destination track, not the invalid-ID sentinel.
@@ -310,9 +374,13 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 				&ids(&linked)?,
 			))
 		}
-		EditCommand::SetClipsLinked { clips, linked } => empty(ops::set_clips_linked(project, &ids(&clips)?, linked)),
+		EditCommand::SetClipsLinked { clips, linked } => {
+			empty(ops::set_clips_linked(project, &ids(&clips)?, linked))
+		}
 		EditCommand::DeleteClip { clip } => empty(ops::delete_clip(project, id(clip)?)),
-		EditCommand::RippleDeleteClip { clip } => empty(ops::ripple_delete_clip(project, id(clip)?)),
+		EditCommand::RippleDeleteClip { clip } => {
+			empty(ops::ripple_delete_clip(project, id(clip)?))
+		}
 		EditCommand::DeleteArea {
 			in_ts,
 			out_ts,
@@ -338,7 +406,7 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 				return Err("a marker already exists at that time".into());
 			}
 			empty(ops::push_command(
-				quercus_timeline::marker::MarkerAddCommand::new_arc(
+				marker::MarkerAddCommand::new_arc(
 					session.markers.clone(),
 					TimeRange::new(time, time),
 					&name,
@@ -354,15 +422,15 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			// the undo command executes.
 			let time = time.native();
 			let list = session.markers.lock().unwrap_or_else(|e| e.into_inner());
-			let Some(index) = (0..list.size())
-				.find(|&index| list.at(index).is_some_and(|marker| marker.time().in_() == time))
-			else {
+			let Some(index) = (0..list.size()).find(|&index| {
+				list.at(index)
+					.is_some_and(|marker| marker.time().in_() == time)
+			}) else {
 				return Err("no marker at that time".into());
 			};
 			drop(list);
 			empty(ops::push_command(
-				quercus_timeline::marker::MarkerRemoveCommand::new_arc(session.markers.clone(), index)
-					.to_command(),
+				marker::MarkerRemoveCommand::new_arc(session.markers.clone(), index).to_command(),
 				"Remove Marker",
 			))
 		}
@@ -381,30 +449,25 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			enabled,
 			range,
 			old_range,
-		} => {
-			empty(ops::push_multi_command(
-				vec![
-					quercus_timeline::workarea::WorkareaSetEnabledCommand::new_arc(
-						session.workarea.clone(),
-						enabled,
-					)
+		} => empty(ops::push_multi_command(
+			vec![
+				workarea::WorkareaSetEnabledCommand::new_arc(session.workarea.clone(), enabled)
 					.to_command(),
-					quercus_timeline::workarea::WorkareaSetRangeCommand::new_with_old_arc(
-						session.workarea.clone(),
-						range.native(),
-						old_range.native(),
-					)
-					.to_command(),
-				],
-				"Set Workarea",
-			))
-		}
+				workarea::WorkareaSetRangeCommand::new_with_old_arc(
+					session.workarea.clone(),
+					range.native(),
+					old_range.native(),
+				)
+				.to_command(),
+			],
+			"Set Workarea",
+		)),
 		EditCommand::CreateNode {
 			context,
 			type_id,
 			x,
 			y,
-		} => primary(crate::effect::create_impl(project, id(context)?, &type_id, x, y)),
+		} => primary(effect::create_impl(project, id(context)?, &type_id, x, y)),
 		EditCommand::RemoveNode { node } => empty(ops::remove_node(project, id(node)?)),
 		EditCommand::Connect { from, to, input_id } => empty(ops::push_command(
 			ops::connect_command(project, id(from)?, id(to)?, &input_id)?,
@@ -414,7 +477,12 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			ops::disconnect_command(project, id(to)?, &input_id)?,
 			"Disconnect Nodes",
 		)),
-		EditCommand::SetContextPosition { node, context, x, y } => empty(ops::push_command(
+		EditCommand::SetContextPosition {
+			node,
+			context,
+			x,
+			y,
+		} => empty(ops::push_command(
 			ops::set_context_position_command(project, id(node)?, id(context)?, x, y)?,
 			"Move Node",
 		)),
@@ -424,45 +492,69 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			// a later paste uses the same session clipboard.
 			session.clipboard = ops::copy_clips(project, &ids(&clips)?);
 			Ok(EditResult {
-				clipboard: session.clipboard.iter().cloned().map(WireClipboardClip::wire).collect(),
+				clipboard: session
+					.clipboard
+					.iter()
+					.cloned()
+					.map(WireClipboardClip::wire)
+					.collect(),
 				..EditResult::default()
 			})
 		}
-		EditCommand::PasteClips { playhead_ts } => {
-			many(ops::paste_clips(project, sequence, &session.clipboard, playhead_ts))
-		}
+		EditCommand::PasteClips { playhead_ts } => many(ops::paste_clips(
+			project,
+			sequence,
+			&session.clipboard,
+			playhead_ts,
+		)),
 		EditCommand::SetBlocksEnabled { clips, enabled } => {
 			empty(ops::set_blocks_enabled(project, &ids(&clips)?, enabled))
 		}
-		EditCommand::SetClipsSpeed { clips, speed } => empty(ops::set_clips_speed(project, &ids(&clips)?, speed)),
-		EditCommand::RenameBlocks { clips, name } => empty(ops::rename_blocks(project, &ids(&clips)?, &name)),
-		EditCommand::DuplicateClips { clips } => many(ops::duplicate_clips(project, sequence, &ids(&clips)?)),
-		EditCommand::PasteClipsInsert { playhead_ts } => {
-			many(ops::paste_clips_insert(project, sequence, &session.clipboard, playhead_ts))
+		EditCommand::SetClipsSpeed { clips, speed } => {
+			empty(ops::set_clips_speed(project, &ids(&clips)?, speed))
 		}
-		EditCommand::NestClips { clips } => primary(ops::nest_clips(project, sequence, &ids(&clips)?)),
+		EditCommand::RenameBlocks { clips, name } => {
+			empty(ops::rename_blocks(project, &ids(&clips)?, &name))
+		}
+		EditCommand::DuplicateClips { clips } => {
+			many(ops::duplicate_clips(project, sequence, &ids(&clips)?))
+		}
+		EditCommand::PasteClipsInsert { playhead_ts } => many(ops::paste_clips_insert(
+			project,
+			sequence,
+			&session.clipboard,
+			playhead_ts,
+		)),
+		EditCommand::NestClips { clips } => {
+			primary(ops::nest_clips(project, sequence, &ids(&clips)?))
+		}
 		EditCommand::EffectInsert {
 			host,
 			index,
 			type_id,
-		} => primary(crate::effect::insert_impl(project, id(host)?, index, &type_id)),
+		} => primary(effect::insert_impl(project, id(host)?, index, &type_id)),
 		EditCommand::EffectRemove { host, effect } => {
-			empty(crate::effect::remove_impl(project, id(host)?, id(effect)?))
+			empty(effect::remove_impl(project, id(host)?, id(effect)?))
 		}
 		EditCommand::EffectMove {
 			host,
 			effect,
 			new_index,
-		} => empty(crate::effect::move_impl(project, id(host)?, id(effect)?, new_index)),
+		} => empty(effect::move_impl(
+			project,
+			id(host)?,
+			id(effect)?,
+			new_index,
+		)),
 		EditCommand::EffectSetEnabled { effect, enabled } => {
-			empty(crate::effect::set_enabled_impl(project, id(effect)?, enabled))
+			empty(effect::set_enabled_impl(project, id(effect)?, enabled))
 		}
 		EditCommand::SetNodeStandardValue {
 			node,
 			input_id,
 			element,
 			value,
-		} => empty(crate::node::set_standard_value_impl(
+		} => empty(node::set_standard_value_impl(
 			project,
 			id(node)?,
 			&input_id,
@@ -480,9 +572,9 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			bezier_out,
 		} => {
 			let interpolation = match interpolation {
-				0 => quercus_node::keyframe::Interpolation::Hold,
-				1 => quercus_node::keyframe::Interpolation::Linear,
-				2 => quercus_node::keyframe::Interpolation::Bezier,
+				0 => keyframe::Interpolation::Hold,
+				1 => keyframe::Interpolation::Linear,
+				2 => keyframe::Interpolation::Bezier,
 				_ => return Err(format!("invalid keyframe interpolation: {interpolation}")),
 			};
 			empty(ops::upsert_keyframe(
@@ -502,7 +594,13 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			input_id,
 			element,
 			time,
-		} => empty(ops::remove_keyframe(project, id(node)?, &input_id, element, time.native())),
+		} => empty(ops::remove_keyframe(
+			project,
+			id(node)?,
+			&input_id,
+			element,
+			time.native(),
+		)),
 		EditCommand::SetNodeValueAtTime {
 			node,
 			input_id,
@@ -525,20 +623,28 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			input_id,
 			element,
 			value,
-		} => empty(ops::set_text_value(project, id(node)?, &input_id, element, &value)),
-		EditCommand::ReplaceFootage { footage, path } => {
-			empty(ops::replace_footage(project, id(footage)?, std::path::Path::new(&path)))
-		}
+		} => empty(ops::set_text_value(
+			project,
+			id(node)?,
+			&input_id,
+			element,
+			&value,
+		)),
+		EditCommand::ReplaceFootage { footage, path } => empty(ops::replace_footage(
+			project,
+			id(footage)?,
+			path::Path::new(&path),
+		)),
 		EditCommand::DeleteEntry { node } => empty(ops::delete_entry(project, id(node)?)),
-		EditCommand::SetFootageProxyParams { footage, params } => {
-			empty(ops::set_footage_proxy_params(project, id(footage)?, Some(params)))
-		}
+		EditCommand::SetFootageProxyParams { footage, params } => empty(
+			ops::set_footage_proxy_params(project, id(footage)?, Some(params)),
+		),
 		EditCommand::ClearFootageProxyParams { footage } => {
 			empty(ops::set_footage_proxy_params(project, id(footage)?, None))
 		}
-		EditCommand::CreateSequenceFromFootage { footage, name } => {
-			primary(ops::create_sequence_from_footage(project, id(footage)?, &name))
-		}
+		EditCommand::CreateSequenceFromFootage { footage, name } => primary(
+			ops::create_sequence_from_footage(project, id(footage)?, &name),
+		),
 		EditCommand::DeleteProxy { footage } => {
 			if session.proxy_tasks.contains_key(&footage) {
 				return Err("cannot delete a proxy while it is generating".into());
@@ -569,8 +675,13 @@ pub(crate) fn execute(session: &mut SessionState, command: EditCommand) -> Resul
 			offsets,
 			name,
 		} => {
-			let result =
-				ops::create_multicam_sequence(project, id(host_sequence)?, &ids(&angles)?, &offsets, &name)?;
+			let result = ops::create_multicam_sequence(
+				project,
+				id(host_sequence)?,
+				&ids(&angles)?,
+				&offsets,
+				&name,
+			)?;
 			Ok(EditResult {
 				primary: Some(result.source_sequence.identity()),
 				ids: vec![result.host_clip.identity()],

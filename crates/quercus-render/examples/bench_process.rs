@@ -36,8 +36,11 @@
 //! binary is located next to the build output (`target/<profile>/quercus-worker`),
 //! or via `$QUERCUS_WORKER_BIN`.
 
+use quercus_render::error;
+use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_core::Rational;
@@ -50,14 +53,14 @@ use quercus_render::worker::{Job, JobDispatch, JobSchedule};
 /// the current executable's `examples/` directory, else `quercus-worker` on
 /// `PATH`.
 fn worker_bin() -> PathBuf {
-	if let Ok(p) = std::env::var("QUERCUS_WORKER_BIN") {
+	if let Ok(p) = env::var("QUERCUS_WORKER_BIN") {
 		return PathBuf::from(p);
 	}
-	if let Ok(exe) = std::env::current_exe() {
+	if let Ok(exe) = env::current_exe() {
 		// target/<profile>/examples/bench_process -> target/<profile>/quercus-worker
 		if let Some(examples) = exe.parent() {
 			if let Some(profile) = examples.parent() {
-				let candidate = profile.join(format!("quercus-worker{}", std::env::consts::EXE_SUFFIX));
+				let candidate = profile.join(format!("quercus-worker{}", env::consts::EXE_SUFFIX));
 				if candidate.exists() {
 					return candidate;
 				}
@@ -68,11 +71,11 @@ fn worker_bin() -> PathBuf {
 }
 
 fn main() {
-	let frames: usize = std::env::args()
+	let frames: usize = env::args()
 		.nth(1)
 		.and_then(|s| s.parse().ok())
 		.unwrap_or(240);
-	let workers: Option<usize> = std::env::args().nth(2).and_then(|s| s.parse().ok());
+	let workers: Option<usize> = env::args().nth(2).and_then(|s| s.parse().ok());
 	let width: i32 = 1920;
 	let height: i32 = 1080;
 
@@ -90,7 +93,9 @@ fn main() {
 	let dispatcher = ProcessDispatcher::new(config).expect("dispatcher config");
 	dispatcher.start().expect("workers start + handshake");
 	let worker_count = dispatcher.worker_count();
-	println!("quercus-worker pool: {worker_count} worker(s), {frames} x {width}x{height} BGRA8 frames");
+	println!(
+		"quercus-worker pool: {worker_count} worker(s), {frames} x {width}x{height} BGRA8 frames"
+	);
 
 	// One completion record per frame: (frame number, wall-clock completion).
 	let results = Arc::new(Mutex::new(Vec::<(i64, Instant)>::new()));
@@ -121,7 +126,7 @@ fn main() {
 			// Never invoked on the process backend (workers render from the
 			// wire spec); must still be a valid producer.
 			produce: Arc::new(|_, _| {
-				Err(quercus_render::error::Error::Failed(
+				Err(error::Error::Failed(
 					"process backend does not use the in-process producer".into(),
 				))
 			}),
@@ -169,7 +174,7 @@ fn main() {
 			eprintln!("timeout: {done}/{frames} completions");
 			break;
 		}
-		std::thread::sleep(Duration::from_millis(2));
+		thread::sleep(Duration::from_millis(2));
 	}
 	let elapsed = start.elapsed();
 

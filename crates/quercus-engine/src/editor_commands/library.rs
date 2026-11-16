@@ -10,6 +10,8 @@
 //! compositions (load + save through the registry) shared with the
 //! `quercus_storage_library_*` C exports.
 
+use crate::storage;
+use quercus_storage::writethrough;
 use std::sync::Arc;
 
 use quercus_storage::backend::StorageBackend;
@@ -43,22 +45,19 @@ impl ProjectLibrary {
 
 	/// The backend claiming this library (registry resolution).
 	fn backend(&self) -> Result<Arc<dyn StorageBackend>, String> {
-		quercus_storage::writethrough::library_backend(&self.uri).map_err(|e| e.to_string())
+		writethrough::library_backend(&self.uri).map_err(|e| e.to_string())
 	}
 
 	/// Lists projects and attaches best-effort statistics to each row.
 	/// A failed statistics lookup yields zeroes rather than hiding the project.
 	pub(crate) fn projects(&self) -> Result<Vec<LibraryProject>, String> {
 		let backend = self.backend()?;
-		let infos = backend
-			.library_list(&self.uri)
-			.map_err(|e| e.to_string())?;
+		let infos = backend.library_list(&self.uri).map_err(|e| e.to_string())?;
 		Ok(infos
 			.into_iter()
 			.map(|info| {
-				let stats =
-					crate::storage::library_project_stats(backend.as_ref(), &self.uri, &info.uuid)
-						.unwrap_or_default();
+				let stats = storage::library_project_stats(backend.as_ref(), &self.uri, &info.uuid)
+					.unwrap_or_default();
 				LibraryProject {
 					uuid: info.uuid,
 					name: info.name,
@@ -78,7 +77,7 @@ impl ProjectLibrary {
 		if name.trim().is_empty() {
 			return Err("invalid name".into());
 		}
-		crate::storage::create_library_project(&self.uri, name).map_err(|e| e.to_string())
+		storage::create_library_project(&self.uri, name).map_err(|e| e.to_string())
 	}
 
 	/// Permanently deletes one project from this library.
@@ -102,19 +101,18 @@ impl ProjectLibrary {
 	/// Generic composition (load + `deep_copy` + save): the copy has no
 	/// journal history, unlike the database backend's native duplicate.
 	pub(crate) fn duplicate(&self, uuid: &str) -> Result<String, String> {
-		crate::storage::duplicate_library_project(&self.uri, uuid).map_err(|e| e.to_string())
+		storage::duplicate_library_project(&self.uri, uuid).map_err(|e| e.to_string())
 	}
 
 	/// Imports a storage URI into this library and returns the imported UUID.
 	pub(crate) fn import(&self, file_uri: &str) -> Result<String, String> {
 		let file_uri = StorageUri::parse(file_uri).map_err(|e| e.to_string())?;
-		crate::storage::import_library_project(&self.uri, &file_uri).map_err(|e| e.to_string())
+		storage::import_library_project(&self.uri, &file_uri).map_err(|e| e.to_string())
 	}
 
 	/// Exports one library project to a registry-resolvable storage URI.
 	pub(crate) fn export(&self, uuid: &str, file_uri: &str) -> Result<(), String> {
 		let file_uri = StorageUri::parse(file_uri).map_err(|e| e.to_string())?;
-		crate::storage::export_library_project(&self.uri, uuid, &file_uri)
-			.map_err(|e| e.to_string())
+		storage::export_library_project(&self.uri, uuid, &file_uri).map_err(|e| e.to_string())
 	}
 }

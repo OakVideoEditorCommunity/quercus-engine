@@ -166,7 +166,10 @@ pub struct Parameter {
 impl Parameter {
 	/// Returns the static scalar value for an ordinary parameter.
 	pub fn scalar_value(&self) -> Option<&ParameterValue> {
-		self.values.iter().find(|(element, _)| *element == -1).map(|(_, value)| value)
+		self.values
+			.iter()
+			.find(|(element, _)| *element == -1)
+			.map(|(_, value)| value)
 	}
 
 	/// Returns the keyframe track for `element`, if one exists.
@@ -261,19 +264,36 @@ impl ParameterSnapshot {
 					.filter_map(|property_index| {
 						let mut property = PropertyRaw::default();
 						if !unsafe {
-							quercus_editor_params_property_at(handle.0, index, property_index, &mut property)
+							quercus_editor_params_property_at(
+								handle.0,
+								index,
+								property_index,
+								&mut property,
+							)
 						} {
 							return None;
 						}
 						let text = property.value.has_text.then(|| {
 							string_out(|buf, len| unsafe {
-								quercus_editor_params_property_text_at(handle.0, index, property_index, buf, len)
+								quercus_editor_params_property_text_at(
+									handle.0,
+									index,
+									property_index,
+									buf,
+									len,
+								)
 							})
 							.unwrap_or_default()
 						});
 						Some(ParameterProperty {
 							key: string_out(|buf, len| unsafe {
-								quercus_editor_params_property_key_at(handle.0, index, property_index, buf, len)
+								quercus_editor_params_property_key_at(
+									handle.0,
+									index,
+									property_index,
+									buf,
+									len,
+								)
 							})
 							.unwrap_or_default(),
 							value: convert_value(property.value, text),
@@ -282,14 +302,20 @@ impl ParameterSnapshot {
 					.collect();
 				let values = (0..raw.value_count.max(0))
 					.filter_map(|element| {
-						let element = unsafe { quercus_editor_params_value_element_at(handle.0, index, element) };
+						let element = unsafe {
+							quercus_editor_params_value_element_at(handle.0, index, element)
+						};
 						let mut value = ValueRaw::default();
-						if !unsafe { quercus_editor_params_value_at(handle.0, index, element, &mut value) } {
+						if !unsafe {
+							quercus_editor_params_value_at(handle.0, index, element, &mut value)
+						} {
 							return None;
 						}
 						let text = value.has_text.then(|| {
 							string_out(|buf, len| unsafe {
-								quercus_editor_params_value_text_at(handle.0, index, element, buf, len)
+								quercus_editor_params_value_text_at(
+									handle.0, index, element, buf, len,
+								)
 							})
 							.unwrap_or_default()
 						});
@@ -298,24 +324,26 @@ impl ParameterSnapshot {
 					.collect();
 				let keyframes = (0..raw.track_count.max(0))
 					.map(|element| {
-						let element = unsafe { quercus_editor_params_track_element_at(handle.0, index, element) };
-						let keys = (0..unsafe { quercus_editor_params_keyframe_count(handle.0, index, element) }.max(0))
+						let element = unsafe {
+							quercus_editor_params_track_element_at(handle.0, index, element)
+						};
+						let keys = (0..unsafe {
+							quercus_editor_params_keyframe_count(handle.0, index, element)
+						}
+						.max(0))
 							.filter_map(|key_index| {
 								let mut key = KeyframeRaw::default();
 								if !unsafe {
-									quercus_editor_params_keyframe_at(handle.0, index, element, key_index, &mut key)
+									quercus_editor_params_keyframe_at(
+										handle.0, index, element, key_index, &mut key,
+									)
 								} {
 									return None;
 								}
 								let text = key.value.has_text.then(|| {
 									string_out(|buf, len| unsafe {
 										quercus_editor_params_keyframe_text_at(
-											handle.0,
-											index,
-											element,
-											key_index,
-											buf,
-											len,
+											handle.0, index, element, key_index, buf, len,
 										)
 									})
 									.unwrap_or_default()

@@ -22,6 +22,8 @@
 //! `Unavailable`. Deterministic per-channel filenames derive from the
 //! source + target audio params.
 
+use crate::error;
+use crate::task;
 use quercus_core::filefunctions::FileFunctions;
 use std::path::Path;
 
@@ -61,7 +63,7 @@ impl ConformManager {
 		channel_layout: u64,
 		sample_format: i32,
 		wait: bool,
-	) -> crate::error::Result<ConformState> {
+	) -> error::Result<ConformState> {
 		let filenames = conform_filenames(
 			cache_path,
 			source_filename,
@@ -77,15 +79,15 @@ impl ConformManager {
 		}
 
 		// Interim state (pre-M8): no task system, conform cannot be generated.
-		if !crate::task::task_submit_is_registered() {
+		if !task::task_submit_is_registered() {
 			return Ok(ConformState::Unavailable);
 		}
 
 		// The task owns the ".working" temporary names and the rename to the
 		// final per-channel filenames on success; output_filename carries the
 		// first channel's final path and the task derives the siblings.
-		let req = crate::task::TaskRequest {
-			kind: crate::task::TaskKind::Conform,
+		let req = task::TaskRequest {
+			kind: task::TaskKind::Conform,
 			input_filename: source_filename,
 			output_filename: filenames.first().map(String::as_str).unwrap_or(""),
 			stream_index,
@@ -98,7 +100,7 @@ impl ConformManager {
 
 		// Interim simplification: submission is synchronous — we always wait
 		// for the submit to return, regardless of `wait`.
-		if crate::task::submit_task(&req).is_err() {
+		if task::submit_task(&req).is_err() {
 			return Ok(ConformState::Unavailable);
 		}
 
@@ -156,7 +158,7 @@ impl ConformManager {
 		channel_layout: u64,
 		sample_format: i32,
 		index: usize,
-	) -> crate::error::Result<String> {
+	) -> error::Result<String> {
 		let filenames = conform_filenames(
 			cache_path,
 			source_filename,
@@ -165,10 +167,7 @@ impl ConformManager {
 			sample_format,
 			channel_layout,
 		);
-		filenames
-			.get(index)
-			.cloned()
-			.ok_or(crate::error::Error::NotFound)
+		filenames.get(index).cloned().ok_or(error::Error::NotFound)
 	}
 }
 
@@ -223,7 +222,12 @@ fn all_conforms_exist(filenames: &[String]) -> bool {
 #[cfg(test)]
 pub(crate) mod test_util {
 	/// Serializes every test that mutates the task-submit registry.
-	pub static REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	use crate::error;
+	use crate::task;
+	use std::ffi;
+	use std::ptr;
+	use std::sync;
+	pub static REG_LOCK: sync::Mutex<()> = sync::Mutex::new(());
 
 	/// Task-submit callback that accepts every request by returning `Ok(())`.
 	///
@@ -231,21 +235,18 @@ pub(crate) mod test_util {
 	/// with `task::set_task_submit_cb`; both are ignored. Test-only support
 	/// installed by [`register_accept_cb`] so conform calls behave as if a
 	/// worker accepted the job immediately.
-	fn accept_cb(
-		_req: &crate::task::TaskRequest,
-		_ud: *mut std::ffi::c_void,
-	) -> crate::error::Result<()> {
+	fn accept_cb(_req: &task::TaskRequest, _ud: *mut ffi::c_void) -> error::Result<()> {
 		Ok(())
 	}
 
 	/// Registers `accept_cb` as the process-wide submit callback.
 	pub fn register_accept_cb() {
-		crate::task::set_task_submit_cb(Some(&accept_cb), std::ptr::null_mut());
+		task::set_task_submit_cb(Some(&accept_cb), ptr::null_mut());
 	}
 
 	/// Clears the process-wide submit callback.
 	pub fn clear_submit_cb() {
-		crate::task::set_task_submit_cb(None, std::ptr::null_mut());
+		task::set_task_submit_cb(None, ptr::null_mut());
 	}
 }
 
@@ -254,8 +255,11 @@ mod tests {
 	use super::*;
 
 	fn temp_subdir(name: &str) -> String {
-		let dir =
-			std::env::temp_dir().join(format!("quercuscodec_conform_{}_{}", name, std::process::id()));
+		let dir = std::env::temp_dir().join(format!(
+			"quercuscodec_conform_{}_{}",
+			name,
+			std::process::id()
+		));
 		let _ = std::fs::create_dir_all(&dir);
 		dir.to_string_lossy().into_owned()
 	}

@@ -32,6 +32,9 @@
 //! paths (observed: a Homebrew upgrade of dav1d left ffmpeg's own .pc
 //! pointing at a deleted Cellar dir, breaking the link).
 
+use std::env;
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -71,9 +74,9 @@ fn main() {
 	let joined_path = {
 		let mut paths = vec![pc_dir.clone()];
 		if !pkg_path.is_empty() {
-			paths.extend(std::env::split_paths(&pkg_path));
+			paths.extend(env::split_paths(&pkg_path));
 		}
-		std::env::join_paths(paths).unwrap_or_default()
+		env::join_paths(paths).unwrap_or_default()
 	};
 	const FFMPEG_LIBS: [&str; 7] = [
 		"libavformat",
@@ -100,9 +103,9 @@ fn main() {
 		Some(custom) => run(&custom).expect("PKG_CONFIG points at a program that failed to run"),
 		None => match run("pkg-config") {
 			Ok(output) => output,
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => match run("pkgconf") {
+			Err(e) if e.kind() == io::ErrorKind::NotFound => match run("pkgconf") {
 				Ok(output) => output,
-				Err(pkgconf_err) if pkgconf_err.kind() == std::io::ErrorKind::NotFound => {
+				Err(pkgconf_err) if pkgconf_err.kind() == io::ErrorKind::NotFound => {
 					// Windows CI/CD links the prebuilt SHARED FFmpeg (the
 					// BtbN archive, see the workflows): its import libraries
 					// carry canonical names and the archive is
@@ -183,7 +186,13 @@ fn main() {
 				// libtheoraenc and libtheoradec share member objects, so
 				// force-including both duplicates theora_* symbols.
 				const WHOLE_ARCHIVE: [&str; 7] = [
-					"ass", "unibreak", "harfbuzz", "fribidi", "fontconfig", "expat", "freetype",
+					"ass",
+					"unibreak",
+					"harfbuzz",
+					"fribidi",
+					"fontconfig",
+					"expat",
+					"freetype",
 				];
 				if WHOLE_ARCHIVE.contains(&lib) {
 					// `+whole-archive` reaches ld64 as `-force_load` and,
@@ -251,7 +260,13 @@ fn link_prebuilt_shared(dir: &str) {
 	);
 	println!("cargo:rustc-link-search=native={}", libdir.display());
 	for lib in [
-		"avformat", "avcodec", "avfilter", "avdevice", "avutil", "swscale", "swresample",
+		"avformat",
+		"avcodec",
+		"avfilter",
+		"avdevice",
+		"avutil",
+		"swscale",
+		"swresample",
 	] {
 		println!("cargo:rustc-link-lib={lib}");
 	}
@@ -266,11 +281,11 @@ fn link_prebuilt_shared(dir: &str) {
 /// IDEs that cannot inject environment variables into the cargo
 /// invocation (RustRover) use the .env fallback for `FFMPEG_DIR`.
 fn env_or_dotenv(key: &str) -> Option<String> {
-	if let Ok(v) = std::env::var(key) {
+	if let Ok(v) = env::var(key) {
 		return Some(v);
 	}
 	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-	let content = std::fs::read_to_string(root.join(".env")).ok()?;
+	let content = fs::read_to_string(root.join(".env")).ok()?;
 	for line in content.lines() {
 		let line = line.trim();
 		if line.is_empty() || line.starts_with('#') {

@@ -5,10 +5,24 @@
 //! value; their methods call into the engine so C++-compatible reduction
 //! and sentinel semantics are never reimplemented on this side.
 
+use crate::codec;
 use std::cmp::Ordering;
+use std::mem;
+use std::ops;
+use std::str;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_core_rational_new(num: i64, den: i64) -> Rational;
 	fn quercus_core_rational_null() -> Rational;
@@ -96,10 +110,8 @@ impl Rational {
 
 	/// The project-XML text form (e.g. "30000/1001").
 	pub fn to_display_string(self) -> String {
-		crate::codec::string_out(|buf, len| unsafe {
-			quercus_core_rational_to_string(self, buf, len)
-		})
-		.unwrap_or_default()
+		codec::string_out(|buf, len| unsafe { quercus_core_rational_to_string(self, buf, len) })
+			.unwrap_or_default()
 	}
 
 	/// Parses the text form; invalid input yields the null sentinel.
@@ -119,28 +131,28 @@ impl Rational {
 	}
 }
 
-impl std::ops::Add for Rational {
+impl ops::Add for Rational {
 	type Output = Rational;
 	fn add(self, rhs: Rational) -> Rational {
 		unsafe { quercus_core_rational_add(self, rhs) }
 	}
 }
 
-impl std::ops::Sub for Rational {
+impl ops::Sub for Rational {
 	type Output = Rational;
 	fn sub(self, rhs: Rational) -> Rational {
 		unsafe { quercus_core_rational_sub(self, rhs) }
 	}
 }
 
-impl std::ops::Mul for Rational {
+impl ops::Mul for Rational {
 	type Output = Rational;
 	fn mul(self, rhs: Rational) -> Rational {
 		unsafe { quercus_core_rational_mul(self, rhs) }
 	}
 }
 
-impl std::ops::Div for Rational {
+impl ops::Div for Rational {
 	type Output = Rational;
 	fn div(self, rhs: Rational) -> Rational {
 		unsafe { quercus_core_rational_div(self, rhs) }
@@ -236,7 +248,7 @@ impl PixelFormat {
 	/// The discriminant for a raw ABI value; `None` outside -1..=4.
 	pub fn from_i32(v: i32) -> Option<PixelFormat> {
 		if unsafe { quercus_core_pixelformat_is_valid(v) } {
-			Some(unsafe { std::mem::transmute::<i32, PixelFormat>(v) })
+			Some(unsafe { mem::transmute::<i32, PixelFormat>(v) })
 		} else {
 			None
 		}
@@ -382,7 +394,7 @@ impl VideoParams {
 			.iter()
 			.position(|&b| b == 0)
 			.unwrap_or(self.colorspace.len());
-		std::str::from_utf8(&self.colorspace[..end]).unwrap_or("")
+		str::from_utf8(&self.colorspace[..end]).unwrap_or("")
 	}
 
 	/// Write the colorspace name into the parameter set's fixed 64-byte field.
@@ -470,8 +482,14 @@ mod tests {
 		assert!(Rational::NULL.is_null());
 		assert!(!Rational::new(1, 2).is_nan());
 
-		assert_eq!(Rational::new(1, 2) + Rational::new(1, 3), Rational::new(5, 6));
-		assert_eq!(Rational::new(1, 2) * Rational::new(2, 1), Rational::new(1, 1));
+		assert_eq!(
+			Rational::new(1, 2) + Rational::new(1, 3),
+			Rational::new(5, 6)
+		);
+		assert_eq!(
+			Rational::new(1, 2) * Rational::new(2, 1),
+			Rational::new(1, 1)
+		);
 		assert!(Rational::new(1, 2) < Rational::new(2, 3));
 
 		let nan = Rational::new(i32::MAX as i64, 1) + Rational::new(i32::MAX as i64, 1);

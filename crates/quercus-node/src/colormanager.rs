@@ -20,6 +20,7 @@
 //! facade. `// CPP-PARITY: src/node/src/color/colormanager/colormanager.{h,cpp}`.
 
 /// Per-project color manager.
+use crate::error;
 pub struct ColorManager {
 	/// OCIO config filename (empty = bundled default).
 	pub config_filename: String,
@@ -59,14 +60,14 @@ impl ColorManager {
 	/// symbols, so this always took the "mark loaded with the built-in
 	/// defaults" path (single-lib: the render call is removed and the
 	/// deterministic equivalent kept).
-	pub fn initialize(&mut self) -> crate::error::Result<()> {
+	pub fn initialize(&mut self) -> error::Result<()> {
 		self.config_loaded = true;
 		Ok(())
 	}
 
 	/// (Re)build the process-wide default config (C++
 	/// `set_up_default_config()`).
-	pub fn set_up_default_config(&mut self) -> crate::error::Result<()> {
+	pub fn set_up_default_config(&mut self) -> error::Result<()> {
 		self.config_loaded = true;
 		Ok(())
 	}
@@ -76,7 +77,7 @@ impl ColorManager {
 	/// `update_config_from_filename()`). The quercusrender color C ABI never
 	/// implemented the load, so the file-loaded path always kept the
 	/// previous state (single-lib: the render call is removed).
-	pub fn update_config_from_filename(&mut self) -> crate::error::Result<()> {
+	pub fn update_config_from_filename(&mut self) -> error::Result<()> {
 		if self.config_filename.is_empty() {
 			// Empty filename selects the bundled default.
 			self.config_loaded = true;

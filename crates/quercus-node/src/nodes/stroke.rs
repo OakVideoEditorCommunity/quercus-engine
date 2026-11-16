@@ -18,6 +18,9 @@
 //! `olive::StrokeFilterNode`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -209,16 +212,18 @@ impl NodeBehavior for StrokeFilterNode {
 			// main texture inside the params row.
 			table.push(
 				crate::value::ValueType::Texture,
-				crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
-					time,
-					iterations: 1,
-					type_id: self.type_id().to_string(),
-					shader_id: String::new(),
-					effect_input: core.effect_input.clone(),
-					params: inputs.clone(),
-					iterative_input: String::new(),
-				}))),
+				crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+					ShaderJobPayload {
+						node_id: id::NodeId::INVALID,
+						time,
+						iterations: 1,
+						type_id: self.type_id().to_string(),
+						shader_id: String::new(),
+						effect_input: core.effect_input.clone(),
+						params: inputs.clone(),
+						iterative_input: String::new(),
+					},
+				))),
 				None,
 			);
 		} else {
@@ -245,22 +250,22 @@ impl NodeBehavior for StrokeFilterNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	let color = crate::input::Input::new(
+	let color = input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([1.0, 1.0, 1.0, 1.0]),
 	);
 	core.add_input(color);
 
-	let mut radius = crate::input::Input::new(
+	let mut radius = input::Input::new(
 		RADIUS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(10.0),
@@ -268,7 +273,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	radius.properties = vec![("min".to_string(), crate::value::NodeValue::Float(0.0))];
 	core.add_input(radius);
 
-	let mut opacity = crate::input::Input::new(
+	let mut opacity = input::Input::new(
 		OPACITY_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(1.0),
@@ -283,7 +288,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(opacity);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		INNER_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -318,12 +323,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -406,8 +411,8 @@ mod tests {
 		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
 		match table.get(ValueType::Texture) {
 			Some(NodeValue::Texture(h)) => {
-				let payload = unsafe { crate::jobs::shader_job(h) }
-					.expect("shader job payload boxed");
+				let payload =
+					unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 				assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.stroke");
 				assert_eq!(payload.shader_id, "");
 				assert_eq!(payload.iterations, 1);

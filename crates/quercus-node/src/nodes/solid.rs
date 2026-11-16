@@ -18,6 +18,9 @@
 //! `olive::SolidGenerator`).
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -95,16 +98,18 @@ impl NodeBehavior for SolidGenerator {
 	) {
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params: inputs.clone(),
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params: inputs.clone(),
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -126,7 +131,7 @@ impl NodeBehavior for SolidGenerator {
 /// `color_in` with the default documented on the constant.
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
-	let mut color = crate::input::Input::new(
+	let mut color = input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([1.0, 0.0, 0.0, 1.0]),
@@ -157,12 +162,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = SolidGenerator;
 		assert_eq!(n.input_name(COLOR_INPUT), "Color");
@@ -194,14 +199,9 @@ mod tests {
 		let NodeValue::Texture(handle) = table.get(ValueType::Texture).unwrap() else {
 			unreachable!()
 		};
-		let job = unsafe {
-			crate::jobs::shader_job(handle)
-		}
-		.expect("solid output boxes a ShaderJobPayload");
-		assert_eq!(
-			job.type_id,
-			"org.olivevideoeditor.Olive.solidgenerator"
-		);
+		let job = unsafe { crate::jobs::shader_job(handle) }
+			.expect("solid output boxes a ShaderJobPayload");
+		assert_eq!(job.type_id, "org.olivevideoeditor.Olive.solidgenerator");
 		assert_eq!(job.shader_id, "");
 		assert_eq!(job.iterations, 1);
 		assert_eq!(job.effect_input, "");

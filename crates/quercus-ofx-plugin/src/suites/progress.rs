@@ -24,13 +24,16 @@
 //! (HS: ofxhImageEffect.cpp gProgressSuite); no reporter (called outside
 //! rendering) → silent OK. start/end are the brackets, OK.
 
+use std::cell;
 use std::ffi::{c_char, c_double, c_int, c_void};
+use std::panic;
+use std::sync;
 
 use crate::progress::ProgressReporter;
 use crate::suites::status;
 
 thread_local! {
-	static CURRENT: std::cell::RefCell<Option<ProgressReporter>> = const { std::cell::RefCell::new(None) };
+	static CURRENT: cell::RefCell<Option<ProgressReporter>> = const { cell::RefCell::new(None) };
 }
 
 /// Sets or clears the current thread's progress reporter (`None` = clear).
@@ -79,7 +82,7 @@ fn progress_update(progress: f64) -> c_int {
 /// undefined behavior, so every progress-suite entry point goes through here; the
 /// OFX status code `f` returns is passed through unchanged.
 fn caught(f: impl FnOnce() -> c_int) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
+	panic::catch_unwind(panic::AssertUnwindSafe(f)).unwrap_or(status::FAILED)
 }
 
 /// Function-table layout (OfxProgressSuiteV1).
@@ -252,7 +255,7 @@ unsafe extern "C" fn progress_end_v2(_handle: *mut c_void) -> c_int {
 
 /// Static function-table instance (v1).
 pub fn suite_v1() -> &'static ProgressSuiteV1 {
-	static SUITE: std::sync::OnceLock<ProgressSuiteV1> = std::sync::OnceLock::new();
+	static SUITE: sync::OnceLock<ProgressSuiteV1> = sync::OnceLock::new();
 	SUITE.get_or_init(|| ProgressSuiteV1 {
 		start: progress_start_v1,
 		update: progress_update_v1,
@@ -262,7 +265,7 @@ pub fn suite_v1() -> &'static ProgressSuiteV1 {
 
 /// Static function-table instance (v2).
 pub fn suite_v2() -> &'static ProgressSuiteV2 {
-	static SUITE: std::sync::OnceLock<ProgressSuiteV2> = std::sync::OnceLock::new();
+	static SUITE: sync::OnceLock<ProgressSuiteV2> = sync::OnceLock::new();
 	SUITE.get_or_init(|| ProgressSuiteV2 {
 		start: progress_start_v2,
 		update: progress_update_v2,

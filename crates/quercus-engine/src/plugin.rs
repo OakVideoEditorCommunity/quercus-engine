@@ -9,7 +9,7 @@
 //! registry lock held, so a callback may call back into the registry
 //! (e.g. add another command).
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 use std::sync::Mutex;
 
 use crate::codec::{copy_str_out, str_arg};
@@ -352,7 +352,10 @@ mod tests {
 
 			// Duplicate ids are rejected.
 			let d2 = descriptor(id, "Dup");
-			assert_eq!(quercus_plugin_register(&d2, Some(recording_cb), std::ptr::null_mut()), -1);
+			assert_eq!(
+				quercus_plugin_register(&d2, Some(recording_cb), std::ptr::null_mut()),
+				-1
+			);
 
 			// Descriptor roundtrip.
 			let mut out = descriptor("", "");
@@ -375,13 +378,19 @@ mod tests {
 
 			let mut buf = [0u8; 64];
 			let n = quercus_plugin_command_id_at(index, 0, buf.as_mut_ptr(), buf.len());
-			assert_eq!(std::str::from_utf8(&buf[..n as usize]).unwrap(), "export_markers");
+			assert_eq!(
+				std::str::from_utf8(&buf[..n as usize]).unwrap(),
+				"export_markers"
+			);
 			let n = quercus_plugin_command_menu_path_at(index, 0, buf.as_mut_ptr(), buf.len());
 			assert_eq!(std::str::from_utf8(&buf[..n as usize]).unwrap(), "Tools");
 
 			let calls_before = CALLS.load(Ordering::SeqCst);
 			assert!(quercus_plugin_invoke_command(cid.as_ptr(), cid.len()));
-			assert_eq!(SEEN.lock().unwrap().last().map(String::as_str), Some("export_markers"));
+			assert_eq!(
+				SEEN.lock().unwrap().last().map(String::as_str),
+				Some("export_markers")
+			);
 			assert_eq!(CALLS.load(Ordering::SeqCst), calls_before + 1);
 
 			// Unknown command: not invoked.
@@ -404,7 +413,10 @@ mod tests {
 			let d = descriptor("com.quercus.test.nocb", "No Callback");
 			assert_eq!(quercus_plugin_register(&d, None, std::ptr::null_mut()), -1);
 			let d = descriptor("", "Empty Id");
-			assert_eq!(quercus_plugin_register(&d, Some(recording_cb), std::ptr::null_mut()), -1);
+			assert_eq!(
+				quercus_plugin_register(&d, Some(recording_cb), std::ptr::null_mut()),
+				-1
+			);
 		}
 	}
 }

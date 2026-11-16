@@ -24,6 +24,7 @@
 //! `quercusnode_colormanager_*` / `quercusrender_color_processor_*` calls.
 
 use crate::factory::NodeMeta;
+use crate::input;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 use crate::nodes::ociobase::OcioBase;
@@ -56,7 +57,7 @@ impl DisplayTransformNode {
 	/// index mapped through the color manager's display list; empty
 	/// string when no manager is attached or the index is out of range.
 	#[allow(dead_code)] // C++ parity getter; the Rust model never attaches a
-	// color manager, so callers have nothing to query yet.
+					 // color manager, so callers have nothing to query yet.
 	fn get_display(&self, core: &NodeCore) -> String {
 		// The C++ reads the display combo index through
 		// `manager()->list_available_displays()`. The Rust model has no
@@ -241,23 +242,23 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
 	// OCIOBaseNode base constructor.
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		crate::nodes::ociobase::TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 	core.effect_input = crate::nodes::ociobase::TEXTURE_INPUT.to_string();
 	core.flags |= crate::node::flags::VIDEO_EFFECT;
 
 	for id in [DISPLAY_INPUT, VIEW_INPUT, DIRECTION_INPUT] {
-		let mut combo = crate::input::Input::new(
+		let mut combo = input::Input::new(
 			id,
 			crate::value::ValueType::Combo,
 			crate::value::NodeValue::Combo(0),
 		);
-		combo.flags |= crate::input::flags::NOT_KEYFRAMABLE | crate::input::flags::NOT_CONNECTABLE;
+		combo.flags |= input::flags::NOT_KEYFRAMABLE | input::flags::NOT_CONNECTABLE;
 		core.add_input(combo);
 	}
 
@@ -392,10 +393,7 @@ mod tests {
 		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
 			panic!("job row expected");
 		};
-		assert!(unsafe {
-			crate::jobs::color_transform_job(handle)
-		}
-		.is_some());
+		assert!(unsafe { crate::jobs::color_transform_job(handle) }.is_some());
 	}
 
 	#[test]

@@ -25,6 +25,9 @@
 //! the green-magenta axis.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -189,9 +192,9 @@ impl NodeBehavior for WhiteBalanceNode {
 		params.insert(GAIN_INPUT.to_string(), crate::value::NodeValue::Vec3(gain));
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
 				ShaderJobPayload {
-					node_id: crate::id::NodeId::INVALID,
+					node_id: id::NodeId::INVALID,
 					time,
 					iterations: 1,
 					type_id: self.type_id().to_string(),
@@ -218,15 +221,15 @@ impl NodeBehavior for WhiteBalanceNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	let mut temperature = crate::input::Input::new(
+	let mut temperature = input::Input::new(
 		TEMPERATURE_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(6500.0),
@@ -241,7 +244,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	];
 	core.add_input(temperature);
 
-	let mut tint = crate::input::Input::new(
+	let mut tint = input::Input::new(
 		TINT_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),

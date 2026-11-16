@@ -333,7 +333,10 @@ pub fn interpolation_from_c(t: i32) -> Interpolation {
 /// through the id table (the packing only survives Rust-written files;
 /// C++ `ptr` values are arbitrary addresses).
 pub fn parse_node_ref(text: &str) -> Option<NodeId> {
-	text.trim().parse::<u64>().ok().and_then(NodeId::from_identity)
+	text.trim()
+		.parse::<u64>()
+		.ok()
+		.and_then(NodeId::from_identity)
 }
 
 /// Save a whole project to the current-version XML format.
@@ -373,7 +376,14 @@ pub fn save(project: &Project) -> crate::error::Result<String> {
 			.filter(|(_, to, _, _)| *to == id)
 			.map(|(from, _, input, element)| (from, input, element))
 			.collect();
-		save_node(&mut writer, &entry.core, &*entry.behavior, id, &type_id, &connections)?;
+		save_node(
+			&mut writer,
+			&entry.core,
+			&*entry.behavior,
+			id,
+			&type_id,
+			&connections,
+		)?;
 		writer.end_element(); // node
 	}
 	writer.end_element(); // nodes
@@ -401,7 +411,10 @@ pub fn save(project: &Project) -> crate::error::Result<String> {
 		);
 	}
 	if !project.custom_cache_path.is_empty() {
-		writer.text_element(crate::project::SETTING_CACHE_PATH, &project.custom_cache_path);
+		writer.text_element(
+			crate::project::SETTING_CACHE_PATH,
+			&project.custom_cache_path,
+		);
 	}
 	writer.end_element(); // settings
 
@@ -847,24 +860,16 @@ fn load_node(
 /// dedicated APIs, C++ `factory.cpp` lists only user-creatable nodes);
 /// the serializer instantiates them directly, following the existing
 /// folder special case.
-fn create_timeline_type(
-	type_id: &str,
-) -> Option<(NodeCore, Box<dyn crate::node::NodeBehavior>)> {
+fn create_timeline_type(type_id: &str) -> Option<(NodeCore, Box<dyn crate::node::NodeBehavior>)> {
 	match type_id {
 		"org.olivevideoeditor.Olive.folder" => Some(crate::folder::create("Folder")),
 		"org.olivevideoeditor.Olive.footage" => Some(crate::footage::FootageBehavior::create()),
-		"org.olivevideoeditor.Olive.sequence" => {
-			Some(crate::sequence::SequenceBehavior::create())
-		}
-		"org.olivevideoeditor.Olive.tracklist" => {
-			Some(crate::track::TrackListBehavior::create())
-		}
+		"org.olivevideoeditor.Olive.sequence" => Some(crate::sequence::SequenceBehavior::create()),
+		"org.olivevideoeditor.Olive.tracklist" => Some(crate::track::TrackListBehavior::create()),
 		"org.olivevideoeditor.Olive.track" => Some(crate::track::TrackBehavior::create()),
 		"org.olivevideoeditor.Olive.clipblock" => Some(crate::block::clip_create()),
 		"org.olivevideoeditor.Olive.gapblock" => Some(crate::block::gap_create()),
-		"org.olivevideoeditor.Olive.transitionblock" => {
-			Some(crate::block::transition_create())
-		}
+		"org.olivevideoeditor.Olive.transitionblock" => Some(crate::block::transition_create()),
 		"org.olivevideoeditor.Olive.adjustment" => Some(crate::block::adjustment_create()),
 		_ => None,
 	}
@@ -1166,8 +1171,7 @@ fn resolve_timeline_refs(graph: &mut Graph, id_map: &std::collections::HashMap<u
 		{
 			// C++ files carry the file name in the `file_in` input.
 			if f.filename.is_empty() {
-				if let crate::value::NodeValue::Text(s) =
-					&entry.core.standard_value("file_in", -1)
+				if let crate::value::NodeValue::Text(s) = &entry.core.standard_value("file_in", -1)
 				{
 					f.filename = s.clone();
 				}
@@ -1222,11 +1226,7 @@ fn resolve_timeline_refs(graph: &mut Graph, id_map: &std::collections::HashMap<u
 	// here (also re-applies the `sequence_type_in` unhide of the C++
 	// `InputConnectedEvent`).
 	for id in graph.node_ids() {
-		let seq = graph.connected_output(
-			id,
-			crate::nodes::multicamnode::SEQUENCE_INPUT,
-			-1,
-		);
+		let seq = graph.connected_output(id, crate::nodes::multicamnode::SEQUENCE_INPUT, -1);
 		if seq.is_none() {
 			continue;
 		}
@@ -1255,10 +1255,7 @@ fn resolve_timeline_refs(graph: &mut Graph, id_map: &std::collections::HashMap<u
 /// display name (C++ `Folder::Name()` returns the label). Each child's
 /// `bin_folder` is then set to its folder. Non-folder nodes are untouched;
 /// returns `()` and cannot fail.
-fn resolve_folder_children(
-	graph: &mut Graph,
-	id_map: &std::collections::HashMap<u64, NodeId>,
-) {
+fn resolve_folder_children(graph: &mut Graph, id_map: &std::collections::HashMap<u64, NodeId>) {
 	for id in graph.node_ids() {
 		let is_folder = graph
 			.get(id)
@@ -1336,7 +1333,8 @@ mod tests {
 	#[test]
 	fn parametric_input_value_codec_roundtrip() {
 		let declared = ValueType::Parametric;
-		let json = r#"{"curves":[[{"key":0,"value":0,"slope":1},{"key":0.5,"value":0.6,"slope":1}]]}"#;
+		let json =
+			r#"{"curves":[[{"key":0,"value":0,"slope":1},{"key":0.5,"value":0.6,"slope":1}]]}"#;
 		let value = NodeValue::Text(json.to_string());
 
 		// save 侧：standard 值按声明类型拆轨（Text → 单轨整值）。
@@ -1375,10 +1373,16 @@ mod tests {
 			Some(VersionProbe::Old)
 		);
 		assert_eq!(
-			probe_version(&format!("<olive version=\"{}\"></olive>", CURRENT_VERSION.0)),
+			probe_version(&format!(
+				"<olive version=\"{}\"></olive>",
+				CURRENT_VERSION.0
+			)),
 			Some(VersionProbe::Current)
 		);
-		assert_eq!(probe_version("<olive></olive>"), Some(VersionProbe::Unknown));
+		assert_eq!(
+			probe_version("<olive></olive>"),
+			Some(VersionProbe::Unknown)
+		);
 		assert_eq!(
 			probe_version("<olive version=\"not-a-number\"></olive>"),
 			Some(VersionProbe::Unknown)

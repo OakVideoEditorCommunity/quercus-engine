@@ -7,8 +7,9 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{editing::*, generators::*, media::*, moving::*, project::*, sequence::*, transitions::*};
-
+use super::{
+	editing::*, generators::*, media::*, moving::*, project::*, sequence::*, transitions::*,
+};
 
 /// An undoable edge remove: succeeds even when nothing is connected (the
 /// redo is then a no-op, mirroring the C++ command's redo swallowing). The
@@ -141,7 +142,8 @@ pub fn add_track(p: &ProjectRef, seq: NodeId, kind: TrackType) -> Result<usize, 
 /// removal, so no live compensation is needed).
 pub fn remove_track(p: &ProjectRef, track: NodeId) -> Result<(), String> {
 	push(
-		quercus_timeline::undogeneral::TimelineRemoveTrackCommand::new(node_ref(p, track)).to_command(),
+		quercus_timeline::undogeneral::TimelineRemoveTrackCommand::new(node_ref(p, track))
+			.to_command(),
 		"Remove Track",
 	)
 }
@@ -389,7 +391,12 @@ pub fn place_footage_clip(
 		in_r,
 	)
 	.to_command();
-	let edge = connect_command(p, footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT)?;
+	let edge = connect_command(
+		p,
+		footage,
+		clip,
+		quercus_node::block::clip_input::TEXTURE_INPUT,
+	)?;
 	push_multi(vec![place, edge], "Add Clip")?;
 	Ok(clip)
 }

@@ -25,13 +25,17 @@
 //! points below are this node's own choice (a horizontal black-to-white
 //! ramp across a 200px-wide frame).
 
+use super::generatorwithmerge;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Base texture input id (the shared generator-with-merge base). Type:
 /// texture; flags: not-keyframable; this is the generator's effect input.
-pub const BASE_INPUT: &str = super::generatorwithmerge::BASE_INPUT;
+pub const BASE_INPUT: &str = generatorwithmerge::BASE_INPUT;
 
 /// First point input id (upstream `kParamPoint0` "Point 0"). Type: vec2;
 /// default `[-100.0, 0.0]`; units: pixels of the center-origin pixel
@@ -155,8 +159,8 @@ impl NodeBehavior for RampNode {
 			}
 		}
 
-		let job = crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(Job::ShaderJob(ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
@@ -165,7 +169,7 @@ impl NodeBehavior for RampNode {
 			params,
 			iterative_input: String::new(),
 		}));
-		super::generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
+		generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
 	}
 
 	/// Shader code request: `"ramp"` returns this node's shader; the
@@ -174,7 +178,7 @@ impl NodeBehavior for RampNode {
 	fn shader_code(&self, request: &str) -> Option<String> {
 		match request {
 			"ramp" => Some(Self::shader_frag().to_string()),
-			"mrg" => Some(super::generatorwithmerge::merge_shader_frag().to_string()),
+			"mrg" => Some(generatorwithmerge::merge_shader_frag().to_string()),
 			_ => None,
 		}
 	}
@@ -192,20 +196,20 @@ impl NodeBehavior for RampNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut base = crate::input::Input::new(
+	let mut base = input::Input::new(
 		BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		POINT0_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([-100.0, 0.0]),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		POINT1_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([100.0, 0.0]),
@@ -215,7 +219,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 		(COLOR0_INPUT, [0.0, 0.0, 0.0, 1.0]),
 		(COLOR1_INPUT, [1.0, 1.0, 1.0, 1.0]),
 	] {
-		let mut color = crate::input::Input::new(
+		let mut color = input::Input::new(
 			id,
 			crate::value::ValueType::Color,
 			crate::value::NodeValue::Color(default),
@@ -249,162 +253,168 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
-    fn input_names() {
-        let n = RampNode;
-        assert_eq!(n.input_name(POINT0_INPUT), "Point 0");
-        assert_eq!(n.input_name(POINT1_INPUT), "Point 1");
-        assert_eq!(n.input_name(COLOR0_INPUT), "Color 0");
-        assert_eq!(n.input_name(COLOR1_INPUT), "Color 1");
-        assert_eq!(
-            n.input_name(super::super::generatorwithmerge::BASE_INPUT),
-            "Base"
-        );
-    }
+	#[test]
+	fn input_names() {
+		let n = RampNode;
+		assert_eq!(n.input_name(POINT0_INPUT), "Point 0");
+		assert_eq!(n.input_name(POINT1_INPUT), "Point 1");
+		assert_eq!(n.input_name(COLOR0_INPUT), "Color 0");
+		assert_eq!(n.input_name(COLOR1_INPUT), "Color 1");
+		assert_eq!(
+			n.input_name(super::super::generatorwithmerge::BASE_INPUT),
+			"Base"
+		);
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.ramp");
-        assert_eq!(
-            core.get_input(POINT0_INPUT).unwrap().default,
-            NodeValue::Vec2([-100.0, 0.0])
-        );
-        assert_eq!(
-            core.get_input(POINT1_INPUT).unwrap().default,
-            NodeValue::Vec2([100.0, 0.0])
-        );
-        assert_eq!(
-            core.get_input(COLOR0_INPUT).unwrap().default,
-            NodeValue::Color([0.0, 0.0, 0.0, 1.0])
-        );
-        assert_eq!(
-            core.get_input(COLOR1_INPUT).unwrap().default,
-            NodeValue::Color([1.0, 1.0, 1.0, 1.0])
-        );
-        assert!(core.get_input(COLOR1_INPUT).unwrap().properties.iter().any(
-            |(k, v)| k == "view" && *v == NodeValue::Text("color".into())
-        ));
-        assert_eq!(core.effect_input, BASE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.ramp");
+		assert_eq!(
+			core.get_input(POINT0_INPUT).unwrap().default,
+			NodeValue::Vec2([-100.0, 0.0])
+		);
+		assert_eq!(
+			core.get_input(POINT1_INPUT).unwrap().default,
+			NodeValue::Vec2([100.0, 0.0])
+		);
+		assert_eq!(
+			core.get_input(COLOR0_INPUT).unwrap().default,
+			NodeValue::Color([0.0, 0.0, 0.0, 1.0])
+		);
+		assert_eq!(
+			core.get_input(COLOR1_INPUT).unwrap().default,
+			NodeValue::Color([1.0, 1.0, 1.0, 1.0])
+		);
+		assert!(core
+			.get_input(COLOR1_INPUT)
+			.unwrap()
+			.properties
+			.iter()
+			.any(|(k, v)| k == "view" && *v == NodeValue::Text("color".into())));
+		assert_eq!(core.effect_input, BASE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_pushes_generator_job() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.ramp");
-        assert_eq!(payload.shader_id, "ramp");
-        assert_eq!(payload.iterations, 1);
-        assert_eq!(payload.effect_input, BASE_INPUT);
-        assert_eq!(payload.iterative_input, "");
-        assert_eq!(
-            payload.params.get(POINT0_INPUT),
-            Some(&NodeValue::Vec2([-100.0, 0.0]))
-        );
-        assert_eq!(
-            payload.params.get(COLOR1_INPUT),
-            Some(&NodeValue::Color([1.0, 1.0, 1.0, 1.0]))
-        );
-    }
+	#[test]
+	fn value_pushes_generator_job() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.ramp");
+		assert_eq!(payload.shader_id, "ramp");
+		assert_eq!(payload.iterations, 1);
+		assert_eq!(payload.effect_input, BASE_INPUT);
+		assert_eq!(payload.iterative_input, "");
+		assert_eq!(
+			payload.params.get(POINT0_INPUT),
+			Some(&NodeValue::Vec2([-100.0, 0.0]))
+		);
+		assert_eq!(
+			payload.params.get(COLOR1_INPUT),
+			Some(&NodeValue::Color([1.0, 1.0, 1.0, 1.0]))
+		);
+	}
 
-    #[test]
-    fn value_row_points_win_over_the_node_defaults() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([
-            (POINT0_INPUT.to_string(), NodeValue::Vec2([-4.0, 0.0])),
-            (POINT1_INPUT.to_string(), NodeValue::Vec2([4.0, 0.0])),
-            (COLOR0_INPUT.to_string(), NodeValue::Color([1.0, 0.0, 0.0, 1.0])),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(
-            payload.params.get(POINT0_INPUT),
-            Some(&NodeValue::Vec2([-4.0, 0.0]))
-        );
-        assert_eq!(
-            payload.params.get(COLOR0_INPUT),
-            Some(&NodeValue::Color([1.0, 0.0, 0.0, 1.0]))
-        );
-        // The unset color falls back to the node default.
-        assert_eq!(
-            payload.params.get(COLOR1_INPUT),
-            Some(&NodeValue::Color([1.0, 1.0, 1.0, 1.0]))
-        );
-    }
+	#[test]
+	fn value_row_points_win_over_the_node_defaults() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([
+			(POINT0_INPUT.to_string(), NodeValue::Vec2([-4.0, 0.0])),
+			(POINT1_INPUT.to_string(), NodeValue::Vec2([4.0, 0.0])),
+			(
+				COLOR0_INPUT.to_string(),
+				NodeValue::Color([1.0, 0.0, 0.0, 1.0]),
+			),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(
+			payload.params.get(POINT0_INPUT),
+			Some(&NodeValue::Vec2([-4.0, 0.0]))
+		);
+		assert_eq!(
+			payload.params.get(COLOR0_INPUT),
+			Some(&NodeValue::Color([1.0, 0.0, 0.0, 1.0]))
+		);
+		// The unset color falls back to the node default.
+		assert_eq!(
+			payload.params.get(COLOR1_INPUT),
+			Some(&NodeValue::Color([1.0, 1.0, 1.0, 1.0]))
+		);
+	}
 
-    #[test]
-    fn value_with_base_merges_nested_job() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([(
-            BASE_INPUT.to_string(),
-            NodeValue::Texture(crate::handle::CHandle::null()),
-        )]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let merge = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("merge job payload expected");
-        assert_eq!(merge.shader_id, "mrg");
-        assert_eq!(merge.effect_input, BASE_INPUT);
-        match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
-            Some(NodeValue::Texture(blend)) => {
-                let nested = unsafe { crate::jobs::shader_job(blend) }
-                    .expect("nested job payload boxed");
-                assert_eq!(nested.shader_id, "ramp");
-            }
-            _ => panic!("nested blend job expected"),
-        }
-    }
+	#[test]
+	fn value_with_base_merges_nested_job() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([(
+			BASE_INPUT.to_string(),
+			NodeValue::Texture(crate::handle::CHandle::null()),
+		)]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let merge =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("merge job payload expected");
+		assert_eq!(merge.shader_id, "mrg");
+		assert_eq!(merge.effect_input, BASE_INPUT);
+		match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
+			Some(NodeValue::Texture(blend)) => {
+				let nested =
+					unsafe { crate::jobs::shader_job(blend) }.expect("nested job payload boxed");
+				assert_eq!(nested.shader_id, "ramp");
+			}
+			_ => panic!("nested blend job expected"),
+		}
+	}
 
-    #[test]
-    fn shader_code_dispatches() {
-        let n = RampNode;
-        let code = n.shader_code("ramp").unwrap();
-        assert!(code.contains("uniform vec2 point0_in;"));
-        assert!(code.contains("uniform vec2 point1_in;"));
-        assert!(code.contains("uniform vec4 color0_in;"));
-        assert!(code.contains("uniform vec4 color1_in;"));
-        assert!(code.contains("uniform vec2 resolution_in;"));
-        assert!(code.contains("t = dot(px - point0_in, d) / norm2;"));
-        assert!(!code.contains("switch"));
-        assert!(n
-            .shader_code("mrg")
-            .unwrap()
-            .contains("base_col *= 1.0 - blend_col.a;"));
-        assert!(n.shader_code("other").is_none());
-    }
+	#[test]
+	fn shader_code_dispatches() {
+		let n = RampNode;
+		let code = n.shader_code("ramp").unwrap();
+		assert!(code.contains("uniform vec2 point0_in;"));
+		assert!(code.contains("uniform vec2 point1_in;"));
+		assert!(code.contains("uniform vec4 color0_in;"));
+		assert!(code.contains("uniform vec4 color1_in;"));
+		assert!(code.contains("uniform vec2 resolution_in;"));
+		assert!(code.contains("t = dot(px - point0_in, d) / norm2;"));
+		assert!(!code.contains("switch"));
+		assert!(n
+			.shader_code("mrg")
+			.unwrap()
+			.contains("base_col *= 1.0 - blend_col.a;"));
+		assert!(n.shader_code("other").is_none());
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Ramp");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Ramp");
+	}
 }

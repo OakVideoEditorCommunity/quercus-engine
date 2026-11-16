@@ -18,7 +18,12 @@
 //! `olive::PolygonGenerator`). Extends the C++ `GeneratorWithMerge`
 //! base (see [`super::generatorwithmerge`]).
 
+use super::generatorwithmerge;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
+use crate::jobs;
 use crate::node::{Category, NodeBehavior, NodeCore};
 
 /// Points array input id (C++ `k_points_input`). Type: bezier; flags:
@@ -114,7 +119,11 @@ impl PolygonGenerator {
 /// `points_in` key (a non-array connection) is used, and failing that a
 /// single degenerate point `[0, 0, 0, 0]`, so `value()` always receives a
 /// closed loop of at least one point.
-pub fn point_array(core: &NodeCore, inputs: &crate::value::NodeValueRow, time: quercus_core::Rational) -> Vec<[f64; 4]> {
+pub fn point_array(
+	core: &NodeCore,
+	inputs: &crate::value::NodeValueRow,
+	time: quercus_core::Rational,
+) -> Vec<[f64; 4]> {
 	let size = core
 		.inputs
 		.iter()
@@ -186,7 +195,7 @@ impl NodeBehavior for PolygonGenerator {
 	/// -> "Color".
 	fn input_name<'a>(&self, id: &'a str) -> &'a str {
 		match id {
-			super::generatorwithmerge::BASE_INPUT => "Base",
+			generatorwithmerge::BASE_INPUT => "Base",
 			POINTS_INPUT => "Points",
 			COLOR_INPUT => "Color",
 			_ => id,
@@ -239,8 +248,8 @@ impl NodeBehavior for PolygonGenerator {
 				core.value_at_time(COLOR_INPUT, -1, time),
 			);
 		}
-		let job = crate::handle::make_owned(crate::jobs::Job::ShaderJob(crate::jobs::ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(jobs::Job::ShaderJob(jobs::ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
@@ -249,7 +258,7 @@ impl NodeBehavior for PolygonGenerator {
 			params,
 			iterative_input: String::new(),
 		}));
-		super::generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
+		generatorwithmerge::GeneratorWithMerge::push_mergable_job(inputs, job, table);
 	}
 
 	/// Direct frame generation (C++ `generate_frame()`): clears the RGBA
@@ -270,7 +279,7 @@ impl NodeBehavior for PolygonGenerator {
 	fn generate_frame(
 		&self,
 		core: &NodeCore,
-		frame: &mut crate::handle::CHandle,
+		frame: &mut handle::CHandle,
 		time: quercus_core::Rational,
 	) {
 		let _ = (core, frame, time);
@@ -312,7 +321,7 @@ impl NodeBehavior for PolygonGenerator {
 	fn shader_code(&self, request: &str) -> Option<String> {
 		match request {
 			"rgb" => Some(Self::rgb_shader_frag().to_string()),
-			"mrg" => Some(super::generatorwithmerge::merge_shader_frag().to_string()),
+			"mrg" => Some(generatorwithmerge::merge_shader_frag().to_string()),
 			_ => None,
 		}
 	}
@@ -340,24 +349,24 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 	// GeneratorWithMerge constructor: `base_in` texture input, made the
 	// effect input, video-effect flag.
-	let mut base = crate::input::Input::new(
-		super::generatorwithmerge::BASE_INPUT,
+	let mut base = input::Input::new(
+		generatorwithmerge::BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	let mut points = crate::input::Input::new(
+	let mut points = input::Input::new(
 		POINTS_INPUT,
 		crate::value::ValueType::Vec4,
 		crate::value::NodeValue::Vec4([0.0, 0.0, 0.0, 0.0]),
 	);
-	points.flags |= crate::input::flags::ARRAY;
+	points.flags |= input::flags::ARRAY;
 	points.array_size = 5;
 	core.add_input(points);
 
-	let color = crate::input::Input::new(
+	let color = input::Input::new(
 		COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([1.0, 1.0, 1.0, 1.0]),
@@ -382,7 +391,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	}
 
 	core.flags |= crate::node::flags::VIDEO_EFFECT;
-	core.effect_input = super::generatorwithmerge::BASE_INPUT.to_string();
+	core.effect_input = generatorwithmerge::BASE_INPUT.to_string();
 
 	(core, Box::new(PolygonGenerator))
 }
@@ -405,12 +414,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = PolygonGenerator;
 		assert_eq!(
@@ -462,10 +471,7 @@ mod tests {
 		let NodeValue::Texture(handle) = tex else {
 			panic!("pushed value is not a texture handle");
 		};
-		let job = unsafe {
-			crate::jobs::shader_job(handle)
-		}
-		.expect("real shader job");
+		let job = unsafe { crate::jobs::shader_job(handle) }.expect("real shader job");
 		assert_eq!(job.shader_id, "rgb");
 		assert_eq!(job.type_id, "org.olivevideoeditor.Olive.polygon");
 		match job.params.get("points_in") {
@@ -496,17 +502,20 @@ mod tests {
 		let Some(NodeValue::Texture(h)) = table.get(ValueType::Texture) else {
 			panic!("texture expected");
 		};
-		let mrg = unsafe { crate::jobs::shader_job(h) }
-			.expect("merge job pushed");
+		let mrg = unsafe { crate::jobs::shader_job(h) }.expect("merge job pushed");
 		assert_eq!(mrg.shader_id, "mrg");
-		assert_eq!(mrg.effect_input, super::super::generatorwithmerge::BASE_INPUT);
-		assert!(mrg.params.contains_key(super::super::generatorwithmerge::BASE_INPUT));
+		assert_eq!(
+			mrg.effect_input,
+			super::super::generatorwithmerge::BASE_INPUT
+		);
+		assert!(mrg
+			.params
+			.contains_key(super::super::generatorwithmerge::BASE_INPUT));
 		let blend = match mrg.params.get(crate::nodes::merge::BLEND_INPUT) {
 			Some(NodeValue::Texture(b)) => *b,
 			other => panic!("blend_in must carry the nested job: {other:?}"),
 		};
-		let blend_job = unsafe { crate::jobs::shader_job(&blend) }
-			.expect("nested generator job");
+		let blend_job = unsafe { crate::jobs::shader_job(&blend) }.expect("nested generator job");
 		assert_eq!(blend_job.shader_id, "rgb");
 		assert_eq!(blend_job.type_id, "org.olivevideoeditor.Olive.polygon");
 	}

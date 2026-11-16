@@ -37,6 +37,7 @@
 /// `TextLayoutRequest`). Replaces the `QTextDocument`/`QTextOption`
 /// usage in the text generator nodes; this module carries only the
 /// data.
+use std::sync;
 pub struct TextLayoutRequest {
 	/// Plain text or markup, per `mode`.
 	pub text: String,
@@ -175,16 +176,16 @@ pub fn text_render_backend() -> Option<TextRenderBackend> {
 }
 
 /// Installed measure hook (C++ global `g_text_measure_backend`).
-static MEASURE: std::sync::Mutex<Option<TextMeasureBackend>> = std::sync::Mutex::new(None);
+static MEASURE: sync::Mutex<Option<TextMeasureBackend>> = sync::Mutex::new(None);
 
 /// Installed render hook (C++ global `g_text_render_backend`).
-static RENDER: std::sync::Mutex<Option<TextRenderBackend>> = std::sync::Mutex::new(None);
+static RENDER: sync::Mutex<Option<TextRenderBackend>> = sync::Mutex::new(None);
 
 /// Serializes every test that installs the process-global text backends:
 /// the tests below and `textv3`'s installer tests share it, so none of
 /// them observes another's install.
 #[cfg(test)]
-pub(crate) static TEST_BACKEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TEST_BACKEND_LOCK: sync::Mutex<()> = sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

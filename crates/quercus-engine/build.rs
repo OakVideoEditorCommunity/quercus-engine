@@ -6,13 +6,14 @@
 //! (`@loader_path` / `$ORIGIN`) when they package the dylib next to the
 //! executable.
 
+use std::env;
 fn main() {
 	// Expose this crate's build-script OUT_DIR to the SDK's build script via
 	// `links` metadata: some Cargo configurations place the cdylib there
 	// instead of `<profile>/deps`.
-	let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set");
+	let out_dir = env::var("OUT_DIR").expect("OUT_DIR is set");
 	println!("cargo:engine_out={out_dir}");
-	match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+	match env::var("CARGO_CFG_TARGET_OS").as_deref() {
 		Ok("macos") => {
 			println!(
 				"cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libquercus_engine.dylib"

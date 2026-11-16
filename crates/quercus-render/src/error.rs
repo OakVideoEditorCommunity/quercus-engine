@@ -56,11 +56,9 @@ mod tests {
 		] {
 			assert!(!msg.trim().is_empty(), "empty Display message");
 		}
-		assert!(
-			Error::Failed("context".into())
-				.to_string()
-				.contains("context")
-		);
+		assert!(Error::Failed("context".into())
+			.to_string()
+			.contains("context"));
 	}
 
 	/// `Error` must be usable behind a trait object.

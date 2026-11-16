@@ -18,6 +18,7 @@
 //! -MMCCCC scheme (module registry in include/common/error.h), pass-through untranslated.
 
 /// Success.
+use std::result;
 pub const QUERCUSCODEC_OK: i32 = 0;
 /// Null handle or invalid argument.
 pub const QUERCUSCODEC_E_INVALID: i32 = -50001;
@@ -37,7 +38,7 @@ pub const QUERCUSCODEC_E_CANCELLED: i32 = -50006;
 pub const QUERCUSCODEC_ABI_VERSION: u32 = 1;
 
 /// Crate-internal result type; the FFI layer maps it to the codes.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, thiserror::Error)]
@@ -94,11 +95,9 @@ mod tests {
 		] {
 			assert!(!msg.trim().is_empty(), "empty Display message");
 		}
-		assert!(
-			Error::Failed("context".into())
-				.to_string()
-				.contains("context")
-		);
+		assert!(Error::Failed("context".into())
+			.to_string()
+			.contains("context"));
 	}
 
 	/// `Error` must be usable behind a trait object.
@@ -126,7 +125,10 @@ mod tests {
 	fn code_mapping_unchanged() {
 		assert_eq!(Error::Invalid.code(), QUERCUSCODEC_E_INVALID);
 		assert_eq!(Error::State.code(), QUERCUSCODEC_E_STATE);
-		assert_eq!(Error::Failed("context".into()).code(), QUERCUSCODEC_E_FAILED);
+		assert_eq!(
+			Error::Failed("context".into()).code(),
+			QUERCUSCODEC_E_FAILED
+		);
 		assert_eq!(Error::NotFound.code(), QUERCUSCODEC_E_NOT_FOUND);
 		assert_eq!(Error::NoMem.code(), QUERCUSCODEC_E_NOMEM);
 		assert_eq!(Error::Cancelled.code(), QUERCUSCODEC_E_CANCELLED);

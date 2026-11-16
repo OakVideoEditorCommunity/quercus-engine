@@ -23,13 +23,18 @@
 //! re-posted, and three consecutive crashes exhaust the budget (the
 //! evaluator's purple fallback is asserted by the eval unit test).
 
+use quercus_render::procpool;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use quercus_core::texture::Texture;
 use quercus_core::{PixelFormat, Rational};
-use quercus_render::eval::{generate_frame, JobSpec};
+use quercus_render::eval::{JobSpec, generate_frame};
 use quercus_render::ofxhost::{OfxHost, OfxHostConfig};
 
 /// The plugin runtime and the progress callback are process-wide.
@@ -40,10 +45,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// plugin was not built (release builds).
 fn bundle_parent(tag: &str) -> Option<PathBuf> {
 	let lib = quercus_ofx_plugin::bundled_test_plugin()?;
-	let root = std::env::temp_dir().join(format!(
-		"quercus-ofx-host-{tag}-{}",
-		std::process::id()
-	));
+	let root = env::temp_dir().join(format!("quercus-ofx-host-{tag}-{}", process::id()));
 	let bundle = root.join("QuercusTest.ofx.bundle");
 	let platform = if cfg!(target_os = "macos") {
 		"MacOS"
@@ -55,16 +57,16 @@ fn bundle_parent(tag: &str) -> Option<PathBuf> {
 		"Linux-x86-64"
 	};
 	let dest = bundle.join("Contents").join(platform);
-	std::fs::create_dir_all(&dest).ok()?;
+	fs::create_dir_all(&dest).ok()?;
 	let name = lib.file_name()?;
-	std::fs::copy(&lib, dest.join(name)).ok()?;
+	fs::copy(&lib, dest.join(name)).ok()?;
 	Some(root)
 }
 
 /// The worker executable: `QUERCUS_WORKER_BIN`, else the workspace target dir.
 /// Tests skip when it is not built (e.g. `cargo test -p quercus-engine` alone).
 fn worker_binary() -> Option<PathBuf> {
-	if let Some(path) = std::env::var_os("QUERCUS_WORKER_BIN") {
+	if let Some(path) = env::var_os("QUERCUS_WORKER_BIN") {
 		let path = PathBuf::from(path);
 		return path.is_file().then_some(path);
 	}
@@ -82,12 +84,7 @@ fn worker_binary() -> Option<PathBuf> {
 /// tests rely on) and `max_failures` the consecutive-crash budget after which
 /// the client is permanently dead (a successful job resets it). Panics if the
 /// host client cannot be constructed — tests treat that as a setup failure.
-fn host(
-	bin: PathBuf,
-	plugin_dir: &Path,
-	args: Vec<String>,
-	max_failures: u32,
-) -> Arc<OfxHost> {
+fn host(bin: PathBuf, plugin_dir: &Path, args: Vec<String>, max_failures: u32) -> Arc<OfxHost> {
 	OfxHost::new(OfxHostConfig {
 		host_bin: Some(bin),
 		max_failures,
@@ -147,11 +144,11 @@ fn host_renders_plugin_job_and_forwards_progress() {
 		return;
 	};
 	let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-	let dir = bundle_parent("render")
-		.expect("the bundled test plugin must exist (build.rs compiles it)");
+	let dir =
+		bundle_parent("render").expect("the bundled test plugin must exist (build.rs compiles it)");
 	let events: Arc<Mutex<Vec<(String, String, f64)>>> = Arc::new(Mutex::new(Vec::new()));
 	let sink = events.clone();
-	quercus_render::procpool::set_plugin_progress_cb(Some(Arc::new(move |label, message, fraction| {
+	procpool::set_plugin_progress_cb(Some(Arc::new(move |label, message, fraction| {
 		sink.lock()
 			.unwrap_or_else(|e| e.into_inner())
 			.push((label, message, fraction));
@@ -177,13 +174,14 @@ fn host_renders_plugin_job_and_forwards_progress() {
 		"the plugin's progressUpdate must reach the app callback: {seen:?}"
 	);
 	assert!(
-		seen.iter().any(|(_, _, fraction)| (*fraction - 1.0).abs() < 1e-6),
+		seen.iter()
+			.any(|(_, _, fraction)| (*fraction - 1.0).abs() < 1e-6),
 		"progressEnd closes the dialog: {seen:?}"
 	);
 
-	quercus_render::procpool::set_plugin_progress_cb(None);
+	procpool::set_plugin_progress_cb(None);
 	client.shutdown();
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -211,11 +209,15 @@ fn host_respawns_and_reposts_after_a_crash() {
 		.expect("the in-flight job is re-posted to the respawned host");
 	assert_eq!(out.width, 16);
 	assert!(client.restarts() >= 1, "the crashed host was respawned");
-	assert_eq!(client.failures(), 0, "a successful re-post clears the crash count");
+	assert_eq!(
+		client.failures(),
+		0,
+		"a successful re-post clears the crash count"
+	);
 	assert_eq!(first_pixel(&out)[0], 0.5, "the re-posted job still renders");
 
 	client.shutdown();
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -239,12 +241,12 @@ fn host_cancels_an_in_flight_slow_render() {
 	let submitter = client.clone();
 	let src_for_job = src.clone();
 	let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-	quercus_render::procpool::set_plugin_progress_cb(Some(Arc::new(move |label, _, _| {
+	procpool::set_plugin_progress_cb(Some(Arc::new(move |label, _, _| {
 		if label == "slow-render" {
 			let _ = progress_tx.send(());
 		}
 	})));
-	let job = std::thread::spawn(move || submitter.submit(&spec, &src_for_job));
+	let job = thread::spawn(move || submitter.submit(&spec, &src_for_job));
 	// Wait for the actual render to start rather than racing plugin/host
 	// initialization: the next progressUpdate must observe the cancel.
 	progress_rx
@@ -263,8 +265,8 @@ fn host_cancels_an_in_flight_slow_render() {
 	);
 
 	client.shutdown();
-	quercus_render::procpool::set_plugin_progress_cb(None);
-	let _ = std::fs::remove_dir_all(&dir);
+	procpool::set_plugin_progress_cb(None);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -281,11 +283,11 @@ fn host_serializes_concurrent_submits() {
 	let a = client.clone();
 	let spec_a = plugin_spec(&src);
 	let src_a = src.clone();
-	let first = std::thread::spawn(move || a.submit(&spec_a, &src_a));
+	let first = thread::spawn(move || a.submit(&spec_a, &src_a));
 	let b = client.clone();
 	let spec_b = plugin_spec(&src);
 	let src_b = src.clone();
-	let second = std::thread::spawn(move || b.submit(&spec_b, &src_b));
+	let second = thread::spawn(move || b.submit(&spec_b, &src_b));
 
 	// The submit lock serializes the jobs (each writes the shared input
 	// pool); both must come back with the plugin's constant grey.
@@ -295,7 +297,7 @@ fn host_serializes_concurrent_submits() {
 	}
 
 	client.shutdown();
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -305,8 +307,8 @@ fn host_gives_up_after_three_consecutive_crashes() {
 		return;
 	};
 	let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-	let dir = bundle_parent("giveup")
-		.expect("the bundled test plugin must exist (build.rs compiles it)");
+	let dir =
+		bundle_parent("giveup").expect("the bundled test plugin must exist (build.rs compiles it)");
 	let client = host(bin.clone(), &dir, vec!["--ofx-crash-always".to_string()], 3);
 	let src = source_texture(8, 8);
 	let err = client
@@ -321,7 +323,7 @@ fn host_gives_up_after_three_consecutive_crashes() {
 	assert_eq!(client.restarts(), restarts);
 
 	client.shutdown();
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +336,7 @@ fn backend_none_exits_one_like_the_cpp_main() {
 		eprintln!("SKIP: build quercus-worker to run the binary contract tests");
 		return;
 	};
-	let out = std::process::Command::new(bin)
+	let out = process::Command::new(bin)
 		.args(["--backend", "none"])
 		.output()
 		.expect("spawn quercus-worker");
@@ -352,11 +354,11 @@ fn backend_cpu_is_headless_but_fully_operational() {
 		eprintln!("SKIP: build quercus-worker to run the binary contract tests");
 		return;
 	};
-	let mut child = std::process::Command::new(bin)
+	let mut child = process::Command::new(bin)
 		.args(["--backend", "cpu"])
-		.stdin(std::process::Stdio::piped())
-		.stdout(std::process::Stdio::piped())
-		.stderr(std::process::Stdio::piped())
+		.stdin(process::Stdio::piped())
+		.stdout(process::Stdio::piped())
+		.stderr(process::Stdio::piped())
 		.spawn()
 		.expect("spawn quercus-worker");
 	drop(child.stdin.take());

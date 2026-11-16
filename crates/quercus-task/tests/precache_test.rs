@@ -23,6 +23,11 @@
 //! `quercus_codec::testmedia` (no network, no fixtures). Nothing here needs a
 //! GPU.
 
+use quercus_codec::testmedia;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use quercus_core::texture::{Frame, Texture};
@@ -51,8 +56,8 @@ fn render_serial() -> MutexGuard<'static, ()> {
 	guard
 }
 
-fn clip_path(tag: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercustask_precache_{tag}_{}.mp4", std::process::id()))
+fn clip_path(tag: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercustask_precache_{tag}_{}.mp4", process::id()))
 }
 
 /// A project with one probed footage node and one sequence whose video
@@ -101,7 +106,7 @@ fn precache(project: &ProjectRef, footage: NodeId, sequence: NodeId, index: i32)
 #[test]
 fn new_labels_with_the_footage_filename_and_index() {
 	let media = clip_path("new");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
 	let (project, footage, sequence) = project_with_footage(&media.to_string_lossy());
 
 	let task = PreCacheTask::new((project.clone(), footage), 3, (project.clone(), sequence));
@@ -115,7 +120,7 @@ fn new_labels_with_the_footage_filename_and_index() {
 	assert!(Arc::ptr_eq(&task.sequence.0, &project));
 	assert_eq!(task.sequence.1, sequence);
 
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&media);
 }
 
 /// Missing media (an unprobed footage node) still constructs a labeled task
@@ -162,7 +167,7 @@ fn project_with_footage_listless() -> (ProjectRef, NodeId, NodeId) {
 #[test]
 fn run_renders_the_footage_frame() {
 	let media = clip_path("run");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
 	let (project, footage, sequence) = project_with_footage(&media.to_string_lossy());
 	let mut task = precache(&project, footage, sequence, 0);
 
@@ -178,7 +183,7 @@ fn run_renders_the_footage_frame() {
 	assert!(!driver.is_cancelled());
 	assert!(driver.error().is_none());
 
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&media);
 }
 
 /// A stale footage id yields an empty range: the run succeeds without
@@ -207,7 +212,7 @@ fn run_with_a_stale_footage_id_renders_nothing() {
 #[test]
 fn run_cancelled_before_start_reports_cancelled() {
 	let media = clip_path("cancel");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
 	let (project, footage, sequence) = project_with_footage(&media.to_string_lossy());
 	let mut task = precache(&project, footage, sequence, 0);
 
@@ -223,7 +228,7 @@ fn run_cancelled_before_start_reports_cancelled() {
 		"the frame count is computed before the cancellation check"
 	);
 
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&media);
 }
 
 /// The download hooks are no-ops: each accepts its payload and reports
@@ -258,7 +263,7 @@ fn download_hooks_are_no_ops() {
 #[test]
 fn render_plan_covers_the_whole_footage() {
 	let media = clip_path("range");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("test clip");
 	let (project, footage, sequence) = project_with_footage(&media.to_string_lossy());
 	let mut task = precache(&project, footage, sequence, 0);
 
@@ -289,5 +294,5 @@ fn render_plan_covers_the_whole_footage() {
 		"disabled native progress signalling emits nothing"
 	);
 
-	let _ = std::fs::remove_file(&media);
+	let _ = fs::remove_file(&media);
 }

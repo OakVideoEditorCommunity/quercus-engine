@@ -33,8 +33,10 @@
 //! (quercusrender frame access became a local stub with the single-library change, see [`crate::render`]); the code is complete, runtime waits on clip.rs.
 
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::ptr;
 use std::sync::Mutex;
 
 use crate::clip::ClipInstance;
@@ -103,10 +105,10 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 		|_| status::FAILED,
 		|r| r.map_or_else(|c| c, |()| status::OK),
 	);
-	if code != status::OK && std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
+	if code != status::OK && env::var_os("QUERCUS_OFX_TRACE").is_some() {
 		eprintln!("[ofx] image-effect suite error {code} at {caller}");
 	}
-	if std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
+	if env::var_os("QUERCUS_OFX_TRACE").is_some() {
 		eprintln!("[ofx] image-effect suite call at {caller} -> {code}");
 	}
 	code
@@ -239,7 +241,7 @@ unsafe extern "C" fn clip_define(
 		if out.is_null() {
 			return Err(status::ERR_BAD_HANDLE);
 		}
-		unsafe { *out = std::ptr::null_mut() };
+		unsafe { *out = ptr::null_mut() };
 		let n = unsafe { c_name(name)? };
 		let desc = match resolve_effect(effect)? {
 			EffectRef::Descriptor(d) => d,
@@ -288,7 +290,7 @@ unsafe extern "C" fn clip_get_handle(
 		if clip.is_null() {
 			return Err(status::ERR_BAD_HANDLE);
 		}
-		unsafe { *clip = std::ptr::null_mut() };
+		unsafe { *clip = ptr::null_mut() };
 		let n = unsafe { c_name(name)? };
 		let handle = match resolve_effect(effect)? {
 			EffectRef::Instance(i) => {
@@ -358,7 +360,7 @@ unsafe extern "C" fn clip_get_image(
 		if out.is_null() {
 			return Err(status::ERR_BAD_HANDLE);
 		}
-		unsafe { *out = std::ptr::null_mut() };
+		unsafe { *out = ptr::null_mut() };
 		let c = resolve_clip(clip)?;
 		// Output clip：返回当前渲染的输出图像（render 驱动经 TLS
 		// 设置；对应 HS 渲染期输出图像挂在 Output clip 上）。
@@ -388,14 +390,17 @@ unsafe extern "C" fn clip_get_image(
 		let image = c
 			.fetch_image(time, scale, region)
 			.map_err(|_| status::FAILED)?;
-		if std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
+		if env::var_os("QUERCUS_OFX_TRACE").is_some() {
 			let p = image.pixels();
 			let dump: Vec<f32> = p
 				.chunks_exact(4)
 				.take(4)
 				.map(|c| f32::from_le_bytes(c.try_into().unwrap()))
 				.collect();
-			eprintln!("[ofx] clipGetImage({}) fetched pixels[0..4] = {dump:?}", c.name);
+			eprintln!(
+				"[ofx] clipGetImage({}) fetched pixels[0..4] = {dump:?}",
+				c.name
+			);
 		}
 		let image = std::sync::Arc::new(image);
 		let addr = &image.props as *const _ as usize;
@@ -511,7 +516,11 @@ unsafe extern "C" fn abort(effect: *mut c_void) -> c_int {
 			Ok(inst) => {
 				let cancelled = inst.cancel.load(std::sync::atomic::Ordering::Relaxed)
 					|| crate::suites::progress::is_cancelled();
-				if cancelled { 1 } else { 0 }
+				if cancelled {
+					1
+				} else {
+					0
+				}
 			}
 			Err(c) => c,
 		},

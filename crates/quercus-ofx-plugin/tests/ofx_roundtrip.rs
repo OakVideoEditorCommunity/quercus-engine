@@ -24,32 +24,38 @@
 //! test skips silently when the variable is unset so plain `cargo test`
 //! runs stay hermetic. The CI workflow builds the fixture and sets it.
 
+use quercus_node::factory;
+use quercus_node::project;
+use quercus_node::serializer;
 use quercus_ofx_plugin::host::Host;
+use quercus_ofx_plugin::node_factory;
+use std::env;
+use std::path;
 
 /// The fixture plugin's type id (tests/fixtures/ci_test_plugin.c).
 const FIXTURE_TYPE_ID: &str = "rs.quercus.CiTestPlugin";
 
 #[test]
 fn plugin_node_survives_save_load_roundtrip() {
-	let Ok(fixture_dir) = std::env::var("QUERCUS_OFX_FIXTURE_DIR") else {
+	let Ok(fixture_dir) = env::var("QUERCUS_OFX_FIXTURE_DIR") else {
 		eprintln!("QUERCUS_OFX_FIXTURE_DIR unset; skipping the OFX round-trip test");
 		return;
 	};
 	let host = Host::global();
 	host.cache
-		.scan_path(std::path::Path::new(&fixture_dir))
+		.scan_path(path::Path::new(&fixture_dir))
 		.expect("fixture dir scans");
-	let registered = quercus_ofx_plugin::node_factory::register_plugin_nodes();
+	let registered = node_factory::register_plugin_nodes();
 	assert!(
 		registered.iter().any(|id| id == FIXTURE_TYPE_ID),
 		"the fixture plugin registered (got {registered:?})"
 	);
 
 	// Build a project carrying one plugin node.
-	let project = quercus_node::project::Project::new();
+	let project = project::Project::new();
 	let node_id = {
 		let mut p = project.lock().unwrap_or_else(|e| e.into_inner());
-		let (core, behavior) = quercus_node::factory::Factory::global()
+		let (core, behavior) = factory::Factory::global()
 			.create_any(FIXTURE_TYPE_ID)
 			.expect("the fixture type resolves through the factory");
 		p.graph.add_node(core, behavior)
@@ -59,9 +65,9 @@ fn plugin_node_survives_save_load_roundtrip() {
 	// that used to fail with "unknown node type" for plugin nodes).
 	let xml = {
 		let p = project.lock().unwrap_or_else(|e| e.into_inner());
-		quercus_node::serializer::save(&p).expect("project saves")
+		serializer::save(&p).expect("project saves")
 	};
-	let loaded = quercus_node::serializer::load(&xml).expect("project with a plugin node loads");
+	let loaded = serializer::load(&xml).expect("project with a plugin node loads");
 	let p = loaded.lock().unwrap_or_else(|e| e.into_inner());
 	let mut found = false;
 	for id in p.graph.node_ids() {
@@ -70,5 +76,8 @@ fn plugin_node_survives_save_load_roundtrip() {
 			found = true;
 		}
 	}
-	assert!(found, "the plugin node survived the round trip (node {node_id:?})");
+	assert!(
+		found,
+		"the plugin node survived the round trip (node {node_id:?})"
+	);
 }

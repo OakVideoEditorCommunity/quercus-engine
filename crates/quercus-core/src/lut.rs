@@ -31,6 +31,7 @@
 //! boundary. Alpha is never part of the transform.
 
 /// A 3D RGB lookup table over `[lo, hi]³`, `edge³` samples, red fastest.
+use std::array;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lut3d {
 	/// Samples per axis (≥ 2).
@@ -147,7 +148,7 @@ impl Lut3d {
 			(i0[1] + 1).min(last),
 			(i0[2] + 1).min(last),
 		];
-		std::array::from_fn(|a| {
+		array::from_fn(|a| {
 			let c00 = lerp(
 				self.sample(i0[0], i0[1], i0[2])[a],
 				self.sample(i1[0], i0[1], i0[2])[a],

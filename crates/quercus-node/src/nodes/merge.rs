@@ -18,6 +18,9 @@
 //! `olive::MergeNode`): alpha-over composites two textures.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -146,16 +149,18 @@ impl NodeBehavior for MergeNode {
 				let _ = (b, bl);
 				table.push(
 					crate::value::ValueType::Texture,
-					crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-						node_id: crate::id::NodeId::INVALID,
-						time,
-						iterations: 1,
-						type_id: self.type_id().to_string(),
-						shader_id: String::new(),
-						effect_input: core.effect_input.clone(),
-						params: inputs.clone(),
-						iterative_input: String::new(),
-					}))),
+					crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+						ShaderJobPayload {
+							node_id: id::NodeId::INVALID,
+							time,
+							iterations: 1,
+							type_id: self.type_id().to_string(),
+							shader_id: String::new(),
+							effect_input: core.effect_input.clone(),
+							params: inputs.clone(),
+							iterative_input: String::new(),
+						},
+					))),
 					None,
 				);
 			}
@@ -187,20 +192,20 @@ impl NodeBehavior for MergeNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut base = crate::input::Input::new(
+	let mut base = input::Input::new(
 		BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	let mut blend = crate::input::Input::new(
+	let mut blend = input::Input::new(
 		BLEND_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	blend.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	blend.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(blend);
 
 	core.flags |= crate::node::flags::DONT_SHOW_IN_PARAM_VIEW;
@@ -231,12 +236,12 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
+	fn tex() -> NodeValue {
 		NodeValue::Texture(crate::handle::CHandle::null())
 	}
 
@@ -300,8 +305,8 @@ mod tests {
 		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
 		match table.get(ValueType::Texture) {
 			Some(NodeValue::Texture(h)) => {
-				let payload = unsafe { crate::jobs::shader_job(h) }
-					.expect("shader job payload boxed");
+				let payload =
+					unsafe { crate::jobs::shader_job(h) }.expect("shader job payload boxed");
 				assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.merge");
 				assert_eq!(payload.shader_id, "");
 				assert_eq!(payload.iterations, 1);

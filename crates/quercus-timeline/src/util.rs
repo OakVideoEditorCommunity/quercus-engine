@@ -164,9 +164,19 @@ fn block_core_of_mut(project: &mut Project, id: NodeId) -> Option<&mut BlockCore
 	let entry = project.graph.get_mut(id)?;
 	let a = entry.behavior.as_any_mut()?;
 	if a.is::<ClipBlockBehavior>() {
-		Some(&mut a.downcast_mut::<ClipBlockBehavior>().expect("checked above").core)
+		Some(
+			&mut a
+				.downcast_mut::<ClipBlockBehavior>()
+				.expect("checked above")
+				.core,
+		)
 	} else if a.is::<GapBlockBehavior>() {
-		Some(&mut a.downcast_mut::<GapBlockBehavior>().expect("checked above").core)
+		Some(
+			&mut a
+				.downcast_mut::<GapBlockBehavior>()
+				.expect("checked above")
+				.core,
+		)
 	} else if a.is::<TransitionBlockBehavior>() {
 		Some(
 			&mut a
@@ -246,13 +256,10 @@ impl quercus_node::track::BlockRange for GraphBlockRange<'_> {
 			.and_then(|e| e.behavior.as_any())
 			.and_then(|a| {
 				[
-					a.downcast_ref::<ClipBlockBehavior>()
-						.map(|b| &b.core),
+					a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
 					a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
-					a.downcast_ref::<TransitionBlockBehavior>()
-						.map(|b| &b.core),
-					a.downcast_ref::<AdjustmentBlockBehavior>()
-						.map(|b| &b.core),
+					a.downcast_ref::<TransitionBlockBehavior>().map(|b| &b.core),
+					a.downcast_ref::<AdjustmentBlockBehavior>().map(|b| &b.core),
 				]
 				.into_iter()
 				.flatten()
@@ -268,13 +275,10 @@ impl quercus_node::track::BlockRange for GraphBlockRange<'_> {
 			.and_then(|e| e.behavior.as_any())
 			.and_then(|a| {
 				[
-					a.downcast_ref::<ClipBlockBehavior>()
-						.map(|b| &b.core),
+					a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
 					a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
-					a.downcast_ref::<TransitionBlockBehavior>()
-						.map(|b| &b.core),
-					a.downcast_ref::<AdjustmentBlockBehavior>()
-						.map(|b| &b.core),
+					a.downcast_ref::<TransitionBlockBehavior>().map(|b| &b.core),
+					a.downcast_ref::<AdjustmentBlockBehavior>().map(|b| &b.core),
 				]
 				.into_iter()
 				.flatten()
@@ -293,7 +297,9 @@ impl quercus_node::track::BlockRange for GraphBlockRange<'_> {
 /// matching the deleted bridge's untouched-output failure path).
 pub fn block_in(b: &NodeRef) -> Rational {
 	let p = b.lock();
-	block_core_of(&p, b.id).map(BlockCore::in_).unwrap_or_else(|| Rational::new(0, 1))
+	block_core_of(&p, b.id)
+		.map(BlockCore::in_)
+		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
 /// Timeline out-point of block `b`.
@@ -303,7 +309,9 @@ pub fn block_in(b: &NodeRef) -> Rational {
 /// non-block node. Counterpart of `block_in`; `block_length` is `out - in`.
 pub fn block_out(b: &NodeRef) -> Rational {
 	let p = b.lock();
-	block_core_of(&p, b.id).map(BlockCore::out).unwrap_or_else(|| Rational::new(0, 1))
+	block_core_of(&p, b.id)
+		.map(BlockCore::out)
+		.unwrap_or_else(|| Rational::new(0, 1))
 }
 
 /// Timeline length of block `b` (`out - in`).
@@ -557,7 +565,9 @@ pub fn track_length(t: &NodeRef) -> Rational {
 /// Counterpart of `track_block_at`.
 pub fn track_block_count(t: &NodeRef) -> usize {
 	let p = t.lock();
-	track_behavior_of(&p, t.id).map(|t| t.blocks.len()).unwrap_or(0)
+	track_behavior_of(&p, t.id)
+		.map(|t| t.blocks.len())
+		.unwrap_or(0)
 }
 
 /// `quercusnode_track_get_block_at`: block at `index` on the track.
@@ -575,7 +585,9 @@ pub fn track_block_at(t: &NodeRef, index: usize) -> Option<NodeRef> {
 /// for a stale or non-track node.
 pub fn track_locked(t: &NodeRef) -> bool {
 	let p = t.lock();
-	track_behavior_of(&p, t.id).map(|t| t.locked).unwrap_or(false)
+	track_behavior_of(&p, t.id)
+		.map(|t| t.locked)
+		.unwrap_or(false)
 }
 
 /// `quercusnode_track_get_nearest_block_before_or_at`: the block containing
@@ -850,8 +862,7 @@ pub fn tracklist_append(list: &NodeRef, track: &NodeRef) {
 /// the graph separately by the caller).
 pub fn tracklist_remove_last(list: &NodeRef) -> Option<NodeRef> {
 	let mut p = list.lock();
-	let removed = tracklist_behavior_of_mut(&mut p, list.id)
-		.and_then(|l| l.tracks.pop())?;
+	let removed = tracklist_behavior_of_mut(&mut p, list.id).and_then(|l| l.tracks.pop())?;
 	if let Some(t) = track_behavior_of_mut(&mut p, removed) {
 		t.track_list = None;
 		t.index = 0;

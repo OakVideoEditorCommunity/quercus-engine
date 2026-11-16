@@ -1,5 +1,6 @@
 //! Strongly typed semantic editing over the native engine ABI.
 
+use crate::codec;
 mod abi;
 mod execute;
 
@@ -579,7 +580,7 @@ pub enum EditCommand {
 		/// The `footage` field.
 		footage: NodeId,
 		/// The `params` field.
-		params: crate::codec::ProxyParams,
+		params: codec::ProxyParams,
 	},
 	/// Clears the per-footage override and restores global proxy parameters.
 	ClearFootageProxyParams {

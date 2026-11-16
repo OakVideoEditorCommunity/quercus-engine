@@ -17,6 +17,8 @@
 //! Error type for the quercusotio binding.
 
 /// Errors produced by loading or saving OpenTimelineIO JSON.
+use std::io;
+use std::result;
 #[derive(Debug, thiserror::Error)]
 pub enum OtioError {
 	/// The document could not be parsed (or a value could not be
@@ -25,11 +27,11 @@ pub enum OtioError {
 	Json(#[from] serde_json::Error),
 	/// The underlying file could not be read or written.
 	#[error("OpenTimelineIO file error: {0}")]
-	Io(#[from] std::io::Error),
+	Io(#[from] io::Error),
 }
 
 /// Convenience alias used by the binding API.
-pub type Result<T> = std::result::Result<T, OtioError>;
+pub type Result<T> = result::Result<T, OtioError>;
 
 #[cfg(test)]
 mod tests {
@@ -42,10 +44,7 @@ mod tests {
 		let json_err = serde_json::from_str::<()>("not json").unwrap_err();
 		let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
 		let cases = [
-			(
-				OtioError::Json(json_err),
-				"OpenTimelineIO JSON error: ",
-			),
+			(OtioError::Json(json_err), "OpenTimelineIO JSON error: "),
 			(OtioError::Io(io_err), "OpenTimelineIO file error: "),
 		];
 		for (err, prefix) in cases {
@@ -80,8 +79,10 @@ mod tests {
 	fn object_safe() {
 		let json_err = serde_json::from_str::<()>("not json").unwrap_err();
 		let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
-		let errs: Vec<Box<dyn std::error::Error>> =
-			vec![Box::new(OtioError::Json(json_err)), Box::new(OtioError::Io(io_err))];
+		let errs: Vec<Box<dyn std::error::Error>> = vec![
+			Box::new(OtioError::Json(json_err)),
+			Box::new(OtioError::Io(io_err)),
+		];
 		assert_eq!(errs.len(), 2);
 		for err in &errs {
 			assert!(!err.to_string().is_empty());

@@ -36,6 +36,13 @@
 //! draw tests require macOS + `QUERCUS_GPU_TESTS` (the GL acceptance
 //! convention, always skipped in CI).
 
+use quercus_ofx_plugin::gl_bridge;
+use quercus_ofx_plugin::host;
+use quercus_ofx_plugin::node_factory;
+use quercus_ofx_plugin::render;
+use std::env;
+use std::fs;
+use std::process;
 mod common;
 
 use std::path::PathBuf;
@@ -55,27 +62,23 @@ fn scan_and_register() -> bool {
 		common::skip("最小测试插件未构建");
 		return false;
 	};
-	if quercus_ofx_plugin::host::Host::global().cache.scan_path(&dir).is_err() {
+	if host::Host::global().cache.scan_path(&dir).is_err() {
 		common::skip("测试插件扫描失败");
 		return false;
 	}
-	quercus_ofx_plugin::node_factory::register_plugin_nodes();
+	node_factory::register_plugin_nodes();
 	true
 }
 
 /// Standalone marker-file path (temp directory, process id to avoid
 /// collisions).
 fn marker_path(tag: &str) -> PathBuf {
-	std::env::temp_dir().join(format!(
-		"quercus-interact-{}-{}.log",
-		std::process::id(),
-		tag
-	))
+	env::temp_dir().join(format!("quercus-interact-{}-{}.log", process::id(), tag))
 }
 
 /// Reads all lines of the marker file.
 fn read_marker(path: &PathBuf) -> Vec<String> {
-	std::fs::read_to_string(path)
+	fs::read_to_string(path)
 		.unwrap_or_default()
 		.lines()
 		.map(|l| l.to_string())
@@ -90,14 +93,14 @@ fn base_plugin_has_no_interact() {
 		if !scan_and_register() {
 			return;
 		}
-		let inst = quercus_ofx_plugin::host::Host::global()
+		let inst = host::Host::global()
 			.create_instance(BASE_PLUGIN_ID, None)
 			.expect("base 插件实例应可建");
 		assert!(
 			inst.value.new_interact().is_none(),
 			"无 interact 的插件 new_interact 应为 None"
 		);
-		quercus_ofx_plugin::host::Host::global().shutdown();
+		host::Host::global().shutdown();
 	});
 }
 
@@ -111,10 +114,10 @@ fn interact_lifecycle_and_events() {
 			return;
 		}
 		let marker = marker_path("events");
-		let _ = std::fs::remove_file(&marker);
-		unsafe { std::env::set_var(MARKER_ENV, &marker) };
+		let _ = fs::remove_file(&marker);
+		unsafe { env::set_var(MARKER_ENV, &marker) };
 
-		let inst = quercus_ofx_plugin::host::Host::global()
+		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
 			.expect("interact 变体实例应可建");
 
@@ -130,17 +133,14 @@ fn interact_lifecycle_and_events() {
 		assert_eq!(interact.pen_motion((10.0, 20.0), true, 5.0), status::OK);
 		assert_eq!(interact.pen_down((30.0, 40.0), 5.0), status::OK);
 		assert_eq!(interact.pen_up((30.0, 40.0), 5.0), status::OK);
-		assert_eq!(
-			interact.key_down(quercus_ofx_plugin::host::KEY_A, "a", 5.0),
-			status::OK
-		);
-		assert_eq!(interact.key_up(quercus_ofx_plugin::host::KEY_A, "a", 5.0), status::OK);
+		assert_eq!(interact.key_down(host::KEY_A, "a", 5.0), status::OK);
+		assert_eq!(interact.key_up(host::KEY_A, "a", 5.0), status::OK);
 		assert_eq!(interact.idle(), status::OK);
 		interact.destroy();
 
-		unsafe { std::env::remove_var(MARKER_ENV) };
+		unsafe { env::remove_var(MARKER_ENV) };
 		let lines = read_marker(&marker);
-		let _ = std::fs::remove_file(&marker);
+		let _ = fs::remove_file(&marker);
 
 		// 生命周期序列（按序）。
 		let seq = ["new_interact", "describe", "create", "destroy"];
@@ -160,15 +160,21 @@ fn interact_lifecycle_and_events() {
 
 		// pen 事件：真实参数（视口位置/canonical/压力；C %g 无尾零）。
 		assert!(
-			lines.iter().any(|l| l == "pen_motion vp=10,20 canon=10,20 pressure=1"),
+			lines
+				.iter()
+				.any(|l| l == "pen_motion vp=10,20 canon=10,20 pressure=1"),
 			"pen_motion 参数不符：{lines:?}"
 		);
 		assert!(
-			lines.iter().any(|l| l == "pen_down vp=30,40 canon=30,40 pressure=1"),
+			lines
+				.iter()
+				.any(|l| l == "pen_down vp=30,40 canon=30,40 pressure=1"),
 			"pen_down 参数不符：{lines:?}"
 		);
 		assert!(
-			lines.iter().any(|l| l == "pen_up vp=30,40 canon=30,40 pressure=0"),
+			lines
+				.iter()
+				.any(|l| l == "pen_up vp=30,40 canon=30,40 pressure=0"),
 			"pen_up 参数不符：{lines:?}"
 		);
 
@@ -181,12 +187,9 @@ fn interact_lifecycle_and_events() {
 			lines.iter().any(|l| l == "key_up sym=97 str=a"),
 			"key_up 参数不符：{lines:?}"
 		);
-		assert!(
-			lines.iter().any(|l| l == "idle"),
-			"idle 未记录：{lines:?}"
-		);
+		assert!(lines.iter().any(|l| l == "idle"), "idle 未记录：{lines:?}");
 
-		quercus_ofx_plugin::host::Host::global().shutdown();
+		host::Host::global().shutdown();
 	});
 }
 
@@ -200,27 +203,31 @@ fn interact_passthrough_plugin_status() {
 			return;
 		}
 		let marker = marker_path("status");
-		let _ = std::fs::remove_file(&marker);
-		unsafe { std::env::set_var(MARKER_ENV, &marker) };
+		let _ = fs::remove_file(&marker);
+		unsafe { env::set_var(MARKER_ENV, &marker) };
 
-		let inst = quercus_ofx_plugin::host::Host::global()
+		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
 			.expect("interact 变体实例应可建");
 		let interact = inst.value.new_interact().expect("interact 应可建");
 
 		// Escape 的 key_down：插件返回 ReplyDefault → 宿主透传。
-		let st = interact.key_down(quercus_ofx_plugin::host::KEY_ESCAPE, "", 0.0);
-		assert_eq!(st, status::REPLY_DEFAULT, "插件 Escape → ReplyDefault 应透传");
+		let st = interact.key_down(host::KEY_ESCAPE, "", 0.0);
+		assert_eq!(
+			st,
+			status::REPLY_DEFAULT,
+			"插件 Escape → ReplyDefault 应透传"
+		);
 
-		unsafe { std::env::remove_var(MARKER_ENV) };
+		unsafe { env::remove_var(MARKER_ENV) };
 		let lines = read_marker(&marker);
-		let _ = std::fs::remove_file(&marker);
+		let _ = fs::remove_file(&marker);
 		assert!(
 			lines.iter().any(|l| l == "key_down sym=65307 str="),
 			"Escape key_down 应真实到达插件：{lines:?}"
 		);
 
-		quercus_ofx_plugin::host::Host::global().shutdown();
+		host::Host::global().shutdown();
 	});
 }
 
@@ -234,10 +241,10 @@ fn instance_destroy_cleans_up_interact() {
 			return;
 		}
 		let marker = marker_path("destroy");
-		let _ = std::fs::remove_file(&marker);
-		unsafe { std::env::set_var(MARKER_ENV, &marker) };
+		let _ = fs::remove_file(&marker);
+		unsafe { env::set_var(MARKER_ENV, &marker) };
 
-		let inst = quercus_ofx_plugin::host::Host::global()
+		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
 			.expect("interact 变体实例应可建");
 		let _interact = inst.value.new_interact().expect("interact 应可建");
@@ -245,15 +252,15 @@ fn instance_destroy_cleans_up_interact() {
 		// drop 实例（Arc 归零 → Drop → notify_destroy → interact destroy）。
 		drop(inst);
 
-		unsafe { std::env::remove_var(MARKER_ENV) };
+		unsafe { env::remove_var(MARKER_ENV) };
 		let lines = read_marker(&marker);
-		let _ = std::fs::remove_file(&marker);
+		let _ = fs::remove_file(&marker);
 		assert!(
 			lines.iter().any(|l| l == "destroy"),
 			"实例销毁应连带 interact destroy：{lines:?}"
 		);
 
-		quercus_ofx_plugin::host::Host::global().shutdown();
+		host::Host::global().shutdown();
 	});
 }
 
@@ -275,7 +282,7 @@ fn interact_draw_renders_plugin_colours() {
 			common::skip("GL 测试需 QUERCUS_GPU_TESTS");
 			return;
 		}
-		if !quercus_ofx_plugin::gl_bridge::gl_available() {
+		if !gl_bridge::gl_available() {
 			common::skip("本机无可用 GL 上下文");
 			return;
 		}
@@ -283,47 +290,48 @@ fn interact_draw_renders_plugin_colours() {
 			return;
 		}
 		let marker = marker_path("draw");
-		let _ = std::fs::remove_file(&marker);
-		unsafe { std::env::set_var(MARKER_ENV, &marker) };
+		let _ = fs::remove_file(&marker);
+		unsafe { env::set_var(MARKER_ENV, &marker) };
 
-		let inst = quercus_ofx_plugin::host::Host::global()
+		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
 			.expect("interact 变体实例应可建");
 		let interact = inst.value.new_interact().expect("interact 应可建");
 
 		let (w, h) = (64i32, 64i32);
-		let params = quercus_ofx_plugin::render::VideoParams {
+		let params = render::VideoParams {
 			width: w,
 			height: h,
-			format: quercus_ofx_plugin::render::PIXEL_FORMAT_F32,
+			format: render::PIXEL_FORMAT_F32,
 			..Default::default()
 		};
 		// 一次 acquire 覆盖 FBO 装配 → draw（内部嵌套 acquire）→ 回读。
-		let _guard = quercus_ofx_plugin::gl_bridge::acquire().expect("acquire 应成功");
-		let tex = quercus_ofx_plugin::gl_bridge::create_output_texture(w, h, &params)
-			.expect("输出纹理应可建");
-		let fbo = quercus_ofx_plugin::gl_bridge::create_fbo(tex, w, h).expect("FBO 应完整");
-		quercus_ofx_plugin::gl_bridge::bind_fbo(fbo);
-		quercus_ofx_plugin::gl_bridge::set_viewport(w, h);
+		let _guard = gl_bridge::acquire().expect("acquire 应成功");
+		let tex = gl_bridge::create_output_texture(w, h, &params).expect("输出纹理应可建");
+		let fbo = gl_bridge::create_fbo(tex, w, h).expect("FBO 应完整");
+		gl_bridge::bind_fbo(fbo);
+		gl_bridge::set_viewport(w, h);
 
 		let st = interact.draw((64.0, 64.0), (1.0, 1.0), 5.0, None);
 		assert_eq!(st, status::OK, "draw 应返回插件 OK");
 
-		let img = quercus_ofx_plugin::gl_bridge::read_pixels_to_image(w, h, &params).expect("回读应成功");
-		quercus_ofx_plugin::gl_bridge::delete_fbo(fbo);
-		quercus_ofx_plugin::gl_bridge::delete_gl_texture(tex);
+		let img = gl_bridge::read_pixels_to_image(w, h, &params).expect("回读应成功");
+		gl_bridge::delete_fbo(fbo);
+		gl_bridge::delete_gl_texture(tex);
 		drop(_guard);
 
-		unsafe { std::env::remove_var(MARKER_ENV) };
+		unsafe { env::remove_var(MARKER_ENV) };
 		let lines = read_marker(&marker);
-		let _ = std::fs::remove_file(&marker);
+		let _ = fs::remove_file(&marker);
 
 		// Draw suite 状态真实往返（插件侧记录）。
 		assert!(
 			lines.iter().any(|l| {
-				l.starts_with("draw vp=64x64") && l.contains("setcol_st=0")
+				l.starts_with("draw vp=64x64")
+					&& l.contains("setcol_st=0")
 					&& l.contains("setcol=0.9,0.1,0.2,1")
-					&& l.contains("getcol_st=0") && l.contains("getcol=0,0,0,1")
+					&& l.contains("getcol_st=0")
+					&& l.contains("getcol=0,0,0,1")
 					&& l.contains("draw_st=0")
 			}),
 			"draw 记录不符（setcol/getcol/draw 应 OK）：{lines:?}"
@@ -381,6 +389,6 @@ fn interact_draw_renders_plugin_colours() {
 		);
 		assert_eq!(rect_n + clear_n, (w * h) as usize, "整帧应为背景+矩形两色");
 
-		quercus_ofx_plugin::host::Host::global().shutdown();
+		host::Host::global().shutdown();
 	});
 }

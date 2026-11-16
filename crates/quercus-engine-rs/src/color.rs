@@ -7,8 +7,18 @@ use thiserror::Error;
 
 use crate::codec::string_out;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_core_colorproc_create(
 		src_space: *const u8,
@@ -17,8 +27,11 @@ unsafe extern "C" {
 		dst_transform_len: usize,
 		inverse: bool,
 	) -> *mut c_void;
-	fn quercus_core_colorproc_create_lut(path: *const u8, path_len: usize, inverse: bool)
-	-> *mut c_void;
+	fn quercus_core_colorproc_create_lut(
+		path: *const u8,
+		path_len: usize,
+		inverse: bool,
+	) -> *mut c_void;
 	fn quercus_core_colorproc_create_display_icc(
 		src_space: *const u8,
 		src_space_len: usize,
@@ -43,8 +56,16 @@ unsafe extern "C" {
 	fn quercus_core_colorproc_is_valid(this: *const c_void) -> bool;
 	fn quercus_core_colorproc_cache_id(this: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_core_colorproc_convert_color(this: *const c_void, rgba: *mut f64) -> bool;
-	fn quercus_core_colorproc_convert_f32_rgba(this: *const c_void, data: *mut f32, pixels: i64) -> bool;
-	fn quercus_core_colorproc_convert_bgra8(this: *const c_void, data: *mut u8, pixels: i64) -> bool;
+	fn quercus_core_colorproc_convert_f32_rgba(
+		this: *const c_void,
+		data: *mut f32,
+		pixels: i64,
+	) -> bool;
+	fn quercus_core_colorproc_convert_bgra8(
+		this: *const c_void,
+		data: *mut u8,
+		pixels: i64,
+	) -> bool;
 	fn quercus_core_colorproc_add_ref(this: *const c_void);
 	fn quercus_core_colorproc_release(this: *const c_void);
 
@@ -59,8 +80,13 @@ unsafe extern "C" {
 		look_len: usize,
 	) -> *mut c_void;
 	fn quercus_core_colortransform_is_display(this: *const c_void) -> bool;
-	fn quercus_core_colortransform_output(this: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_core_colortransform_display(this: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
+	fn quercus_core_colortransform_output(this: *const c_void, buf: *mut u8, buf_len: usize)
+	-> i32;
+	fn quercus_core_colortransform_display(
+		this: *const c_void,
+		buf: *mut u8,
+		buf_len: usize,
+	) -> i32;
 	fn quercus_core_colortransform_view(this: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_core_colortransform_look(this: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
 	fn quercus_core_colortransform_add_ref(this: *const c_void);
@@ -84,7 +110,11 @@ unsafe impl Sync for ColorProcessor {}
 
 impl ColorProcessor {
 	fn from_raw(ptr: *mut c_void) -> Option<Self> {
-		if ptr.is_null() { None } else { Some(Self { ptr }) }
+		if ptr.is_null() {
+			None
+		} else {
+			Some(Self { ptr })
+		}
 	}
 
 	/// A processor from two colorspace names on the default OCIO config
@@ -107,7 +137,9 @@ impl ColorProcessor {
 	/// A processor applying the LUT file at `path` (`inverse` runs it
 	/// backwards).
 	pub fn create_lut(path: &str, inverse: bool) -> Option<Self> {
-		Self::from_raw(unsafe { quercus_core_colorproc_create_lut(path.as_ptr(), path.len(), inverse) })
+		Self::from_raw(unsafe {
+			quercus_core_colorproc_create_lut(path.as_ptr(), path.len(), inverse)
+		})
 	}
 
 	/// A processor converting `src_space` to the display ICC profile at
@@ -193,7 +225,9 @@ impl ColorProcessor {
 	/// leaves the samples unchanged. Returns `Err(Error)` when the engine reports an
 	/// OCIO apply failure; the buffer contents are then unspecified.
 	pub fn convert_f32_rgba(&self, samples: &mut [f32], pixels: i64) -> Result<(), Error> {
-		if unsafe { quercus_core_colorproc_convert_f32_rgba(self.ptr, samples.as_mut_ptr(), pixels) } {
+		if unsafe {
+			quercus_core_colorproc_convert_f32_rgba(self.ptr, samples.as_mut_ptr(), pixels)
+		} {
 			Ok(())
 		} else {
 			Err(Error)
@@ -338,7 +372,10 @@ mod tests {
 		let proc = ColorProcessor::pass_through();
 		assert!(!proc.is_valid(), "pass-through carries no OCIO transform");
 
-		assert_eq!(proc.convert_color([0.1, 0.5, 0.9, 1.0]), [0.1, 0.5, 0.9, 1.0]);
+		assert_eq!(
+			proc.convert_color([0.1, 0.5, 0.9, 1.0]),
+			[0.1, 0.5, 0.9, 1.0]
+		);
 
 		let mut px = [0.25f32, 0.5, 0.75, 1.0];
 		proc.convert_f32_rgba(&mut px, 1).expect("convert");
@@ -350,7 +387,10 @@ mod tests {
 
 		// Clones share the processor.
 		let clone = proc.clone();
-		assert_eq!(clone.convert_color([1.0, 0.0, 0.0, 1.0]), [1.0, 0.0, 0.0, 1.0]);
+		assert_eq!(
+			clone.convert_color([1.0, 0.0, 0.0, 1.0]),
+			[1.0, 0.0, 0.0, 1.0]
+		);
 	}
 
 	#[test]

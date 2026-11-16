@@ -13,16 +13,41 @@ use crate::node::NodeId;
 #[cfg(test)]
 mod tests;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
-	fn quercus_editor_graph_snapshot(session: *mut c_void, sequence: u64, clip: u64) -> *mut c_void;
+	fn quercus_editor_graph_snapshot(session: *mut c_void, sequence: u64, clip: u64)
+	-> *mut c_void;
 	fn quercus_editor_graph_release(graph: *const c_void);
 	fn quercus_editor_graph_revision(graph: *const c_void) -> i64;
 	fn quercus_editor_graph_node_count(graph: *const c_void) -> i32;
-	fn quercus_editor_graph_node_at(graph: *const c_void, index: i32, out: *mut GraphNodeRaw) -> bool;
-	fn quercus_editor_graph_node_label_at(graph: *const c_void, index: i32, buf: *mut u8, len: usize) -> i32;
-	fn quercus_editor_graph_node_type_at(graph: *const c_void, index: i32, buf: *mut u8, len: usize) -> i32;
+	fn quercus_editor_graph_node_at(
+		graph: *const c_void,
+		index: i32,
+		out: *mut GraphNodeRaw,
+	) -> bool;
+	fn quercus_editor_graph_node_label_at(
+		graph: *const c_void,
+		index: i32,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
+	fn quercus_editor_graph_node_type_at(
+		graph: *const c_void,
+		index: i32,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
 	fn quercus_editor_graph_port_at(
 		graph: *const c_void,
 		node: i32,
@@ -44,8 +69,17 @@ unsafe extern "C" {
 		len: usize,
 	) -> i32;
 	fn quercus_editor_graph_edge_count(graph: *const c_void) -> i32;
-	fn quercus_editor_graph_edge_at(graph: *const c_void, index: i32, out: *mut GraphEdgeRaw) -> bool;
-	fn quercus_editor_graph_edge_input_at(graph: *const c_void, index: i32, buf: *mut u8, len: usize) -> i32;
+	fn quercus_editor_graph_edge_at(
+		graph: *const c_void,
+		index: i32,
+		out: *mut GraphEdgeRaw,
+	) -> bool;
+	fn quercus_editor_graph_edge_input_at(
+		graph: *const c_void,
+		index: i32,
+		buf: *mut u8,
+		len: usize,
+	) -> i32;
 	fn quercus_editor_graph_can_connect(
 		session: *mut c_void,
 		from: u64,
@@ -227,16 +261,22 @@ impl GraphSnapshot {
 				let inputs = (0..raw.input_count.max(0))
 					.filter_map(|port_index| {
 						let mut port = GraphPortRaw::default();
-						if !unsafe { quercus_editor_graph_port_at(handle.0, index, port_index, &mut port) } {
+						if !unsafe {
+							quercus_editor_graph_port_at(handle.0, index, port_index, &mut port)
+						} {
 							return None;
 						}
 						Some(GraphPort {
 							id: string_out(|buf, len| unsafe {
-								quercus_editor_graph_port_id_at(handle.0, index, port_index, buf, len)
+								quercus_editor_graph_port_id_at(
+									handle.0, index, port_index, buf, len,
+								)
 							})
 							.unwrap_or_default(),
 							label: string_out(|buf, len| unsafe {
-								quercus_editor_graph_port_label_at(handle.0, index, port_index, buf, len)
+								quercus_editor_graph_port_label_at(
+									handle.0, index, port_index, buf, len,
+								)
 							})
 							.unwrap_or_default(),
 							declaration_index: port.declaration_index,

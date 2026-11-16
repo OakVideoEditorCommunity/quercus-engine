@@ -24,8 +24,18 @@ struct QuercusPluginDescriptor {
 
 type CommandFn = unsafe extern "C" fn(command_id: *const std::ffi::c_char, userdata: *mut c_void);
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_plugin_register(
 		descriptor: *const QuercusPluginDescriptor,
@@ -45,7 +55,12 @@ unsafe extern "C" {
 		menu_path_len: usize,
 	) -> bool;
 	fn quercus_plugin_command_count(index: i32) -> i32;
-	fn quercus_plugin_command_id_at(index: i32, command_index: i32, buf: *mut u8, buf_len: usize) -> i32;
+	fn quercus_plugin_command_id_at(
+		index: i32,
+		command_index: i32,
+		buf: *mut u8,
+		buf_len: usize,
+	) -> i32;
 	fn quercus_plugin_command_title_at(
 		index: i32,
 		command_index: i32,
@@ -194,13 +209,15 @@ impl Plugin {
 		/// `Plugin::register` and must stay alive until the plugin is unregistered;
 		/// `command_id` must be NUL-terminated and valid for reads. Both are rejected
 		/// when null, but neither is validated further.
-		unsafe extern "C" fn trampoline(command_id: *const std::ffi::c_char, userdata: *mut c_void) {
+		unsafe extern "C" fn trampoline(
+			command_id: *const std::ffi::c_char,
+			userdata: *mut c_void,
+		) {
 			if command_id.is_null() || userdata.is_null() {
 				return;
 			}
 			let f = unsafe { &**(userdata as *const BoxedCallback) };
-			let id = unsafe { std::ffi::CStr::from_ptr(command_id) }
-				.to_string_lossy();
+			let id = unsafe { std::ffi::CStr::from_ptr(command_id) }.to_string_lossy();
 			f(&id);
 		}
 		// Double-box so the userdata pointer is thin (a Box<dyn Fn> is a
@@ -328,7 +345,10 @@ mod tests {
 		assert_eq!(plugin.descriptor().name, "SDK Test");
 
 		assert!(plugin.add_command("export_markers", "Export Markers", "Tools"));
-		assert!(!plugin.add_command("export_markers", "Dup", "Tools"), "duplicate command id");
+		assert!(
+			!plugin.add_command("export_markers", "Dup", "Tools"),
+			"duplicate command id"
+		);
 		assert_eq!(plugin.commands().len(), 1);
 		assert_eq!(plugin.commands()[0].menu_path, "Tools");
 
@@ -341,7 +361,10 @@ mod tests {
 
 		drop(plugin);
 		assert_eq!(plugin_count(), base);
-		assert!(!invoke_command("export_markers"), "unregistered plugins don't fire");
+		assert!(
+			!invoke_command("export_markers"),
+			"unregistered plugins don't fire"
+		);
 	}
 
 	#[test]
@@ -355,14 +378,16 @@ mod tests {
 			|_| {},
 		)
 		.expect("register");
-		assert!(Plugin::register(
-			PluginDescriptor {
-				id: "com.quercus.sdk-dup".to_string(),
-				..Default::default()
-			},
-			|_| {},
-		)
-		.is_none());
+		assert!(
+			Plugin::register(
+				PluginDescriptor {
+					id: "com.quercus.sdk-dup".to_string(),
+					..Default::default()
+				},
+				|_| {},
+			)
+			.is_none()
+		);
 		drop(plugin);
 	}
 }

@@ -21,13 +21,14 @@
 //! `add_ref`/`release` pair; all entry points are null-safe and never
 //! panic across the boundary.
 
+use std::ptr;
 use std::sync::Mutex;
 
+use quercus_otio::model::Timeline;
 use quercus_otio::model::{
 	Clip, Composable, ExternalReference, Gap, MediaReference, RationalTime, Serializable,
 	TimeRange, Track, Transition,
 };
-use quercus_otio::model::Timeline;
 
 use crate::codec::{copy_str_out, str_arg};
 use crate::handle::NativeMirror;
@@ -129,7 +130,11 @@ crate::export_handle!(
 	quercus_otio_timeline_add_ref,
 	quercus_otio_timeline_release
 );
-crate::export_handle!(QuercusOtioTrack, quercus_otio_track_add_ref, quercus_otio_track_release);
+crate::export_handle!(
+	QuercusOtioTrack,
+	quercus_otio_track_add_ref,
+	quercus_otio_track_release
+);
 crate::export_handle!(
 	QuercusOtioComposable,
 	quercus_otio_composable_add_ref,
@@ -184,13 +189,13 @@ pub unsafe extern "C" fn quercus_otio_document_from_json(
 	json_len: usize,
 ) -> *mut QuercusOtioDocument {
 	let Some(json) = (unsafe { str_arg(json, json_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match quercus_otio::from_json_string(json) {
 		Ok(root) => crate::handle::into_ffi(QuercusOtioDocument {
 			inner: Mutex::new(root),
 		}) as *mut QuercusOtioDocument,
-		Err(_) => std::ptr::null_mut(),
+		Err(_) => ptr::null_mut(),
 	}
 }
 
@@ -269,7 +274,7 @@ pub unsafe extern "C" fn quercus_otio_document_timeline(
 	doc: *const QuercusOtioDocument,
 ) -> *mut QuercusOtioTimeline {
 	if doc.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let root = lock(&unsafe { &*doc }.inner);
 	match root.as_timeline().cloned() {
@@ -279,7 +284,7 @@ pub unsafe extern "C" fn quercus_otio_document_timeline(
 				inner: Mutex::new(tl),
 			}) as *mut QuercusOtioTimeline
 		}
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -334,11 +339,11 @@ pub unsafe extern "C" fn quercus_otio_document_collection_timeline_at(
 	index: i32,
 ) -> *mut QuercusOtioTimeline {
 	if doc.is_null() || index < 0 {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let root = lock(&unsafe { &*doc }.inner);
 	let Some(collection) = root.as_collection() else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let timeline = collection
 		.children()
@@ -353,7 +358,7 @@ pub unsafe extern "C" fn quercus_otio_document_collection_timeline_at(
 				inner: Mutex::new(tl),
 			}) as *mut QuercusOtioTimeline
 		}
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -378,7 +383,7 @@ pub unsafe extern "C" fn quercus_otio_document_from_timeline(
 	timeline: *const QuercusOtioTimeline,
 ) -> *mut QuercusOtioDocument {
 	if timeline.is_null() {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let tl = lock(&unsafe { &*timeline }.inner).clone();
 	crate::handle::into_ffi(QuercusOtioDocument {
@@ -420,13 +425,13 @@ pub unsafe extern "C" fn quercus_otio_timelines_from_fcpxml(
 	xml_len: usize,
 ) -> *mut QuercusOtioTimelines {
 	let Some(xml) = (unsafe { str_arg(xml, xml_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	match quercus_otio::from_fcpxml_string(xml) {
 		Ok(timelines) => crate::handle::into_ffi(QuercusOtioTimelines {
 			inner: Mutex::new(timelines),
 		}) as *mut QuercusOtioTimelines,
-		Err(_) => std::ptr::null_mut(),
+		Err(_) => ptr::null_mut(),
 	}
 }
 
@@ -477,7 +482,9 @@ pub unsafe extern "C" fn quercus_otio_timelines_to_fcpxml(
 ///
 /// `timelines` must be a live list handle (or null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_otio_timelines_count(timelines: *const QuercusOtioTimelines) -> i32 {
+pub unsafe extern "C" fn quercus_otio_timelines_count(
+	timelines: *const QuercusOtioTimelines,
+) -> i32 {
 	if timelines.is_null() {
 		return -1;
 	}
@@ -503,11 +510,11 @@ pub unsafe extern "C" fn quercus_otio_timelines_at(
 	index: i32,
 ) -> *mut QuercusOtioTimeline {
 	if timelines.is_null() || index < 0 {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let list = lock(&unsafe { &*timelines }.inner);
 	let Some(tl) = list.get(index as usize).cloned() else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	drop(list);
 	crate::handle::into_ffi(QuercusOtioTimeline {
@@ -598,7 +605,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_new(
 	name_len: usize,
 ) -> *mut QuercusOtioTimeline {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	crate::handle::into_ffi(QuercusOtioTimeline {
 		inner: Mutex::new(Timeline::new(name)),
@@ -765,7 +772,9 @@ pub unsafe extern "C" fn quercus_otio_timeline_to_json(
 ///
 /// `timeline` must be a live timeline handle (or null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_otio_timeline_track_count(timeline: *const QuercusOtioTimeline) -> i32 {
+pub unsafe extern "C" fn quercus_otio_timeline_track_count(
+	timeline: *const QuercusOtioTimeline,
+) -> i32 {
 	if timeline.is_null() {
 		return -1;
 	}
@@ -792,7 +801,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_at(
 	index: i32,
 ) -> *mut QuercusOtioTrack {
 	if timeline.is_null() || index < 0 {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let tl = lock(&unsafe { &*timeline }.inner);
 	let track = tl
@@ -808,7 +817,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_at(
 				inner: Mutex::new(track),
 			}) as *mut QuercusOtioTrack
 		}
-		None => std::ptr::null_mut(),
+		None => ptr::null_mut(),
 	}
 }
 
@@ -914,9 +923,12 @@ pub unsafe extern "C" fn quercus_otio_timeline_remove_track(
 ///
 /// `kind` must be null or point to `kind_len` readable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_otio_track_new(kind: *const u8, kind_len: usize) -> *mut QuercusOtioTrack {
+pub unsafe extern "C" fn quercus_otio_track_new(
+	kind: *const u8,
+	kind_len: usize,
+) -> *mut QuercusOtioTrack {
 	let Some(kind) = (unsafe { str_arg(kind, kind_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	crate::handle::into_ffi(QuercusOtioTrack {
 		inner: Mutex::new(Track::new(kind)),
@@ -991,11 +1003,11 @@ pub unsafe extern "C" fn quercus_otio_track_child_at(
 	index: i32,
 ) -> *mut QuercusOtioComposable {
 	if track.is_null() || index < 0 {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	}
 	let track = lock(&unsafe { &*track }.inner);
 	let Some(child) = track.children().get(index as usize).map(|c| (**c).clone()) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	drop(track);
 	crate::handle::into_ffi(QuercusOtioComposable {
@@ -1069,7 +1081,10 @@ pub unsafe extern "C" fn quercus_otio_track_append_child(
 ///
 /// `track` must be a live track handle (or null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_otio_track_remove_child(track: *mut QuercusOtioTrack, index: i32) -> bool {
+pub unsafe extern "C" fn quercus_otio_track_remove_child(
+	track: *mut QuercusOtioTrack,
+	index: i32,
+) -> bool {
 	if track.is_null() || index < 0 {
 		return false;
 	}
@@ -1193,7 +1208,7 @@ pub unsafe extern "C" fn quercus_otio_clip_new(
 	source_range: *const QuercusOtioTimeRange,
 ) -> *mut QuercusOtioComposable {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let mut clip = Clip::new(name);
 	if let Some(url) = unsafe { str_arg(url, url_len) }.filter(|u| !u.is_empty()) {
@@ -1231,7 +1246,7 @@ pub unsafe extern "C" fn quercus_otio_gap_new(
 	source_range: *const QuercusOtioTimeRange,
 ) -> *mut QuercusOtioComposable {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let range = if source_range.is_null() {
 		TimeRange::default()
@@ -1267,7 +1282,7 @@ pub unsafe extern "C" fn quercus_otio_transition_new(
 	out_offset: QuercusOtioRationalTime,
 ) -> *mut QuercusOtioComposable {
 	let Some(name) = (unsafe { str_arg(name, name_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let mut transition = Transition::new(name);
 	transition.set_in_offset(in_offset.to_native());
@@ -1588,7 +1603,10 @@ mod tests {
 			let (u, ul) = arg("file:///tmp/a.mov");
 			let clip = quercus_otio_clip_new(cn, cnl, u, ul, &range);
 			assert!(!clip.is_null());
-			assert_eq!(quercus_otio_composable_kind(clip), QUERCUS_OTIO_COMPOSABLE_CLIP);
+			assert_eq!(
+				quercus_otio_composable_kind(clip),
+				QUERCUS_OTIO_COMPOSABLE_CLIP
+			);
 			assert!(quercus_otio_track_append_child(track, clip));
 			quercus_otio_composable_release(clip);
 
@@ -1606,7 +1624,10 @@ mod tests {
 			assert!(!track.is_null());
 			assert_eq!(quercus_otio_track_child_count(track), 2);
 			let child = quercus_otio_track_child_at(track, 0);
-			assert_eq!(quercus_otio_composable_kind(child), QUERCUS_OTIO_COMPOSABLE_CLIP);
+			assert_eq!(
+				quercus_otio_composable_kind(child),
+				QUERCUS_OTIO_COMPOSABLE_CLIP
+			);
 			let mut buf = [0u8; 64];
 			let n = quercus_otio_clip_media_url(child, buf.as_mut_ptr(), buf.len());
 			assert_eq!(

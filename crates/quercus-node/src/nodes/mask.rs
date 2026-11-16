@@ -22,7 +22,12 @@
 //! `crate::nodes::polygon`.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
+use crate::jobs;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::nodes;
 
 /// Invert input id (C++ `k_invert_input`). Type: bool; default `false`.
 pub const INVERT_INPUT: &str = "invert_in";
@@ -39,7 +44,7 @@ pub struct MaskDistortNode {
 	/// Inherited polygon-generator state (C++ base class
 	/// `PolygonGenerator`; provides `points_in`, `color_in`, the base
 	/// merge input `base_in` and the polygon shape shader).
-	pub polygon: crate::nodes::polygon::PolygonGenerator,
+	pub polygon: nodes::polygon::PolygonGenerator,
 }
 
 /// Merge fragment shader for the `"mrg"` shader id (C++ loads
@@ -363,11 +368,11 @@ impl NodeBehavior for MaskDistortNode {
 	/// retranslate).
 	fn input_name<'a>(&self, id: &'a str) -> &'a str {
 		match id {
-			crate::nodes::generatorwithmerge::BASE_INPUT => "Texture",
+			nodes::generatorwithmerge::BASE_INPUT => "Texture",
 			INVERT_INPUT => "Invert",
 			FEATHER_INPUT => "Feather",
-			crate::nodes::polygon::POINTS_INPUT => "Points",
-			crate::nodes::polygon::COLOR_INPUT => "Color",
+			nodes::polygon::POINTS_INPUT => "Points",
+			nodes::polygon::COLOR_INPUT => "Color",
 			_ => id,
 		}
 	}
@@ -387,11 +392,11 @@ impl NodeBehavior for MaskDistortNode {
 		time: quercus_core::Rational,
 		table: &mut crate::value::NodeValueTable,
 	) {
-		let points = crate::nodes::polygon::point_array(core, inputs, time);
+		let points = nodes::polygon::point_array(core, inputs, time);
 		let point_count = points.len();
 		let mut params = inputs.clone();
 		params.insert(
-			crate::nodes::polygon::POINTS_INPUT.to_string(),
+			nodes::polygon::POINTS_INPUT.to_string(),
 			crate::value::NodeValue::Vec4Array(points),
 		);
 		params.insert(
@@ -405,13 +410,13 @@ impl NodeBehavior for MaskDistortNode {
 				params.insert(id.to_string(), core.value_at_time(id, -1, time));
 			}
 		}
-		let job = crate::handle::make_owned(crate::jobs::Job::ShaderJob(crate::jobs::ShaderJobPayload {
-			node_id: crate::id::NodeId::INVALID,
+		let job = handle::make_owned(jobs::Job::ShaderJob(jobs::ShaderJobPayload {
+			node_id: id::NodeId::INVALID,
 			time,
 			iterations: 1,
 			type_id: self.type_id().to_string(),
 			shader_id: "mask".to_string(),
-			effect_input: crate::nodes::generatorwithmerge::BASE_INPUT.to_string(),
+			effect_input: nodes::generatorwithmerge::BASE_INPUT.to_string(),
 			params,
 			iterative_input: String::new(),
 		}));
@@ -439,7 +444,7 @@ impl NodeBehavior for MaskDistortNode {
 	/// Deep copy (C++ `copy()`).
 	fn duplicate(&self, _core: &NodeCore) -> Option<Box<dyn NodeBehavior>> {
 		Some(Box::new(MaskDistortNode {
-			polygon: crate::nodes::polygon::PolygonGenerator,
+			polygon: nodes::polygon::PolygonGenerator,
 		}))
 	}
 }
@@ -464,14 +469,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// in the Rust model (`// CPP-PARITY: generatorwithmerge.cpp` /
 	// `polygon.cpp` constructors). `base_in` is the effect input and sets
 	// the video-effect flag.
-	let mut base = crate::input::Input::new(
-		crate::nodes::generatorwithmerge::BASE_INPUT,
+	let mut base = input::Input::new(
+		nodes::generatorwithmerge::BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
-	core.effect_input = crate::nodes::generatorwithmerge::BASE_INPUT.to_string();
+	core.effect_input = nodes::generatorwithmerge::BASE_INPUT.to_string();
 	core.flags |= crate::node::flags::VIDEO_EFFECT;
 
 	// `points_in` is a bezier array in C++; the Rust value model has no
@@ -479,12 +484,12 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// pentagon positions (the bezier control handles are not
 	// representable). The array element count matches the C++ default of
 	// 5 (`// CPP-PARITY: polygon.cpp` constructor).
-	let mut points = crate::input::Input::new(
-		crate::nodes::polygon::POINTS_INPUT,
+	let mut points = input::Input::new(
+		nodes::polygon::POINTS_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	);
-	points.flags |= crate::input::flags::ARRAY;
+	points.flags |= input::flags::ARRAY;
 	points.array_size = 5;
 	core.add_input(points);
 	for (i, (x, y)) in [
@@ -498,28 +503,28 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	.enumerate()
 	{
 		core.set_standard_value(
-			crate::nodes::polygon::POINTS_INPUT,
+			nodes::polygon::POINTS_INPUT,
 			i as i32,
 			crate::value::NodeValue::Vec2([*x, *y]),
 		);
 	}
 
 	// Mask should always be (1.0, 1.0, 1.0) for multiply to work correctly
-	let mut color = crate::input::Input::new(
-		crate::nodes::polygon::COLOR_INPUT,
+	let mut color = input::Input::new(
+		nodes::polygon::COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([1.0, 1.0, 1.0, 1.0]),
 	);
-	color.flags |= crate::input::flags::HIDDEN;
+	color.flags |= input::flags::HIDDEN;
 	core.add_input(color);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		INVERT_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
 	));
 
-	let mut feather = crate::input::Input::new(
+	let mut feather = input::Input::new(
 		FEATHER_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(0.0),
@@ -530,7 +535,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	(
 		core,
 		Box::new(MaskDistortNode {
-			polygon: crate::nodes::polygon::PolygonGenerator,
+			polygon: nodes::polygon::PolygonGenerator,
 		}),
 	)
 }
@@ -558,11 +563,11 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
+	#[test]
 	fn input_names() {
 		let n = MaskDistortNode {
 			polygon: crate::nodes::polygon::PolygonGenerator,
@@ -638,10 +643,7 @@ mod tests {
 		let NodeValue::Texture(handle) = tex else {
 			panic!("pushed value is not a texture handle");
 		};
-		let job = unsafe {
-			crate::jobs::shader_job(handle)
-		}
-		.expect("real shader job");
+		let job = unsafe { crate::jobs::shader_job(handle) }.expect("real shader job");
 		assert_eq!(job.shader_id, "mask");
 		assert_eq!(job.type_id, "org.olivevideoeditor.Olive.mask");
 		assert_eq!(
@@ -655,10 +657,7 @@ mod tests {
 			}
 			other => panic!("points_in is not a Vec4Array: {other:?}"),
 		}
-		assert_eq!(
-			job.params.get("point_count"),
-			Some(&NodeValue::Int(5))
-		);
+		assert_eq!(job.params.get("point_count"), Some(&NodeValue::Int(5)));
 		assert_eq!(
 			job.params.get(INVERT_INPUT),
 			Some(&NodeValue::Boolean(false))

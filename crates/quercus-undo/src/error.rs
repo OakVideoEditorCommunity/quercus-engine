@@ -17,6 +17,7 @@
 //! Error codes, mirroring `include/undo/error.h`; project-wide
 //! -MMCCCC scheme (module 02), pass-through untranslated.
 
+use std::result;
 use thiserror::Error;
 
 /// Success.
@@ -33,7 +34,7 @@ pub const QUERCUSUNDO_E_NOT_FOUND: i32 = -20004;
 pub const QUERCUSUNDO_E_NOMEM: i32 = -20005;
 
 /// Crate-internal result type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, Error)]
@@ -101,7 +102,10 @@ mod tests {
 	fn code_maps_each_variant() {
 		assert_eq!(Error::Invalid.code(), QUERCUSUNDO_E_INVALID);
 		assert_eq!(Error::State.code(), QUERCUSUNDO_E_STATE);
-		assert_eq!(Error::Failed("boom".to_string()).code(), QUERCUSUNDO_E_FAILED);
+		assert_eq!(
+			Error::Failed("boom".to_string()).code(),
+			QUERCUSUNDO_E_FAILED
+		);
 		assert_eq!(Error::NotFound.code(), QUERCUSUNDO_E_NOT_FOUND);
 		assert_eq!(Error::NoMem.code(), QUERCUSUNDO_E_NOMEM);
 	}
@@ -132,4 +136,3 @@ mod tests {
 		assert!(!e.to_string().is_empty());
 	}
 }
-

@@ -18,8 +18,11 @@
 //! or a real cancellation (`Err(Cancelled)`); the cancelled callback fires
 //! only for real cancellations.
 
+use quercus_task::error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time;
 
 use quercus_task::customcache::CustomCacheTask;
 use quercus_task::task::Task;
@@ -27,7 +30,7 @@ use quercus_task::task::Task;
 fn spawn_parked(
 	cc: CustomCacheTask,
 ) -> (
-	std::thread::JoinHandle<quercus_task::error::Result<()>>,
+	thread::JoinHandle<error::Result<()>>,
 	Arc<quercus_task::customcache::CustomCacheState>,
 ) {
 	let state = cc.state();
@@ -35,9 +38,9 @@ fn spawn_parked(
 	let title = cc.base.title().to_string();
 	let mut outer = Task::new(&title, Some(atom));
 	outer.set_behavior(Box::new(cc));
-	let handle = std::thread::spawn(move || outer.start());
+	let handle = thread::spawn(move || outer.start());
 	// Let the worker park on the condvar.
-	std::thread::sleep(std::time::Duration::from_millis(50));
+	thread::sleep(time::Duration::from_millis(50));
 	(handle, state)
 }
 

@@ -19,24 +19,40 @@
 //! [`crate::sequence`]). Each registers with the factory via
 //! [`register_all`].
 
+use crate::factory;
 pub mod blur;
+mod checkerboard;
 mod chromakey;
+mod clamp;
+mod colorbars;
+mod colorcorrect;
 mod colordifferencekey;
+mod colormatrix;
 pub mod compositesource;
 mod cornerpindistortnode;
 mod cropdistortnode;
 mod despill;
+mod dilate;
+mod dirblur;
 mod displaytransform;
+mod dissolve;
 mod dropshadowfilter;
+mod edgedetect;
+mod erode;
 mod flipdistortnode;
+mod gamma;
 mod generatorwithmerge;
+mod grade;
 pub mod graphendpoints;
 pub mod group;
+mod invert;
+mod keymix;
 mod mask;
 mod math;
 mod mathbase;
 mod matrix;
 mod merge;
+mod mirror;
 mod mosaicfilternode;
 pub mod multicamnode;
 mod noise;
@@ -48,9 +64,14 @@ pub mod opacity;
 mod pan;
 pub mod plugin;
 mod polygon;
+mod position;
+mod premult;
+mod ramp;
 mod rippledistortnode;
+mod saturation;
 mod shapenode;
 mod shapenodebase;
+mod sharpen;
 mod solid;
 mod stroke;
 mod swirldistortnode;
@@ -64,35 +85,15 @@ mod timeformat;
 mod timeinput;
 mod timeoffsetnode;
 mod timeremap;
+mod transformdistortnode;
 pub mod transitionfx;
 pub mod transitions;
-mod transformdistortnode;
 mod trigonometry;
+mod unpremult;
 mod valuenode;
 mod volume;
 mod wavedistortnode;
 mod whitebalance;
-mod colormatrix;
-mod dilate;
-mod edgedetect;
-mod erode;
-mod colorcorrect;
-mod gamma;
-mod saturation;
-mod invert;
-mod clamp;
-mod grade;
-mod dirblur;
-mod sharpen;
-mod dissolve;
-mod keymix;
-mod premult;
-mod unpremult;
-mod position;
-mod mirror;
-mod checkerboard;
-mod colorbars;
-mod ramp;
 
 use crate::node::{NodeBehavior, NodeCore};
 
@@ -203,5 +204,5 @@ pub fn register_all() {
 	// no-op placeholder for the quercusplugin bridge's runtime discovery.
 	plugin::register(&mut meta);
 
-	crate::factory::install_entries(meta);
+	factory::install_entries(meta);
 }

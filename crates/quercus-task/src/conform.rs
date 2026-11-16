@@ -26,6 +26,7 @@
 
 use quercus_codec::decoder::CodecStream;
 use quercus_codec::task::TaskRequest;
+use std::fs;
 
 use crate::error::{Error, Result};
 use crate::task::{Task, TaskBehavior};
@@ -164,7 +165,7 @@ impl TaskBehavior for ConformTask {
 					// Rename each working file into place; a failure aborts
 					// the rest (mirroring the C++ loop).
 					for i in 0..self.working_names.len() {
-						if std::fs::rename(&self.working_names[i], &self.final_names[i]).is_err() {
+						if fs::rename(&self.working_names[i], &self.final_names[i]).is_err() {
 							task.set_error("Failed to move conformed audio into place");
 							return false;
 						}
@@ -174,7 +175,7 @@ impl TaskBehavior for ConformTask {
 				Err(_) => {
 					// Clean up any partial working files.
 					for name in &self.working_names {
-						let _ = std::fs::remove_file(name);
+						let _ = fs::remove_file(name);
 					}
 					if atom.is_cancelled() {
 						task.set_error("Audio conform was cancelled");

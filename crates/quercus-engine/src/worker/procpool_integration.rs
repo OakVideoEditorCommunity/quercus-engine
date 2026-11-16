@@ -27,7 +27,16 @@
 //! processes that inherit the process environment, and the crash test
 //! sets crash-hook variables that must not leak into sibling runs.
 
+use quercus_codec::testmedia;
+use quercus_node::serializer;
+use quercus_node::value;
+use quercus_render::error;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_core::{PixelFormat, Rational, TimeRange};
@@ -40,7 +49,7 @@ use quercus_node::sequence::SequenceBehavior;
 use quercus_node::track::{TrackBehavior, TrackListBehavior};
 use quercus_render::ipc::SLOT_FORMAT_BGRA8;
 use quercus_render::procpool::{
-	main_heap_frame_copies, reset_main_heap_frame_copies, DispatcherConfig, ProcessDispatcher,
+	DispatcherConfig, ProcessDispatcher, main_heap_frame_copies, reset_main_heap_frame_copies,
 };
 use quercus_render::ticket::{AudioTicketParams, TicketPayload, TicketResult, VideoTicketParams};
 use quercus_render::worker::{Job, JobDispatch, JobSchedule};
@@ -53,12 +62,12 @@ fn lock_test() -> std::sync::MutexGuard<'static, ()> {
 	TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn worker_bin() -> Option<std::path::PathBuf> {
-	if let Some(path) = std::env::var_os("QUERCUS_WORKER_BIN") {
-		let path = std::path::PathBuf::from(path);
+fn worker_bin() -> Option<path::PathBuf> {
+	if let Some(path) = env::var_os("QUERCUS_WORKER_BIN") {
+		let path = path::PathBuf::from(path);
 		return path.is_file().then_some(path);
 	}
-	let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+	let target = path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
 	["debug/quercus-worker", "release/quercus-worker"]
 		.into_iter()
 		.map(|relative| target.join(relative))
@@ -144,7 +153,7 @@ fn submit(
 			// Never invoked on the process backend (workers render from
 			// the wire spec); must still be a valid producer.
 			produce: Arc::new(|_, _| {
-				Err(quercus_render::error::Error::Failed(
+				Err(error::Error::Failed(
 					"process backend does not use the in-process producer".into(),
 				))
 			}),
@@ -174,7 +183,7 @@ fn pump_until(dispatcher: &ProcessDispatcher, results: &Mutex<Vec<TicketResult>>
 			let have = results.lock().unwrap_or_else(|e| e.into_inner()).len();
 			panic!("timeout: {have}/{expect} completions");
 		}
-		std::thread::sleep(Duration::from_millis(5));
+		thread::sleep(Duration::from_millis(5));
 	}
 }
 
@@ -221,7 +230,7 @@ fn pool_resize_drains_shrunk_workers_and_regrows() {
 		if Instant::now() > deadline {
 			panic!("timeout draining the shrunken pool: {completed}/12");
 		}
-		std::thread::sleep(Duration::from_millis(2));
+		thread::sleep(Duration::from_millis(2));
 	}
 	assert_eq!(
 		completed, 12,
@@ -231,7 +240,7 @@ fn pool_resize_drains_shrunk_workers_and_regrows() {
 	assert_eq!(dispatcher.worker_count(), 1);
 	// Let the retired children exit naturally (their EOF is reaped on
 	// the next poll); never kill them mid-frame.
-	std::thread::sleep(Duration::from_millis(100));
+	thread::sleep(Duration::from_millis(100));
 	dispatcher.poll();
 
 	// Grow back to 3: fresh workers spawn, a new wave renders fine.
@@ -239,7 +248,7 @@ fn pool_resize_drains_shrunk_workers_and_regrows() {
 	let deadline = Instant::now() + Duration::from_secs(60);
 	while dispatcher.worker_count() < 3 && Instant::now() < deadline {
 		dispatcher.poll();
-		std::thread::sleep(Duration::from_millis(5));
+		thread::sleep(Duration::from_millis(5));
 	}
 	assert_eq!(dispatcher.worker_count(), 3);
 	let results2 = Arc::new(Mutex::new(Vec::new()));
@@ -323,7 +332,7 @@ fn two_workers_render_two_waves_zero_copy() {
 			panic!("timeout: {completed}/12 completions");
 		}
 		if completed < 12 {
-			std::thread::sleep(Duration::from_millis(5));
+			thread::sleep(Duration::from_millis(5));
 		}
 	}
 	// Zero copy: nothing bumped the main-process frame-copy counter.
@@ -361,16 +370,15 @@ fn crash_isolation_restarts_worker_and_frame_still_renders() {
 	// One-shot crash hook: the worker dies with SIGSEGV while rendering
 	// ticket 1; the marker file it leaves behind makes the restarted
 	// worker render the re-queued frame for real.
-	let marker =
-		std::env::temp_dir().join(format!("quercus-procpool-crash-marker-{}", std::process::id()));
-	let _ = std::fs::remove_file(&marker);
-	unsafe { std::env::set_var("QUERCUS_WORKER_CRASH_ON_TICKET", "1") };
-	unsafe { std::env::set_var("QUERCUS_WORKER_CRASH_MARKER", &marker) };
+	let marker = env::temp_dir().join(format!("quercus-procpool-crash-marker-{}", process::id()));
+	let _ = fs::remove_file(&marker);
+	unsafe { env::set_var("QUERCUS_WORKER_CRASH_ON_TICKET", "1") };
+	unsafe { env::set_var("QUERCUS_WORKER_CRASH_MARKER", &marker) };
 	struct EnvGuard;
 	impl Drop for EnvGuard {
 		fn drop(&mut self) {
-			unsafe { std::env::remove_var("QUERCUS_WORKER_CRASH_ON_TICKET") };
-			unsafe { std::env::remove_var("QUERCUS_WORKER_CRASH_MARKER") };
+			unsafe { env::remove_var("QUERCUS_WORKER_CRASH_ON_TICKET") };
+			unsafe { env::remove_var("QUERCUS_WORKER_CRASH_MARKER") };
 		}
 	}
 	let _env_guard = EnvGuard;
@@ -406,7 +414,7 @@ fn crash_isolation_restarts_worker_and_frame_still_renders() {
 	}
 	assert!(crashed_ticket_seen, "ticket 1 delivered after the restart");
 	assert!(marker.exists(), "the crash hook fired exactly once");
-	let _ = std::fs::remove_file(&marker);
+	let _ = fs::remove_file(&marker);
 
 	dispatcher.shutdown();
 }
@@ -419,7 +427,7 @@ fn worker_decodes_real_footage_into_slot() {
 		return;
 	}
 	let _guard = lock_test();
-	let demo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4");
+	let demo = path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4");
 	assert!(demo.exists(), "repo fixture tests/demo.mp4 missing");
 
 	let dispatcher = ProcessDispatcher::new(config(1, 4)).expect("dispatcher config");
@@ -473,7 +481,7 @@ fn montage_effects_render_through_the_worker() {
 		return;
 	}
 	let _guard = lock_test();
-	let demo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4");
+	let demo = path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4");
 	assert!(demo.exists(), "repo fixture tests/demo.mp4 missing");
 
 	let dispatcher = ProcessDispatcher::new(config(1, 4)).expect("dispatcher config");
@@ -498,7 +506,7 @@ fn montage_effects_render_through_the_worker() {
 			type_id: "org.olivevideoeditor.Olive.opacity".into(),
 			enabled: true,
 			effect_input_id: Some("tex_in".into()),
-			params: vec![("opacity_in".into(), quercus_node::value::NodeValue::Float(0.5))],
+			params: vec![("opacity_in".into(), value::NodeValue::Float(0.5))],
 		}])],
 	];
 
@@ -514,7 +522,7 @@ fn montage_effects_render_through_the_worker() {
 			params: Arc::new(p),
 			audio: None,
 			produce: Arc::new(|_, _| {
-				Err(quercus_render::error::Error::Failed(
+				Err(error::Error::Failed(
 					"process backend does not use the in-process producer".into(),
 				))
 			}),
@@ -615,7 +623,7 @@ fn submit_audio(
 		// Never invoked on the process backend (the worker renders audio
 		// from the wire spec); must still be a valid producer.
 		produce: Arc::new(|_, _| {
-			Err(quercus_render::error::Error::Failed(
+			Err(error::Error::Failed(
 				"process backend does not use the in-process producer".into(),
 			))
 		}),
@@ -667,7 +675,10 @@ fn audio_tickets_roundtrip_through_shm_slots() {
 		};
 		assert_eq!(audio.sample_rate, 48000);
 		assert_eq!(audio.channel_count, 2);
-		assert_eq!(audio.meta.format, quercus_render::ipc::SLOT_FORMAT_AUDIO_F32);
+		assert_eq!(
+			audio.meta.format,
+			quercus_render::ipc::SLOT_FORMAT_AUDIO_F32
+		);
 		assert_eq!(audio.meta.channel_count, 2);
 		assert_eq!(audio.meta.linesize, 2 * 4);
 		assert_eq!(audio.meta.data_size, 2000 * 2 * 4);
@@ -746,7 +757,7 @@ fn mixed_audio_video_batch_keeps_slot_assignment_order() {
 		if Instant::now() > deadline {
 			panic!("timeout waiting for the mixed batch ({total}/16)");
 		}
-		std::thread::sleep(Duration::from_millis(2));
+		thread::sleep(Duration::from_millis(2));
 	}
 
 	dispatcher.shutdown();
@@ -762,18 +773,18 @@ fn audio_crash_isolation_restarts_worker_and_audio_still_renders() {
 	}
 	let _guard = lock_test();
 
-	let marker = std::env::temp_dir().join(format!(
+	let marker = env::temp_dir().join(format!(
 		"quercus-procpool-audio-crash-marker-{}",
-		std::process::id()
+		process::id()
 	));
-	let _ = std::fs::remove_file(&marker);
-	unsafe { std::env::set_var("QUERCUS_WORKER_CRASH_ON_TICKET", "1") };
-	unsafe { std::env::set_var("QUERCUS_WORKER_CRASH_MARKER", &marker) };
+	let _ = fs::remove_file(&marker);
+	unsafe { env::set_var("QUERCUS_WORKER_CRASH_ON_TICKET", "1") };
+	unsafe { env::set_var("QUERCUS_WORKER_CRASH_MARKER", &marker) };
 	struct EnvGuard;
 	impl Drop for EnvGuard {
 		fn drop(&mut self) {
-			unsafe { std::env::remove_var("QUERCUS_WORKER_CRASH_ON_TICKET") };
-			unsafe { std::env::remove_var("QUERCUS_WORKER_CRASH_MARKER") };
+			unsafe { env::remove_var("QUERCUS_WORKER_CRASH_ON_TICKET") };
+			unsafe { env::remove_var("QUERCUS_WORKER_CRASH_MARKER") };
 		}
 	}
 	let _env_guard = EnvGuard;
@@ -815,7 +826,7 @@ fn audio_crash_isolation_restarts_worker_and_audio_still_renders() {
 	}
 	assert!(crashed_ticket_seen, "ticket 1 delivered after the restart");
 	assert!(marker.exists(), "the crash hook fired exactly once");
-	let _ = std::fs::remove_file(&marker);
+	let _ = fs::remove_file(&marker);
 
 	dispatcher.shutdown();
 }
@@ -864,7 +875,7 @@ fn oversized_audio_ticket_is_refused_by_process_backend() {
 		}),
 		audio: Some(audio),
 		produce: Arc::new(|_, _| {
-			Err(quercus_render::error::Error::Failed(
+			Err(error::Error::Failed(
 				"process backend does not use the in-process producer".into(),
 			))
 		}),
@@ -936,7 +947,7 @@ fn f32_ticket_gets_f32_slot_and_bgra8_stays_bgra8() {
 			}),
 			audio: None,
 			produce: Arc::new(|_, _| {
-				Err(quercus_render::error::Error::Failed(
+				Err(error::Error::Failed(
 					"process backend does not use the in-process producer".into(),
 				))
 			}),
@@ -995,7 +1006,7 @@ fn f32_ticket_gets_f32_slot_and_bgra8_stays_bgra8() {
 
 /// One sequence with a single video track holding one clip over `clip`
 /// (range [0, 1)); returns the project and the sequence node.
-fn build_graph_project(clip: &std::path::Path) -> (Arc<Mutex<Project>>, NodeId) {
+fn build_graph_project(clip: &path::Path) -> (Arc<Mutex<Project>>, NodeId) {
 	let project = Project::new();
 	let seq;
 	{
@@ -1102,7 +1113,7 @@ fn post_graph_job(
 		}),
 		audio: None,
 		produce: Arc::new(|_, _| {
-			Err(quercus_render::error::Error::Failed(
+			Err(error::Error::Failed(
 				"process backend does not use the in-process producer".into(),
 			))
 		}),
@@ -1170,24 +1181,21 @@ fn graph_mode_renders_sequence_viewer_from_snapshot() {
 	}
 	let _guard = lock_test();
 
-	let clip = std::env::temp_dir().join(format!(
-		"quercus-procpool-graph-clip-{}.mp4",
-		std::process::id()
-	));
-	let snapshot = std::env::temp_dir().join(format!(
+	let clip = env::temp_dir().join(format!("quercus-procpool-graph-clip-{}.mp4", process::id()));
+	let snapshot = env::temp_dir().join(format!(
 		"quercus-procpool-graph-snapshot-{}.xml",
-		std::process::id()
+		process::id()
 	));
-	let _ = std::fs::remove_file(&clip);
-	let _ = std::fs::remove_file(&snapshot);
-	quercus_codec::testmedia::write_test_clip(&clip, 64, 64, 10, 10).expect("test clip generation");
+	let _ = fs::remove_file(&clip);
+	let _ = fs::remove_file(&snapshot);
+	testmedia::write_test_clip(&clip, 64, 64, 10, 10).expect("test clip generation");
 
 	let (project, seq) = build_graph_project(&clip);
 	let xml = {
 		let p = project.lock().unwrap_or_else(|e| e.into_inner());
-		quercus_node::serializer::save(&p).expect("project serializes")
+		serializer::save(&p).expect("project serializes")
 	};
-	std::fs::write(&snapshot, xml).expect("snapshot written");
+	fs::write(&snapshot, xml).expect("snapshot written");
 	let viewer = seq.identity();
 	assert_ne!(viewer, 0, "viewer must not be the no-viewer sentinel 0");
 
@@ -1213,8 +1221,8 @@ fn graph_mode_renders_sequence_viewer_from_snapshot() {
 	assert_graph_frame_opaque(&dispatcher, result);
 
 	dispatcher.shutdown();
-	let _ = std::fs::remove_file(&clip);
-	let _ = std::fs::remove_file(&snapshot);
+	let _ = fs::remove_file(&clip);
+	let _ = fs::remove_file(&snapshot);
 }
 
 /// M16 S1: a snapshot pushed after startup reroutes subsequent viewer
@@ -1228,24 +1236,24 @@ fn set_graph_snapshot_after_start_reroutes_tickets() {
 	}
 	let _guard = lock_test();
 
-	let clip = std::env::temp_dir().join(format!(
+	let clip = env::temp_dir().join(format!(
 		"quercus-procpool-reroute-clip-{}.mp4",
-		std::process::id()
+		process::id()
 	));
-	let snapshot = std::env::temp_dir().join(format!(
+	let snapshot = env::temp_dir().join(format!(
 		"quercus-procpool-reroute-snapshot-{}.xml",
-		std::process::id()
+		process::id()
 	));
-	let _ = std::fs::remove_file(&clip);
-	let _ = std::fs::remove_file(&snapshot);
-	quercus_codec::testmedia::write_test_clip(&clip, 64, 64, 10, 10).expect("test clip generation");
+	let _ = fs::remove_file(&clip);
+	let _ = fs::remove_file(&snapshot);
+	testmedia::write_test_clip(&clip, 64, 64, 10, 10).expect("test clip generation");
 
 	let (project, seq) = build_graph_project(&clip);
 	let xml = {
 		let p = project.lock().unwrap_or_else(|e| e.into_inner());
-		quercus_node::serializer::save(&p).expect("project serializes")
+		serializer::save(&p).expect("project serializes")
 	};
-	std::fs::write(&snapshot, xml).expect("snapshot written");
+	fs::write(&snapshot, xml).expect("snapshot written");
 	let viewer = seq.identity();
 	assert_ne!(viewer, 0, "viewer must not be the no-viewer sentinel 0");
 
@@ -1270,6 +1278,6 @@ fn set_graph_snapshot_after_start_reroutes_tickets() {
 	assert_graph_frame_opaque(&dispatcher, result);
 
 	dispatcher.shutdown();
-	let _ = std::fs::remove_file(&clip);
-	let _ = std::fs::remove_file(&snapshot);
+	let _ = fs::remove_file(&clip);
+	let _ = fs::remove_file(&snapshot);
 }

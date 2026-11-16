@@ -28,6 +28,7 @@
 use quercus_core::{Rational, TimeRange};
 use quercus_node::block::transition_input::{IN_BLOCK, OUT_BLOCK};
 use quercus_node::graph::NodeEntry;
+use quercus_node::id;
 use quercus_node::track::TrackType;
 use quercus_undo::undocommand::UndoCommand;
 
@@ -39,11 +40,10 @@ use crate::util::{
 	block_previous, block_range, block_remove_from_graph, block_set_enabled, block_set_in,
 	block_set_length_and_media_in, block_set_length_and_media_out, block_set_length_keeping_out,
 	block_set_range, block_track, clip_media_in, clip_set_media_in, same_block, track_append_block,
-	track_create,
-	track_insert_block_after, track_insert_block_before, track_replace_block,
+	track_create, track_insert_block_after, track_insert_block_before, track_replace_block,
 	track_ripple_remove_block, tracklist_append, tracklist_remove, tracklist_track_at,
-	tracklist_track_count, tracklist_type, transition_offsets,
-	transition_set_offsets, BlockKind, NodeRef,
+	tracklist_track_count, tracklist_type, transition_offsets, transition_set_offsets, BlockKind,
+	NodeRef,
 };
 
 // `quercusnode/sequence.h` element input ids (the C++ automerge branch).
@@ -389,14 +389,17 @@ impl TimelineRemoveTrackCommand {
 		}
 		let (list_id, index) = {
 			let project = self.track.project.clone();
-			let p = project.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+			let p = project
+				.lock()
+				.unwrap_or_else(|poisoned| poisoned.into_inner());
 			let Some(entry) = p.graph.get(self.track.id) else {
 				return;
 			};
 			let Some(behavior) = entry.behavior.as_any() else {
 				return;
 			};
-			let Some(track_behavior) = behavior.downcast_ref::<quercus_node::track::TrackBehavior>()
+			let Some(track_behavior) =
+				behavior.downcast_ref::<quercus_node::track::TrackBehavior>()
 			else {
 				return;
 			};
@@ -430,7 +433,7 @@ impl TimelineRemoveTrackCommand {
 		// First pass: remove the track from the list and collect the ids of
 		// the tracks after it (their indexes shift).
 		let mut removed = false;
-		let mut later: Vec<quercus_node::id::NodeId> = Vec::new();
+		let mut later: Vec<id::NodeId> = Vec::new();
 		{
 			let mut p = self
 				.track
@@ -460,7 +463,9 @@ impl TimelineRemoveTrackCommand {
 				for t in &later {
 					if let Some(te) = p.graph.get_mut(*t) {
 						if let Some(ta) = te.behavior.as_any_mut() {
-							if let Some(tb) = ta.downcast_mut::<quercus_node::track::TrackBehavior>() {
+							if let Some(tb) =
+								ta.downcast_mut::<quercus_node::track::TrackBehavior>()
+							{
 								if tb.index > index.unwrap_or(0) as i32 {
 									tb.index -= 1;
 								}
@@ -492,7 +497,7 @@ impl TimelineRemoveTrackCommand {
 		let index = self.index.unwrap_or(0);
 		// Re-insert the track into the list and collect the tracks after it
 		// (their indexes shift).
-		let later: Vec<quercus_node::id::NodeId> = 'block: {
+		let later: Vec<id::NodeId> = 'block: {
 			let mut p = self
 				.track
 				.project
@@ -861,8 +866,14 @@ impl TrackReplaceBlockWithGapCommand {
 			let previous = block_previous(&self.block);
 			let next = block_next(&self.block);
 
-			let previous_is_a_gap = previous.as_ref().map(|b| block_kind(b) == BlockKind::Gap).unwrap_or(false);
-			let next_is_a_gap = next.as_ref().map(|b| block_kind(b) == BlockKind::Gap).unwrap_or(false);
+			let previous_is_a_gap = previous
+				.as_ref()
+				.map(|b| block_kind(b) == BlockKind::Gap)
+				.unwrap_or(false);
+			let next_is_a_gap = next
+				.as_ref()
+				.map(|b| block_kind(b) == BlockKind::Gap)
+				.unwrap_or(false);
 
 			if previous_is_a_gap && next_is_a_gap {
 				// The clip is preceded and followed by a gap, so merge the two.
@@ -897,8 +908,10 @@ impl TrackReplaceBlockWithGapCommand {
 					block_set_length_keeping_out(gap, new_gap_length);
 				}
 				track_ripple_remove_block(&self.track, &self.block);
-				self.existing_gap_precedes =
-					previous.as_ref().map(|p| same_block(gap, p)).unwrap_or(false);
+				self.existing_gap_precedes = previous
+					.as_ref()
+					.map(|p| same_block(gap, p))
+					.unwrap_or(false);
 			} else {
 				// No gap exists to fill this space, create a new one and swap it in.
 				if self.our_gap.is_none() {
@@ -922,7 +935,11 @@ impl TrackReplaceBlockWithGapCommand {
 			track_ripple_remove_block(&self.track, &self.block);
 
 			// Remove a preceding gap too, if there is one.
-			if preceding.as_ref().map(|b| block_kind(b) == BlockKind::Gap).unwrap_or(false) {
+			if preceding
+				.as_ref()
+				.map(|b| block_kind(b) == BlockKind::Gap)
+				.unwrap_or(false)
+			{
 				if let Some(gap) = &preceding {
 					track_ripple_remove_block(&self.track, gap);
 					self.merged_gap_entry = block_remove_from_graph(gap);
@@ -1359,7 +1376,10 @@ impl TimelineAddDefaultTransitionCommand {
 				}
 			};
 
-			let prev_kind = previous.as_ref().map(block_kind).unwrap_or(BlockKind::Other);
+			let prev_kind = previous
+				.as_ref()
+				.map(block_kind)
+				.unwrap_or(BlockKind::Other);
 			let next_kind = next.as_ref().map(block_kind).unwrap_or(BlockKind::Other);
 
 			// Handle the in transition.

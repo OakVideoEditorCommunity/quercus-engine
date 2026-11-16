@@ -1,6 +1,8 @@
 //! Session-local edit subscriptions with deterministic callback-data cleanup.
 
+use quercus_undo::global;
 use std::ffi::c_void;
+use std::panic;
 use std::sync::Arc;
 
 use crate::editor::EditorSessionHandle;
@@ -123,10 +125,10 @@ pub unsafe extern "C" fn quercus_editor_edit_unsubscribe(
 pub(crate) fn notify(session: &EditorSessionHandle, op: u32) {
 	let (observers, revision) = {
 		let state = session.inner.lock().unwrap_or_else(|e| e.into_inner());
-		(state.observers.clone(), quercus_undo::global::index().unwrap_or(0))
+		(state.observers.clone(), global::index().unwrap_or(0))
 	};
 	for observer in observers {
-		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+		let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| unsafe {
 			(observer.callback)(observer.user_data, op, revision);
 		}));
 	}

@@ -90,8 +90,8 @@ impl Default for OutputColorSpec {
 /// Returns the current project output specification.
 pub fn pipeline_output_spec() -> OutputColorSpec {
 	OutputColorSpec {
-		gamut: crate::state::color_output_gamut(),
-		transfer: crate::state::color_output_transfer(),
+		gamut: state::color_output_gamut(),
+		transfer: state::color_output_transfer(),
 	}
 }
 
@@ -124,9 +124,15 @@ pub const SUPPORTED_LUT_EXTENSIONS: [&str; 9] = [
 ];
 
 /// The D65 white point.
-pub const WHITE_D65: utils::Xy = utils::Xy { x: 0.3127, y: 0.3290 };
+pub const WHITE_D65: utils::Xy = utils::Xy {
+	x: 0.3127,
+	y: 0.3290,
+};
 /// The ACES white point (≈D60; the exact ACES specification values).
-pub const WHITE_ACES: utils::Xy = utils::Xy { x: 0.32168, y: 0.33767 };
+pub const WHITE_ACES: utils::Xy = utils::Xy {
+	x: 0.32168,
+	y: 0.33767,
+};
 
 /// sRGB / Rec.709 primaries (D65).
 pub const PRIMARIES_SRGB: utils::Primaries = utils::Primaries {
@@ -174,7 +180,10 @@ mod tests {
 		assert!(!atom.is_cancelled());
 		// Pass-through carries no OCIO transform (identity conversion).
 		let proc = color::ColorProcessor::pass_through();
-		assert_eq!(proc.convert_color([0.1, 0.5, 0.9, 1.0]), [0.1, 0.5, 0.9, 1.0]);
+		assert_eq!(
+			proc.convert_color([0.1, 0.5, 0.9, 1.0]),
+			[0.1, 0.5, 0.9, 1.0]
+		);
 	}
 
 	/// The constants match the engine where a live cross-check exists.

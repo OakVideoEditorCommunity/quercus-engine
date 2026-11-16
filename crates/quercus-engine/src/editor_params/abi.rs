@@ -6,7 +6,9 @@ use quercus_node::value::QuercusNodeValue;
 use crate::codec::copy_str_out;
 use crate::coretypes::QuercusRational;
 use crate::editor::EditorSessionHandle;
-use crate::editor_params::snapshot::{Param, ParamKeyframe, ParamProperty, ParamSnapshot, ParamValue, build};
+use crate::editor_params::snapshot::{
+	Param, ParamKeyframe, ParamProperty, ParamSnapshot, ParamValue, build,
+};
 use crate::handle::NativeMirror;
 
 /// Opaque immutable parameter snapshot with independent refcounting.
@@ -17,7 +19,11 @@ pub struct EditorParamHandle {
 	snapshot: ParamSnapshot,
 }
 
-crate::export_handle!(EditorParamHandle, quercus_editor_params_add_ref, quercus_editor_params_release);
+crate::export_handle!(
+	EditorParamHandle,
+	quercus_editor_params_add_ref,
+	quercus_editor_params_release
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -206,20 +212,26 @@ pub unsafe extern "C" fn quercus_editor_params_snapshot(
 		.project
 		.clone();
 	build(&project, node)
-		.map(|snapshot| crate::handle::into_ffi(EditorParamHandle { snapshot }) as *mut EditorParamHandle)
+		.map(|snapshot| {
+			crate::handle::into_ffi(EditorParamHandle { snapshot }) as *mut EditorParamHandle
+		})
 		.unwrap_or(std::ptr::null_mut())
 }
 
 /// Returns the undo revision captured by this parameter snapshot, or zero for null.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_editor_params_revision(params: *const EditorParamHandle) -> i64 {
-	unsafe { params.as_ref() }.map(|p| p.snapshot.revision).unwrap_or(0)
+	unsafe { params.as_ref() }
+		.map(|p| p.snapshot.revision)
+		.unwrap_or(0)
 }
 
 /// Returns the number of visible declared parameters, or zero for a null handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_editor_params_count(params: *const EditorParamHandle) -> i32 {
-	unsafe { params.as_ref() }.map(|p| p.snapshot.params.len() as i32).unwrap_or(0)
+	unsafe { params.as_ref() }
+		.map(|p| p.snapshot.params.len() as i32)
+		.unwrap_or(0)
 }
 
 /// Copies metadata for one parameter. Returns false without writing when the
@@ -459,4 +471,3 @@ pub unsafe extern "C" fn quercus_editor_params_value_text_at(
 		.map(|text| copy_str_out(text, buf, buf_len))
 		.unwrap_or(-1)
 }
-

@@ -108,7 +108,10 @@ fn region_of_definition_default_and_override() {
 		};
 		let rod = inst
 			.value
-			.get_region_of_definition(0.0, quercus_ofx_plugin::instance::RenderScale { x: 1.0, y: 1.0 })
+			.get_region_of_definition(
+				0.0,
+				quercus_ofx_plugin::instance::RenderScale { x: 1.0, y: 1.0 },
+			)
 			.expect("getRoD 应成功");
 		assert_eq!((rod.x1, rod.y1, rod.x2, rod.y2), (0.0, 0.0, 1920.0, 1080.0));
 		Host::global().shutdown();

@@ -117,10 +117,10 @@ impl VideoParamsPod {
 
 #[cfg(test)]
 mod tests {
-    use crate::PixelFormat;
-use super::*;
+	use super::*;
+	use crate::PixelFormat;
 
-    #[test]
+	#[test]
 	fn pod_defaults() {
 		let p = VideoParamsPod::default();
 		assert_eq!(p.format, PixelFormat::F32 as i32);

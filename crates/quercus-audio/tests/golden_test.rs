@@ -22,9 +22,9 @@ mod common;
 use std::ffi::CString;
 
 use common::write_wav_header_only;
-use quercus_core::Rational;
 use quercus_audio::params::{frames_to_rational, rational_to_samples, AudioParams, SampleFormat};
 use quercus_audio::waveform::{extract, AudioVisualWaveform};
+use quercus_core::Rational;
 
 /// SampleFormat planar-first ordering matches the authoritative C++ enum:
 /// f32_p == 4 == QUERCUSAUDIO_PROCESSOR_OUTPUT_FORMAT. This guards the
@@ -157,7 +157,8 @@ fn waveform_sync_offset_golden() {
 	let reference: Vec<f64> = (0..10).map(|i| i as f64 * 0.1 + 0.1).collect();
 	let mut candidate = vec![0.0f64; 10];
 	candidate[2..].copy_from_slice(&reference[..8]);
-	let out = quercus_audio::waveformsync::estimate_envelope_offset(&reference, &candidate, 100, 10);
+	let out =
+		quercus_audio::waveformsync::estimate_envelope_offset(&reference, &candidate, 100, 10);
 	assert!(out.valid);
 	assert_eq!(out.offset_samples, 200);
 	assert!((out.confidence - 1.0).abs() < 1e-9);

@@ -7,6 +7,10 @@
 use crate::codec::copy_str_out;
 use crate::editor::EditorSessionHandle;
 use crate::node::QUERCUS_NODE_ID_INVALID;
+use quercus_codec::proxymanager;
+use quercus_node::value;
+use quercus_undo::global;
+use std::ptr;
 
 use super::{EditResult, WireClipboardClip, execute};
 
@@ -229,14 +233,14 @@ pub struct QuercusEditParams {
 	pub old_range: super::WireTimeRange,
 	// Effect parameter element index and POD value used by SetNodeStandardValue.
 	pub element: i32,
-	pub node_value: quercus_node::value::QuercusNodeValue,
+	pub node_value: value::QuercusNodeValue,
 	// Bezier handle offsets used by UpsertNodeKeyframe.
 	pub bezier_in_x: f64,
 	pub bezier_in_y: f64,
 	pub bezier_out_x: f64,
 	pub bezier_out_y: f64,
 	// Custom proxy generation parameters used by SetFootageProxyParams.
-	pub proxy_params: quercus_codec::proxymanager::ProxyParams,
+	pub proxy_params: proxymanager::ProxyParams,
 	// Borrowed UTF-8 strings and arrays, each with an explicit element/byte count.
 	pub name: *const u8,
 	pub name_len: usize,
@@ -283,27 +287,27 @@ impl Default for QuercusEditParams {
 			range: Default::default(),
 			old_range: Default::default(),
 			element: 0,
-			node_value: quercus_node::value::QuercusNodeValue::none(),
+			node_value: value::QuercusNodeValue::none(),
 			bezier_in_x: 0.0,
 			bezier_in_y: 0.0,
 			bezier_out_x: 0.0,
 			bezier_out_y: 0.0,
-			proxy_params: quercus_codec::proxymanager::ProxyParams::default(),
-			name: std::ptr::null(),
+			proxy_params: proxymanager::ProxyParams::default(),
+			name: ptr::null(),
 			name_len: 0,
-			path: std::ptr::null(),
+			path: ptr::null(),
 			path_len: 0,
-			input_id: std::ptr::null(),
+			input_id: ptr::null(),
 			input_id_len: 0,
-			ids: std::ptr::null(),
+			ids: ptr::null(),
 			ids_len: 0,
-			placements: std::ptr::null(),
+			placements: ptr::null(),
 			placements_len: 0,
-			values: std::ptr::null(),
+			values: ptr::null(),
 			values_len: 0,
-			result_ids: std::ptr::null_mut(),
+			result_ids: ptr::null_mut(),
 			result_ids_capacity: 0,
-			result_clipboard: std::ptr::null_mut(),
+			result_clipboard: ptr::null_mut(),
 			result_clipboard_capacity: 0,
 		}
 	}
@@ -335,13 +339,11 @@ fn write_result(result: EditResult, p: &QuercusEditParams, out: *mut QuercusEdit
 	// Execution has already happened at this point. In particular, callers must
 	// not respond to `-2` by retrying blindly, or they could apply the edit twice.
 	if !result.ids.is_empty() {
-		unsafe {
-			std::ptr::copy_nonoverlapping(result.ids.as_ptr(), p.result_ids, result.ids.len())
-		};
+		unsafe { ptr::copy_nonoverlapping(result.ids.as_ptr(), p.result_ids, result.ids.len()) };
 	}
 	if !result.clipboard.is_empty() {
 		unsafe {
-			std::ptr::copy_nonoverlapping(
+			ptr::copy_nonoverlapping(
 				result.clipboard.as_ptr(),
 				p.result_clipboard,
 				result.clipboard.len(),
@@ -353,7 +355,7 @@ fn write_result(result: EditResult, p: &QuercusEditParams, out: *mut QuercusEdit
 			primary: result.primary.unwrap_or(QUERCUS_NODE_ID_INVALID),
 			value: result.value,
 			rational: result.rational.unwrap_or_default(),
-			revision: quercus_undo::global::index().unwrap_or(0),
+			revision: global::index().unwrap_or(0),
 			ids_len: result.ids.len(),
 			clipboard_len: result.clipboard.len(),
 		}

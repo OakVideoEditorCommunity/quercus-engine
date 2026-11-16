@@ -1,9 +1,14 @@
 //! Sequence/footage montage construction shared by inline and worker renders.
 
+use crate::effect;
+use quercus_codec::proxymanager;
 use quercus_core::Rational;
+use quercus_core::configstore;
 use quercus_node::block::{AdjustmentBlockBehavior, ClipBlockBehavior, clip_input};
 use quercus_node::footage::FootageBehavior;
 use quercus_node::id::NodeId;
+use quercus_node::input;
+use quercus_node::node;
 use quercus_node::nodes::multicamnode::{CURRENT_INPUT, SEQUENCE_INPUT, SEQUENCE_TYPE_INPUT};
 use quercus_node::project::Project;
 use quercus_node::sequence::SequenceBehavior;
@@ -19,13 +24,12 @@ pub(crate) fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> 
 	let original = first
 		.map(|stream| (footage.filename.clone(), stream.index))
 		.or_else(|| (!footage.filename.is_empty()).then(|| (footage.filename.clone(), 0)))?;
-	let use_proxy =
-		quercus_core::configstore::ConfigStore::instance().get_bool(None, "UseProxyMedia", 1) != 0;
+	let use_proxy = configstore::ConfigStore::instance().get_bool(None, "UseProxyMedia", 1) != 0;
 	if !use_proxy || !footage.proxy_enabled || footage.proxy.is_empty() {
 		return Some(original);
 	}
-	if quercus_codec::proxymanager::ProxyManager::get_proxy_state(&footage.proxy)
-		!= quercus_codec::proxymanager::ProxyState::Ready
+	if proxymanager::ProxyManager::get_proxy_state(&footage.proxy)
+		!= proxymanager::ProxyState::Ready
 	{
 		return Some(original);
 	}
@@ -45,9 +49,9 @@ pub(crate) fn preview_media(footage: &FootageBehavior) -> Option<(String, i32)> 
 /// an effect input; texture/samples/matrix, hidden inputs and `enabled_in` are
 /// excluded from `params`, while `enabled` records the effect's own flag.
 fn clip_effects(project: &Project, clip: NodeId, time: Rational) -> Vec<MontageEffect> {
-	crate::effect::chain(&project.graph, clip)
+	effect::chain(&project.graph, clip)
 		.into_iter()
-		.filter(|&effect| crate::effect::effect_input_of(&project.graph, effect).is_some())
+		.filter(|&effect| effect::effect_input_of(&project.graph, effect).is_some())
 		.filter_map(|effect| {
 			let entry = project.graph.get(effect)?;
 			let params = entry
@@ -58,15 +62,20 @@ fn clip_effects(project: &Project, clip: NodeId, time: Rational) -> Vec<MontageE
 					!matches!(
 						input.value_type,
 						ValueType::Texture | ValueType::Samples | ValueType::Matrix
-					) && input.flags & quercus_node::input::flags::HIDDEN == 0
-						&& input.id != quercus_node::node::ENABLED_INPUT
+					) && input.flags & input::flags::HIDDEN == 0
+						&& input.id != node::ENABLED_INPUT
 				})
-				.map(|input| (input.id.clone(), entry.core.value_at_time(&input.id, -1, time)))
+				.map(|input| {
+					(
+						input.id.clone(),
+						entry.core.value_at_time(&input.id, -1, time),
+					)
+				})
 				.collect();
 			Some(MontageEffect {
 				type_id: entry.behavior.type_id().to_string(),
-				enabled: crate::effect::is_enabled(&project.graph, effect),
-				effect_input_id: crate::effect::effect_input_of(&project.graph, effect),
+				enabled: effect::is_enabled(&project.graph, effect),
+				effect_input_id: effect::effect_input_of(&project.graph, effect),
 				params,
 			})
 		})
@@ -368,7 +377,7 @@ fn proxy_resolution(footage: &FootageBehavior) -> Option<(i32, i32)> {
 	let params = footage
 		.custom_proxy_params
 		.clone()
-		.unwrap_or_else(|| quercus_codec::proxymanager::ProxyManager::proxy_params_from_config());
+		.unwrap_or_else(|| proxymanager::ProxyManager::proxy_params_from_config());
 	if params.width > 0 && params.height > 0 {
 		return Some((params.width, params.height));
 	}

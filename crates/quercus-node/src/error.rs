@@ -17,6 +17,7 @@
 //! Error codes, mirroring `include/node/error.h` verbatim; project-wide
 //! -MMCCCC scheme (module registry in include/common/error.h), pass-through untranslated.
 
+use std::result;
 use thiserror::Error;
 
 /// Success.
@@ -33,7 +34,7 @@ pub const QUERCUSNODE_E_NOT_FOUND: i32 = -30004;
 pub const QUERCUSNODE_E_NOMEM: i32 = -30005;
 
 /// Crate-internal result type; the FFI layer maps it to the codes.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, PartialEq, Error)]
@@ -87,7 +88,10 @@ mod tests {
 	fn code_maps_each_variant() {
 		assert_eq!(Error::Invalid.code(), QUERCUSNODE_E_INVALID);
 		assert_eq!(Error::State.code(), QUERCUSNODE_E_STATE);
-		assert_eq!(Error::Failed("boom".to_string()).code(), QUERCUSNODE_E_FAILED);
+		assert_eq!(
+			Error::Failed("boom".to_string()).code(),
+			QUERCUSNODE_E_FAILED
+		);
 		assert_eq!(Error::NotFound.code(), QUERCUSNODE_E_NOT_FOUND);
 		assert_eq!(Error::NoMem.code(), QUERCUSNODE_E_NOMEM);
 	}
@@ -118,4 +122,3 @@ mod tests {
 		assert!(!e.to_string().is_empty());
 	}
 }
-

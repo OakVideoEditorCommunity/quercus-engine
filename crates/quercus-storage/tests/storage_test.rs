@@ -34,9 +34,9 @@ use quercus_node::track::{TrackBehavior, TrackListBehavior, TrackType};
 use quercus_node::value::NodeValue;
 use quercus_storage::backend::{LoadResult, StorageBackend};
 use quercus_storage::error::{
-	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_E_IO, QUERCUSSTORAGE_E_NO_BACKEND,
-	QUERCUSSTORAGE_E_STATE, QUERCUSSTORAGE_OK, QUERCUSSTORAGE_TOO_NEW, QUERCUSSTORAGE_TOO_OLD,
-	QUERCUSSTORAGE_UNKNOWN_VERSION,
+	QUERCUSSTORAGE_E_FORMAT, QUERCUSSTORAGE_E_INVALID, QUERCUSSTORAGE_E_IO,
+	QUERCUSSTORAGE_E_NO_BACKEND, QUERCUSSTORAGE_E_STATE, QUERCUSSTORAGE_OK, QUERCUSSTORAGE_TOO_NEW,
+	QUERCUSSTORAGE_TOO_OLD, QUERCUSSTORAGE_UNKNOWN_VERSION,
 };
 use quercus_storage::handle::CHandle;
 use quercus_storage::nodeutil::{make_project_owned, project_arc};
@@ -54,11 +54,8 @@ fn file_uri(path: &Path) -> String {
 
 /// A fresh, unique temp directory for one test.
 fn temp_dir(tag: &str) -> PathBuf {
-	let dir = std::env::temp_dir().join(format!(
-		"quercusstorage_it_{}_{}",
-		std::process::id(),
-		tag
-	));
+	let dir =
+		std::env::temp_dir().join(format!("quercusstorage_it_{}_{}", std::process::id(), tag));
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(&dir).unwrap();
 	dir
@@ -136,13 +133,17 @@ fn build_roundtrip_project() -> Arc<Mutex<Project>> {
 	let mut p = project.lock().unwrap();
 	p.initialize().unwrap();
 
-	let (core, behavior) = (quercus_node::factory::Factory::global().find(MATH).unwrap().create)();
+	let (core, behavior) = (quercus_node::factory::Factory::global()
+		.find(MATH)
+		.unwrap()
+		.create)();
 	let a = p.graph.add_node(core, behavior);
 	{
 		let e = p.graph.get_mut(a).unwrap();
 		e.core.label = "Math A".to_string();
 		e.core.override_color = 2;
-		e.core.set_standard_value("param_a_in", -1, NodeValue::Float(2.5));
+		e.core
+			.set_standard_value("param_a_in", -1, NodeValue::Float(2.5));
 		e.core
 			.keyframe_track_mut("param_a_in", -1)
 			.set_key(Keyframe {
@@ -162,7 +163,10 @@ fn build_roundtrip_project() -> Arc<Mutex<Project>> {
 				bezier_out: (0.3, 0.4),
 			});
 	}
-	let (core, behavior) = (quercus_node::factory::Factory::global().find(MATH).unwrap().create)();
+	let (core, behavior) = (quercus_node::factory::Factory::global()
+		.find(MATH)
+		.unwrap()
+		.create)();
 	let b = p.graph.add_node(core, behavior);
 	p.graph
 		.get_mut(b)
@@ -231,13 +235,31 @@ fn assert_roundtrip_fields(orig: &Project, loaded: &Project) {
 
 	// Standard values.
 	assert_eq!(
-		loaded.graph.get(a_l).unwrap().core.standard_value("param_a_in", -1),
-		orig.graph.get(a_o).unwrap().core.standard_value("param_a_in", -1),
+		loaded
+			.graph
+			.get(a_l)
+			.unwrap()
+			.core
+			.standard_value("param_a_in", -1),
+		orig.graph
+			.get(a_o)
+			.unwrap()
+			.core
+			.standard_value("param_a_in", -1),
 		"value a"
 	);
 	assert_eq!(
-		loaded.graph.get(b_l).unwrap().core.standard_value("param_a_in", -1),
-		orig.graph.get(b_o).unwrap().core.standard_value("param_a_in", -1),
+		loaded
+			.graph
+			.get(b_l)
+			.unwrap()
+			.core
+			.standard_value("param_a_in", -1),
+		orig.graph
+			.get(b_o)
+			.unwrap()
+			.core
+			.standard_value("param_a_in", -1),
 		"value b"
 	);
 
@@ -316,7 +338,10 @@ fn ove_xml_compress_flag_still_round_trips() {
 	save_project(&project, &uri, 1).unwrap();
 
 	let text = std::fs::read_to_string(&path).unwrap();
-	assert!(text.starts_with("<project"), "compression must not corrupt the file");
+	assert!(
+		text.starts_with("<project"),
+		"compression must not corrupt the file"
+	);
 
 	let (session, rc) = open(&uri).unwrap();
 	assert!(session.project().is_some(), "open failed rc={rc}");
@@ -453,11 +478,18 @@ fn probe_dispatch() {
 		"case-insensitive"
 	);
 	assert_eq!(backend_for("file:///tmp/x.fcpxml").unwrap().name(), "otio");
-	assert_eq!(backend_for("/tmp/x.ove").unwrap().name(), "ove-xml", "bare path");
+	assert_eq!(
+		backend_for("/tmp/x.ove").unwrap().name(),
+		"ove-xml",
+		"bare path"
+	);
 
 	// No backend claims these.
 	assert_eq!(
-		backend_for("quercusdb://user@host/db").err().unwrap().code(),
+		backend_for("quercusdb://user@host/db")
+			.err()
+			.unwrap()
+			.code(),
 		QUERCUSSTORAGE_E_NO_BACKEND
 	);
 	assert_eq!(
@@ -466,7 +498,10 @@ fn probe_dispatch() {
 	);
 
 	// Empty URI -> E_INVALID.
-	assert_eq!(backend_for("").err().unwrap().code(), QUERCUSSTORAGE_E_INVALID);
+	assert_eq!(
+		backend_for("").err().unwrap().code(),
+		QUERCUSSTORAGE_E_INVALID
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +635,11 @@ fn backend_pluggability() {
 
 	// Duplicate registration is rejected.
 	assert_eq!(
-		Registry::global().register(Arc::new(MemBackend)).err().unwrap().code(),
+		Registry::global()
+			.register(Arc::new(MemBackend))
+			.err()
+			.unwrap()
+			.code(),
 		QUERCUSSTORAGE_E_STATE
 	);
 
@@ -663,7 +702,8 @@ fn build_timeline_project() -> Arc<Mutex<Project>> {
 			.as_any_mut()
 			.and_then(|a| a.downcast_mut::<ClipBlockBehavior>())
 			.unwrap();
-		clip.core.range = quercus_core::TimeRange::new(Rational::new(100, 25), Rational::new(150, 25));
+		clip.core.range =
+			quercus_core::TimeRange::new(Rational::new(100, 25), Rational::new(150, 25));
 		clip.core.media_in = Rational::new(10, 25);
 		clip.core.track = Some(track_id);
 		clip.footage = Some(foot2);
@@ -903,7 +943,8 @@ fn null_and_invalid_handles() {
 	let backend = backend_for(uri).unwrap();
 	let err = backend
 		.save(CHandle::null(), &StorageUri::parse(uri).unwrap(), 0)
-		.err().unwrap();
+		.err()
+		.unwrap();
 	assert_eq!(err.code(), QUERCUSSTORAGE_E_INVALID);
 
 	// save to an unknown-scheme URI -> E_NO_BACKEND (never reaches a

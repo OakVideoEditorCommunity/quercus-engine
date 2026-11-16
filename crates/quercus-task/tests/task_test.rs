@@ -26,7 +26,9 @@ use std::sync::{Arc, Mutex};
 
 use quercus_core::cancelatom::CancelAtom;
 use quercus_task::error::{Error, Result};
-use quercus_task::task::{cancelled, system_time_ms, SubscriberState, Task, TaskBehavior, TaskEvent};
+use quercus_task::task::{
+	cancelled, system_time_ms, SubscriberState, Task, TaskBehavior, TaskEvent,
+};
 
 // ---- behaviors --------------------------------------------------------
 

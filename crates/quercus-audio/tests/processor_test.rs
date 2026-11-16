@@ -23,6 +23,7 @@
 use quercus_audio::error::{Error, QUERCUSAUDIO_E_INVALID, QUERCUSAUDIO_E_STATE, QUERCUSAUDIO_OK};
 use quercus_audio::params::{AudioParams, SampleFormat};
 use quercus_audio::processor::Processor;
+use std::ptr;
 
 /// Stereo f32_p planes of `frames` ramp samples.
 fn ramp_planes(frames: usize) -> Vec<Vec<f32>> {
@@ -162,7 +163,7 @@ fn open_invalid_params() {
 	// convert before open is a state error; a non-positive speed is
 	// rejected on open.
 	assert_eq!(
-		code(convert(&p, std::ptr::null(), 0, std::ptr::null(), 0).unwrap_err()),
+		code(convert(&p, ptr::null(), 0, ptr::null(), 0).unwrap_err()),
 		QUERCUSAUDIO_E_STATE
 	);
 	assert_eq!(
@@ -197,7 +198,7 @@ fn resample_and_flush() {
 	p.flush().unwrap();
 	// Drain the resampler delay after end-of-input.
 	while total < frames as i32 {
-		let n = convert(&p, std::ptr::null(), 0, out_ptrs.as_ptr(), frames as i32).unwrap();
+		let n = convert(&p, ptr::null(), 0, out_ptrs.as_ptr(), frames as i32).unwrap();
 		if n == 0 {
 			break;
 		}
@@ -235,7 +236,7 @@ fn tempo_stretch() {
 	.unwrap();
 	p.flush().unwrap();
 	while total < frames as i32 {
-		let n = convert(&p, std::ptr::null(), 0, out_ptrs.as_ptr(), frames as i32).unwrap();
+		let n = convert(&p, ptr::null(), 0, out_ptrs.as_ptr(), frames as i32).unwrap();
 		if n == 0 {
 			break;
 		}

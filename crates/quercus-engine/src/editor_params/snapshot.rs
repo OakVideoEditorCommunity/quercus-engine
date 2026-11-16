@@ -1,8 +1,11 @@
 //! Domain-side capture of declared parameters and their animation data.
 
 use quercus_node::id::NodeId;
+use quercus_node::input;
+use quercus_node::keyframe;
 use quercus_node::node::ENABLED_INPUT;
 use quercus_node::value::{NodeValue, QuercusNodeValue, ValueType};
+use quercus_undo::global;
 
 use crate::coretypes::QuercusRational;
 use crate::editor_commands::ProjectRef;
@@ -68,7 +71,7 @@ fn value(declared: ValueType, value: &NodeValue) -> ParamValue {
 /// structural enabled toggle. Behavior labels and combo strings are preserved;
 /// application language-pack substitution remains an app concern.
 pub(crate) fn build(project: &ProjectRef, node: NodeId) -> Option<ParamSnapshot> {
-	let revision = quercus_undo::global::index().unwrap_or(0);
+	let revision = global::index().unwrap_or(0);
 	let guard = project.lock().unwrap_or_else(|e| e.into_inner());
 	let entry = guard.graph.get(node)?;
 	let behavior = &entry.behavior;
@@ -77,8 +80,10 @@ pub(crate) fn build(project: &ProjectRef, node: NodeId) -> Option<ParamSnapshot>
 		.inputs
 		.iter()
 		.filter(|input| {
-			!matches!(input.value_type, ValueType::Texture | ValueType::Samples | ValueType::Matrix)
-				&& input.flags & quercus_node::input::flags::HIDDEN == 0
+			!matches!(
+				input.value_type,
+				ValueType::Texture | ValueType::Samples | ValueType::Matrix
+			) && input.flags & input::flags::HIDDEN == 0
 				&& input.id != ENABLED_INPUT
 		})
 		.map(|input| {
@@ -97,25 +102,25 @@ pub(crate) fn build(project: &ProjectRef, node: NodeId) -> Option<ParamSnapshot>
 				})
 				.collect();
 			if input.value_type == ValueType::Combo
-				&& !properties.iter().any(|property| property.key == "combo_option")
+				&& !properties
+					.iter()
+					.any(|property| property.key == "combo_option")
 			{
-				properties.extend(behavior.input_combo_strings(&input.id).into_iter().map(|option| {
-					ParamProperty {
+				properties.extend(behavior.input_combo_strings(&input.id).into_iter().map(
+					|option| ParamProperty {
 						key: "combo_option".into(),
 						value: ParamValue {
 							pod: None,
 							text: Some(option.to_string()),
 						},
-					}
-				}));
+					},
+				));
 			}
 			let mut values: Vec<(i32, ParamValue)> = core
 				.standard_values
 				.iter()
 				.filter(|((id, _), _)| id == &input.id)
-				.map(|((_, element), value)| {
-					(*element, self::value(input.value_type, value))
-				})
+				.map(|((_, element), value)| (*element, self::value(input.value_type, value)))
 				.collect();
 			if !values.iter().any(|(element, _)| *element == -1) {
 				values.push((-1, self::value(input.value_type, &input.default)));
@@ -133,9 +138,9 @@ pub(crate) fn build(project: &ProjectRef, node: NodeId) -> Option<ParamSnapshot>
 							time: QuercusRational::from_native(&key.time),
 							value: self::value(input.value_type, &key.value),
 							interpolation: match key.interpolation {
-								quercus_node::keyframe::Interpolation::Hold => 0,
-								quercus_node::keyframe::Interpolation::Linear => 1,
-								quercus_node::keyframe::Interpolation::Bezier => 2,
+								keyframe::Interpolation::Hold => 0,
+								keyframe::Interpolation::Linear => 1,
+								keyframe::Interpolation::Bezier => 2,
 							},
 							bezier_in: key.bezier_in,
 							bezier_out: key.bezier_out,

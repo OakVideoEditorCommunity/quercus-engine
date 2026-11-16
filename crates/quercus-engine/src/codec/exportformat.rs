@@ -126,7 +126,10 @@ mod tests {
 		assert_eq!(n, 3);
 		assert_eq!(&buf[..=n as usize], b"mkv\0");
 
-		assert_eq!(quercus_codec_format_get_name(42, buf.as_mut_ptr(), buf.len()), -1);
+		assert_eq!(
+			quercus_codec_format_get_name(42, buf.as_mut_ptr(), buf.len()),
+			-1
+		);
 	}
 
 	#[test]

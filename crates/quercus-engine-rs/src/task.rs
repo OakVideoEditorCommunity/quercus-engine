@@ -7,16 +7,29 @@
 //! project over through [`Task::take_project`]; analysis tasks transfer
 //! immutable owned DTOs through their corresponding take methods.
 
+use crate::audio_analysis;
+use crate::preview_audio;
+use crate::preview_video;
+use crate::thumbnail;
+use crate::types;
 use std::ffi::c_void;
 
 use crate::codec::string_out;
 use crate::node::{NodeId, Project};
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_task_export(
 		project: *const c_void,
@@ -50,7 +63,7 @@ unsafe extern "C" {
 	fn quercus_task_thumbnail_render(
 		project: *const c_void,
 		viewer: u64,
-		time: crate::types::Rational,
+		time: types::Rational,
 		width: i32,
 		height: i32,
 	) -> u64;
@@ -58,7 +71,7 @@ unsafe extern "C" {
 	fn quercus_task_audio_render(
 		project: *const c_void,
 		viewer: u64,
-		range: crate::types::TimeRange,
+		range: types::TimeRange,
 		sample_rate: i32,
 		channel_layout: u64,
 	) -> u64;
@@ -66,7 +79,7 @@ unsafe extern "C" {
 	fn quercus_task_video_render(
 		project: *const c_void,
 		viewer: u64,
-		time: crate::types::Rational,
+		time: types::Rational,
 		width: i32,
 		height: i32,
 		pixel_format: i32,
@@ -74,7 +87,7 @@ unsafe extern "C" {
 	fn quercus_task_video_render_playback(
 		project: *const c_void,
 		viewer: u64,
-		time: crate::types::Rational,
+		time: types::Rational,
 		width: i32,
 		height: i32,
 		pixel_format: i32,
@@ -86,7 +99,7 @@ unsafe extern "C" {
 		project: *const c_void,
 		viewer: u64,
 		track: u64,
-		time: crate::types::Rational,
+		time: types::Rational,
 		width: i32,
 		height: i32,
 		pixel_format: i32,
@@ -266,23 +279,23 @@ impl Task {
 
 	/// Takes the owned result of a successful waveform task. Subsequent calls
 	/// return `None`, and non-waveform tasks never produce a result here.
-	pub fn take_waveform(&self) -> Option<crate::audio_analysis::Waveform> {
-		crate::audio_analysis::Waveform::from_raw(unsafe { quercus_task_take_waveform(self.id) })
+	pub fn take_waveform(&self) -> Option<audio_analysis::Waveform> {
+		audio_analysis::Waveform::from_raw(unsafe { quercus_task_take_waveform(self.id) })
 	}
 
 	/// Takes the owned result of a successful thumbnail render exactly once.
-	pub fn take_thumbnail(&self) -> Option<crate::thumbnail::Thumbnail> {
-		crate::thumbnail::Thumbnail::from_raw(unsafe { quercus_task_take_thumbnail(self.id) })
+	pub fn take_thumbnail(&self) -> Option<thumbnail::Thumbnail> {
+		thumbnail::Thumbnail::from_raw(unsafe { quercus_task_take_thumbnail(self.id) })
 	}
 
 	/// Takes the owned result of a successful audio mix exactly once.
-	pub fn take_audio(&self) -> Option<crate::preview_audio::AudioBlock> {
-		crate::preview_audio::AudioBlock::from_raw(unsafe { quercus_task_take_audio(self.id) })
+	pub fn take_audio(&self) -> Option<preview_audio::AudioBlock> {
+		preview_audio::AudioBlock::from_raw(unsafe { quercus_task_take_audio(self.id) })
 	}
 
 	/// Takes the owned result of a successful video render exactly once.
-	pub fn take_video(&self) -> Option<crate::preview_video::VideoFrame> {
-		crate::preview_video::VideoFrame::from_raw(unsafe { quercus_task_take_video(self.id) })
+	pub fn take_video(&self) -> Option<preview_video::VideoFrame> {
+		preview_video::VideoFrame::from_raw(unsafe { quercus_task_take_video(self.id) })
 	}
 }
 
@@ -335,7 +348,7 @@ pub fn extract_waveform(filename: &str, stream_index: i32, samples_per_point: i3
 pub fn render_thumbnail(
 	project: &Project,
 	viewer: NodeId,
-	time: crate::types::Rational,
+	time: types::Rational,
 	size: (u32, u32),
 ) -> Option<Task> {
 	if size.0 == 0 || size.1 == 0 {
@@ -369,7 +382,7 @@ pub fn render_thumbnail(
 pub fn render_audio(
 	project: &Project,
 	viewer: NodeId,
-	range: crate::types::TimeRange,
+	range: types::TimeRange,
 	sample_rate: i32,
 	channel_layout: u64,
 ) -> Option<Task> {
@@ -404,9 +417,9 @@ pub fn render_audio(
 pub fn render_video(
 	project: &Project,
 	viewer: NodeId,
-	time: crate::types::Rational,
+	time: types::Rational,
 	size: (u32, u32),
-	pixel_format: crate::preview_video::VideoPixelFormat,
+	pixel_format: preview_video::VideoPixelFormat,
 ) -> Option<Task> {
 	if size.0 == 0 || size.1 == 0 {
 		return None;
@@ -444,9 +457,9 @@ pub fn render_video(
 pub fn render_playback_video(
 	project: &Project,
 	viewer: NodeId,
-	time: crate::types::Rational,
+	time: types::Rational,
 	size: (u32, u32),
-	pixel_format: crate::preview_video::VideoPixelFormat,
+	pixel_format: preview_video::VideoPixelFormat,
 	frame: i64,
 	distance: i64,
 	generation: u64,
@@ -486,9 +499,9 @@ pub fn render_track_video(
 	project: &Project,
 	viewer: NodeId,
 	track: NodeId,
-	time: crate::types::Rational,
+	time: types::Rational,
 	size: (u32, u32),
-	pixel_format: crate::preview_video::VideoPixelFormat,
+	pixel_format: preview_video::VideoPixelFormat,
 ) -> Option<Task> {
 	if size.0 == 0 || size.1 == 0 {
 		return None;
@@ -628,7 +641,10 @@ mod tests {
 		assert!(std::path::Path::new(&path).is_file());
 
 		let cancelled_path = std::env::temp_dir()
-			.join(format!("quercus_sdk_export_cancel_{}.mp4", std::process::id()))
+			.join(format!(
+				"quercus_sdk_export_cancel_{}.mp4",
+				std::process::id()
+			))
 			.to_string_lossy()
 			.into_owned();
 		let cancelled = export(
@@ -726,7 +742,11 @@ mod export_regression_tests {
 		let task = export(&session.project(), sequence, &path, &params).expect("export task");
 		assert!(task.wait(), "audio export failed: {}", task.error());
 		assert_eq!(task.state(), TaskState::Succeeded);
-		assert!(std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false));
+		assert!(
+			std::fs::metadata(&path)
+				.map(|m| m.len() > 0)
+				.unwrap_or(false)
+		);
 		let _ = std::fs::remove_file(&path);
 		let _ = std::fs::remove_file(&media);
 	}
@@ -753,7 +773,10 @@ mod export_regression_tests {
 			.expect("place video");
 
 		let path = std::env::temp_dir()
-			.join(format!("quercus_sdk_short_video_{}.mp4", std::process::id()))
+			.join(format!(
+				"quercus_sdk_short_video_{}.mp4",
+				std::process::id()
+			))
 			.to_string_lossy()
 			.into_owned();
 		let params = EncodingParams {
@@ -772,7 +795,11 @@ mod export_regression_tests {
 		let task = export(&session.project(), sequence, &path, &params).expect("export task");
 		assert!(task.wait(), "padded export failed: {}", task.error());
 		assert_eq!(task.state(), TaskState::Succeeded);
-		assert!(std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false));
+		assert!(
+			std::fs::metadata(&path)
+				.map(|m| m.len() > 0)
+				.unwrap_or(false)
+		);
 		let _ = std::fs::remove_file(&path);
 		let _ = std::fs::remove_file(&media);
 	}

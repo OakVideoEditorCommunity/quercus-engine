@@ -18,6 +18,7 @@
 //! the handle ABI discipline (QUERCUSTASK_ABI_VERSION, ctx/addref/release) so
 //! a header change on the C++ side is caught here before linking.
 
+use std::ffi;
 use std::mem::{align_of, offset_of, size_of};
 
 use quercus_task::handle::{make_owned, CHandle, QUERCUSTASK_ABI_VERSION};
@@ -27,9 +28,9 @@ use quercus_task::handle::{make_owned, CHandle, QUERCUSTASK_ABI_VERSION};
 /// void (*release)(void*); uint32_t abi_version; } QuercusTaskTask;`).
 #[repr(C)]
 struct CKernel {
-	ctx: *mut std::ffi::c_void,
-	addref: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
-	release: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+	ctx: *mut ffi::c_void,
+	addref: Option<unsafe extern "C" fn(*mut ffi::c_void)>,
+	release: Option<unsafe extern "C" fn(*mut ffi::c_void)>,
 	abi_version: u32,
 }
 

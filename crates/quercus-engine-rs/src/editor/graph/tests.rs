@@ -2,18 +2,25 @@
 
 use crate::edit::EditCommand;
 use crate::editor::{GraphNodeRole, GraphSnapshot};
+use crate::effect;
 use crate::node::NodeId;
+use crate::test_support;
+use std::fs;
 
 fn effect_type() -> String {
-	crate::effect::factory_entries()
+	effect::factory_entries()
 		.into_iter()
-		.find(|entry| entry.flags & crate::effect::NODE_FLAG_VIDEO_EFFECT != 0)
+		.find(|entry| entry.flags & effect::NODE_FLAG_VIDEO_EFFECT != 0)
 		.expect("video effect")
 		.type_id
 }
 
 fn find_node<'a>(snapshot: &'a GraphSnapshot, id: NodeId) -> &'a crate::editor::GraphNode {
-	snapshot.nodes.iter().find(|node| node.id == id).expect("graph node")
+	snapshot
+		.nodes
+		.iter()
+		.find(|node| node.id == id)
+		.expect("graph node")
 }
 
 #[test]
@@ -23,7 +30,7 @@ fn full_and_clip_graphs_are_consistent_owned_snapshots() {
 		.unwrap_or_else(|e| e.into_inner());
 	let session = crate::editor::EditorSession::new().expect("session");
 	let sequence = session.create_sequence("Graph").expect("sequence");
-	let media = crate::test_support::make_test_clip("graph_snapshot");
+	let media = test_support::make_test_clip("graph_snapshot");
 	let footage = session.project().import_footage(&media).expect("footage");
 	let clip = session
 		.execute(EditCommand::PlaceFootageClip {
@@ -55,24 +62,45 @@ fn full_and_clip_graphs_are_consistent_owned_snapshots() {
 	let endpoints: Vec<_> = full
 		.nodes
 		.iter()
-		.filter(|node| matches!(node.role, GraphNodeRole::InputEndpoint | GraphNodeRole::OutputEndpoint))
+		.filter(|node| {
+			matches!(
+				node.role,
+				GraphNodeRole::InputEndpoint | GraphNodeRole::OutputEndpoint
+			)
+		})
 		.collect();
 	assert_eq!(endpoints.len(), 2);
 	assert!(endpoints.iter().all(|node| node.protected));
-	assert!(find_node(&full, clip)
-		.inputs
-		.iter()
-		.all(|port| port.id != "enabled_in" && port.media_type.is_some()));
+	assert!(
+		find_node(&full, clip)
+			.inputs
+			.iter()
+			.all(|port| port.id != "enabled_in" && port.media_type.is_some())
+	);
 	assert!(full.edges.iter().any(|edge| {
 		edge.synthetic && edge.from == clip && edge.to == sequence && edge.input_id == "tex_in"
 	}));
-	assert!(full.edges.iter().any(|edge| edge.from == footage && edge.to == effect));
-	assert!(full.edges.iter().any(|edge| edge.from == effect && edge.to == clip));
+	assert!(
+		full.edges
+			.iter()
+			.any(|edge| edge.from == footage && edge.to == effect)
+	);
+	assert!(
+		full.edges
+			.iter()
+			.any(|edge| edge.from == effect && edge.to == clip)
+	);
 
-	let context = session.graph_snapshot(sequence, Some(clip)).expect("clip graph");
+	let context = session
+		.graph_snapshot(sequence, Some(clip))
+		.expect("clip graph");
 	assert_eq!(context.nodes.len(), 3, "footage, effect and clip only");
 	assert!(context.nodes.iter().all(|node| {
-		node.id != sequence && !matches!(node.role, GraphNodeRole::InputEndpoint | GraphNodeRole::OutputEndpoint)
+		node.id != sequence
+			&& !matches!(
+				node.role,
+				GraphNodeRole::InputEndpoint | GraphNodeRole::OutputEndpoint
+			)
 	}));
 	assert!(context.edges.iter().all(|edge| !edge.synthetic));
 
@@ -84,12 +112,14 @@ fn full_and_clip_graphs_are_consistent_owned_snapshots() {
 			y: 24.0,
 		})
 		.expect("position effect");
-	let moved = session.graph_snapshot(sequence, None).expect("updated graph");
+	let moved = session
+		.graph_snapshot(sequence, None)
+		.expect("updated graph");
 	assert!(moved.revision > full.revision);
 	assert_eq!(find_node(&moved, effect).position, Some((42.0, 24.0)));
 	// The older handle remains an immutable point-in-time view.
 	assert_eq!(find_node(&full, effect).position, None);
-	let _ = std::fs::remove_file(media);
+	let _ = fs::remove_file(media);
 }
 
 #[test]
@@ -99,7 +129,7 @@ fn connection_validation_is_live_and_has_no_side_effects() {
 		.unwrap_or_else(|e| e.into_inner());
 	let session = crate::editor::EditorSession::new().expect("session");
 	let sequence = session.create_sequence("Connections").expect("sequence");
-	let media = crate::test_support::make_test_clip("graph_connect");
+	let media = test_support::make_test_clip("graph_connect");
 	let footage = session.project().import_footage(&media).expect("footage");
 	let clip = session
 		.execute(EditCommand::PlaceFootageClip {
@@ -145,8 +175,12 @@ fn connection_validation_is_live_and_has_no_side_effects() {
 		.expect("reconnect");
 	assert!(!session.can_connect(footage, effect, &effect_input, -1));
 	assert!(session.graph_snapshot(NodeId::INVALID, None).is_none());
-	assert!(session.graph_snapshot(sequence, Some(NodeId::INVALID)).is_none());
-	let _ = std::fs::remove_file(media);
+	assert!(
+		session
+			.graph_snapshot(sequence, Some(NodeId::INVALID))
+			.is_none()
+	);
+	let _ = fs::remove_file(media);
 }
 
 #[test]
@@ -156,10 +190,16 @@ fn merge_accepts_two_independent_sources() {
 		.unwrap_or_else(|e| e.into_inner());
 	let session = crate::editor::EditorSession::new().expect("session");
 	let sequence = session.create_sequence("Merge").expect("sequence");
-	let base_media = crate::test_support::make_test_clip("graph_merge_base");
-	let blend_media = crate::test_support::make_test_clip("graph_merge_blend");
-	let base = session.project().import_footage(&base_media).expect("base footage");
-	let blend = session.project().import_footage(&blend_media).expect("blend footage");
+	let base_media = test_support::make_test_clip("graph_merge_base");
+	let blend_media = test_support::make_test_clip("graph_merge_blend");
+	let base = session
+		.project()
+		.import_footage(&base_media)
+		.expect("base footage");
+	let blend = session
+		.project()
+		.import_footage(&blend_media)
+		.expect("blend footage");
 	let merge = session
 		.execute(EditCommand::CreateNode {
 			context: sequence,
@@ -192,13 +232,21 @@ fn merge_accepts_two_independent_sources() {
 		})
 		.expect("connect blend");
 
-	let connected = session.graph_snapshot(sequence, None).expect("connected graph");
-	assert!(connected.edges.iter().any(|edge| {
-		edge.from == base && edge.to == merge && edge.input_id == "base_in"
-	}));
-	assert!(connected.edges.iter().any(|edge| {
-		edge.from == blend && edge.to == merge && edge.input_id == "blend_in"
-	}));
-	let _ = std::fs::remove_file(base_media);
-	let _ = std::fs::remove_file(blend_media);
+	let connected = session
+		.graph_snapshot(sequence, None)
+		.expect("connected graph");
+	assert!(
+		connected
+			.edges
+			.iter()
+			.any(|edge| { edge.from == base && edge.to == merge && edge.input_id == "base_in" })
+	);
+	assert!(
+		connected
+			.edges
+			.iter()
+			.any(|edge| { edge.from == blend && edge.to == merge && edge.input_id == "blend_in" })
+	);
+	let _ = fs::remove_file(base_media);
+	let _ = fs::remove_file(blend_media);
 }

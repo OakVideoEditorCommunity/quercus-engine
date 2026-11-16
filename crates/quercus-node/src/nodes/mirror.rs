@@ -26,7 +26,11 @@
 //! [`NodeBehavior::shader_code`] and only maps its own input names onto
 //! the shader's uniforms. No second shader is duplicated.
 
+use super::flipdistortnode;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -122,26 +126,28 @@ impl NodeBehavior for MirrorNode {
 		params.remove(HORIZONTAL_INPUT);
 		params.remove(VERTICAL_INPUT);
 		params.insert(
-			super::flipdistortnode::HORIZONTAL_INPUT.to_string(),
+			flipdistortnode::HORIZONTAL_INPUT.to_string(),
 			crate::value::NodeValue::Boolean(horiz),
 		);
 		params.insert(
-			super::flipdistortnode::VERTICAL_INPUT.to_string(),
+			flipdistortnode::VERTICAL_INPUT.to_string(),
 			crate::value::NodeValue::Boolean(vert),
 		);
 
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: TEXTURE_INPUT.to_string(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: TEXTURE_INPUT.to_string(),
+				},
+			))),
 			None,
 		);
 	}
@@ -149,7 +155,7 @@ impl NodeBehavior for MirrorNode {
 	/// Shader code request: delegates to the flip node's shader (the flip
 	/// request id is ignored there — it has a single shader variant).
 	fn shader_code(&self, request: &str) -> Option<String> {
-		super::flipdistortnode::FlipDistortNode.shader_code(request)
+		flipdistortnode::FlipDistortNode.shader_code(request)
 	}
 
 	/// Deep copy.
@@ -164,20 +170,20 @@ impl NodeBehavior for MirrorNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		HORIZONTAL_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
 	));
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		VERTICAL_INPUT,
 		crate::value::ValueType::Boolean,
 		crate::value::NodeValue::Boolean(false),
@@ -206,139 +212,139 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::node::NodeBehavior;
+	use crate::value::{NodeValue, NodeValueRow, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    fn tex() -> NodeValue {
-        NodeValue::Texture(crate::handle::CHandle::null())
-    }
+	fn tex() -> NodeValue {
+		NodeValue::Texture(crate::handle::CHandle::null())
+	}
 
-    #[test]
-    fn input_names() {
-        let n = MirrorNode;
-        assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
-        assert_eq!(n.input_name(HORIZONTAL_INPUT), "Horizontal (flop)");
-        assert_eq!(n.input_name(VERTICAL_INPUT), "Vertical (flip)");
-        assert_eq!(n.input_name("other_in"), "other_in");
-    }
+	#[test]
+	fn input_names() {
+		let n = MirrorNode;
+		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
+		assert_eq!(n.input_name(HORIZONTAL_INPUT), "Horizontal (flop)");
+		assert_eq!(n.input_name(VERTICAL_INPUT), "Vertical (flip)");
+		assert_eq!(n.input_name("other_in"), "other_in");
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.mirror");
-        assert_eq!(
-            core.get_input(HORIZONTAL_INPUT).unwrap().default,
-            NodeValue::Boolean(false)
-        );
-        assert_eq!(
-            core.get_input(VERTICAL_INPUT).unwrap().default,
-            NodeValue::Boolean(false)
-        );
-        assert_ne!(
-            core.get_input(TEXTURE_INPUT).unwrap().flags & crate::input::flags::NOT_KEYFRAMABLE,
-            0
-        );
-        assert_eq!(core.effect_input, TEXTURE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.mirror");
+		assert_eq!(
+			core.get_input(HORIZONTAL_INPUT).unwrap().default,
+			NodeValue::Boolean(false)
+		);
+		assert_eq!(
+			core.get_input(VERTICAL_INPUT).unwrap().default,
+			NodeValue::Boolean(false)
+		);
+		assert_ne!(
+			core.get_input(TEXTURE_INPUT).unwrap().flags & crate::input::flags::NOT_KEYFRAMABLE,
+			0
+		);
+		assert_eq!(core.effect_input, TEXTURE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_no_texture_pushes_nothing() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        assert!(table.is_empty());
-    }
+	#[test]
+	fn value_no_texture_pushes_nothing() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		assert!(table.is_empty());
+	}
 
-    #[test]
-    fn value_no_mirror_passes_texture_through() {
-        let (core, behavior) = create();
-        let tex = tex();
-        let inputs = NodeValueRow::from([(TEXTURE_INPUT.to_string(), tex.clone())]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        assert_eq!(table.get(ValueType::Texture), Some(&tex));
-    }
+	#[test]
+	fn value_no_mirror_passes_texture_through() {
+		let (core, behavior) = create();
+		let tex = tex();
+		let inputs = NodeValueRow::from([(TEXTURE_INPUT.to_string(), tex.clone())]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		assert_eq!(table.get(ValueType::Texture), Some(&tex));
+	}
 
-    #[test]
-    fn value_translates_flag_names_to_the_flip_uniforms() {
-        let (core, behavior) = create();
-        let inputs = NodeValueRow::from([
-            (TEXTURE_INPUT.to_string(), tex()),
-            (HORIZONTAL_INPUT.to_string(), NodeValue::Boolean(true)),
-            (VERTICAL_INPUT.to_string(), NodeValue::Boolean(false)),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let handle = match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => *h,
-            _ => panic!("texture expected"),
-        };
-        let payload = unsafe { crate::jobs::shader_job(&handle) }
-            .expect("shader job payload expected");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.mirror");
-        assert_eq!(payload.shader_id, "");
-        assert_eq!(payload.iterations, 1);
-        assert_eq!(payload.effect_input, TEXTURE_INPUT);
-        assert_eq!(payload.iterative_input, TEXTURE_INPUT);
-        // The shader reads `horiz_in`/`vert_in`; the node's own keys are gone.
-        assert_eq!(
-            payload
-                .params
-                .get(super::super::flipdistortnode::HORIZONTAL_INPUT),
-            Some(&NodeValue::Boolean(true))
-        );
-        assert_eq!(
-            payload
-                .params
-                .get(super::super::flipdistortnode::VERTICAL_INPUT),
-            Some(&NodeValue::Boolean(false))
-        );
-        assert!(!payload.params.contains_key(HORIZONTAL_INPUT));
-        assert!(!payload.params.contains_key(VERTICAL_INPUT));
-    }
+	#[test]
+	fn value_translates_flag_names_to_the_flip_uniforms() {
+		let (core, behavior) = create();
+		let inputs = NodeValueRow::from([
+			(TEXTURE_INPUT.to_string(), tex()),
+			(HORIZONTAL_INPUT.to_string(), NodeValue::Boolean(true)),
+			(VERTICAL_INPUT.to_string(), NodeValue::Boolean(false)),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let handle = match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => *h,
+			_ => panic!("texture expected"),
+		};
+		let payload =
+			unsafe { crate::jobs::shader_job(&handle) }.expect("shader job payload expected");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.mirror");
+		assert_eq!(payload.shader_id, "");
+		assert_eq!(payload.iterations, 1);
+		assert_eq!(payload.effect_input, TEXTURE_INPUT);
+		assert_eq!(payload.iterative_input, TEXTURE_INPUT);
+		// The shader reads `horiz_in`/`vert_in`; the node's own keys are gone.
+		assert_eq!(
+			payload
+				.params
+				.get(super::super::flipdistortnode::HORIZONTAL_INPUT),
+			Some(&NodeValue::Boolean(true))
+		);
+		assert_eq!(
+			payload
+				.params
+				.get(super::super::flipdistortnode::VERTICAL_INPUT),
+			Some(&NodeValue::Boolean(false))
+		);
+		assert!(!payload.params.contains_key(HORIZONTAL_INPUT));
+		assert!(!payload.params.contains_key(VERTICAL_INPUT));
+	}
 
-    #[test]
-    fn value_connected_flags_win_over_the_node_values() {
-        let (mut core, behavior) = create();
-        core.set_standard_value(HORIZONTAL_INPUT, -1, NodeValue::Boolean(false));
-        core.set_standard_value(VERTICAL_INPUT, -1, NodeValue::Boolean(true));
-        let inputs = NodeValueRow::from([
-            (TEXTURE_INPUT.to_string(), tex()),
-            (VERTICAL_INPUT.to_string(), NodeValue::Boolean(false)),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        // The row's false for vertical wins over the node's true, so both
-        // flags are off and the texture passes through unmirrored.
-        match table.get(ValueType::Texture) {
-            Some(NodeValue::Texture(h)) => assert!(h.is_null()),
-            other => panic!("pass-through texture expected, got {other:?}"),
-        }
-    }
+	#[test]
+	fn value_connected_flags_win_over_the_node_values() {
+		let (mut core, behavior) = create();
+		core.set_standard_value(HORIZONTAL_INPUT, -1, NodeValue::Boolean(false));
+		core.set_standard_value(VERTICAL_INPUT, -1, NodeValue::Boolean(true));
+		let inputs = NodeValueRow::from([
+			(TEXTURE_INPUT.to_string(), tex()),
+			(VERTICAL_INPUT.to_string(), NodeValue::Boolean(false)),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		// The row's false for vertical wins over the node's true, so both
+		// flags are off and the texture passes through unmirrored.
+		match table.get(ValueType::Texture) {
+			Some(NodeValue::Texture(h)) => assert!(h.is_null()),
+			other => panic!("pass-through texture expected, got {other:?}"),
+		}
+	}
 
-    #[test]
-    fn shader_code_returns_the_flip_shader() {
-        let code = MirrorNode.shader_code("").unwrap();
-        assert!(code.contains("uniform sampler2D tex_in;"));
-        assert!(code.contains("uniform bool horiz_in;"));
-        assert!(code.contains("uniform bool vert_in;"));
-        assert!(code.contains("if (horiz_in) new_coord.x = 1.0 - new_coord.x;"));
-        assert!(code.contains("if (vert_in) new_coord.y = 1.0 - new_coord.y;"));
-        assert!(!code.contains("switch"));
-    }
+	#[test]
+	fn shader_code_returns_the_flip_shader() {
+		let code = MirrorNode.shader_code("").unwrap();
+		assert!(code.contains("uniform sampler2D tex_in;"));
+		assert!(code.contains("uniform bool horiz_in;"));
+		assert!(code.contains("uniform bool vert_in;"));
+		assert!(code.contains("if (horiz_in) new_coord.x = 1.0 - new_coord.x;"));
+		assert!(code.contains("if (vert_in) new_coord.y = 1.0 - new_coord.y;"));
+		assert!(!code.contains("switch"));
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Mirror");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Mirror");
+	}
 }

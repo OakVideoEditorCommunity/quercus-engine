@@ -115,8 +115,8 @@ impl FootageBehavior {
 	/// prior `streams`/`valid` state is preserved on failure (no partial
 	/// state).
 	pub fn probe(&mut self) -> crate::error::Result<()> {
-        use crate::error::Error;
-        // Direct probe through the quercuscodec decoder registry (single-lib
+		use crate::error::Error;
+		// Direct probe through the quercuscodec decoder registry (single-lib
 		// unification; replaces the former `quercuscodec_decoder_probe` C ABI
 		// call).
 		let desc = quercus_codec::decoder::receive_list_of_all_decoders()
@@ -340,11 +340,7 @@ impl FootageBehavior {
 		// Bin item (C++ `footage.cpp:61` `set_flag(k_is_item)`): shared,
 		// never cloned, by dependency-graph copies.
 		core.flags |= crate::node::flags::IS_ITEM;
-		let mut file = Input::new(
-			"file_in",
-			ValueType::Text,
-			NodeValue::Text(String::new()),
-		);
+		let mut file = Input::new("file_in", ValueType::Text, NodeValue::Text(String::new()));
 		file.flags |= crate::input::flags::NOT_CONNECTABLE | crate::input::flags::NOT_KEYFRAMABLE;
 		core.add_input(file);
 		for (id, ty) in [
@@ -424,8 +420,7 @@ impl NodeBehavior for FootageBehavior {
 		let use_proxy = self.proxy_enabled
 			&& !self.proxy.is_empty()
 			&& proxy_ready
-			&& (self.proxy_video_stream_index == stream.index
-				|| self.proxy_video_stream_index < 0);
+			&& (self.proxy_video_stream_index == stream.index || self.proxy_video_stream_index < 0);
 		let (filename, stream_index) = if use_proxy {
 			(self.proxy.clone(), 0)
 		} else {
@@ -505,10 +500,7 @@ impl NodeBehavior for FootageBehavior {
 					writer.attribute("framerate", &v.frame_rate.to_display_string());
 					writer.attribute("pixelformat", &v.pixel_format.to_string());
 					writer.attribute("channels", &v.channels.to_string());
-					writer.attribute(
-						"interlaced",
-						if v.interlaced { "1" } else { "0" },
-					);
+					writer.attribute("interlaced", if v.interlaced { "1" } else { "0" });
 					writer.end_element(); // video
 				}
 				if let Some(a) = s.audio {
@@ -561,7 +553,11 @@ impl NodeBehavior for FootageBehavior {
 						.attribute("preset")
 						.and_then(|v| v.parse().ok())
 						.unwrap_or(0);
-					if reader.attribute("custom").map(|v| v == "1").unwrap_or(false) {
+					if reader
+						.attribute("custom")
+						.map(|v| v == "1")
+						.unwrap_or(false)
+					{
 						let mut custom = quercus_codec::proxymanager::ProxyParams::default();
 						if let Some(v) = reader.attribute("pwidth").and_then(|v| v.parse().ok()) {
 							custom.width = v;
@@ -621,10 +617,8 @@ impl NodeBehavior for FootageBehavior {
 								.attribute("index")
 								.and_then(|v| v.parse().ok())
 								.unwrap_or(0);
-							let is_video = reader
-								.attribute("video")
-								.map(|v| v == "1")
-								.unwrap_or(false);
+							let is_video =
+								reader.attribute("video").map(|v| v == "1").unwrap_or(false);
 							let duration = reader
 								.attribute("duration")
 								.map(|v| quercus_core::Rational::from_string(&v))
@@ -809,19 +803,19 @@ fn stream_duration_seconds(duration: i64, time_base: (i32, i32)) -> quercus_core
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use quercus_codec::footagedescription::{FootageDescription, StreamEntry};
+	use super::*;
+	use quercus_codec::footagedescription::{FootageDescription, StreamEntry};
 
-    fn video_entry(stream_index: i32, duration: i64) -> StreamEntry {
+	fn video_entry(stream_index: i32, duration: i64) -> StreamEntry {
 		let mut vp = quercus_core::videoparams::VideoParams::new_basic(
-            1920,
-            1080,
-            quercus_core::ocioutils::PixelFormat::F32,
-            4,
-            1,
-            1,
-            0,
-            1,
+			1920,
+			1080,
+			quercus_core::ocioutils::PixelFormat::F32,
+			4,
+			1,
+			1,
+			0,
+			1,
 		);
 		vp.set_stream_index(stream_index);
 		vp.set_frame_rate(30000, 1001);
@@ -867,7 +861,10 @@ mod tests {
 		assert_eq!(v.width, 1920);
 		assert_eq!(v.height, 1080);
 		assert_eq!(v.frame_rate, quercus_core::Rational::new(30000, 1001));
-		assert_eq!(v.pixel_format, quercus_core::ocioutils::PixelFormat::F32.code());
+		assert_eq!(
+			v.pixel_format,
+			quercus_core::ocioutils::PixelFormat::F32.code()
+		);
 		// 300000 ticks at 1/30000 = 10 seconds.
 		assert_eq!(video.duration, quercus_core::Rational::new(10, 1));
 	}
@@ -876,7 +873,9 @@ mod tests {
 	fn conversion_skips_subtitles_and_unusable_durations() {
 		let mut desc = FootageDescription::new("ffmpeg");
 		desc.push_stream(video_entry(0, i64::MIN)); // AV_NOPTS_VALUE
-		desc.push_stream(StreamEntry::Subtitle(quercus_core::subtitleparams::SubtitleParams::new()));
+		desc.push_stream(StreamEntry::Subtitle(
+			quercus_core::subtitleparams::SubtitleParams::new(),
+		));
 
 		let streams = streams_from_description(&desc);
 		assert_eq!(streams.len(), 1, "the subtitle stream is skipped");

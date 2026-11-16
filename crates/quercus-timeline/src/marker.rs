@@ -25,6 +25,7 @@
 //! not re-sort (the De-Qt marker has no parent pointer); callers restore
 //! order via `TimelineMarkerList::resort`/`resort_at`.
 
+use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{Rational, TimeRange};
@@ -197,7 +198,7 @@ impl TimelineMarkerList {
 	/// Detach `m` from the list, returning it; `None` if not present.
 	pub fn remove_marker(&mut self, m: &TimelineMarker) -> Option<TimelineMarker> {
 		for i in 0..self.markers_.len() {
-			if std::ptr::eq(&self.markers_[i], m) {
+			if ptr::eq(&self.markers_[i], m) {
 				return Some(self.markers_.remove(i));
 			}
 		}
@@ -242,7 +243,7 @@ impl TimelineMarkerList {
 	/// order). A marker that is not in this list, compared by pointer identity,
 	/// is ignored.
 	pub fn resort(&mut self, m: &mut TimelineMarker) {
-		if let Some(index) = self.markers_.iter().position(|x| std::ptr::eq(x, &*m)) {
+		if let Some(index) = self.markers_.iter().position(|x| ptr::eq(x, &*m)) {
 			let marker = self.markers_.remove(index);
 			self.add_marker(marker);
 		}
@@ -383,8 +384,8 @@ impl MarkerAddCommand {
 		}
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
-			if let Some(index) = (0..l.size())
-				.find(|&i| l.at(i).is_some_and(|m| m.time().in_() == self.range.in_()))
+			if let Some(index) =
+				(0..l.size()).find(|&i| l.at(i).is_some_and(|m| m.time().in_() == self.range.in_()))
 			{
 				l.remove_at(index);
 			}

@@ -33,12 +33,14 @@
 //! CPP-PARITY: src/task/src/project/saveotio/saveotio.cpp
 
 use quercus_core::Rational;
+use quercus_node::folder;
 use quercus_node::id::NodeId;
 use quercus_node::track::TrackType;
 use quercus_otio::{
 	Clip, Composable, ExternalReference, Gap, MediaReference, RationalTime, Serializable,
 	SerializableCollection, TimeRange, Timeline, Track, Transition,
 };
+use std::result;
 
 use crate::error::{Error, Result};
 use crate::nodeops::{self, ProjectRef};
@@ -67,8 +69,7 @@ impl SaveOTIOTask {
 	///
 	/// CPP-PARITY: saveotio.cpp (SaveOTIOTask::serialize_timeline)
 	fn serialize_timeline(project: &ProjectRef, sequence: NodeId) -> Option<Timeline> {
-		let mut otio_timeline =
-			Timeline::new(nodeops::node_label(project, sequence));
+		let mut otio_timeline = Timeline::new(nodeops::node_label(project, sequence));
 
 		// Direct video-params value type (single-lib unification); absent
 		// params leave rate at 0.0 → the documented `None` path.
@@ -199,17 +200,18 @@ impl SaveOTIOTask {
 						// every clip whose source range falls outside it.
 						let duration_seconds = nodeops::node_length(project, media).to_f64();
 						let available_range = if track_type == TrackType::Video {
-							let source_frame_rate = nodeops::footage_video_params(project, media, 0)
-								.map(|vp| {
-									let (num, den) = vp.frame_rate();
-									if den != 0 {
-										num as f64 / den as f64
-									} else {
-										0.0
-									}
-								})
-								.filter(|rate| *rate > 0.0)
-								.unwrap_or(sequence_rate);
+							let source_frame_rate =
+								nodeops::footage_video_params(project, media, 0)
+									.map(|vp| {
+										let (num, den) = vp.frame_rate();
+										if den != 0 {
+											num as f64 / den as f64
+										} else {
+											0.0
+										}
+									})
+									.filter(|rate| *rate > 0.0)
+									.unwrap_or(sequence_rate);
 							TimeRange::new(
 								RationalTime::new(0.0, source_frame_rate),
 								RationalTime::new(
@@ -250,8 +252,7 @@ impl SaveOTIOTask {
 					nodeops::node_label(project, block),
 				))),
 				nodeops::BlockKind::Transition => {
-					let mut otio_transition =
-						Transition::new(nodeops::node_label(project, block));
+					let mut otio_transition = Transition::new(nodeops::node_label(project, block));
 
 					let n = transition_offset_of(project, block, true);
 					otio_transition.set_in_offset(RationalTime::from_rational(n, 24.0));
@@ -358,7 +359,7 @@ impl TaskBehavior for SaveOTIOTask {
 			let Some(folder) = entry
 				.behavior
 				.as_any()
-				.and_then(|a| a.downcast_ref::<quercus_node::folder::FolderBehavior>())
+				.and_then(|a| a.downcast_ref::<folder::FolderBehavior>())
 			else {
 				task.set_error("Project contains no sequences to export.");
 				return Err(Error::Failed(
@@ -418,7 +419,7 @@ impl TaskBehavior for SaveOTIOTask {
 		// JSON writes a `Timeline` root for one sequence or a
 		// `SerializableCollection` for several; FCPXML writes all timelines
 		// into one document (one `<project>` per timeline).
-		let result: std::result::Result<(), String> = match format {
+		let result: result::Result<(), String> = match format {
 			InterchangeFormat::OtioJson => {
 				if serialized.len() == 1 {
 					serialized[0]

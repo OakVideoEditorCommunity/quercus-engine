@@ -26,21 +26,29 @@
 //! compiled without `#[cfg(test)]` and cannot resolve those symbols; see
 //! `tests/ffi_contract_test.rs`).
 
-use quercus_core::ocioutils::PixelFormat as QuercusPixelFormat;
-use quercus_core::videoparams::VideoParams;
 use crate::decoder::{
 	CodecStream, Decoder, RenderMode, RetrieveAudioStatus, RetrieveVideoParams,
 	K_COLOR_RANGE_DEFAULT,
 };
 use crate::encoder::create_from_params;
+use crate::encodingparams;
 use crate::ffmpeg::FFmpegDecoder;
 use crate::frame::Frame;
+use crate::hwdecode;
+use crate::testmedia;
+use quercus_core::configstore;
+use quercus_core::ocioutils::PixelFormat as QuercusPixelFormat;
+use quercus_core::videoparams::VideoParams;
 use quercus_core::{PixelFormat, Rational, TimeRange};
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::Arc;
 
 /// `tests/demo.mp4` at the repository root.
-fn demo_path() -> std::path::PathBuf {
-	std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4")
+fn demo_path() -> path::PathBuf {
+	path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/demo.mp4")
 }
 
 /// Build the fixed [`RetrieveVideoParams`] used by the decode tests.
@@ -77,8 +85,8 @@ fn video_params(stream: CodecStream, time: Rational) -> RetrieveVideoParams {
 ///
 /// Panics when `out`'s path bytes do not fit the `filename` buffer (the copy
 /// is an unchecked slice assignment).
-fn h264_params(out: &std::path::Path) -> crate::encodingparams::EncodingParams {
-	let mut p = crate::encodingparams::EncodingParams::default();
+fn h264_params(out: &path::Path) -> encodingparams::EncodingParams {
+	let mut p = encodingparams::EncodingParams::default();
 	let name = out.as_os_str().as_encoded_bytes();
 	p.filename[..name.len()].copy_from_slice(name);
 	p.format = 2; // MPEG-4 video
@@ -298,7 +306,7 @@ fn contiguous_audio_chunks_skip_seek_and_match_oneshot() {
 #[test]
 fn playback_sized_chunks_match_oneshot_sample_exact() {
 	let d = FFmpegDecoder::new();
-	let tone = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/tone48k.mp4");
+	let tone = path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/tone48k.mp4");
 	let s = CodecStream::with_block(tone.to_string_lossy().into_owned(), 0, None);
 	d.open(&s).expect("open tone audio stream");
 
@@ -355,9 +363,21 @@ fn playback_sized_chunks_match_oneshot_sample_exact() {
 		let positions: Vec<String> = worst
 			.iter()
 			.take(20)
-			.map(|(i, d)| format!("{}(chunk {},+{},{:.4})", i, i / (CHUNK * 2), (i / 2) % CHUNK, d))
+			.map(|(i, d)| {
+				format!(
+					"{}(chunk {},+{},{:.4})",
+					i,
+					i / (CHUNK * 2),
+					(i / 2) % CHUNK,
+					d
+				)
+			})
 			.collect();
-		eprintln!("diffs>1e-6: {} total; worst: {}", worst.len(), positions.join(" "));
+		eprintln!(
+			"diffs>1e-6: {} total; worst: {}",
+			worst.len(),
+			positions.join(" ")
+		);
 	}
 	assert!(
 		max_diff < 1e-6,
@@ -368,7 +388,7 @@ fn playback_sized_chunks_match_oneshot_sample_exact() {
 
 #[test]
 fn encode_h264_roundtrip_to_tmp() {
-	let out = std::env::temp_dir().join(format!("quercuscodec_roundtrip_{}.mp4", std::process::id()));
+	let out = env::temp_dir().join(format!("quercuscodec_roundtrip_{}.mp4", process::id()));
 	let params = h264_params(&out);
 	let out_str = out.to_str().expect("utf8 temp path").to_string();
 
@@ -410,7 +430,7 @@ fn encode_h264_roundtrip_to_tmp() {
 	assert_eq!(f.format(), PixelFormat::F32);
 	assert!(f.data().unwrap().iter().any(|&b| b != 0));
 
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 }
 
 #[test]
@@ -419,8 +439,8 @@ fn audio_conform_writes_planar_pcm() {
 	let s = CodecStream::with_block(demo_path().to_string_lossy().into_owned(), 1, None);
 	d.open(&s).expect("open audio stream");
 
-	let dir = std::env::temp_dir().join(format!("quercuscodec_conform_{}", std::process::id()));
-	std::fs::create_dir_all(&dir).unwrap();
+	let dir = env::temp_dir().join(format!("quercuscodec_conform_{}", process::id()));
+	fs::create_dir_all(&dir).unwrap();
 	let ch0 = dir.join("0.pcm").to_string_lossy().into_owned();
 	let ch1 = dir.join("1.pcm").to_string_lossy().into_owned();
 
@@ -428,7 +448,7 @@ fn audio_conform_writes_planar_pcm() {
 		.expect("conform to f32 planar");
 
 	for path in [&ch0, &ch1] {
-		let meta = std::fs::metadata(path).expect("conform output exists");
+		let meta = fs::metadata(path).expect("conform output exists");
 		assert!(meta.len() > 0, "conform file is empty");
 		// 1 second at 48kHz * 4 bytes = 192 KB minimum.
 		assert!(
@@ -438,7 +458,7 @@ fn audio_conform_writes_planar_pcm() {
 		);
 	}
 
-	let _ = std::fs::remove_dir_all(&dir);
+	let _ = fs::remove_dir_all(&dir);
 }
 
 /// Count red-dominant pixels on `row` within the left half of the frame
@@ -465,8 +485,8 @@ fn red_row_count(f: &Frame, row: usize) -> usize {
 
 #[test]
 fn testmedia_clip_probe_roundtrip() {
-	let out = std::env::temp_dir().join(format!("quercuscodec_tm3_{}.mp4", std::process::id()));
-	crate::testmedia::write_test_clip(&out, 64, 64, 10, 10).expect("generate");
+	let out = env::temp_dir().join(format!("quercuscodec_tm3_{}.mp4", process::id()));
+	testmedia::write_test_clip(&out, 64, 64, 10, 10).expect("generate");
 	println!("out: {}", out.display());
 	let d = FFmpegDecoder::new();
 
@@ -504,19 +524,19 @@ fn testmedia_clip_probe_roundtrip() {
 	}
 
 	// QUERCUS_KEEP_TESTMEDIA keeps the clip for external inspection (ffprobe).
-	if std::env::var_os("QUERCUS_KEEP_TESTMEDIA").is_none() {
-		let _ = std::fs::remove_file(&out);
+	if env::var_os("QUERCUS_KEEP_TESTMEDIA").is_none() {
+		let _ = fs::remove_file(&out);
 	}
 }
 
 #[test]
 fn testmedia_audio_track_encodes() {
-	let out = std::env::temp_dir().join(format!("quercuscodec_tm_audio_{}.mp4", std::process::id()));
-	crate::testmedia::write_test_clip(&out, 64, 64, 10, 10).expect("generate with audio");
+	let out = env::temp_dir().join(format!("quercuscodec_tm_audio_{}.mp4", process::id()));
+	testmedia::write_test_clip(&out, 64, 64, 10, 10).expect("generate with audio");
 	let d = FFmpegDecoder::new();
 	let desc = d.probe(&out.to_string_lossy(), None).expect("probe");
 	assert!(desc.audio_stream_count() >= 1, "audio stream present");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 }
 
 /// Serialize the config-toggling hardware-decode test (the config store
@@ -531,8 +551,8 @@ static HW_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn hardware_decode_matches_software_decode() {
 	let _guard = HW_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-	let config = quercus_core::configstore::ConfigStore::instance();
-	let key = crate::hwdecode::CONFIG_KEY_HARDWARE_DECODING;
+	let config = configstore::ConfigStore::instance();
+	let key = hwdecode::CONFIG_KEY_HARDWARE_DECODING;
 
 	let decode_at = |time: i64| -> (Option<String>, Arc<Frame>) {
 		let d = FFmpegDecoder::new();
@@ -550,8 +570,7 @@ fn hardware_decode_matches_software_decode() {
 	let (hw_name, hw_frame) = decode_at(5);
 	#[cfg(target_os = "macos")]
 	{
-		let transfers =
-			crate::hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed);
+		let transfers = hwdecode::HW_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed);
 		if hw_name.as_deref() != Some("videotoolbox") || transfers == 0 {
 			// Headless/virtualized macOS (CI runners) cannot bring up
 			// VideoToolbox ("hwaccel initialisation returned error"); the

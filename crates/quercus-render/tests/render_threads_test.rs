@@ -24,9 +24,20 @@
 //! service slot are process-wide, so every test here serializes on `LOCK`
 //! and each creates and tears its manager down explicitly.
 
+use quercus_codec::testmedia;
+use quercus_core::backend;
+use quercus_core::color;
+use quercus_core::colormath;
+use quercus_node::graph;
+use quercus_node::nodes;
+use quercus_node::value;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use quercus_core::commonutil::ENV_TEST_LOCK;
@@ -67,11 +78,8 @@ fn lock() -> MutexGuard<'static, ()> {
 /// tag separates tests inside one binary — the decode caches are
 /// process-wide).
 fn test_clip(tag: &str) -> PathBuf {
-	let path = std::env::temp_dir().join(format!(
-		"quercusrender_threads_{tag}_{}.mp4",
-		std::process::id()
-	));
-	quercus_codec::testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
+	let path = env::temp_dir().join(format!("quercusrender_threads_{tag}_{}.mp4", process::id()));
+	testmedia::write_test_clip(&path, 64, 64, 10, 10).expect("test clip generation");
 	path
 }
 
@@ -80,11 +88,8 @@ fn test_clip(tag: &str) -> PathBuf {
 /// (otherwise the pipeline run would replay the inline run's cache instead
 /// of decoding).
 fn test_clip_copy(src: &Path, tag: &str) -> PathBuf {
-	let path = std::env::temp_dir().join(format!(
-		"quercusrender_threads_{tag}_{}.mp4",
-		std::process::id()
-	));
-	std::fs::copy(src, &path).expect("copy the test clip");
+	let path = env::temp_dir().join(format!("quercusrender_threads_{tag}_{}.mp4", process::id()));
+	fs::copy(src, &path).expect("copy the test clip");
 	path
 }
 
@@ -92,9 +97,9 @@ fn test_clip_copy(src: &Path, tag: &str) -> PathBuf {
 /// assert the decoded pattern, not the color transform (the ACEScg
 /// default would remap the values).
 fn pin_legacy_working_space() {
-	quercus_core::color::set_pipeline_color_settings(
-		quercus_core::colormath::WorkingColorSpace::SrgbLegacy,
-		quercus_core::colormath::OutputColorSpec::default(),
+	color::set_pipeline_color_settings(
+		colormath::WorkingColorSpace::SrgbLegacy,
+		colormath::OutputColorSpec::default(),
 	);
 }
 
@@ -109,8 +114,8 @@ struct SoftwareDecodeGuard {
 
 impl SoftwareDecodeGuard {
 	fn set() -> Self {
-		let prev = std::env::var("QUERCUS_HWACCEL").ok();
-		std::env::set_var("QUERCUS_HWACCEL", "0");
+		let prev = env::var("QUERCUS_HWACCEL").ok();
+		env::set_var("QUERCUS_HWACCEL", "0");
 		Self { prev }
 	}
 }
@@ -118,8 +123,8 @@ impl SoftwareDecodeGuard {
 impl Drop for SoftwareDecodeGuard {
 	fn drop(&mut self) {
 		match &self.prev {
-			Some(p) => std::env::set_var("QUERCUS_HWACCEL", p),
-			None => std::env::remove_var("QUERCUS_HWACCEL"),
+			Some(p) => env::set_var("QUERCUS_HWACCEL", p),
+			None => env::remove_var("QUERCUS_HWACCEL"),
 		}
 	}
 }
@@ -266,7 +271,7 @@ fn wait_until(what: &str, check: &mut dyn FnMut() -> bool) {
 		return;
 	}
 	while Instant::now() < deadline {
-		std::thread::sleep(Duration::from_millis(5));
+		thread::sleep(Duration::from_millis(5));
 		if check() {
 			return;
 		}
@@ -438,12 +443,7 @@ fn build_project(clips: &[(&str, Rational, Rational)]) -> (Arc<Mutex<Project>>, 
 
 /// Create one footage clip on `track` (not appended: the layered fixture
 /// orders V1 as clip/transition/clip explicitly).
-fn add_clip(
-	graph: &mut quercus_node::graph::Graph,
-	path: &Path,
-	in_: Rational,
-	out: Rational,
-) -> NodeId {
+fn add_clip(graph: &mut graph::Graph, path: &Path, in_: Rational, out: Rational) -> NodeId {
 	let mut footage = FootageBehavior::new(path.to_string_lossy().as_ref());
 	footage.probe().expect("probe the generated clip");
 	let footage = graph.add_node(NodeCore::new(), Box::new(footage));
@@ -465,7 +465,7 @@ fn add_clip(
 	clip
 }
 
-fn track_mut(graph: &mut quercus_node::graph::Graph, id: NodeId) -> &mut TrackBehavior {
+fn track_mut(graph: &mut graph::Graph, id: NodeId) -> &mut TrackBehavior {
 	graph
 		.get_mut(id)
 		.unwrap()
@@ -573,7 +573,7 @@ fn build_layered_project(
 			.expect("adjustment block")
 			.core
 			.range = TimeRange::new(Rational::new(0, 1), Rational::new(2, 1));
-		let (ecore, ebehavior) = quercus_node::nodes::opacity::create();
+		let (ecore, ebehavior) = nodes::opacity::create();
 		let effect = p.graph.add_node(ecore, ebehavior);
 		p.graph
 			.connect(
@@ -584,9 +584,9 @@ fn build_layered_project(
 			)
 			.expect("connect opacity to the adjustment block");
 		p.graph.get_mut(effect).unwrap().core.set_standard_value(
-			quercus_node::nodes::opacity::VALUE_INPUT,
+			nodes::opacity::VALUE_INPUT,
 			-1,
-			quercus_node::value::NodeValue::Float(0.75),
+			value::NodeValue::Float(0.75),
 		);
 		track_mut(&mut p.graph, v3).append_block(adjustment);
 
@@ -627,7 +627,7 @@ fn quercus_pipeline_env_selects_the_thread_backend() {
 	let _lock = lock();
 	let _env = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	RenderManager::shutdown();
-	std::env::set_var("QUERCUS_PIPELINE", "threads");
+	env::set_var("QUERCUS_PIPELINE", "threads");
 	RenderManager::init().expect("manager init with QUERCUS_PIPELINE=threads");
 	{
 		let manager = RenderManager::global().expect("manager installed");
@@ -648,7 +648,7 @@ fn quercus_pipeline_env_selects_the_thread_backend() {
 		);
 	}
 	RenderManager::shutdown();
-	std::env::remove_var("QUERCUS_PIPELINE");
+	env::remove_var("QUERCUS_PIPELINE");
 	assert!(
 		decode_service().is_none(),
 		"shutdown uninstalls the decode service"
@@ -696,8 +696,8 @@ fn pipeline_matches_inline_pixels_across_consecutive_frames() {
 		"the generated clip really moves between frames"
 	);
 
-	let _ = std::fs::remove_file(&inline_path);
-	let _ = std::fs::remove_file(&pipeline_path);
+	let _ = fs::remove_file(&inline_path);
+	let _ = fs::remove_file(&pipeline_path);
 }
 
 /// Out-of-order seeks with a repeat: the service's LRU must absorb the
@@ -727,8 +727,8 @@ fn pipeline_seek_out_of_order_matches_inline() {
 	assert_known_pattern(&inline_frames[3], 0, "inline seek to 0/10");
 	assert_known_pattern(&pipeline_frames[3], 0, "pipeline seek to 0/10");
 
-	let _ = std::fs::remove_file(&inline_path);
-	let _ = std::fs::remove_file(&pipeline_path);
+	let _ = fs::remove_file(&inline_path);
+	let _ = fs::remove_file(&pipeline_path);
 }
 
 /// The graph (viewer) path through the pipeline: the same node-graph
@@ -765,7 +765,7 @@ fn pipeline_viewer_ticket_matches_inline_pixels() {
 		assert_same_frame(a, b, &format!("graph frame {index}"));
 	}
 
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 // M2: the playback graph path keeps every frame on the GPU. Rendering
@@ -777,7 +777,7 @@ fn pipeline_viewer_ticket_matches_inline_pixels() {
 fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 	let _lock = lock();
 	pin_legacy_working_space();
-	if quercus_core::backend::shared_gpu_or_skip("the pipeline GPU zero-copy assertion").is_none() {
+	if backend::shared_gpu_or_skip("the pipeline GPU zero-copy assertion").is_none() {
 		return;
 	}
 	let path = test_clip("gpu_zero");
@@ -798,7 +798,7 @@ fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 	if let Some(backend) = manager.pipeline_backend() {
 		assert!(backend.decode_service().wait_idle(), "service drained");
 	}
-	quercus_core::backend::reset_gpu_transfer_counters();
+	backend::reset_gpu_transfer_counters();
 	let mut rendered = 0u64;
 	for &time in &times {
 		let texture = render_video(viewer_params(&uuid, viewer, time));
@@ -808,14 +808,14 @@ fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 		);
 		rendered += 1;
 	}
-	let (uploads, downloads) = quercus_core::backend::gpu_transfer_counters();
+	let (uploads, downloads) = backend::gpu_transfer_counters();
 	assert_eq!(downloads, 0, "playback must not read the frame back to CPU");
 	assert_eq!(
 		uploads, rendered,
 		"one decode upload per frame until M5 imports the decode surface"
 	);
 	drop(guard);
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 /// M2: the layered playback path — multi-track composite + transition
 /// blend + adjustment sweep — is zero-readback too. The single clip test
@@ -825,9 +825,7 @@ fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 #[test]
 fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 	let _lock = lock();
-	if quercus_core::backend::shared_gpu_or_skip("the layered playback zero-readback assertion")
-		.is_none()
-	{
+	if backend::shared_gpu_or_skip("the layered playback zero-readback assertion").is_none() {
 		return;
 	}
 	let first = test_clip("layered_first");
@@ -843,7 +841,7 @@ fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 	if let Some(backend) = manager.pipeline_backend() {
 		assert!(backend.decode_service().wait_idle(), "service drained");
 	}
-	quercus_core::backend::reset_gpu_transfer_counters();
+	backend::reset_gpu_transfer_counters();
 	// The transition seam: V1 blends A/B, V2 composites underneath and V3
 	// sweeps the result with Opacity(0.75).
 	let texture = render_video(viewer_params(&uuid, viewer, Rational::new(1, 1)));
@@ -851,7 +849,7 @@ fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 		matches!(texture, Texture::Gpu { .. }),
 		"layered playback must produce a GPU texture"
 	);
-	let (uploads, downloads) = quercus_core::backend::gpu_transfer_counters();
+	let (uploads, downloads) = backend::gpu_transfer_counters();
 	assert_eq!(
 		downloads, 0,
 		"multi-track/transition/adjustment playback must not read back"
@@ -870,9 +868,9 @@ fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 		"the adjustment sweep applied (alpha {alpha})"
 	);
 	drop(guard);
-	let _ = std::fs::remove_file(&first);
-	let _ = std::fs::remove_file(&second);
-	let _ = std::fs::remove_file(&below);
+	let _ = fs::remove_file(&first);
+	let _ = fs::remove_file(&second);
+	let _ = fs::remove_file(&below);
 }
 
 /// M4: every playback post queues its footage read-ahead and every
@@ -943,7 +941,7 @@ fn pipeline_playback_prefetches_ahead_of_the_render() {
 	// eval-cache and service-LRU boundaries (M5 narrows this); the bench
 	// comparison must not claim "no heap copies" for the pipeline.
 	drop(guard);
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 /// A producer that parks the render thread until `release` is signalled,
@@ -1133,7 +1131,7 @@ fn pipeline_prefetch_is_the_frame_the_render_request_uses() {
 		"the render request must not decode the frame a second time"
 	);
 	backend.shutdown();
-	let _ = std::fs::remove_file(&path);
+	let _ = fs::remove_file(&path);
 }
 
 /// M4: cancelling a preview window drops only that window's queued frame.
@@ -1261,12 +1259,8 @@ fn pipeline_queue_backpressure_closes_the_prefetch_gate() {
 		move |_time: Rational, _params: &VideoTicketParams| -> TicketResult {
 			{
 				let (name, work) = &*job_started;
-				*name.lock().unwrap_or_else(|e| e.into_inner()) = Some(
-					std::thread::current()
-						.name()
-						.unwrap_or_default()
-						.to_string(),
-				);
+				*name.lock().unwrap_or_else(|e| e.into_inner()) =
+					Some(thread::current().name().unwrap_or_default().to_string());
 				work.notify_all();
 			}
 			let (released, work) = &*job_release;

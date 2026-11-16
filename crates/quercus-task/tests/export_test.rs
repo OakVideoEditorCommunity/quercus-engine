@@ -21,6 +21,18 @@
 //! guard: the whole chain (graph montage -> render tickets -> encoder)
 //! must produce a playable file.
 
+use quercus_codec::exportcodec;
+use quercus_codec::exportformat;
+use quercus_codec::testmedia;
+use quercus_core::color;
+use quercus_core::colormath;
+use quercus_render::eval;
+use quercus_task::export;
+use quercus_task::task;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{PixelFormat, Rational, TimeRange};
@@ -35,8 +47,8 @@ use quercus_render::manager::{RenderBackendChoice, RenderManager};
 
 /// Unique temp path per test (the process id disambiguates parallel test
 /// binaries; the tag separates files inside one binary).
-fn clip_path(tag: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercustask_export_{tag}_{}.mp4", std::process::id()))
+fn clip_path(tag: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercustask_export_{tag}_{}.mp4", process::id()))
 }
 
 /// One sequence + one video track list + one track + one clip of `media`
@@ -45,9 +57,9 @@ fn build_project(media: &str) -> (Arc<Mutex<Project>>, NodeId) {
 	// The export converts through the pipeline working space on the way
 	// out; pin the legacy sRGB pass-through so the decoded-back pixels
 	// keep their display-referred values for the assertions below.
-	quercus_core::color::set_pipeline_color_settings(
-		quercus_core::colormath::WorkingColorSpace::SrgbLegacy,
-		quercus_core::colormath::OutputColorSpec::default(),
+	color::set_pipeline_color_settings(
+		colormath::WorkingColorSpace::SrgbLegacy,
+		colormath::OutputColorSpec::default(),
 	);
 	let project = Project::new();
 	let seq;
@@ -125,11 +137,11 @@ fn build_project(media: &str) -> (Arc<Mutex<Project>>, NodeId) {
 #[test]
 fn export_writes_a_real_playable_mp4() {
 	let media = clip_path("src");
-	quercus_codec::testmedia::write_test_clip_solid(&media, 64, 64, 10, 10, [0.0, 1.0, 0.0, 1.0])
+	testmedia::write_test_clip_solid(&media, 64, 64, 10, 10, [0.0, 1.0, 0.0, 1.0])
 		.expect("green clip generation");
 	let (project, seq) = build_project(&media.to_string_lossy());
 	let out = clip_path("out");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 
 	// The export's render loop runs on the process-wide manager arena;
 	// the inline backend keeps the test in-process.
@@ -138,18 +150,18 @@ fn export_writes_a_real_playable_mp4() {
 			.expect("render manager init");
 	}
 
-	let encoding = quercus_task::export::EncodingParams {
+	let encoding = export::EncodingParams {
 		filename: out.to_string_lossy().into_owned(),
-		format: quercus_codec::exportformat::Format::MPEG4Video as i32,
+		format: exportformat::Format::MPEG4Video as i32,
 		video_enabled: true,
-		video_codec: quercus_codec::exportcodec::Codec::H264 as i32,
+		video_codec: exportcodec::Codec::H264 as i32,
 		video_width: 64,
 		video_height: 64,
 		video_time_base_num: 1,
 		video_time_base_den: 30,
 		video_pixel_format: 0,
 		audio_enabled: true,
-		audio_codec: quercus_codec::exportcodec::Codec::AAC as i32,
+		audio_codec: exportcodec::Codec::AAC as i32,
 		audio_sample_rate: 48000,
 		audio_channel_layout: 0x3,
 		subtitles_enabled: false,
@@ -167,8 +179,8 @@ fn export_writes_a_real_playable_mp4() {
 		color_trc: 0,
 		color_space: 0,
 	};
-	let inner = quercus_task::export::ExportTask::new((project.clone(), seq), encoding);
-	let mut driver = quercus_task::task::Task::new("Exporting...", None);
+	let inner = export::ExportTask::new((project.clone(), seq), encoding);
+	let mut driver = task::Task::new("Exporting...", None);
 	driver.set_behavior(Box::new(inner));
 	if let Err(e) = driver.start() {
 		panic!(
@@ -179,9 +191,7 @@ fn export_writes_a_real_playable_mp4() {
 
 	// The file exists and is a real container (video + audio for a second
 	// is far past a header-only file).
-	let bytes = std::fs::metadata(&out)
-		.expect("the export wrote the file")
-		.len();
+	let bytes = fs::metadata(&out).expect("the export wrote the file").len();
 	assert!(
 		bytes > 1024,
 		"a playable mp4 with video+audio is more than 1K, got {bytes}"
@@ -201,7 +211,7 @@ fn export_writes_a_real_playable_mp4() {
 
 	// And a decoded frame is the clip's solid green (H.264 YCbCr keeps
 	// the hue; loose thresholds).
-	let tex = quercus_render::eval::render_footage_frame(
+	let tex = eval::render_footage_frame(
 		&out.to_string_lossy(),
 		0,
 		Rational::new(0, 1),
@@ -218,6 +228,6 @@ fn export_writes_a_real_playable_mp4() {
 		"the exported frame is the clip's green (r={r} g={g})"
 	);
 
-	let _ = std::fs::remove_file(&media);
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
 }

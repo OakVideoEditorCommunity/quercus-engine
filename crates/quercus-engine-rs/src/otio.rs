@@ -14,14 +14,23 @@
 //!   it.
 
 use std::ffi::c_void;
+use std::ptr;
 
 use crate::codec::string_out;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_otio_document_add_ref(doc: *const c_void);
 	fn quercus_otio_document_release(doc: *const c_void);
@@ -72,7 +81,10 @@ unsafe extern "C" {
 
 	fn quercus_otio_composable_kind(c: *const c_void) -> i32;
 	fn quercus_otio_composable_name(c: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_otio_composable_source_range(c: *const c_void, out: *mut QuercusOtioTimeRange) -> bool;
+	fn quercus_otio_composable_source_range(
+		c: *const c_void,
+		out: *mut QuercusOtioTimeRange,
+	) -> bool;
 	fn quercus_otio_clip_new(
 		name: *const u8,
 		name_len: usize,
@@ -97,8 +109,16 @@ unsafe extern "C" {
 	fn quercus_otio_clip_enabled(c: *const c_void) -> i32;
 	fn quercus_otio_clip_set_enabled(c: *mut c_void, enabled: bool) -> bool;
 	fn quercus_otio_transition_type(c: *const c_void, buf: *mut u8, buf_len: usize) -> i32;
-	fn quercus_otio_transition_offset(c: *const c_void, is_in: bool, out: *mut RationalTime) -> bool;
-	fn quercus_otio_transition_set_offset(c: *mut c_void, is_in: bool, offset: RationalTime) -> bool;
+	fn quercus_otio_transition_offset(
+		c: *const c_void,
+		is_in: bool,
+		out: *mut RationalTime,
+	) -> bool;
+	fn quercus_otio_transition_set_offset(
+		c: *mut c_void,
+		is_in: bool,
+		offset: RationalTime,
+	) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +547,11 @@ pub struct Track {
 	ptr: *mut c_void,
 }
 
-handle!(Track, quercus_otio_track_add_ref, quercus_otio_track_release);
+handle!(
+	Track,
+	quercus_otio_track_add_ref,
+	quercus_otio_track_release
+);
 
 impl Track {
 	/// A new track of the given kind ([`track_kind::VIDEO`],
@@ -625,11 +649,15 @@ impl Composable {
 	///
 	/// Panics if the engine returns a null handle, which the wrapper treats as
 	/// impossible for valid input.
-	pub fn clip(name: &str, url: Option<&str>, source_range: Option<QuercusOtioTimeRange>) -> Composable {
-		let (u, ul) = url.map_or((std::ptr::null(), 0), |u| (u.as_ptr(), u.len()));
+	pub fn clip(
+		name: &str,
+		url: Option<&str>,
+		source_range: Option<QuercusOtioTimeRange>,
+	) -> Composable {
+		let (u, ul) = url.map_or((ptr::null(), 0), |u| (u.as_ptr(), u.len()));
 		let range = source_range
 			.as_ref()
-			.map_or(std::ptr::null(), |r| r as *const QuercusOtioTimeRange);
+			.map_or(ptr::null(), |r| r as *const QuercusOtioTimeRange);
 		let ptr = unsafe { quercus_otio_clip_new(name.as_ptr(), name.len(), u, ul, range) };
 		assert!(!ptr.is_null(), "valid input always builds a clip");
 		Composable { ptr }
@@ -648,7 +676,7 @@ impl Composable {
 	pub fn gap(name: &str, source_range: Option<QuercusOtioTimeRange>) -> Composable {
 		let range = source_range
 			.as_ref()
-			.map_or(std::ptr::null(), |r| r as *const QuercusOtioTimeRange);
+			.map_or(ptr::null(), |r| r as *const QuercusOtioTimeRange);
 		let ptr = unsafe { quercus_otio_gap_new(name.as_ptr(), name.len(), range) };
 		assert!(!ptr.is_null(), "valid input always builds a gap");
 		Composable { ptr }
@@ -666,8 +694,9 @@ impl Composable {
 	/// Panics if the engine returns a null handle, which the wrapper treats as
 	/// impossible for valid input.
 	pub fn transition(name: &str, in_offset: RationalTime, out_offset: RationalTime) -> Composable {
-		let ptr =
-			unsafe { quercus_otio_transition_new(name.as_ptr(), name.len(), in_offset, out_offset) };
+		let ptr = unsafe {
+			quercus_otio_transition_new(name.as_ptr(), name.len(), in_offset, out_offset)
+		};
 		assert!(!ptr.is_null(), "valid input always builds a transition");
 		Composable { ptr }
 	}
@@ -815,7 +844,8 @@ mod tests {
 		assert!(timeline.set_global_start_time(RationalTime::new(0.0, 24.0)));
 
 		let track = Track::new(track_kind::VIDEO);
-		let range = QuercusOtioTimeRange::new(RationalTime::new(10.0, 24.0), RationalTime::new(48.0, 24.0));
+		let range =
+			QuercusOtioTimeRange::new(RationalTime::new(10.0, 24.0), RationalTime::new(48.0, 24.0));
 		let clip = Composable::clip("clip1", Some("file:///tmp/a.mov"), Some(range));
 		assert_eq!(clip.kind(), Some(ComposableKind::Clip));
 		track.append_child(&clip);

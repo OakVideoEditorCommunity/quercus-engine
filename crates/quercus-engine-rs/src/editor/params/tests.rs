@@ -72,15 +72,39 @@ fn metadata_and_keyframe_commands_roundtrip_through_native_snapshots() {
 		.expect("bezier key");
 	let animated = session.parameters(effect).expect("animated parameters");
 	assert!(animated.revision > initial.revision);
-	let track = animated.get("saturation_in").expect("saturation").track(-1).expect("track");
+	let track = animated
+		.get("saturation_in")
+		.expect("saturation")
+		.track(-1)
+		.expect("track");
 	assert_eq!(track.len(), 3);
 	assert_eq!(track[2].interpolation, KeyframeInterpolation::Bezier);
 	assert_eq!(track[2].bezier_in, (-0.25, -1.0));
 	assert_eq!(track[2].bezier_out, (0.5, 1.0));
 	assert!(crate::node::undo());
-	assert_eq!(session.parameters(effect).unwrap().get("saturation_in").unwrap().track(-1).unwrap().len(), 2);
+	assert_eq!(
+		session
+			.parameters(effect)
+			.unwrap()
+			.get("saturation_in")
+			.unwrap()
+			.track(-1)
+			.unwrap()
+			.len(),
+		2
+	);
 	assert!(crate::node::redo());
-	assert_eq!(session.parameters(effect).unwrap().get("saturation_in").unwrap().track(-1).unwrap().len(), 3);
+	assert_eq!(
+		session
+			.parameters(effect)
+			.unwrap()
+			.get("saturation_in")
+			.unwrap()
+			.track(-1)
+			.unwrap()
+			.len(),
+		3
+	);
 
 	session
 		.execute(EditCommand::SetNodeValueAtTime {

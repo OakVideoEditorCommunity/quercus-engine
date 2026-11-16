@@ -21,13 +21,16 @@
 //! §4.1 — dead direction), so the success paths fail explainably and the
 //! tests assert those failures.
 
+use quercus_render::autocacher;
+use quercus_render::copier;
+use std::mem;
 use std::sync::Arc;
 
 use quercus_core::{Rational, TimeRange};
 
-use quercus_render::error::Error;
 use quercus_core::frame::VideoParamsPod;
 use quercus_core::texture::{Frame, Texture};
+use quercus_render::error::Error;
 use quercus_render::ticket::TicketArena;
 use quercus_render::worker::{InlineDispatcher, JobDispatch};
 
@@ -37,16 +40,18 @@ fn frame_producer() -> quercus_render::ticket::Producer {
 		let mut p = VideoParamsPod::default();
 		p.width = 4;
 		p.height = 4;
-	f.set_video_params(p);
-	f.allocate();
-	Ok(quercus_render::ticket::TicketPayload::Video(Texture::wrap_frame(f)))
-})
+		f.set_video_params(p);
+		f.allocate();
+		Ok(quercus_render::ticket::TicketPayload::Video(
+			Texture::wrap_frame(f),
+		))
+	})
 }
 
-fn cacher() -> (quercus_render::autocacher::PreviewAutoCacher, Arc<InlineDispatcher>) {
+fn cacher() -> (autocacher::PreviewAutoCacher, Arc<InlineDispatcher>) {
 	let d = InlineDispatcher::queued();
 	let arena = Arc::new(TicketArena::new(d.clone(), frame_producer()));
-	(quercus_render::autocacher::PreviewAutoCacher::new(arena), d)
+	(autocacher::PreviewAutoCacher::new(arena), d)
 }
 
 /// Deep-copy through quercusnode with a valid (non-empty) project identity:
@@ -55,8 +60,8 @@ fn cacher() -> (quercus_render::autocacher::PreviewAutoCacher, Arc<InlineDispatc
 /// caller sees today.
 #[test]
 fn deep_copy_with_valid_identity_fails_explainably() {
-	let mut copier = quercus_render::copier::ProjectCopy::new();
-	let src = quercus_render::copier::ProjectHandle::new(7);
+	let mut copier = copier::ProjectCopy::new();
+	let src = copier::ProjectHandle::new(7);
 	assert_eq!(
 		copier.set_project(src).unwrap_err().code(),
 		Error::Failed(String::new()).code()
@@ -69,11 +74,11 @@ fn deep_copy_with_valid_identity_fails_explainably() {
 /// no copy can ever be attached, so sync always reports the state error.
 #[test]
 fn sync_without_established_copy_fails() {
-	let mut copier = quercus_render::copier::ProjectCopy::new();
-	let src = quercus_render::copier::ProjectHandle::new(7);
+	let mut copier = copier::ProjectCopy::new();
+	let src = copier::ProjectHandle::new(7);
 	assert!(copier.set_project(src).is_err());
-	let changes = [quercus_render::copier::ChangeRecord {
-		kind: quercus_render::copier::change_kind::NODE_ADD,
+	let changes = [copier::ChangeRecord {
+		kind: copier::change_kind::NODE_ADD,
 		payload: [0u8; 48],
 	}];
 	assert_eq!(
@@ -133,16 +138,16 @@ fn cancel_video_tasks_semantics() {
 /// stay distinct so the wire tags never collide.
 #[test]
 fn change_record_layout_is_abi_pinned() {
-	assert_eq!(std::mem::size_of::<quercus_render::copier::ChangeRecord>(), 52);
+	assert_eq!(mem::size_of::<copier::ChangeRecord>(), 52);
 	let kinds = [
-		quercus_render::copier::change_kind::NODE_ADD,
-		quercus_render::copier::change_kind::NODE_REMOVE,
-		quercus_render::copier::change_kind::EDGE_ADD,
-		quercus_render::copier::change_kind::EDGE_REMOVE,
-		quercus_render::copier::change_kind::VALUE_CHANGE,
-		quercus_render::copier::change_kind::VALUE_HINT_CHANGE,
-		quercus_render::copier::change_kind::PROJECT_SETTING_CHANGE,
-		quercus_render::copier::change_kind::FOOTAGE_PROXY,
+		copier::change_kind::NODE_ADD,
+		copier::change_kind::NODE_REMOVE,
+		copier::change_kind::EDGE_ADD,
+		copier::change_kind::EDGE_REMOVE,
+		copier::change_kind::VALUE_CHANGE,
+		copier::change_kind::VALUE_HINT_CHANGE,
+		copier::change_kind::PROJECT_SETTING_CHANGE,
+		copier::change_kind::FOOTAGE_PROXY,
 	];
 	for (i, a) in kinds.iter().enumerate() {
 		for b in &kinds[i + 1..] {
@@ -154,17 +159,17 @@ fn change_record_layout_is_abi_pinned() {
 /// Copier failure paths (the deep-copy direction is dead).
 #[test]
 fn copier_error_paths() {
-	let mut copier = quercus_render::copier::ProjectCopy::new();
+	let mut copier = copier::ProjectCopy::new();
 	assert_eq!(
 		copier
-			.set_project(quercus_render::copier::ProjectHandle::null())
+			.set_project(copier::ProjectHandle::null())
 			.unwrap_err()
 			.code(),
 		Error::Invalid.code()
 	);
 	// sync before any project → state error.
-	let changes = [quercus_render::copier::ChangeRecord {
-		kind: quercus_render::copier::change_kind::NODE_ADD,
+	let changes = [copier::ChangeRecord {
+		kind: copier::change_kind::NODE_ADD,
 		payload: [0u8; 48],
 	}];
 	assert_eq!(

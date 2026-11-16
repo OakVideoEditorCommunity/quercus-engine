@@ -29,8 +29,12 @@
 //! `quercusrender_color_processor_*` / `quercusnode_colormanager_*` C functions
 //! instead of using OCIO directly.
 
+use crate::handle;
+use crate::jobs;
 use crate::node::NodeCore;
 use crate::value::{NodeValue, NodeValueRow, NodeValueTable};
+use quercus_core::color;
+use std::sync;
 
 /// Texture input id shared by all OCIO nodes (C++
 /// `OCIOBaseNode::k_texture_input`). Type: texture; flags:
@@ -58,7 +62,7 @@ pub struct OcioBase {
 	/// Behind a mutex because the C++ regenerates the processor from
 	/// `value()`-time paths (`ensure_processor()`'s mutable-in-const-
 	/// method pattern), so interior mutability is required.
-	processor: std::sync::Mutex<Option<std::sync::Arc<quercus_core::color::ColorProcessor>>>,
+	processor: sync::Mutex<Option<sync::Arc<color::ColorProcessor>>>,
 }
 
 impl OcioBase {
@@ -68,13 +72,13 @@ impl OcioBase {
 	/// video-effect flag happens in each node's `create()`.
 	pub fn new() -> Self {
 		OcioBase {
-			processor: std::sync::Mutex::new(None),
+			processor: sync::Mutex::new(None),
 		}
 	}
 
 	/// Shared reference to the owned processor (C++
 	/// `OCIOBaseNode::processor()`; callers must NOT free it).
-	pub fn processor(&self) -> Option<std::sync::Arc<quercus_core::color::ColorProcessor>> {
+	pub fn processor(&self) -> Option<sync::Arc<color::ColorProcessor>> {
 		self.processor
 			.lock()
 			.unwrap_or_else(|e| e.into_inner())
@@ -84,10 +88,7 @@ impl OcioBase {
 	/// Take ownership of a new processor, releasing the old one
 	/// (C++ `OCIOBaseNode::set_processor()`, which frees the previous
 	/// `QuercusColorProcessor` before storing the new one).
-	pub fn set_processor(
-		&self,
-		processor: Option<std::sync::Arc<quercus_core::color::ColorProcessor>>,
-	) {
+	pub fn set_processor(&self, processor: Option<sync::Arc<color::ColorProcessor>>) {
 		// The C++ frees the previous processor via
 		// `quercusrender_color_processor_free`; the Rust processor is an
 		// `Arc` released on drop, so replacing the field drops the old
@@ -125,8 +126,8 @@ impl OcioBase {
 		match self.processor() {
 			Some(processor) => table.push(
 				crate::value::ValueType::Texture,
-				NodeValue::Texture(crate::handle::make_owned(crate::jobs::Job::ColorTransformJob(
-					crate::jobs::ColorTransformJobPayload {
+				NodeValue::Texture(handle::make_owned(jobs::Job::ColorTransformJob(
+					jobs::ColorTransformJobPayload {
 						color_processor: processor,
 						input: tex.clone(),
 						time,
@@ -225,10 +226,8 @@ mod tests {
 		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
 			panic!("job row expected");
 		};
-		let payload = unsafe {
-			crate::jobs::color_transform_job(handle)
-		}
-		.expect("a boxed ColorTransformJobPayload");
+		let payload = unsafe { crate::jobs::color_transform_job(handle) }
+			.expect("a boxed ColorTransformJobPayload");
 		assert!(std::sync::Arc::ptr_eq(
 			&payload.color_processor,
 			&base.processor().unwrap()

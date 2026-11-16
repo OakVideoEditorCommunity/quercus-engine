@@ -23,6 +23,7 @@ use quercus_otio::{
 	Clip, Composable, ExternalReference, Gap, MediaReference, RationalTime, TimeRange, Timeline,
 	Track, Transition,
 };
+use std::fs;
 
 fn build_golden_timeline() -> Timeline {
 	let mut timeline = Timeline::new("My Sequence");
@@ -85,7 +86,7 @@ fn build_golden_timeline() -> Timeline {
 
 #[test]
 fn saved_timeline_matches_golden_bytes() {
-	let golden = std::fs::read_to_string(concat!(
+	let golden = fs::read_to_string(concat!(
 		env!("CARGO_MANIFEST_DIR"),
 		"/tests/data/golden_timeline.json"
 	))

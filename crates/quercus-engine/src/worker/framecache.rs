@@ -47,6 +47,7 @@
 //! still gets cached (it is the most likely re-request: the pause frame).
 
 use std::collections::HashMap;
+use std::env;
 
 use serde::Serialize;
 
@@ -81,7 +82,7 @@ impl FrameCache {
 	/// `QUERCUS_WORKER_FRAME_CACHE_MB` overrides the budget in MiB; garbage
 	/// values fall back to the default).
 	pub fn new() -> Self {
-		let budget = std::env::var(BUDGET_ENV)
+		let budget = env::var(BUDGET_ENV)
 			.ok()
 			.and_then(|v| v.trim().parse::<f64>().ok())
 			.filter(|mb| mb.is_finite() && *mb > 0.0)
@@ -127,13 +128,7 @@ impl FrameCache {
 		}
 		self.clock = self.clock.wrapping_add(1);
 		let stamp = self.clock;
-		self.entries.insert(
-			key,
-			Entry {
-				bytes,
-				stamp,
-			},
-		);
+		self.entries.insert(key, Entry { bytes, stamp });
 		self.evict_until_within_limits();
 	}
 
@@ -143,8 +138,11 @@ impl FrameCache {
 	fn evict_until_within_limits(&mut self) {
 		loop {
 			if self.entries.len() <= self.max_entries
-				&& self.entries.values().map(|e| e.bytes.len() as u64).sum::<u64>()
-					<= self.budget_bytes
+				&& self
+					.entries
+					.values()
+					.map(|e| e.bytes.len() as u64)
+					.sum::<u64>() <= self.budget_bytes
 			{
 				return;
 			}

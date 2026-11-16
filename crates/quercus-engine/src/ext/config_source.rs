@@ -20,6 +20,8 @@
 //! `quercus-core` sees.
 
 use std::ffi::c_void;
+use std::mem;
+use std::ptr;
 use std::sync::Arc;
 
 use quercus_core::configstore::{self, ConfigSource, ConfigStore};
@@ -82,7 +84,7 @@ impl ConfigSource for ForeignConfigSource {
 	fn load(&self) -> Option<String> {
 		// SAFETY: the callback/userdata pair is kept alive by the `Arc`
 		// quercus-core holds for this call.
-		let mut query = unsafe { (self.load)(self.userdata, std::ptr::null_mut(), 0) };
+		let mut query = unsafe { (self.load)(self.userdata, ptr::null_mut(), 0) };
 		for _ in 0..3 {
 			if query < 0 {
 				return None;
@@ -153,12 +155,12 @@ pub(crate) unsafe fn install(
 	// Read the declared size first: only the prefix the caller declares is
 	// guaranteed readable, and the v1 layout must be complete.
 	let declared = unsafe { (*vt).struct_size } as usize;
-	if declared < std::mem::size_of::<QuercusConfigSourceVTable>() {
+	if declared < mem::size_of::<QuercusConfigSourceVTable>() {
 		return false;
 	}
 	// SAFETY: the caller guarantees `declared` readable bytes, which cover
 	// our whole layout.
-	let vt = unsafe { std::ptr::read(vt) };
+	let vt = unsafe { ptr::read(vt) };
 	if vt.abi_version != CONFIG_SOURCE_ABI_VERSION {
 		return false;
 	}

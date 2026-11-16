@@ -16,6 +16,7 @@
 
 //! Error and info codes (M10 §2.1; -MMCCCC scheme, module 10).
 
+use std::result;
 use thiserror::Error;
 
 /// Success.
@@ -46,7 +47,7 @@ pub const QUERCUSSTORAGE_E_NOMEM: i32 = -100008;
 pub const QUERCUSSTORAGE_E_UNSUPPORTED: i32 = -100009;
 
 /// Crate-internal result type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Crate-internal error.
 #[derive(Debug, Error)]
@@ -157,7 +158,10 @@ mod tests {
 		assert_eq!(Error::Invalid.code(), QUERCUSSTORAGE_E_INVALID);
 		assert_eq!(Error::State.code(), QUERCUSSTORAGE_E_STATE);
 		assert_eq!(Error::NotFound.code(), QUERCUSSTORAGE_E_NOT_FOUND);
-		assert_eq!(Error::Failed("boom".to_string()).code(), QUERCUSSTORAGE_E_FAILED);
+		assert_eq!(
+			Error::Failed("boom".to_string()).code(),
+			QUERCUSSTORAGE_E_FAILED
+		);
 		assert_eq!(
 			Error::Foreign {
 				code: QUERCUSSTORAGE_E_NOT_FOUND,
@@ -168,8 +172,14 @@ mod tests {
 			"foreign codes pass through verbatim"
 		);
 		assert_eq!(Error::NoBackend.code(), QUERCUSSTORAGE_E_NO_BACKEND);
-		assert_eq!(Error::Format("bad xml".to_string()).code(), QUERCUSSTORAGE_E_FORMAT);
-		assert_eq!(Error::Io("disk full".to_string()).code(), QUERCUSSTORAGE_E_IO);
+		assert_eq!(
+			Error::Format("bad xml".to_string()).code(),
+			QUERCUSSTORAGE_E_FORMAT
+		);
+		assert_eq!(
+			Error::Io("disk full".to_string()).code(),
+			QUERCUSSTORAGE_E_IO
+		);
 		assert_eq!(Error::NoMem.code(), QUERCUSSTORAGE_E_NOMEM);
 	}
 }

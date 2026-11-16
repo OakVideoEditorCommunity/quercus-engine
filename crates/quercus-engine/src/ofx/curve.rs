@@ -6,6 +6,7 @@
 //! (`curves_to_json`/`curves_from_json`); the handle API is for
 //! building/inspecting curves without string munging.
 
+use std::ptr;
 use std::sync::Mutex;
 
 use quercus_ofx_plugin::param_curve::{self, ControlPoint, Curve};
@@ -89,10 +90,10 @@ pub unsafe extern "C" fn quercus_ofx_curveset_from_json(
 	json_len: usize,
 ) -> *mut OfxCurveSet {
 	let Some(json) = (unsafe { str_arg(json, json_len) }) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	let Some(curves) = param_curve::curves_from_json(json) else {
-		return std::ptr::null_mut();
+		return ptr::null_mut();
 	};
 	crate::handle::into_ffi(OfxCurveSet {
 		curves: Mutex::new(curves),
@@ -233,7 +234,10 @@ pub unsafe extern "C" fn quercus_ofx_curveset_add_identity_curve(
 /// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
 /// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_curveset_point_count(set: *const OfxCurveSet, curve: i32) -> i32 {
+pub unsafe extern "C" fn quercus_ofx_curveset_point_count(
+	set: *const OfxCurveSet,
+	curve: i32,
+) -> i32 {
 	if set.is_null() || curve < 0 {
 		return -1;
 	}
@@ -359,8 +363,14 @@ pub unsafe extern "C" fn quercus_ofx_curveset_push_point(
 		return false;
 	};
 	let point = point.to_native();
-	let index = curve.points.partition_point(|existing| existing.key < point.key);
-	if curve.points.get(index).is_some_and(|existing| existing.key == point.key) {
+	let index = curve
+		.points
+		.partition_point(|existing| existing.key < point.key);
+	if curve
+		.points
+		.get(index)
+		.is_some_and(|existing| existing.key == point.key)
+	{
 		curve.points[index] = point;
 	} else {
 		curve.points.insert(index, point);
@@ -418,7 +428,10 @@ pub unsafe extern "C" fn quercus_ofx_curveset_delete_point(
 /// `quercus_ofx_curveset_new`/`_from_json` whose last reference has not been
 /// released. The internal mutex serializes concurrent calls.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_curveset_clear_curve(set: *const OfxCurveSet, curve: i32) -> bool {
+pub unsafe extern "C" fn quercus_ofx_curveset_clear_curve(
+	set: *const OfxCurveSet,
+	curve: i32,
+) -> bool {
 	if set.is_null() || curve < 0 {
 		return false;
 	}

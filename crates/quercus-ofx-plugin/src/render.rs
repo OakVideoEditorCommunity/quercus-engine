@@ -74,9 +74,9 @@ pub fn texture_is_dummy(texture: &Texture) -> bool {
 /// (the old `texture_get_frame` out-parameter form became a value return; an error is the old
 /// "texture has no CPU frame" failure path).
 pub fn texture_get_frame(texture: &Texture) -> crate::error::Result<Frame> {
-	texture.to_frame().map_err(|e| {
-		crate::error::Error::Failed(format!("纹理 readback 失败：{e}"))
-	})
+	texture
+		.to_frame()
+		.map_err(|e| crate::error::Error::Failed(format!("纹理 readback 失败：{e}")))
 }
 
 /// The texture's video parameters (size + pixel format; the old `texture_get_params`
@@ -122,7 +122,11 @@ pub fn texture_create(
 		frame.channels = (linesize as usize / (w * bpc)) as i32;
 	}
 	let tight = frame.linesize_bytes();
-	let row = if linesize > 0 { linesize as usize } else { tight };
+	let row = if linesize > 0 {
+		linesize as usize
+	} else {
+		tight
+	};
 	if pixels.len() < row.saturating_mul(h) {
 		return Err(Error::Invalid);
 	}
@@ -169,17 +173,21 @@ impl quercus_core::backend::GpuContextLike for GlKindMarker {
 		quercus_core::backend::BackendKind::Gl
 	}
 	fn destroy_texture(&self, _token: u64) {}
-	fn upload(&self, _token: u64, _frame: &quercus_core::texture::Frame) -> quercus_render::error::Result<()> {
+	fn upload(
+		&self,
+		_token: u64,
+		_frame: &quercus_core::texture::Frame,
+	) -> quercus_render::error::Result<()> {
 		Ok(())
 	}
 	fn download(&self, _token: u64) -> quercus_render::error::Result<quercus_core::texture::Frame> {
 		Ok(quercus_core::texture::Frame::new())
 	}
 	fn blit(
-        &self,
-        _src: u64,
-        _dst: u64,
-        _processor: Option<&quercus_core::color::ColorProcessor>,
+		&self,
+		_src: u64,
+		_dst: u64,
+		_processor: Option<&quercus_core::color::ColorProcessor>,
 	) -> quercus_render::error::Result<()> {
 		Ok(())
 	}
@@ -203,10 +211,10 @@ mod tests {
 			Ok(Frame::new())
 		}
 		fn blit(
-            &self,
-            _src: u64,
-            _dst: u64,
-            _processor: Option<&quercus_core::color::ColorProcessor>,
+			&self,
+			_src: u64,
+			_dst: u64,
+			_processor: Option<&quercus_core::color::ColorProcessor>,
 		) -> quercus_render::error::Result<()> {
 			Ok(())
 		}

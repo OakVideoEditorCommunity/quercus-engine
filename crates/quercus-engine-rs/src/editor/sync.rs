@@ -2,20 +2,31 @@
 
 use std::ffi::c_void;
 
-use crate::node::NodeId;
 use crate::codec::string_out;
+use crate::node::NodeId;
 use crate::types::Rational;
 
 use super::EditorSession;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"),
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
 	windows,
-	link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim")
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
 )]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
-	fn quercus_editor_clip_sync_info(session: *const c_void, clip: u64, out: *mut ClipSyncInfo)
-	-> bool;
+	fn quercus_editor_clip_sync_info(
+		session: *const c_void,
+		clip: u64,
+		out: *mut ClipSyncInfo,
+	) -> bool;
 	fn quercus_editor_clip_media_filename(
 		session: *const c_void,
 		clip: u64,
@@ -61,15 +72,17 @@ impl EditorSession {
 mod tests {
 	use crate::edit::EditCommand;
 	use crate::editor::{EditorSession, TrackKind};
+	use crate::node;
+	use crate::test_support;
+	use crate::types;
+	use std::fs;
 
 	#[test]
 	fn clip_sync_info_resolves_range_and_optional_source_time() {
-		let _guard = crate::node::UNDO_SERIAL
-			.lock()
-			.unwrap_or_else(|e| e.into_inner());
+		let _guard = node::UNDO_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 		let session = EditorSession::new().expect("session");
 		session.create_sequence("Sync").expect("sequence");
-		let media = crate::test_support::make_test_clip("sync_info");
+		let media = test_support::make_test_clip("sync_info");
 		let footage = session.project().import_footage(&media).expect("footage");
 		let clip = session
 			.execute(EditCommand::PlaceFootageClip {
@@ -84,18 +97,14 @@ mod tests {
 			.primary
 			.expect("clip");
 		let info = session.clip_sync_info(clip).expect("sync info");
-		assert_eq!(info.timeline_in, crate::types::Rational::new(0, 1));
+		assert_eq!(info.timeline_in, types::Rational::new(0, 1));
 		assert!(info.media_length_seconds > 0.0);
 		assert_eq!(
 			info.media_length_seconds,
 			(info.timeline_out - info.timeline_in).to_f64()
 		);
 		assert!(!info.has_source_start_time);
-		assert!(
-			session
-				.clip_sync_info(crate::node::NodeId::INVALID)
-				.is_none()
-		);
-		let _ = std::fs::remove_file(media);
+		assert!(session.clip_sync_info(node::NodeId::INVALID).is_none());
+		let _ = fs::remove_file(media);
 	}
 }

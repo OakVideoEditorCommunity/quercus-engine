@@ -19,6 +19,7 @@
 //! Reference: HS: ofxhProperty.cpp. Semantic points: multi-dimensional
 //! arrays, behavior for out-of-bounds/missing/type-mismatched access, and
 /// define replace semantics.
+use std::thread;
 mod common;
 
 use std::ffi::{c_void, CString};
@@ -178,7 +179,7 @@ fn concurrent_access() {
 			let s = Arc::clone(&s);
 			// &'static str 是 Copy：拷贝进闭包，线程各自持名。
 			let name = names[i];
-			std::thread::spawn(move || {
+			thread::spawn(move || {
 				for k in 0..500 {
 					// 读永远合法（属性始终存在、维度恒为 1）。
 					assert!(s.get(name, 0).is_some());

@@ -19,9 +19,15 @@
 //! `GeneratorWithMerge` bases (see [`super::shapenodebase`] and
 //! [`super::generatorwithmerge`]).
 
+use super::generatorwithmerge;
+use super::shapenodebase;
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::nodes;
 
 /// Shape type input id (C++ `k_type_input`). Type: combo; prepended
 /// ahead of the base inputs; combo strings (matching the C++ `Type`
@@ -163,8 +169,8 @@ impl NodeBehavior for ShapeNode {
 		match id {
 			TYPE_INPUT => "Type",
 			RADIUS_INPUT => "Radius",
-			super::generatorwithmerge::BASE_INPUT => "Base",
-			_ => super::shapenodebase::ShapeNodeBase::input_name(id),
+			generatorwithmerge::BASE_INPUT => "Base",
+			_ => shapenodebase::ShapeNodeBase::input_name(id),
 		}
 	}
 
@@ -202,9 +208,9 @@ impl NodeBehavior for ShapeNode {
 	) {
 		// The `"shape"` shader job (C++ `value()`: `ShaderJob job(value);`
 		// `Insert("resolution_in")`; `SetShaderID("shape")`).
-		let shape_job = crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+		let shape_job = crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
 			ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
+				node_id: id::NodeId::INVALID,
 				time,
 				iterations: 1,
 				type_id: self.type_id().to_string(),
@@ -215,7 +221,7 @@ impl NodeBehavior for ShapeNode {
 			},
 		)));
 
-		match inputs.get(super::generatorwithmerge::BASE_INPUT) {
+		match inputs.get(generatorwithmerge::BASE_INPUT) {
 			Some(base @ crate::value::NodeValue::Texture(_)) => {
 				// A base is connected: the C++ `push_mergable_job` pushes
 				// `base->toJob(ShaderJob("mrg"))` with `base_in` = the base
@@ -226,16 +232,13 @@ impl NodeBehavior for ShapeNode {
 				// resolves the nested payload recursively
 				// (`process_shader_job_depth`).
 				let mut params = crate::value::NodeValueRow::new();
-				params.insert(
-					super::generatorwithmerge::BASE_INPUT.to_string(),
-					base.clone(),
-				);
-				params.insert(crate::nodes::merge::BLEND_INPUT.to_string(), shape_job);
+				params.insert(generatorwithmerge::BASE_INPUT.to_string(), base.clone());
+				params.insert(nodes::merge::BLEND_INPUT.to_string(), shape_job);
 				table.push(
 					crate::value::ValueType::Texture,
-					crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(
+					crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
 						ShaderJobPayload {
-							node_id: crate::id::NodeId::INVALID,
+							node_id: id::NodeId::INVALID,
 							time,
 							iterations: 1,
 							type_id: self.type_id().to_string(),
@@ -260,7 +263,7 @@ impl NodeBehavior for ShapeNode {
 	fn shader_code(&self, request: &str) -> Option<String> {
 		match request {
 			"shape" => Some(Self::shader_frag().to_string()),
-			"mrg" => Some(super::generatorwithmerge::merge_shader_frag().to_string()),
+			"mrg" => Some(generatorwithmerge::merge_shader_frag().to_string()),
 			_ => None,
 		}
 	}
@@ -274,9 +277,9 @@ impl NodeBehavior for ShapeNode {
 			let ty = core.standard_value(TYPE_INPUT, -1).to_double() as i64;
 			if let Some(radius) = core.get_input_mut(RADIUS_INPUT) {
 				if ty == 2 {
-					radius.flags &= !crate::input::flags::HIDDEN;
+					radius.flags &= !input::flags::HIDDEN;
 				} else {
-					radius.flags |= crate::input::flags::HIDDEN;
+					radius.flags |= input::flags::HIDDEN;
 				}
 			}
 		}
@@ -303,31 +306,31 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
 	// ShapeNodeBase constructor (GeneratorWithMerge + shape inputs).
-	let mut base = crate::input::Input::new(
-		super::generatorwithmerge::BASE_INPUT,
+	let mut base = input::Input::new(
+		generatorwithmerge::BASE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	base.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	base.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(base);
 
-	let pos = crate::input::Input::new(
-		super::shapenodebase::POSITION_INPUT,
+	let pos = input::Input::new(
+		shapenodebase::POSITION_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([0.0, 0.0]),
 	);
 	core.add_input(pos);
 
-	let mut size = crate::input::Input::new(
-		super::shapenodebase::SIZE_INPUT,
+	let mut size = input::Input::new(
+		shapenodebase::SIZE_INPUT,
 		crate::value::ValueType::Vec2,
 		crate::value::NodeValue::Vec2([100.0, 100.0]),
 	);
 	size.properties = vec![("min".to_string(), crate::value::NodeValue::Vec2([0.0, 0.0]))];
 	core.add_input(size);
 
-	let color = crate::input::Input::new(
-		super::shapenodebase::COLOR_INPUT,
+	let color = input::Input::new(
+		shapenodebase::COLOR_INPUT,
 		crate::value::ValueType::Color,
 		crate::value::NodeValue::Color([1.0, 0.0, 0.0, 1.0]),
 	);
@@ -337,14 +340,14 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	// after `enabled_in`), then append `radius_in`.
 	core.inputs.insert(
 		1,
-		crate::input::Input::new(
+		input::Input::new(
 			TYPE_INPUT,
 			crate::value::ValueType::Combo,
 			crate::value::NodeValue::Combo(0),
 		),
 	);
 
-	let mut radius = crate::input::Input::new(
+	let mut radius = input::Input::new(
 		RADIUS_INPUT,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(20.0),
@@ -354,7 +357,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 
 	// GeneratorWithMerge constructor side effects.
 	core.flags |= crate::node::flags::VIDEO_EFFECT;
-	core.effect_input = super::generatorwithmerge::BASE_INPUT.to_string();
+	core.effect_input = generatorwithmerge::BASE_INPUT.to_string();
 
 	(core, Box::new(ShapeNode))
 }
@@ -376,159 +379,4 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::node::NodeBehavior;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
-
-    #[test]
-	fn input_names() {
-		let n = ShapeNode;
-		assert_eq!(n.input_name(TYPE_INPUT), "Type");
-		assert_eq!(n.input_name(RADIUS_INPUT), "Radius");
-		assert_eq!(
-			n.input_name(super::super::generatorwithmerge::BASE_INPUT),
-			"Base"
-		);
-		assert_eq!(
-			n.input_name(super::super::shapenodebase::POSITION_INPUT),
-			"Position"
-		);
-		assert_eq!(
-			n.input_name(super::super::shapenodebase::SIZE_INPUT),
-			"Size"
-		);
-		assert_eq!(
-			n.input_name(super::super::shapenodebase::COLOR_INPUT),
-			"Color"
-		);
-	}
-
-	#[test]
-	fn create_wires_inputs_and_flags() {
-		let (core, behavior) = create();
-		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.shape");
-		// `type_in` is prepended right after `enabled_in`.
-		assert_eq!(core.inputs[1].id, TYPE_INPUT);
-		assert_eq!(core.inputs[1].default, NodeValue::Combo(0));
-		assert_eq!(
-			core.get_input(RADIUS_INPUT).unwrap().default,
-			NodeValue::Float(20.0)
-		);
-		assert_eq!(
-			core.get_input(super::super::shapenodebase::SIZE_INPUT)
-				.unwrap()
-				.default,
-			NodeValue::Vec2([100.0, 100.0])
-		);
-		assert_eq!(
-			core.get_input(super::super::shapenodebase::COLOR_INPUT)
-				.unwrap()
-				.default,
-			NodeValue::Color([1.0, 0.0, 0.0, 1.0])
-		);
-		assert_eq!(
-			core.effect_input,
-			super::super::generatorwithmerge::BASE_INPUT
-		);
-		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-	}
-
-	#[test]
-	fn value_pushes_shape_job_payload() {
-		let (core, behavior) = create();
-		let mut table = NodeValueTable::default();
-		behavior.value(
-			&core,
-			&crate::value::NodeValueRow::default(),
-			Rational::new(0, 1),
-			&mut table,
-		);
-		match table.get(ValueType::Texture) {
-			Some(NodeValue::Texture(h)) => {
-				let payload = unsafe { crate::jobs::shader_job(h) }
-					.expect("shader job payload boxed");
-				assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.shape");
-				assert_eq!(payload.shader_id, "shape");
-				assert_eq!(payload.iterations, 1);
-				assert_eq!(
-					payload.effect_input,
-					super::super::generatorwithmerge::BASE_INPUT
-				);
-				assert_eq!(payload.iterative_input, "");
-			}
-			_ => panic!("texture expected"),
-		}
-	}
-
-	#[test]
-	fn value_with_base_merges_nested_shape_job() {
-		let (core, behavior) = create();
-		let inputs = crate::value::NodeValueRow::from([(
-			super::super::generatorwithmerge::BASE_INPUT.to_string(),
-			NodeValue::Texture(crate::handle::CHandle::null()),
-		)]);
-		let mut table = NodeValueTable::default();
-		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-		match table.get(ValueType::Texture) {
-			Some(NodeValue::Texture(h)) => {
-				let merge = unsafe { crate::jobs::shader_job(h) }
-					.expect("merge job payload boxed");
-				assert_eq!(merge.shader_id, "mrg");
-				assert_eq!(merge.iterations, 1);
-				assert!(merge
-					.params
-					.contains_key(super::super::generatorwithmerge::BASE_INPUT));
-				// The shape job is nested as the merge's blend texture.
-				match merge.params.get(crate::nodes::merge::BLEND_INPUT) {
-					Some(NodeValue::Texture(blend)) => {
-						let shape =
-							unsafe { crate::jobs::shader_job(blend) }
-								.expect("nested shape job payload boxed");
-						assert_eq!(shape.shader_id, "shape");
-					}
-					_ => panic!("nested blend job expected"),
-				}
-			}
-			_ => panic!("texture expected"),
-		}
-	}
-
-	#[test]
-	fn shader_code_dispatches() {
-		let n = ShapeNode;
-		let shape = n.shader_code("shape").unwrap();
-		assert!(shape.contains("const int SHAPE_RECTANGLE = 0;"));
-		let mrg = n.shader_code("mrg").unwrap();
-		assert!(mrg.contains("base_col *= 1.0 - blend_col.a;"));
-		assert!(n.shader_code("other").is_none());
-	}
-
-	#[test]
-	fn input_value_changed_toggles_radius_hidden() {
-		let (mut core, behavior) = create();
-		let mut b = behavior;
-		// Default type is rectangle (0): radius_in becomes hidden.
-		b.input_value_changed(&mut core, TYPE_INPUT, -1);
-		assert_ne!(
-			core.get_input(RADIUS_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
-			0
-		);
-
-		// Rounded rectangle (2): radius_in is shown.
-		core.set_standard_value(TYPE_INPUT, -1, NodeValue::Combo(2));
-		b.input_value_changed(&mut core, TYPE_INPUT, -1);
-		assert_eq!(
-			core.get_input(RADIUS_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
-			0
-		);
-	}
-
-	#[test]
-	fn duplicate_clones() {
-		let (core, behavior) = create();
-		let dup = behavior.duplicate(&core).unwrap();
-		assert_eq!(dup.name(), "Shape");
-	}
-}
+mod tests;

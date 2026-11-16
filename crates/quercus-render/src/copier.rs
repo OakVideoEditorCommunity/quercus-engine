@@ -19,7 +19,7 @@
 //! deep-copy direction (single-lib plan §4.1 — dead direction), so the
 //! copy operations fail explainably; the tests assert those failures.
 
-
+use crate::copier;
 use crate::error::{Error, Result};
 
 /// An opaque identity for an quercusnode project (the C++ handle's `ctx`
@@ -149,7 +149,7 @@ impl ProjectCopy {
 		}
 		// Drop any previous copy.
 		self.release_copy();
-		let copy = crate::copier::project_deep_copy(source);
+		let copy = copier::project_deep_copy(source);
 		if copy.is_null() {
 			return Err(Error::Failed(
 				"quercusnode_project_deep_copy failed (symbol missing or copy error)".into(),
@@ -168,7 +168,7 @@ impl ProjectCopy {
 		if self.copy == 0 {
 			return Err(Error::State);
 		}
-		crate::copier::project_sync_copy(
+		copier::project_sync_copy(
 			ProjectHandle::new(self.source),
 			ProjectHandle::new(self.copy),
 			changes,

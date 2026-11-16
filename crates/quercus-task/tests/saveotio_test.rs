@@ -22,6 +22,13 @@
 //! assets of a file used on both video and audio tracks declare both
 //! stream flags.
 
+use quercus_codec::testmedia;
+use quercus_node::folder;
+use quercus_task::task;
+use std::env;
+use std::fs;
+use std::path;
+use std::process;
 use std::sync::{Arc, Mutex};
 
 use quercus_core::{Rational, TimeRange};
@@ -40,8 +47,8 @@ fn sequence_rate() -> f64 {
 	30000.0 / 1001.0
 }
 
-fn clip_path(tag: &str, ext: &str) -> std::path::PathBuf {
-	std::env::temp_dir().join(format!("quercustask_otio_{tag}_{}.{ext}", std::process::id()))
+fn clip_path(tag: &str, ext: &str) -> path::PathBuf {
+	env::temp_dir().join(format!("quercustask_otio_{tag}_{}.{ext}", process::id()))
 }
 
 /// Add a track of `kind` carrying one clip of `footage` covering
@@ -69,7 +76,12 @@ fn add_track_with_clip(
 	let (ccore, cbehavior) = quercus_node::block::clip_create();
 	let clip = p.graph.add_node(ccore, cbehavior);
 	p.graph
-		.connect(footage, clip, quercus_node::block::clip_input::TEXTURE_INPUT, -1)
+		.connect(
+			footage,
+			clip,
+			quercus_node::block::clip_input::TEXTURE_INPUT,
+			-1,
+		)
 		.expect("connect footage to clip");
 	p.graph
 		.get_mut(clip)
@@ -164,11 +176,7 @@ fn build_project(media: &str) -> Arc<Mutex<Project>> {
 					.track_lists
 					.push(list);
 			}
-			p.graph
-				.get_mut(edited)
-				.unwrap()
-				.core
-				.label = "Edited".to_string();
+			p.graph.get_mut(edited).unwrap().core.label = "Edited".to_string();
 		}
 
 		// "Empty": a sequence with no track lists at all.
@@ -184,7 +192,7 @@ fn build_project(media: &str) -> Arc<Mutex<Project>> {
 			.behavior
 			.as_any_mut()
 			.unwrap()
-			.downcast_mut::<quercus_node::folder::FolderBehavior>()
+			.downcast_mut::<folder::FolderBehavior>()
 			.expect("root folder")
 			.children
 			.extend([edited, empty]);
@@ -194,9 +202,9 @@ fn build_project(media: &str) -> Arc<Mutex<Project>> {
 
 /// Run the save task for `project` to `filename`.
 fn save(project: &Arc<Mutex<Project>>, filename: String) {
-	let mut driver = quercus_task::task::Task::new("Saving project...", None);
+	let mut driver = task::Task::new("Saving project...", None);
 	driver.set_behavior(Box::new(quercus_task::project::saveotio::SaveOTIOTask {
-		base: quercus_task::task::Task::new("Saving project...", None),
+		base: task::Task::new("Saving project...", None),
 		project: project.clone(),
 		filename: filename.clone(),
 	}));
@@ -214,10 +222,10 @@ fn save(project: &Arc<Mutex<Project>>, filename: String) {
 #[test]
 fn otio_export_is_importable() {
 	let media = clip_path("src_otio", "mp4");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("clip generation");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("clip generation");
 	let project = build_project(&media.to_string_lossy());
 	let out = clip_path("out", "otio");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 	save(&project, out.to_string_lossy().into_owned());
 
 	let doc = quercus_otio::from_json_file(&out).expect("the export parses as OTIO");
@@ -269,10 +277,13 @@ fn otio_export_is_importable() {
 		}
 	}
 	assert_eq!(clips, 3, "two video clips + one audio clip");
-	assert!(gaps >= 1, "the half-length video track gains a trailing gap");
+	assert!(
+		gaps >= 1,
+		"the half-length video track gains a trailing gap"
+	);
 
-	let _ = std::fs::remove_file(&media);
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
 }
 
 /// FCPXML: the shared media's single asset declares hasVideo AND
@@ -280,13 +291,13 @@ fn otio_export_is_importable() {
 #[test]
 fn fcpxml_export_declares_both_streams_and_real_durations() {
 	let media = clip_path("src_fcpxml", "mp4");
-	quercus_codec::testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("clip generation");
+	testmedia::write_test_clip(&media, 64, 64, 10, 10).expect("clip generation");
 	let project = build_project(&media.to_string_lossy());
 	let out = clip_path("out", "fcpxml");
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&out);
 	save(&project, out.to_string_lossy().into_owned());
 
-	let xml = std::fs::read_to_string(&out).expect("read the fcpxml export");
+	let xml = fs::read_to_string(&out).expect("read the fcpxml export");
 	assert!(
 		xml.contains("hasVideo=\"1\""),
 		"the shared media's asset declares video: {xml}"
@@ -300,6 +311,6 @@ fn fcpxml_export_declares_both_streams_and_real_durations() {
 		"no asset carries a zero duration: {xml}"
 	);
 
-	let _ = std::fs::remove_file(&media);
-	let _ = std::fs::remove_file(&out);
+	let _ = fs::remove_file(&media);
+	let _ = fs::remove_file(&out);
 }

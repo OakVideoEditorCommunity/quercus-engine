@@ -7,8 +7,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{edit_menu::*, editing::*, media::*, moving::*, project::*, sequence::*, tracks::*, transitions::*};
-
+use super::{
+	edit_menu::*, editing::*, media::*, moving::*, project::*, sequence::*, tracks::*,
+	transitions::*,
+};
 
 /// The transition wedges of every clip on `track`, keyed by clip:
 /// `(start, end)` are the widths of the transition before the clip (drawn
@@ -398,9 +400,7 @@ pub fn split_clip(p: &ProjectRef, clip: NodeId, time_ts: i64) -> Result<NodeId, 
 	clip_ids(&g.graph, track)
 		.into_iter()
 		.find(|&block| {
-			block != clip
-				&& clip_range(&g.graph, block)
-					.is_some_and(|(in_r, _, _)| in_r == point)
+			block != clip && clip_range(&g.graph, block).is_some_and(|(in_r, _, _)| in_r == point)
 		})
 		.ok_or_else(|| "the split command produced no rear half".to_string())
 }
@@ -435,7 +435,8 @@ pub fn split_clips_preserving_links(
 	refs.extend(rest.iter().map(|&b| node_ref(p, b)));
 	let times = vec![point; refs.len()];
 	push(
-		quercus_timeline::undosplit::BlockSplitPreservingLinksCommand::new(refs, times).to_command(),
+		quercus_timeline::undosplit::BlockSplitPreservingLinksCommand::new(refs, times)
+			.to_command(),
 		"Split Clips",
 	)
 }

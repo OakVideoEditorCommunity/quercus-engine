@@ -19,6 +19,7 @@
 //! include/common/error.h) and forwards codes across modules without
 //! translating them.
 
+use std::result;
 use thiserror::Error;
 
 /// Success.
@@ -38,7 +39,7 @@ pub const QUERCUSPLUGIN_E_NOMEM: i32 = -90005;
 
 /// The crate-wide result type; the FFI layer maps it to the i32 codes
 /// above.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// A crate-internal error. `code()` returns the externally visible
 /// error code.
@@ -117,7 +118,10 @@ mod tests {
 	fn code_is_unaffected_by_trait_impl() {
 		assert_eq!(Error::Invalid.code(), QUERCUSPLUGIN_E_INVALID);
 		assert_eq!(Error::State.code(), QUERCUSPLUGIN_E_STATE);
-		assert_eq!(Error::Failed("boom".to_string()).code(), QUERCUSPLUGIN_E_FAILED);
+		assert_eq!(
+			Error::Failed("boom".to_string()).code(),
+			QUERCUSPLUGIN_E_FAILED
+		);
 		assert_eq!(Error::NotFound.code(), QUERCUSPLUGIN_E_NOT_FOUND);
 		assert_eq!(Error::NoMem.code(), QUERCUSPLUGIN_E_NOMEM);
 	}

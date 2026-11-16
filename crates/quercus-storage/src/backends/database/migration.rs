@@ -21,6 +21,7 @@
 //! NOT EXISTS` is idempotent — no versioned migration machinery, no
 //! extra crate in the tree. The DDL runs once at first connection open.
 
+use crate::error;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
 /// SQLite DDL for the four tables (plan §1, SQLite dialect:
@@ -102,13 +103,13 @@ const POSTGRES_DDL: &[&str] = &[
 
 /// Apply the schema for the connection's dialect (idempotent; safe to
 /// run on every connection open).
-pub async fn migrate(db: &impl ConnectionTrait) -> crate::error::Result<()> {
+pub async fn migrate(db: &impl ConnectionTrait) -> error::Result<()> {
 	let backend = db.get_database_backend();
 	let statements: &[&str] = match backend {
 		DatabaseBackend::Sqlite => SQLITE_DDL,
 		DatabaseBackend::Postgres => POSTGRES_DDL,
 		other => {
-			return Err(crate::error::Error::Failed(format!(
+			return Err(error::Error::Failed(format!(
 				"unsupported database backend {other:?}"
 			)));
 		}
@@ -116,7 +117,7 @@ pub async fn migrate(db: &impl ConnectionTrait) -> crate::error::Result<()> {
 	for sql in statements {
 		db.execute_raw(Statement::from_string(backend, sql.to_string()))
 			.await
-			.map_err(|e| crate::error::Error::Io(format!("schema migration: {e}")))?;
+			.map_err(|e| error::Error::Io(format!("schema migration: {e}")))?;
 	}
 	Ok(())
 }

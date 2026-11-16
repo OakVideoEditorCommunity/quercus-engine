@@ -20,6 +20,7 @@
 //! path (which the otio backend would also claim as JSON) stays on the
 //! ove backend. The database backend claims its own `quercusdb+…` schemes.
 
+use crate::backend;
 pub mod database;
 pub mod otio;
 pub mod ove_xml;
@@ -32,7 +33,7 @@ use std::sync::Arc;
 /// The database entry is the process-wide [`database::DatabaseBackend::shared`]
 /// instance so every resolution of a `quercusdb+…` URI lands on the same
 /// connection pools and operation lock.
-pub fn builtins() -> Vec<Arc<dyn crate::backend::StorageBackend>> {
+pub fn builtins() -> Vec<Arc<dyn backend::StorageBackend>> {
 	vec![
 		Arc::new(ove_xml::OveXmlBackend::new()),
 		Arc::new(otio::OtioBackend::new()),

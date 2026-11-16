@@ -437,7 +437,6 @@ pub fn create_multicam_sequence(
 	})
 }
 
-
 #[cfg(test)]
 mod tests {
 	use super::*;

@@ -22,8 +22,10 @@
 //! mutex and starts from a shut-down singleton. The worker behaviors use
 //! atomics and `yield_now` spins — no sleeps.
 
+use quercus_task::codecbridge;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 
 use quercus_task::error::Error;
 use quercus_task::manager::TaskManager;
@@ -49,7 +51,7 @@ fn spin_until(flag: &AtomicBool) {
 		if flag.load(Ordering::SeqCst) {
 			return;
 		}
-		std::thread::yield_now();
+		thread::yield_now();
 	}
 	panic!("flag was not set in time");
 }
@@ -78,7 +80,7 @@ impl TaskBehavior for Park {
 	fn run(&mut self, task: &mut Task) -> Result<(), quercus_task::error::Error> {
 		self.started.store(true, Ordering::SeqCst);
 		while !task.is_cancelled() {
-			std::thread::yield_now();
+			thread::yield_now();
 		}
 		self.cancelled.store(true, Ordering::SeqCst);
 		Err(quercus_task::task::cancelled())
@@ -95,7 +97,7 @@ impl TaskBehavior for Gate {
 	fn run(&mut self, _task: &mut Task) -> Result<(), quercus_task::error::Error> {
 		self.started.store(true, Ordering::SeqCst);
 		while !self.release.load(Ordering::SeqCst) {
-			std::thread::yield_now();
+			thread::yield_now();
 		}
 		Ok(())
 	}
@@ -168,7 +170,7 @@ fn init_does_not_register_the_codec_submitter() {
 	init_fresh();
 
 	assert!(
-		!quercus_task::codecbridge::is_codec_task_submitter_registered(),
+		!codecbridge::is_codec_task_submitter_registered(),
 		"init() must not install the codec submitter"
 	);
 	assert_eq!(
@@ -179,7 +181,7 @@ fn init_does_not_register_the_codec_submitter() {
 
 	TaskManager::with_manager_mut(|m| m.set_codec_submitter_registered(true)).unwrap();
 	assert!(
-		!quercus_task::codecbridge::is_codec_task_submitter_registered(),
+		!codecbridge::is_codec_task_submitter_registered(),
 		"the bookkeeping flag never installs the quercuscodec callback"
 	);
 	assert_eq!(
@@ -398,7 +400,7 @@ fn wait_finished_blocks_until_the_behavior_returns() {
 	let entered = Arc::new(AtomicBool::new(false));
 	let waiter_entered = entered.clone();
 	let ptr_addr = ptr as usize;
-	let waiter = std::thread::spawn(move || {
+	let waiter = thread::spawn(move || {
 		let task = unsafe { &*(ptr_addr as *const Task) };
 		waiter_entered.store(true, Ordering::SeqCst);
 		task.wait_finished();

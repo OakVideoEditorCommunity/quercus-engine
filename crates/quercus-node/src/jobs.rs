@@ -20,11 +20,13 @@
 //! ([`crate::traverser::RenderHooks::resolve`]).
 //! `// CPP-PARITY: app/render/job/footagejob.h, shaderjob.h`.
 
-use quercus_core::color::ColorProcessor;
-use quercus_core::Rational;
+use crate::handle;
 use crate::id::NodeId;
 use crate::nodes::plugin::PluginJobPayload;
 use crate::value::{NodeValue, NodeValueRow};
+use quercus_core::color::ColorProcessor;
+use quercus_core::Rational;
+use std::sync;
 
 /// The render-job enum (C++ the `RenderJob` class hierarchy of
 /// `app/render/job/*.h`).
@@ -98,7 +100,7 @@ pub struct ShaderJobPayload {
 #[derive(Clone)]
 pub struct ColorTransformJobPayload {
 	/// The OCIO processor to apply (C++ `ColorTransformJob::processor`).
-	pub color_processor: std::sync::Arc<ColorProcessor>,
+	pub color_processor: sync::Arc<ColorProcessor>,
 	/// The input texture value (C++ the texture `to_job` was called on).
 	pub input: crate::value::NodeValue,
 	/// Request time in media seconds.
@@ -207,10 +209,10 @@ impl Job {
 /// `h` must be empty or a live handle created by
 /// [`crate::handle::make_owned`]/[`crate::handle::make_owned_with`] for
 /// the duration of the call.
-pub unsafe fn job_ref(h: &crate::handle::CHandle) -> Option<&Job> {
+pub unsafe fn job_ref(h: &handle::CHandle) -> Option<&Job> {
 	// SAFETY: the caller guarantees liveness; `get_checked` adds the
 	// boxed-type check and returns `None` for empty handles.
-	unsafe { crate::handle::get_checked::<Job>(h) }
+	unsafe { handle::get_checked::<Job>(h) }
 }
 
 /// Borrow the [`FootageJobPayload`] boxed in `h` (a
@@ -219,7 +221,7 @@ pub unsafe fn job_ref(h: &crate::handle::CHandle) -> Option<&Job> {
 ///
 /// # Safety
 /// Same contract as [`job_ref`].
-pub unsafe fn footage_job(h: &crate::handle::CHandle) -> Option<&FootageJobPayload> {
+pub unsafe fn footage_job(h: &handle::CHandle) -> Option<&FootageJobPayload> {
 	unsafe { job_ref(h) }.and_then(Job::as_footage)
 }
 
@@ -228,7 +230,7 @@ pub unsafe fn footage_job(h: &crate::handle::CHandle) -> Option<&FootageJobPaylo
 ///
 /// # Safety
 /// Same contract as [`job_ref`].
-pub unsafe fn shader_job(h: &crate::handle::CHandle) -> Option<&ShaderJobPayload> {
+pub unsafe fn shader_job(h: &handle::CHandle) -> Option<&ShaderJobPayload> {
 	unsafe { job_ref(h) }.and_then(Job::as_shader)
 }
 
@@ -237,7 +239,7 @@ pub unsafe fn shader_job(h: &crate::handle::CHandle) -> Option<&ShaderJobPayload
 ///
 /// # Safety
 /// Same contract as [`job_ref`].
-pub unsafe fn plugin_job(h: &crate::handle::CHandle) -> Option<&PluginJobPayload> {
+pub unsafe fn plugin_job(h: &handle::CHandle) -> Option<&PluginJobPayload> {
 	unsafe { job_ref(h) }.and_then(Job::as_plugin)
 }
 
@@ -247,7 +249,7 @@ pub unsafe fn plugin_job(h: &crate::handle::CHandle) -> Option<&PluginJobPayload
 ///
 /// # Safety
 /// Same contract as [`job_ref`].
-pub unsafe fn color_transform_job(h: &crate::handle::CHandle) -> Option<&ColorTransformJobPayload> {
+pub unsafe fn color_transform_job(h: &handle::CHandle) -> Option<&ColorTransformJobPayload> {
 	unsafe { job_ref(h) }.and_then(Job::as_color_transform)
 }
 
@@ -256,6 +258,6 @@ pub unsafe fn color_transform_job(h: &crate::handle::CHandle) -> Option<&ColorTr
 ///
 /// # Safety
 /// Same contract as [`job_ref`].
-pub unsafe fn cache_job(h: &crate::handle::CHandle) -> Option<&CacheJobPayload> {
+pub unsafe fn cache_job(h: &handle::CHandle) -> Option<&CacheJobPayload> {
 	unsafe { job_ref(h) }.and_then(Job::as_cache)
 }

@@ -25,6 +25,7 @@
 //! compile-time ids, so their metadata is owned and their constructor
 //! is a closure capturing the plugin identifier).
 
+use crate::nodes;
 use std::sync::{Mutex, OnceLock};
 
 use crate::node::{Category, NodeBehavior, NodeCore};
@@ -88,7 +89,7 @@ impl Factory {
 	/// runs the initializer exactly once even under concurrent first calls.
 	pub fn global() -> &'static Factory {
 		GLOBAL.get_or_init(|| {
-			crate::nodes::register_all();
+			nodes::register_all();
 			let entries = ENTRIES
 				.get()
 				.expect("nodes::register_all installs the entry table")
@@ -150,7 +151,10 @@ impl Factory {
 	/// combined lookup. The returned [`DynamicNodeMeta`] is a clone, taken so
 	/// that the registry mutex is not held by the caller.
 	pub fn find_dynamic(&self, type_id: &str) -> Option<DynamicNodeMeta> {
-		self.dynamic().iter().find(|m| m.type_id == type_id).cloned()
+		self.dynamic()
+			.iter()
+			.find(|m| m.type_id == type_id)
+			.cloned()
 	}
 
 	/// Look up either entry kind and construct a node (static first,

@@ -2,6 +2,7 @@
 
 use crate::codec::str_arg;
 use crate::node::QUERCUS_NODE_ID_INVALID;
+use std::slice;
 
 use super::super::EditCommand;
 use super::{QuercusEditOp, QuercusEditParams};
@@ -18,12 +19,12 @@ pub(super) fn command(op: QuercusEditOp, p: &QuercusEditParams) -> Result<EditCo
 	let ids = if p.ids.is_null() {
 		Vec::new()
 	} else {
-		unsafe { std::slice::from_raw_parts(p.ids, p.ids_len) }.to_vec()
+		unsafe { slice::from_raw_parts(p.ids, p.ids_len) }.to_vec()
 	};
 	let placements = if p.placements.is_null() {
 		Vec::new()
 	} else {
-		unsafe { std::slice::from_raw_parts(p.placements, p.placements_len) }
+		unsafe { slice::from_raw_parts(p.placements, p.placements_len) }
 			.iter()
 			.map(|placement| (placement.kind, placement.index))
 			.collect()
@@ -31,7 +32,7 @@ pub(super) fn command(op: QuercusEditOp, p: &QuercusEditParams) -> Result<EditCo
 	let values = if p.values.is_null() {
 		Vec::new()
 	} else {
-		unsafe { std::slice::from_raw_parts(p.values, p.values_len) }.to_vec()
+		unsafe { slice::from_raw_parts(p.values, p.values_len) }.to_vec()
 	};
 	Ok(match op {
 		QuercusEditOp::AddTrack => EditCommand::AddTrack { kind: p.kind },
@@ -321,7 +322,9 @@ pub(super) fn command(op: QuercusEditOp, p: &QuercusEditParams) -> Result<EditCo
 			footage: p.a,
 			params: p.proxy_params.clone(),
 		},
-		QuercusEditOp::ClearFootageProxyParams => EditCommand::ClearFootageProxyParams { footage: p.a },
+		QuercusEditOp::ClearFootageProxyParams => {
+			EditCommand::ClearFootageProxyParams { footage: p.a }
+		}
 		QuercusEditOp::CreateSequenceFromFootage => EditCommand::CreateSequenceFromFootage {
 			footage: p.a,
 			name: text(p.name, p.name_len),

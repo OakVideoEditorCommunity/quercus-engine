@@ -157,22 +157,29 @@ fn add_gap(track: &NodeRef, in_: Rational, out: Rational) -> NodeRef {
 /// The block span of `block` (`None` for a stale node).
 fn span_of(block: &NodeRef) -> Option<(Rational, Rational)> {
 	let p = block.project.lock().unwrap();
-	p.graph.get(block.id).and_then(|e| e.behavior.as_any()).and_then(|a| {
-		[
-			a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
-			a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
-		]
-		.into_iter()
-		.flatten()
-		.next()
-		.map(|core| (core.in_(), core.out()))
-	})
+	p.graph
+		.get(block.id)
+		.and_then(|e| e.behavior.as_any())
+		.and_then(|a| {
+			[
+				a.downcast_ref::<ClipBlockBehavior>().map(|b| &b.core),
+				a.downcast_ref::<GapBlockBehavior>().map(|b| &b.core),
+			]
+			.into_iter()
+			.flatten()
+			.next()
+			.map(|core| (core.in_(), core.out()))
+		})
 }
 
 /// Set a track's locked flag (the flag `prepare` consults).
 fn set_track_locked(track: &NodeRef, locked: bool) {
 	let mut p = track.project.lock().unwrap();
-	if let Some(a) = p.graph.get_mut(track.id).and_then(|e| e.behavior.as_any_mut()) {
+	if let Some(a) = p
+		.graph
+		.get_mut(track.id)
+		.and_then(|e| e.behavior.as_any_mut())
+	{
 		if let Some(t) = a.downcast_mut::<TrackBehavior>() {
 			t.locked = locked;
 		}
@@ -226,12 +233,21 @@ fn ripple_remove_area_splices_cutting_block() {
 	assert_ne!(spliced.id, clip.id);
 	assert_eq!(track_block_count(&track), 2);
 	assert_eq!(track_block_at(&track, 0).unwrap().id, clip.id);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(25, 1))));
-	assert_eq!(span_of(&spliced), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
+	assert_eq!(
+		span_of(&spliced),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	// The next redo re-attaches the same second half identity.
 	cmd.redo();
@@ -255,9 +271,15 @@ fn ripple_remove_area_gap_splitting_flag() {
 	cmd.redo();
 	assert_eq!(track_block_count(&track), 1);
 	assert!(cmd.get_spliced_block().is_none());
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(75, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(75, 1)))
+	);
 	cmd.undo();
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	// Allowed: the gap is split and the remainders are trimmed.
 	let mut cmd = TrackRippleRemoveAreaCommand::new(track.clone(), range);
@@ -266,11 +288,20 @@ fn ripple_remove_area_gap_splitting_flag() {
 	assert_eq!(track_block_count(&track), 2);
 	let spliced = cmd.get_spliced_block().expect("gap split allowed");
 	assert_eq!(block_kind(&spliced), BlockKind::Gap);
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(25, 1))));
-	assert_eq!(span_of(&spliced), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
+	assert_eq!(
+		span_of(&spliced),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// The splice re-links the second half to the original's link partners:
@@ -336,17 +367,35 @@ fn ripple_remove_area_undo_before_redo_is_noop() {
 	cmd.prepare();
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&c1), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&c2), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&c1),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&c2),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 
 	cmd.redo();
-	assert_eq!(span_of(&c1), Some((Rational::new(0, 1), Rational::new(25, 1))));
+	assert_eq!(
+		span_of(&c1),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
 	// c2's in-end trim is out-anchored: its out stays at 100.
-	assert_eq!(span_of(&c2), Some((Rational::new(75, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&c2),
+		Some((Rational::new(75, 1), Rational::new(100, 1)))
+	);
 
 	cmd.undo();
-	assert_eq!(span_of(&c1), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&c2), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&c1),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&c2),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackRippleRemoveAreaCommand` with no block at/before the range (an
@@ -373,7 +422,10 @@ fn ripple_remove_area_no_candidate_block_is_noop() {
 	cmd.redo();
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackRippleRemoveAreaCommand` against a stale track reference (its
@@ -395,7 +447,10 @@ fn ripple_remove_area_stale_track_is_noop() {
 	cmd.redo();
 	cmd.undo();
 	assert!(!node_in_graph(&project, &track));
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackListRippleRemoveAreaCommand` applies the range to every unlocked
@@ -419,14 +474,23 @@ fn tracklist_ripple_remove_area_skips_locked_track() {
 	cmd.redo();
 	// Unlocked track spliced into [0,25) + [25,50); locked track untouched.
 	assert_eq!(track_block_count(&unlocked), 2);
-	assert_eq!(span_of(&unlocked_clip), Some((Rational::new(0, 1), Rational::new(25, 1))));
+	assert_eq!(
+		span_of(&unlocked_clip),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
 	assert_eq!(track_block_count(&locked), 1);
-	assert_eq!(span_of(&locked_clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&locked_clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(track_length(&locked), Rational::new(100, 1));
 
 	cmd.undo();
 	assert_eq!(track_block_count(&unlocked), 1);
-	assert_eq!(span_of(&unlocked_clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&unlocked_clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TimelineRippleRemoveAreaCommand` walks the sequence's track lists; the
@@ -446,26 +510,32 @@ fn timeline_ripple_remove_area_round_trip() {
 	.to_command();
 	cmd.redo_now();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(25, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
 	cmd.undo_now();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	// A range covering the whole block removes it (graph node included) and
 	// undo re-attaches it.
-	let mut cmd = TimelineRippleRemoveAreaCommand::new(
-		seq,
-		Rational::new(0, 1),
-		Rational::new(100, 1),
-	)
-	.to_command();
+	let mut cmd =
+		TimelineRippleRemoveAreaCommand::new(seq, Rational::new(0, 1), Rational::new(100, 1))
+			.to_command();
 	cmd.redo_now();
 	assert_eq!(track_block_count(&track), 0);
 	assert!(!node_in_graph(&project, &clip));
 	cmd.undo_now();
 	assert_eq!(track_block_count(&track), 1);
 	assert!(node_in_graph(&project, &clip));
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TimelineRippleDeleteGapsAtRegionsCommand` removes a gap covering the
@@ -499,7 +569,10 @@ fn timeline_ripple_delete_gaps_at_regions_round_trip() {
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, gap.id);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// A requested region that lies inside a gap longer than the region
@@ -529,10 +602,16 @@ fn timeline_ripple_delete_gaps_resizes_longer_gap() {
 	// (the layout derives it); the stored-range command trims the gap only,
 	// so callers that need the tail shifted do it explicitly.
 	assert_eq!(track_block_count(&track), 3);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(130, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(130, 1)))
+	);
 
 	cmd.undo();
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(150, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(150, 1)))
+	);
 }
 
 /// A region whose nearest block is not a gap, and an empty region list,
@@ -558,15 +637,20 @@ fn timeline_ripple_delete_gaps_non_gap_region_is_noop() {
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 2);
 
-	let mut empty =
-		TimelineRippleDeleteGapsAtRegionsCommand::new(seq, Vec::new());
+	let mut empty = TimelineRippleDeleteGapsAtRegionsCommand::new(seq, Vec::new());
 	empty.prepare();
 	assert!(!empty.has_commands());
 	empty.redo();
 	empty.undo();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
-	assert_eq!(span_of(&gap), Some((Rational::new(100, 1), Rational::new(150, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(100, 1), Rational::new(150, 1)))
+	);
 }
 
 /// `TrackListRippleToolCommand` with no per-track info is a no-op in both
@@ -589,7 +673,10 @@ fn track_list_ripple_tool_empty_info_is_noop() {
 	cmd.redo();
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	let mut boxed = TrackListRippleToolCommand::new(
 		list,
@@ -601,7 +688,10 @@ fn track_list_ripple_tool_empty_info_is_noop() {
 	boxed.redo_now();
 	boxed.undo_now();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackListRippleToolCommand` with real per-track info resizes the block
@@ -633,7 +723,10 @@ fn track_list_ripple_tool_resizes_with_real_info() {
 	assert_eq!(clip_media_in(&clip), Rational::new(0, 1));
 
 	cmd.undo();
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(clip_media_in(&clip), Rational::new(0, 1));
 }
 
@@ -659,12 +752,21 @@ fn track_list_ripple_tool_append_gap_creates_a_gap() {
 	// length — the caller owns that shift, see the insert site's note).
 	let gap = track_block_at(&track, 0).expect("gap at the front");
 	assert_eq!(block_kind(&gap), BlockKind::Gap);
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(10, 1))));
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(10, 1)))
+	);
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1, "the inserted gap is removed");
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -693,8 +795,14 @@ fn block_trim_with_gap_adjacent_round_trip() {
 	);
 	cmd.prepare();
 	cmd.redo();
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(25, 1))));
-	assert_eq!(span_of(&gap), Some((Rational::new(25, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(25, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(
 		clip_media_in(&clip),
 		Rational::new(0, 1),
@@ -702,8 +810,14 @@ fn block_trim_with_gap_adjacent_round_trip() {
 	);
 
 	cmd.undo();
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(clip_media_in(&clip), Rational::new(0, 1));
 }
 
@@ -731,14 +845,26 @@ fn block_trim_creates_gap_next_to_clip() {
 	assert_eq!(block_kind(&created), BlockKind::Gap);
 	// The trim keeps `first`'s in fixed and moves its out to 25; the fresh
 	// gap fills the freed [25,50) space so `second` does not move.
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(25, 1))));
-	assert_eq!(span_of(&created), Some((Rational::new(25, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
+	assert_eq!(
+		span_of(&created),
+		Some((Rational::new(25, 1), Rational::new(50, 1)))
+	);
 	assert_eq!(track_block_at(&track, 2).unwrap().id, second.id);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&second), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&second),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `BlockTrimCommand::set_trim_is_a_roll_edit` trims into the adjacent
@@ -762,8 +888,14 @@ fn block_trim_roll_edit_resizes_adjacent_clip() {
 	cmd.prepare();
 	cmd.redo();
 	assert_eq!(track_block_count(&track), 2);
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(25, 1))));
-	assert_eq!(span_of(&second), Some((Rational::new(25, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(25, 1)))
+	);
+	assert_eq!(
+		span_of(&second),
+		Some((Rational::new(25, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(
 		span_of(&first).map(|(_, out)| out),
 		span_of(&second).map(|(in_, _)| in_),
@@ -781,8 +913,14 @@ fn block_trim_roll_edit_resizes_adjacent_clip() {
 	);
 
 	cmd.undo();
-	assert_eq!(span_of(&first), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&second), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&first),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&second),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 	assert_eq!(clip_media_in(&first), Rational::new(0, 1));
 	assert_eq!(clip_media_in(&second), Rational::new(0, 1));
 }
@@ -814,8 +952,14 @@ fn block_trim_removes_zero_length_adjacent_from_graph() {
 	assert_eq!(track_block_count(&track), 2);
 	assert!(node_in_graph(&project, &gap));
 	assert_eq!(track_block_at(&track, 1).unwrap().id, gap.id);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(75, 1))));
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(75, 1)))
+	);
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 }
 
 /// `BlockTrimCommand::set_remove_zero_length_from_graph(false)` leaves a
@@ -844,7 +988,10 @@ fn block_trim_zero_length_adjacent_kept_in_graph() {
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 2);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, gap.id);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(75, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(75, 1)))
+	);
 }
 
 /// A trim that does not change the length is a no-op; the boxing path
@@ -867,7 +1014,10 @@ fn block_trim_same_length_is_noop() {
 	boxed.redo_now();
 	boxed.undo_now();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 }
 
 /// `TrackSlideCommand` resizes both adjacent blocks by the movement;
@@ -895,9 +1045,18 @@ fn track_slide_resizes_adjacent_blocks() {
 	);
 	cmd.prepare();
 	cmd.redo();
-	assert_eq!(span_of(&previous), Some((Rational::new(0, 1), Rational::new(70, 1))));
-	assert_eq!(span_of(&slide), Some((Rational::new(50, 1), Rational::new(100, 1))));
-	assert_eq!(span_of(&next), Some((Rational::new(120, 1), Rational::new(150, 1))));
+	assert_eq!(
+		span_of(&previous),
+		Some((Rational::new(0, 1), Rational::new(70, 1)))
+	);
+	assert_eq!(
+		span_of(&slide),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
+	assert_eq!(
+		span_of(&next),
+		Some((Rational::new(120, 1), Rational::new(150, 1)))
+	);
 	assert_eq!(
 		clip_media_in(&previous),
 		Rational::new(0, 1),
@@ -910,8 +1069,14 @@ fn track_slide_resizes_adjacent_blocks() {
 	);
 
 	cmd.undo();
-	assert_eq!(span_of(&previous), Some((Rational::new(0, 1), Rational::new(50, 1))));
-	assert_eq!(span_of(&next), Some((Rational::new(100, 1), Rational::new(150, 1))));
+	assert_eq!(
+		span_of(&previous),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
+	assert_eq!(
+		span_of(&next),
+		Some((Rational::new(100, 1), Rational::new(150, 1)))
+	);
 	assert_eq!(clip_media_in(&previous), Rational::new(0, 1));
 	assert_eq!(clip_media_in(&next), Rational::new(0, 1));
 }
@@ -940,14 +1105,23 @@ fn track_slide_removes_out_adjacent_at_boundary() {
 	assert_eq!(track_block_count(&track), 2);
 	assert!(block_track(&out_gap).is_none());
 	assert!(!node_in_graph(&project, &out_gap));
-	assert_eq!(span_of(&in_gap), Some((Rational::new(0, 1), Rational::new(40, 1))));
+	assert_eq!(
+		span_of(&in_gap),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
 	assert!(node_in_graph(&project, &out_gap));
 	assert_eq!(track_block_at(&track, 2).unwrap().id, out_gap.id);
-	assert_eq!(span_of(&in_gap), Some((Rational::new(0, 1), Rational::new(20, 1))));
-	assert_eq!(span_of(&out_gap), Some((Rational::new(70, 1), Rational::new(90, 1))));
+	assert_eq!(
+		span_of(&in_gap),
+		Some((Rational::new(0, 1), Rational::new(20, 1)))
+	);
+	assert_eq!(
+		span_of(&out_gap),
+		Some((Rational::new(70, 1), Rational::new(90, 1)))
+	);
 }
 
 /// `TrackSlideCommand` removes the in adjacent when a leftward movement
@@ -974,14 +1148,23 @@ fn track_slide_removes_in_adjacent_at_boundary() {
 	assert_eq!(track_block_count(&track), 2);
 	assert!(block_track(&in_gap).is_none());
 	assert!(!node_in_graph(&project, &in_gap));
-	assert_eq!(span_of(&out_gap), Some((Rational::new(50, 1), Rational::new(90, 1))));
+	assert_eq!(
+		span_of(&out_gap),
+		Some((Rational::new(50, 1), Rational::new(90, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
 	assert!(node_in_graph(&project, &in_gap));
 	assert_eq!(track_block_at(&track, 0).unwrap().id, in_gap.id);
-	assert_eq!(span_of(&in_gap), Some((Rational::new(0, 1), Rational::new(20, 1))));
-	assert_eq!(span_of(&out_gap), Some((Rational::new(70, 1), Rational::new(90, 1))));
+	assert_eq!(
+		span_of(&in_gap),
+		Some((Rational::new(0, 1), Rational::new(20, 1)))
+	);
+	assert_eq!(
+		span_of(&out_gap),
+		Some((Rational::new(70, 1), Rational::new(90, 1)))
+	);
 }
 
 /// `TrackSlideCommand::prepare` creates the missing in adjacent (a leftward
@@ -1005,13 +1188,19 @@ fn track_slide_creates_in_adjacent_gap() {
 	assert_eq!(track_block_count(&track), 2);
 	let created = track_block_at(&track, 0).unwrap();
 	assert_eq!(block_kind(&created), BlockKind::Gap);
-	assert_eq!(span_of(&created), Some((Rational::new(-10, 1), Rational::new(0, 1))));
+	assert_eq!(
+		span_of(&created),
+		Some((Rational::new(-10, 1), Rational::new(0, 1)))
+	);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, clip.id);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
 	assert!(!node_in_graph(&project, &created));
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackSlideCommand::prepare` creates the missing out adjacent when the
@@ -1037,14 +1226,23 @@ fn track_slide_creates_out_adjacent_gap() {
 	assert_eq!(track_block_count(&track), 4);
 	let created = track_block_at(&track, 2).unwrap();
 	assert_eq!(block_kind(&created), BlockKind::Gap);
-	assert_eq!(span_of(&created), Some((Rational::new(110, 1), Rational::new(120, 1))));
+	assert_eq!(
+		span_of(&created),
+		Some((Rational::new(110, 1), Rational::new(120, 1)))
+	);
 	assert_eq!(track_block_at(&track, 3).unwrap().id, tail.id);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
 	assert!(!node_in_graph(&project, &created));
-	assert_eq!(span_of(&in_gap), Some((Rational::new(0, 1), Rational::new(10, 1))));
-	assert_eq!(span_of(&clip), Some((Rational::new(10, 1), Rational::new(110, 1))));
+	assert_eq!(
+		span_of(&in_gap),
+		Some((Rational::new(0, 1), Rational::new(10, 1)))
+	);
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(10, 1), Rational::new(110, 1)))
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,14 +1355,23 @@ fn track_split_at_time_round_trip() {
 	cmd.redo();
 	assert_eq!(track_block_count(&track), 2);
 	assert_eq!(track_block_at(&track, 0).unwrap().id, clip.id);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(40, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
 	let second = track_block_at(&track, 1).unwrap();
 	assert_eq!(block_kind(&second), BlockKind::Clip);
-	assert_eq!(span_of(&second), Some((Rational::new(40, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&second),
+		Some((Rational::new(40, 1), Rational::new(100, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 
 	cmd.redo();
 	assert_eq!(track_block_count(&track), 2);
@@ -1180,12 +1387,19 @@ fn track_split_at_time_outside_block_is_noop() {
 	let track = TimelineAddTrackCommand::run_immediately(list);
 	let clip = add_clip(&track, Rational::new(0, 1), Rational::new(100, 1));
 
-	for point in [Rational::new(100, 1), Rational::new(0, 1), Rational::new(150, 1)] {
+	for point in [
+		Rational::new(100, 1),
+		Rational::new(0, 1),
+		Rational::new(150, 1),
+	] {
 		let mut cmd = TrackSplitAtTimeCommand::new(track.clone(), point);
 		cmd.redo();
 		cmd.undo();
 		assert_eq!(track_block_count(&track), 1);
-		assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+		assert_eq!(
+			span_of(&clip),
+			Some((Rational::new(0, 1), Rational::new(100, 1)))
+		);
 	}
 }
 
@@ -1211,15 +1425,27 @@ fn block_split_preserving_links_round_trip() {
 	cmd.redo();
 	assert_eq!(track_block_count(&track_a), 2);
 	assert_eq!(track_block_count(&track_b), 2);
-	assert_eq!(span_of(&a), Some((Rational::new(0, 1), Rational::new(40, 1))));
-	assert_eq!(span_of(&b), Some((Rational::new(0, 1), Rational::new(40, 1))));
+	assert_eq!(
+		span_of(&a),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
+	assert_eq!(
+		span_of(&b),
+		Some((Rational::new(0, 1), Rational::new(40, 1)))
+	);
 
 	let split_a = cmd.get_split(&a, 0).expect("a was split");
 	let split_b = cmd.get_split(&b, 0).expect("b was split");
 	assert_eq!(split_a.id, track_block_at(&track_a, 1).unwrap().id);
 	assert_eq!(split_b.id, track_block_at(&track_b, 1).unwrap().id);
-	assert_eq!(span_of(&split_a), Some((Rational::new(40, 1), Rational::new(100, 1))));
-	assert_eq!(span_of(&split_b), Some((Rational::new(40, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&split_a),
+		Some((Rational::new(40, 1), Rational::new(100, 1)))
+	);
+	assert_eq!(
+		span_of(&split_b),
+		Some((Rational::new(40, 1), Rational::new(100, 1)))
+	);
 	// The new halves of the linked pair stay linked.
 	assert!(blocks_are_linked(&project, &split_a, &split_b));
 	assert!(cmd.get_split(&split_a, 0).is_none());
@@ -1228,8 +1454,14 @@ fn block_split_preserving_links_round_trip() {
 	cmd.undo();
 	assert_eq!(track_block_count(&track_a), 1);
 	assert_eq!(track_block_count(&track_b), 1);
-	assert_eq!(span_of(&a), Some((Rational::new(0, 1), Rational::new(100, 1))));
-	assert_eq!(span_of(&b), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&a),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
+	assert_eq!(
+		span_of(&b),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 	assert!(blocks_are_linked(&project, &a, &b));
 
 	cmd.redo();
@@ -1251,7 +1483,10 @@ fn block_split_preserving_links_noop_time() {
 	cmd.redo();
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 	assert!(cmd.get_split(&clip, 0).is_none());
 
 	let mut empty = BlockSplitPreservingLinksCommand::new(Vec::new(), Vec::new());
@@ -1277,14 +1512,20 @@ fn block_resize_with_media_in_round_trip() {
 
 	let mut cmd = BlockResizeWithMediaInCommand::new(clip.clone(), Rational::new(30, 1));
 	cmd.redo();
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(30, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(30, 1)))
+	);
 	assert_eq!(
 		clip_media_in(&clip),
 		Rational::new(20, 1),
 		"media_in advances by the trimmed 20 frames (media_out stays at 50)"
 	);
 	cmd.undo();
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 	assert_eq!(clip_media_in(&clip), Rational::new(0, 1));
 }
 
@@ -1348,17 +1589,22 @@ fn track_list_insert_gaps_extends_existing_gap() {
 	let gap = add_gap(&track, Rational::new(50, 1), Rational::new(100, 1));
 	add_clip(&track, Rational::new(100, 1), Rational::new(150, 1));
 
-	let mut cmd =
-		TrackListInsertGaps::new(list, Rational::new(75, 1), Rational::new(20, 1));
+	let mut cmd = TrackListInsertGaps::new(list, Rational::new(75, 1), Rational::new(20, 1));
 	cmd.prepare();
 	cmd.redo();
 	// The gap keeps its in point and grows rightward by the gap length.
 	assert_eq!(track_block_count(&track), 3);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(120, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(120, 1)))
+	);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 3);
-	assert_eq!(span_of(&gap), Some((Rational::new(50, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(50, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackListInsertGaps` at the in point of the first block prepends the
@@ -1370,19 +1616,24 @@ fn track_list_insert_gaps_at_track_start_round_trip() {
 	let track = TimelineAddTrackCommand::run_immediately(list.clone());
 	let clip = add_clip(&track, Rational::new(0, 1), Rational::new(100, 1));
 
-	let mut cmd =
-		TrackListInsertGaps::new(list, Rational::new(0, 1), Rational::new(20, 1));
+	let mut cmd = TrackListInsertGaps::new(list, Rational::new(0, 1), Rational::new(20, 1));
 	cmd.prepare();
 	cmd.redo();
 	assert_eq!(track_block_count(&track), 2);
 	let gap = track_block_at(&track, 0).unwrap();
 	assert_eq!(block_kind(&gap), BlockKind::Gap);
-	assert_eq!(span_of(&gap), Some((Rational::new(0, 1), Rational::new(20, 1))));
+	assert_eq!(
+		span_of(&gap),
+		Some((Rational::new(0, 1), Rational::new(20, 1)))
+	);
 	assert_eq!(track_block_at(&track, 1).unwrap().id, clip.id);
 
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(100, 1)))
+	);
 }
 
 /// `TrackListInsertGaps` skips locked tracks; a point past the track end
@@ -1401,7 +1652,10 @@ fn track_list_insert_gaps_locked_and_past_end_are_noop() {
 	locked.redo();
 	locked.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 
 	// The point is past the single 50-long clip: no split, no gap.
 	set_track_locked(&track, false);
@@ -1410,7 +1664,10 @@ fn track_list_insert_gaps_locked_and_past_end_are_noop() {
 	past_end.redo();
 	past_end.undo();
 	assert_eq!(track_block_count(&track), 1);
-	assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+	assert_eq!(
+		span_of(&clip),
+		Some((Rational::new(0, 1), Rational::new(50, 1)))
+	);
 }
 
 /// `TimelineAddDefaultTransitionCommand` walks the selection and builds no
@@ -1426,25 +1683,35 @@ fn timeline_add_default_transition_is_noop() {
 	let b = add_clip(&track, Rational::new(110, 1), Rational::new(210, 1));
 	add_gap(&track, Rational::new(210, 1), Rational::new(230, 1));
 
-	let mut cmd = TimelineAddDefaultTransitionCommand::new(
-		vec![a.clone(), b.clone()],
-		Rational::new(1, 30),
-	);
+	let mut cmd =
+		TimelineAddDefaultTransitionCommand::new(vec![a.clone(), b.clone()], Rational::new(1, 30));
 	cmd.prepare();
 	cmd.redo();
 	cmd.undo();
 	assert_eq!(track_block_count(&track), 4);
-	assert_eq!(block_kind(&track_block_at(&track, 0).unwrap()), BlockKind::Gap);
-	assert_eq!(block_kind(&track_block_at(&track, 1).unwrap()), BlockKind::Clip);
-	assert_eq!(block_kind(&track_block_at(&track, 2).unwrap()), BlockKind::Clip);
-	assert_eq!(block_kind(&track_block_at(&track, 3).unwrap()), BlockKind::Gap);
-	assert_eq!(span_of(&a), Some((Rational::new(10, 1), Rational::new(110, 1))));
+	assert_eq!(
+		block_kind(&track_block_at(&track, 0).unwrap()),
+		BlockKind::Gap
+	);
+	assert_eq!(
+		block_kind(&track_block_at(&track, 1).unwrap()),
+		BlockKind::Clip
+	);
+	assert_eq!(
+		block_kind(&track_block_at(&track, 2).unwrap()),
+		BlockKind::Clip
+	);
+	assert_eq!(
+		block_kind(&track_block_at(&track, 3).unwrap()),
+		BlockKind::Gap
+	);
+	assert_eq!(
+		span_of(&a),
+		Some((Rational::new(10, 1), Rational::new(110, 1)))
+	);
 
-	let mut boxed = TimelineAddDefaultTransitionCommand::new(
-		vec![a.clone()],
-		Rational::new(1, 30),
-	)
-	.to_command();
+	let mut boxed = TimelineAddDefaultTransitionCommand::new(vec![a.clone()], Rational::new(1, 30))
+		.to_command();
 	boxed.redo_now();
 	boxed.undo_now();
 	assert_eq!(track_block_count(&track), 4);
@@ -1474,7 +1741,10 @@ fn boxed_self_preparing_commands_round_trip() {
 		assert_eq!(track_block_count(&track), 2);
 		boxed.undo_now();
 		assert_eq!(track_block_count(&track), 1);
-		assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(100, 1))));
+		assert_eq!(
+			span_of(&clip),
+			Some((Rational::new(0, 1), Rational::new(100, 1)))
+		);
 	}
 
 	// TrackListRippleRemoveAreaCommand.
@@ -1483,11 +1753,8 @@ fn boxed_self_preparing_commands_round_trip() {
 		let (_seq, list) = sequence_and_list(&project);
 		let track = TimelineAddTrackCommand::run_immediately(list.clone());
 		add_clip(&track, Rational::new(0, 1), Rational::new(100, 1));
-		let mut cmd = TrackListRippleRemoveAreaCommand::new(
-			list,
-			Rational::new(25, 1),
-			Rational::new(75, 1),
-		);
+		let mut cmd =
+			TrackListRippleRemoveAreaCommand::new(list, Rational::new(25, 1), Rational::new(75, 1));
 		// `redo` runs the children but does not build them: prepare first.
 		cmd.prepare();
 		let mut boxed = cmd.to_command();
@@ -1540,11 +1807,9 @@ fn boxed_self_preparing_commands_round_trip() {
 		let track_b = TimelineAddTrackCommand::run_immediately(list);
 		let a = add_clip(&track_a, Rational::new(0, 1), Rational::new(100, 1));
 		let b = add_clip(&track_b, Rational::new(0, 1), Rational::new(100, 1));
-		let mut boxed = BlockSplitPreservingLinksCommand::new(
-			vec![a, b],
-			vec![Rational::new(40, 1)],
-		)
-		.to_command();
+		let mut boxed =
+			BlockSplitPreservingLinksCommand::new(vec![a, b], vec![Rational::new(40, 1)])
+				.to_command();
 		boxed.redo_now();
 		assert_eq!(track_block_count(&track_a), 2);
 		assert_eq!(track_block_count(&track_b), 2);
@@ -1606,9 +1871,15 @@ fn boxed_self_preparing_commands_round_trip() {
 		let mut boxed =
 			BlockResizeWithMediaInCommand::new(clip.clone(), Rational::new(30, 1)).to_command();
 		boxed.redo_now();
-		assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(30, 1))));
+		assert_eq!(
+			span_of(&clip),
+			Some((Rational::new(0, 1), Rational::new(30, 1)))
+		);
 		boxed.undo_now();
-		assert_eq!(span_of(&clip), Some((Rational::new(0, 1), Rational::new(50, 1))));
+		assert_eq!(
+			span_of(&clip),
+			Some((Rational::new(0, 1), Rational::new(50, 1)))
+		);
 	}
 }
 
@@ -1634,11 +1905,23 @@ fn boxed_prepared_commands_round_trip() {
 		cmd.prepare();
 		let mut boxed = cmd.to_command();
 		boxed.redo_now();
-		assert_eq!(span_of(&previous), Some((Rational::new(0, 1), Rational::new(70, 1))));
-		assert_eq!(span_of(&next), Some((Rational::new(120, 1), Rational::new(150, 1))));
+		assert_eq!(
+			span_of(&previous),
+			Some((Rational::new(0, 1), Rational::new(70, 1)))
+		);
+		assert_eq!(
+			span_of(&next),
+			Some((Rational::new(120, 1), Rational::new(150, 1)))
+		);
 		boxed.undo_now();
-		assert_eq!(span_of(&previous), Some((Rational::new(0, 1), Rational::new(50, 1))));
-		assert_eq!(span_of(&next), Some((Rational::new(100, 1), Rational::new(150, 1))));
+		assert_eq!(
+			span_of(&previous),
+			Some((Rational::new(0, 1), Rational::new(50, 1)))
+		);
+		assert_eq!(
+			span_of(&next),
+			Some((Rational::new(100, 1), Rational::new(150, 1)))
+		);
 	}
 
 	// TrackListInsertGaps.

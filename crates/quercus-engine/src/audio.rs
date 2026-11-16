@@ -1,65 +1,65 @@
+use crate::handle::NativeMirror;
+use crate::vecs::{IntoFfiVec, QuercusVecString};
 use quercus_audio::manager::*;
 use quercus_audio::params::AudioParams;
 use quercus_core::SampleFormat;
-use crate::handle::NativeMirror;
-use crate::vecs::{IntoFfiVec, QuercusVecString};
 /// Audio stream parameters. Bridge to C value handle.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QuercusAudioParams{
-    /// Sample rate in Hz.
-    pub sample_rate: i32,
-    /// ffmpeg-style channel layout mask (0 = unknown/unspecified).
-    pub channel_layout: u64,
-    /// Sample format (see [`SampleFormat`]).
-    pub format: i32,
+pub struct QuercusAudioParams {
+	/// Sample rate in Hz.
+	pub sample_rate: i32,
+	/// ffmpeg-style channel layout mask (0 = unknown/unspecified).
+	pub channel_layout: u64,
+	/// Sample format (see [`SampleFormat`]).
+	pub format: i32,
 }
 
 impl NativeMirror for QuercusAudioParams {
-    type Native = AudioParams;
+	type Native = AudioParams;
 
-    fn from_native(params: &AudioParams) -> Self {
-        Self {
-            sample_rate: params.sample_rate,
-            channel_layout: params.channel_layout,
-            format: params.format as i32,
-        }
-    }
+	fn from_native(params: &AudioParams) -> Self {
+		Self {
+			sample_rate: params.sample_rate,
+			channel_layout: params.channel_layout,
+			format: params.format as i32,
+		}
+	}
 
-    fn to_native(&self) -> AudioParams {
-        AudioParams {
-            sample_rate: self.sample_rate,
-            channel_layout: self.channel_layout,
-            format: match self.format {
-                // Unsigned 8-bit planar.
-                0 => SampleFormat::U8Planar,
-                // Signed 16-bit planar.
-                1 => SampleFormat::S16Planar,
-                // Signed 32-bit planar.
-                2 => SampleFormat::S32Planar,
-                // Signed 64-bit planar.
-                3 => SampleFormat::S64Planar,
-                // 32-bit float planar.
-                4 => SampleFormat::F32Planar,
-                // 64-bit float planar.
-                5 => SampleFormat::F64Planar,
-                // Unsigned 8-bit packed.
-                6 => SampleFormat::U8,
-                // Signed 16-bit packed.
-                7 => SampleFormat::S16,
-                // Signed 32-bit packed.
-                8 => SampleFormat::S32,
-                // Signed 64-bit packed.
-                9 => SampleFormat::S64,
-                // 32-bit float packed.
-                10 => SampleFormat::F32,
-                // 64-bit float packed.
-                11 => SampleFormat::F64,
-                // Invalid/unspecified.
-                _ => SampleFormat::Invalid
-            } ,
-        }
-    }
+	fn to_native(&self) -> AudioParams {
+		AudioParams {
+			sample_rate: self.sample_rate,
+			channel_layout: self.channel_layout,
+			format: match self.format {
+				// Unsigned 8-bit planar.
+				0 => SampleFormat::U8Planar,
+				// Signed 16-bit planar.
+				1 => SampleFormat::S16Planar,
+				// Signed 32-bit planar.
+				2 => SampleFormat::S32Planar,
+				// Signed 64-bit planar.
+				3 => SampleFormat::S64Planar,
+				// 32-bit float planar.
+				4 => SampleFormat::F32Planar,
+				// 64-bit float planar.
+				5 => SampleFormat::F64Planar,
+				// Unsigned 8-bit packed.
+				6 => SampleFormat::U8,
+				// Signed 16-bit packed.
+				7 => SampleFormat::S16,
+				// Signed 32-bit packed.
+				8 => SampleFormat::S32,
+				// Signed 64-bit packed.
+				9 => SampleFormat::S64,
+				// 32-bit float packed.
+				10 => SampleFormat::F32,
+				// 64-bit float packed.
+				11 => SampleFormat::F64,
+				// Invalid/unspecified.
+				_ => SampleFormat::Invalid,
+			},
+		}
+	}
 }
 
 /// Creates the process-wide audio manager instance.
@@ -70,8 +70,8 @@ impl NativeMirror for QuercusAudioParams {
 /// down by [`quercus_audio_manager_destroy_instance`]. Returns `true` on success
 /// — the Rust allocation cannot fail, so `false` is not produced in practice.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_create_instance() -> bool{
-    ManagerInner::create_instance().is_ok()
+pub extern "C" fn quercus_audio_manager_create_instance() -> bool {
+	ManagerInner::create_instance().is_ok()
 }
 /// Tears down the process-wide audio manager instance.
 ///
@@ -82,8 +82,8 @@ pub extern "C" fn quercus_audio_manager_create_instance() -> bool{
 /// call when no instance exists (no-op). Not reference-counted: all handles refer
 /// to the same process-wide singleton.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_destroy_instance(){
-    ManagerInner::destroy_instance()
+pub extern "C" fn quercus_audio_manager_destroy_instance() {
+	ManagerInner::destroy_instance()
 }
 
 /// Returns the host's output device names in enumeration order.
@@ -95,8 +95,8 @@ pub extern "C" fn quercus_audio_manager_destroy_instance(){
 /// not marked — callers prepend their own "system default" entry (index `-1`).
 /// The vector is empty when the host reports no output devices.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_output_device_names() -> *mut QuercusVecString{
-    output_device_names().into_ffi_vec()
+pub extern "C" fn quercus_audio_manager_output_device_names() -> *mut QuercusVecString {
+	output_device_names().into_ffi_vec()
 }
 /// Returns the host's input device names in enumeration order.
 ///
@@ -107,8 +107,8 @@ pub extern "C" fn quercus_audio_manager_output_device_names() -> *mut QuercusVec
 /// not marked — callers prepend their own "system default" entry (index `-1`).
 /// The vector is empty when the host reports no input devices.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_input_device_names() -> *mut QuercusVecString{
-    input_device_names().into_ffi_vec()
+pub extern "C" fn quercus_audio_manager_input_device_names() -> *mut QuercusVecString {
+	input_device_names().into_ffi_vec()
 }
 
 /// Looks up a device's enumeration index by its exact name.
@@ -125,17 +125,21 @@ pub extern "C" fn quercus_audio_manager_input_device_names() -> *mut QuercusVecS
 /// `name` must be valid for `len` byte reads when non-null; it need not be
 /// NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_audio_manager_device_index_by_name(name: *const u8, len: usize, is_output: bool) -> i32{
-    if name.is_null() {
-        return -1;
-    }
-    // The buffer is borrowed from C: build a &str view over it (no copy,
-    // no ownership transfer), validating UTF-8 at the boundary.
-    let bytes = unsafe { std::slice::from_raw_parts(name, len) };
-    let Ok(name) = std::str::from_utf8(bytes) else {
-        return -1;
-    };
-    device_index_by_name(name, is_output).unwrap_or(-1)
+pub unsafe extern "C" fn quercus_audio_manager_device_index_by_name(
+	name: *const u8,
+	len: usize,
+	is_output: bool,
+) -> i32 {
+	if name.is_null() {
+		return -1;
+	}
+	// The buffer is borrowed from C: build a &str view over it (no copy,
+	// no ownership transfer), validating UTF-8 at the boundary.
+	let bytes = unsafe { std::slice::from_raw_parts(name, len) };
+	let Ok(name) = std::str::from_utf8(bytes) else {
+		return -1;
+	};
+	device_index_by_name(name, is_output).unwrap_or(-1)
 }
 
 /// Switches the output device to enumeration index `device`.
@@ -147,9 +151,11 @@ pub unsafe extern "C" fn quercus_audio_manager_device_index_by_name(name: *const
 /// device. Returns `false` when no manager instance exists; the index itself is
 /// not validated here.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_set_output_device(device: i32) -> bool{
-    let Some(mut inst) = instance() else { return false; };
-    inst.set_output_device(device).is_ok()
+pub extern "C" fn quercus_audio_manager_set_output_device(device: i32) -> bool {
+	let Some(mut inst) = instance() else {
+		return false;
+	};
+	inst.set_output_device(device).is_ok()
 }
 
 /// Selects the input (capture) device used by the next recording.
@@ -161,9 +167,11 @@ pub extern "C" fn quercus_audio_manager_set_output_device(device: i32) -> bool{
 /// only surfaces when the device is opened. Returns `false` when no manager
 /// instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_set_input_device(device: i32) -> bool{
-    let Some(mut inst) = instance() else { return false; };
-    inst.set_input_device(device).is_ok()
+pub extern "C" fn quercus_audio_manager_set_input_device(device: i32) -> bool {
+	let Some(mut inst) = instance() else {
+		return false;
+	};
+	inst.set_input_device(device).is_ok()
 }
 
 /// Reads per-channel peak levels of the buffered, not-yet-consumed output.
@@ -180,18 +188,23 @@ pub extern "C" fn quercus_audio_manager_set_input_device(device: i32) -> bool{
 ///
 /// `peaks` must be valid for `capacity` f32 writes when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_audio_manager_output_levels(peaks: *mut f32, capacity: usize) -> i32{
-    if peaks.is_null() && capacity > 0 {
-        return -1;
-    }
-    let Some(inst) = instance() else { return -1; };
-    let peaks = if peaks.is_null() {
-        // from_raw_parts_mut(null, 0) is UB; an empty slice is not.
-        &mut []
-    } else {
-        unsafe { std::slice::from_raw_parts_mut(peaks, capacity) }
-    };
-    inst.output_levels(peaks).unwrap_or(-1)
+pub unsafe extern "C" fn quercus_audio_manager_output_levels(
+	peaks: *mut f32,
+	capacity: usize,
+) -> i32 {
+	if peaks.is_null() && capacity > 0 {
+		return -1;
+	}
+	let Some(inst) = instance() else {
+		return -1;
+	};
+	let peaks = if peaks.is_null() {
+		// from_raw_parts_mut(null, 0) is UB; an empty slice is not.
+		&mut []
+	} else {
+		unsafe { std::slice::from_raw_parts_mut(peaks, capacity) }
+	};
+	inst.output_levels(peaks).unwrap_or(-1)
 }
 
 /// Reads the seconds of audio consumed by the output device since the last
@@ -207,17 +220,19 @@ pub unsafe extern "C" fn quercus_audio_manager_output_levels(peaks: *mut f32, ca
 ///
 /// `seconds` must be a valid `*mut f64`, or null (which is rejected).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_audio_manager_seconds(seconds: *mut f64) -> bool{
-    if seconds.is_null() {
-        return false;
-    }
-    let Some(inst) = instance() else { return false; };
-    let mut seconds_got:f64 = 0.0;
-    if !inst.seconds(&mut seconds_got).is_ok(){
-        return false;
-    }
-    unsafe { *seconds = seconds_got };
-    true
+pub unsafe extern "C" fn quercus_audio_manager_seconds(seconds: *mut f64) -> bool {
+	if seconds.is_null() {
+		return false;
+	}
+	let Some(inst) = instance() else {
+		return false;
+	};
+	let mut seconds_got: f64 = 0.0;
+	if !inst.seconds(&mut seconds_got).is_ok() {
+		return false;
+	}
+	unsafe { *seconds = seconds_got };
+	true
 }
 
 /// Discards all audio currently buffered for output without stopping playback.
@@ -226,9 +241,11 @@ pub unsafe extern "C" fn quercus_audio_manager_seconds(seconds: *mut f64) -> boo
 /// and only the queued bytes are dropped. Returns `false` when no manager
 /// instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_clear_buffered_output() -> bool{
-    let Some(inst) = instance() else { return false; };
-    inst.clear_buffered_output().is_ok()
+pub extern "C" fn quercus_audio_manager_clear_buffered_output() -> bool {
+	let Some(inst) = instance() else {
+		return false;
+	};
+	inst.clear_buffered_output().is_ok()
 }
 
 /// Restarts the output playback clock at zero.
@@ -237,9 +254,11 @@ pub extern "C" fn quercus_audio_manager_clear_buffered_output() -> bool{
 /// with [`quercus_audio_manager_seconds`], which reads that clock. Returns
 /// `false` when no manager instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_reset_output_clock() -> bool{
-    let Some(inst) = instance() else { return false; };
-    inst.reset_output_clock().is_ok()
+pub extern "C" fn quercus_audio_manager_reset_output_clock() -> bool {
+	let Some(inst) = instance() else {
+		return false;
+	};
+	inst.reset_output_clock().is_ok()
 }
 
 /// Stops playback and discards everything still queued for the output device.
@@ -249,9 +268,11 @@ pub extern "C" fn quercus_audio_manager_reset_output_clock() -> bool{
 /// [`quercus_audio_manager_push_to_output`] restarts playback; the device stream
 /// is not explicitly closed. Returns `false` when no manager instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_stop_output() -> bool{
-    let Some(mut inst) = instance() else { return false; };
-    inst.stop_output().is_ok()
+pub extern "C" fn quercus_audio_manager_stop_output() -> bool {
+	let Some(mut inst) = instance() else {
+		return false;
+	};
+	inst.stop_output().is_ok()
 }
 
 /// Reads and resets the output underrun counter.
@@ -261,9 +282,11 @@ pub extern "C" fn quercus_audio_manager_stop_output() -> bool{
 /// every tick and resyncs afterwards, since the zero-fill advanced the output
 /// clock past the queued content. Returns `-1` when no manager instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_take_output_underrun_frames() -> i64{
-    let Some(inst) = instance() else { return -1; };
-    inst.take_output_underrun_frames()
+pub extern "C" fn quercus_audio_manager_take_output_underrun_frames() -> i64 {
+	let Some(inst) = instance() else {
+		return -1;
+	};
+	inst.take_output_underrun_frames()
 }
 
 /// Returns the number of frames currently queued for the output callback.
@@ -272,9 +295,11 @@ pub extern "C" fn quercus_audio_manager_take_output_underrun_frames() -> i64{
 /// [`quercus_audio_manager_output_levels`]. Returns `-1` when no manager
 /// instance exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_output_queued_frames() -> i64{
-    let Some(inst) = instance() else { return -1; };
-    inst.output_queued_frames()
+pub extern "C" fn quercus_audio_manager_output_queued_frames() -> i64 {
+	let Some(inst) = instance() else {
+		return -1;
+	};
+	inst.output_queued_frames()
 }
 
 /// Drops up to `frame` frames from the front of the output queue.
@@ -284,9 +309,11 @@ pub extern "C" fn quercus_audio_manager_output_queued_frames() -> i64{
 /// than `frame` when the queue is shorter), or `-1` when no manager instance
 /// exists.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_audio_manager_drop_output_frames(frame: i64) -> i64{
-    let Some(inst) = instance() else { return -1; };
-    inst.drop_output_frames(frame)
+pub extern "C" fn quercus_audio_manager_drop_output_frames(frame: i64) -> i64 {
+	let Some(inst) = instance() else {
+		return -1;
+	};
+	inst.drop_output_frames(frame)
 }
 
 /// Buffers one block of raw sample bytes for the audio output device.
@@ -308,29 +335,35 @@ pub extern "C" fn quercus_audio_manager_drop_output_frames(frame: i64) -> i64{
 /// `sample` must be valid for `sample_len` byte reads and `error_buf` valid for
 /// `error_buf_len` byte writes; either may be null only when its length is 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_audio_manager_push_to_output(params: QuercusAudioParams,
-                                                          sample: *const u8, sample_len: usize,
-                                                          error_buf: *mut u8, error_buf_len: usize
-) -> bool{
-    // from_raw_parts on null is UB even with len 0; empty slices are not.
-    if sample.is_null() && sample_len > 0 {
-        return false;
-    }
-    if error_buf.is_null() && error_buf_len > 0 {
-        return false;
-    }
-    let sample_buf = if sample.is_null() {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(sample, sample_len) }
-    };
-    let error_buf = if error_buf.is_null() {
-        &mut []
-    } else {
-        unsafe { std::slice::from_raw_parts_mut(error_buf, error_buf_len) }
-    };
-    let Some(mut inst) = instance() else { return false; };
-    inst.push_to_output(params.to_native(), sample_buf, error_buf).is_ok()
+pub unsafe extern "C" fn quercus_audio_manager_push_to_output(
+	params: QuercusAudioParams,
+	sample: *const u8,
+	sample_len: usize,
+	error_buf: *mut u8,
+	error_buf_len: usize,
+) -> bool {
+	// from_raw_parts on null is UB even with len 0; empty slices are not.
+	if sample.is_null() && sample_len > 0 {
+		return false;
+	}
+	if error_buf.is_null() && error_buf_len > 0 {
+		return false;
+	}
+	let sample_buf = if sample.is_null() {
+		&[]
+	} else {
+		unsafe { std::slice::from_raw_parts(sample, sample_len) }
+	};
+	let error_buf = if error_buf.is_null() {
+		&mut []
+	} else {
+		unsafe { std::slice::from_raw_parts_mut(error_buf, error_buf_len) }
+	};
+	let Some(mut inst) = instance() else {
+		return false;
+	};
+	inst.push_to_output(params.to_native(), sample_buf, error_buf)
+		.is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -571,8 +604,7 @@ pub unsafe extern "C" fn quercus_audio_levelmeter_analyze(
 	if channels > 0 && channel_stats.is_null() {
 		return false;
 	}
-	let channels_ptrs =
-		unsafe { std::slice::from_raw_parts(planar, channels) };
+	let channels_ptrs = unsafe { std::slice::from_raw_parts(planar, channels) };
 	let mut lanes: Vec<&[f32]> = Vec::with_capacity(channels);
 	for &ptr in channels_ptrs {
 		if ptr.is_null() && samples_per_channel > 0 {
@@ -605,7 +637,10 @@ mod tests {
 		// Stereo (layout 0x3) F32 (discriminant 10): 4 bytes/sample/channel.
 		assert_eq!(quercus_audio_params_channel_count(0x3), 2);
 		assert_eq!(quercus_audio_params_bytes_per_sample_per_channel(10), 4);
-		assert_eq!(quercus_audio_params_samples_to_bytes(48000, 0x3, 10, 100), 800);
+		assert_eq!(
+			quercus_audio_params_samples_to_bytes(48000, 0x3, 10, 100),
+			800
+		);
 
 		let r = quercus_audio_params_frames_to_rational(48, 48_000);
 		assert_eq!((r.num, r.den), (1, 1000));

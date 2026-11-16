@@ -3,7 +3,12 @@
 //! time, project extent) — the `quercusui/ofx.rs` wiring exposed over
 //! the C ABI.
 
+use crate::ofx;
+use quercus_ofx_plugin::property;
+use quercus_render::procpool;
 use std::ffi::{CString, c_char, c_void};
+use std::path;
+use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -64,7 +69,7 @@ pub unsafe extern "C" fn quercus_ofx_scan_path(path: *const u8, path_len: usize)
 	};
 	Host::global()
 		.cache
-		.scan_path(std::path::Path::new(path))
+		.scan_path(path::Path::new(path))
 		.is_ok()
 }
 
@@ -147,10 +152,14 @@ pub unsafe extern "C" fn quercus_ofx_plugin_identifier_at(
 ///
 /// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_plugin_label_at(index: i32, buf: *mut u8, buf_len: usize) -> i32 {
+pub unsafe extern "C" fn quercus_ofx_plugin_label_at(
+	index: i32,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
 	plugin_string_at(index, buf, buf_len, |p| {
 		match p.descriptor.props.get(PROP_LABEL, 0) {
-			Some(quercus_ofx_plugin::property::Value::String(s)) => s.to_string_lossy().into_owned(),
+			Some(property::Value::String(s)) => s.to_string_lossy().into_owned(),
 			_ => String::new(),
 		}
 	})
@@ -178,7 +187,11 @@ pub unsafe extern "C" fn quercus_ofx_plugin_label_at(index: i32, buf: *mut u8, b
 ///
 /// `buf` must be valid for `buf_len` writes when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_plugin_path_at(index: i32, buf: *mut u8, buf_len: usize) -> i32 {
+pub unsafe extern "C" fn quercus_ofx_plugin_path_at(
+	index: i32,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
 	plugin_string_at(index, buf, buf_len, |p| {
 		p.bundle_path.to_string_lossy().into_owned()
 	})
@@ -287,8 +300,8 @@ pub unsafe extern "C" fn quercus_ofx_plugin_context_at(
 /// allocated but inert (their render entry short-circuits).
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_shutdown() {
-	crate::ofx::interact::shutdown();
-	unsafe { quercus_ofx_set_progress_handler(None, None, std::ptr::null_mut()) };
+	ofx::interact::shutdown();
+	unsafe { quercus_ofx_set_progress_handler(None, None, ptr::null_mut()) };
 	Host::global().shutdown();
 }
 
@@ -379,7 +392,11 @@ pub extern "C" fn quercus_ofx_instance_count() -> i32 {
 /// `buf` must be valid for `buf_len` writes when non-null; the instance must not
 /// be released concurrently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_ofx_instance_context(id: u64, buf: *mut u8, buf_len: usize) -> i32 {
+pub unsafe extern "C" fn quercus_ofx_instance_context(
+	id: u64,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
 	let Some(inst) = node_factory::instance_from_id(id) else {
 		return -1;
 	};
@@ -568,8 +585,11 @@ impl UiProgressReporter for SilentReporter {
 	}
 }
 
-static PROGRESS_HANDLER: Mutex<(Option<QuercusOfxProgressFn>, Option<QuercusOfxProgressEndFn>, usize)> =
-	Mutex::new((None, None, 0));
+static PROGRESS_HANDLER: Mutex<(
+	Option<QuercusOfxProgressFn>,
+	Option<QuercusOfxProgressEndFn>,
+	usize,
+)> = Mutex::new((None, None, 0));
 static RENDER_CANCEL: AtomicBool = AtomicBool::new(false);
 
 /// Bridges the render procpool's plugin-progress hook to the C progress
@@ -582,7 +602,7 @@ static RENDER_CANCEL: AtomicBool = AtomicBool::new(false);
 /// into a no-op) and ignores the callback's return value — worker cancellation
 /// is driven by `quercus_ofx_cancel_render` instead.
 fn install_worker_progress_handler() {
-	quercus_render::procpool::set_plugin_progress_cb(Some(Arc::new(|label, message, fraction| {
+	procpool::set_plugin_progress_cb(Some(Arc::new(|label, message, fraction| {
 		let (cb, _, userdata) = *PROGRESS_HANDLER.lock().unwrap_or_else(|e| e.into_inner());
 		let Some(cb) = cb else {
 			return;
@@ -635,7 +655,7 @@ pub unsafe extern "C" fn quercus_ofx_set_progress_handler(
 		None => {
 			*slot = (None, None, 0);
 			drop(slot);
-			quercus_render::procpool::set_plugin_progress_cb(None);
+			procpool::set_plugin_progress_cb(None);
 			quercus_ofx_plugin::progress::set_reporter_factory(None);
 		}
 		Some(_) => {
@@ -666,7 +686,7 @@ pub unsafe extern "C" fn quercus_ofx_set_progress_handler(
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_ofx_cancel_render() {
 	RENDER_CANCEL.store(true, Ordering::Relaxed);
-	quercus_render::procpool::request_plugin_cancel_all();
+	procpool::request_plugin_cancel_all();
 }
 
 /// Whether a progress handler is registered.

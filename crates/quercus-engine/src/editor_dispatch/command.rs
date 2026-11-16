@@ -7,6 +7,8 @@
 //! use the current sequence's frame timebase; wire rationals do not.
 
 use super::{WireRational, WireTimeRange};
+use quercus_codec::proxymanager;
+use quercus_node::value;
 
 /// A decoded ABI command. This is intentionally separate from the SDK's
 /// public `EditCommand`, which uses safe `NodeId` and native rational types.
@@ -282,14 +284,14 @@ pub enum EditCommand {
 		node: u64,
 		input_id: String,
 		element: i32,
-		value: quercus_node::value::QuercusNodeValue,
+		value: value::QuercusNodeValue,
 	},
 	UpsertNodeKeyframe {
 		node: u64,
 		input_id: String,
 		element: i32,
 		time: WireRational,
-		value: quercus_node::value::QuercusNodeValue,
+		value: value::QuercusNodeValue,
 		interpolation: i32,
 		bezier_in: (f64, f64),
 		bezier_out: (f64, f64),
@@ -305,7 +307,7 @@ pub enum EditCommand {
 		input_id: String,
 		element: i32,
 		time: WireRational,
-		value: quercus_node::value::QuercusNodeValue,
+		value: value::QuercusNodeValue,
 	},
 	PushNodeButton {
 		node: u64,
@@ -326,7 +328,7 @@ pub enum EditCommand {
 	},
 	SetFootageProxyParams {
 		footage: u64,
-		params: quercus_codec::proxymanager::ProxyParams,
+		params: proxymanager::ProxyParams,
 	},
 	ClearFootageProxyParams {
 		footage: u64,

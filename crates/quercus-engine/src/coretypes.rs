@@ -7,7 +7,10 @@
 //! (reduction, sentinel propagation, C++-compatible overflow behavior)
 //! instead of reimplementing them.
 
+use crate::codec;
 use quercus_core::ocioutils::PixelFormat as VideoPixelFormat;
+use std::cmp;
+use std::str;
 
 use crate::handle::NativeMirror;
 use quercus_core::videoparams::{ColorRange, Interlacing, VideoParams, VideoType};
@@ -140,7 +143,10 @@ pub extern "C" fn quercus_core_rational_from_f64(value: f64) -> QuercusRational 
 /// NaN operand propagates NaN. Mirrors the C++ `Rational::operator+`. Both
 /// operands are taken by value.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_rational_add(a: QuercusRational, b: QuercusRational) -> QuercusRational {
+pub extern "C" fn quercus_core_rational_add(
+	a: QuercusRational,
+	b: QuercusRational,
+) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() + b.to_native()))
 }
 
@@ -150,7 +156,10 @@ pub extern "C" fn quercus_core_rational_add(a: QuercusRational, b: QuercusRation
 /// NaN operand propagates NaN. Mirrors the C++ `Rational::operator-`. Both
 /// operands are taken by value.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_rational_sub(a: QuercusRational, b: QuercusRational) -> QuercusRational {
+pub extern "C" fn quercus_core_rational_sub(
+	a: QuercusRational,
+	b: QuercusRational,
+) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() - b.to_native()))
 }
 
@@ -160,7 +169,10 @@ pub extern "C" fn quercus_core_rational_sub(a: QuercusRational, b: QuercusRation
 /// NaN operand propagates NaN. Mirrors the C++ `Rational::operator*`. Both
 /// operands are taken by value.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_rational_mul(a: QuercusRational, b: QuercusRational) -> QuercusRational {
+pub extern "C" fn quercus_core_rational_mul(
+	a: QuercusRational,
+	b: QuercusRational,
+) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() * b.to_native()))
 }
 
@@ -170,7 +182,10 @@ pub extern "C" fn quercus_core_rational_mul(a: QuercusRational, b: QuercusRation
 /// yields the null sentinel `0/0`; a NaN operand propagates NaN. Mirrors the
 /// C++ `Rational::operator/`. Both operands are taken by value.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_rational_div(a: QuercusRational, b: QuercusRational) -> QuercusRational {
+pub extern "C" fn quercus_core_rational_div(
+	a: QuercusRational,
+	b: QuercusRational,
+) -> QuercusRational {
 	QuercusRational::from_native(&(a.to_native() / b.to_native()))
 }
 
@@ -183,9 +198,9 @@ pub extern "C" fn quercus_core_rational_div(a: QuercusRational, b: QuercusRation
 #[unsafe(no_mangle)]
 pub extern "C" fn quercus_core_rational_cmp(a: QuercusRational, b: QuercusRational) -> i32 {
 	match a.to_native().cmp(&b.to_native()) {
-		std::cmp::Ordering::Less => -1,
-		std::cmp::Ordering::Equal => 0,
-		std::cmp::Ordering::Greater => 1,
+		cmp::Ordering::Less => -1,
+		cmp::Ordering::Equal => 0,
+		cmp::Ordering::Greater => 1,
 	}
 }
 
@@ -198,8 +213,12 @@ pub extern "C" fn quercus_core_rational_cmp(a: QuercusRational, b: QuercusRation
 /// `buf_len == 0` writes nothing and just returns the required length (query
 /// mode). See `codec::copy_str_out`.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_rational_to_string(r: QuercusRational, buf: *mut u8, buf_len: usize) -> i32 {
-	crate::codec::copy_str_out(&r.to_native().to_display_string(), buf, buf_len)
+pub extern "C" fn quercus_core_rational_to_string(
+	r: QuercusRational,
+	buf: *mut u8,
+	buf_len: usize,
+) -> i32 {
+	codec::copy_str_out(&r.to_native().to_display_string(), buf, buf_len)
 }
 
 /// Parse the project-XML rational text form, e.g. `"30000/1001"`.
@@ -214,8 +233,11 @@ pub extern "C" fn quercus_core_rational_to_string(r: QuercusRational, buf: *mut 
 /// `s` must point to `len` readable bytes that stay valid for the call; a null
 /// pointer is allowed and returns the null sentinel.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn quercus_core_rational_from_string(s: *const u8, len: usize) -> QuercusRational {
-	let Some(s) = (unsafe { crate::codec::str_arg(s, len) }) else {
+pub unsafe extern "C" fn quercus_core_rational_from_string(
+	s: *const u8,
+	len: usize,
+) -> QuercusRational {
+	let Some(s) = (unsafe { codec::str_arg(s, len) }) else {
 		return quercus_core_rational_null();
 	};
 	QuercusRational::from_native(&Rational::from_string(s))
@@ -247,7 +269,10 @@ pub extern "C" fn quercus_core_rational_timestamp_to_time(
 
 /// A normalized half-open range (endpoints swapped when `out < in`).
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_timerange_new(in_: QuercusRational, out: QuercusRational) -> QuercusTimeRange {
+pub extern "C" fn quercus_core_timerange_new(
+	in_: QuercusRational,
+	out: QuercusRational,
+) -> QuercusTimeRange {
 	QuercusTimeRange::from_native(&TimeRange::new(in_.to_native(), out.to_native()))
 }
 
@@ -294,7 +319,10 @@ pub extern "C" fn quercus_core_timerange_intersected(
 /// (C++ `TimeRange::combined`); it never merges into a list of ranges. Both
 /// inputs are taken by value.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_timerange_combined(a: QuercusTimeRange, b: QuercusTimeRange) -> QuercusTimeRange {
+pub extern "C" fn quercus_core_timerange_combined(
+	a: QuercusTimeRange,
+	b: QuercusTimeRange,
+) -> QuercusTimeRange {
 	QuercusTimeRange::from_native(&a.to_native().combined(&b.to_native()))
 }
 
@@ -453,7 +481,7 @@ impl crate::handle::NativeMirror for QuercusVideoParams {
 			.iter()
 			.position(|&b| b == 0)
 			.unwrap_or(self.colorspace.len());
-		v.set_colorspace(std::str::from_utf8(&self.colorspace[..end]).unwrap_or(""));
+		v.set_colorspace(str::from_utf8(&self.colorspace[..end]).unwrap_or(""));
 		v
 	}
 }
@@ -490,7 +518,9 @@ pub extern "C" fn quercus_core_videoparams_is_valid(params: *const QuercusVideoP
 /// divider is `0`, because the underlying division is unchecked; validate the
 /// parameter set before calling.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_videoparams_effective_width(params: *const QuercusVideoParams) -> i32 {
+pub extern "C" fn quercus_core_videoparams_effective_width(
+	params: *const QuercusVideoParams,
+) -> i32 {
 	if params.is_null() {
 		return 0;
 	}
@@ -509,7 +539,9 @@ pub extern "C" fn quercus_core_videoparams_effective_width(params: *const Quercu
 /// divider is `0`, because the underlying division is unchecked; validate the
 /// parameter set before calling.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_videoparams_effective_height(params: *const QuercusVideoParams) -> i32 {
+pub extern "C" fn quercus_core_videoparams_effective_height(
+	params: *const QuercusVideoParams,
+) -> i32 {
 	if params.is_null() {
 		return 0;
 	}
@@ -518,7 +550,9 @@ pub extern "C" fn quercus_core_videoparams_effective_height(params: *const Querc
 
 /// Bytes per pixel for this parameter set; -1 when params is null.
 #[unsafe(no_mangle)]
-pub extern "C" fn quercus_core_videoparams_bytes_per_pixel(params: *const QuercusVideoParams) -> i32 {
+pub extern "C" fn quercus_core_videoparams_bytes_per_pixel(
+	params: *const QuercusVideoParams,
+) -> i32 {
 	if params.is_null() {
 		return -1;
 	}
@@ -553,7 +587,11 @@ mod tests {
 		assert_eq!(r(2, 4), QuercusRational { num: 1, den: 2 });
 		assert_eq!(r(1, -2), QuercusRational { num: -1, den: 2 });
 		assert_eq!(r(0, 5), QuercusRational { num: 0, den: 1 });
-		assert_eq!(r(3, 0), QuercusRational { num: 0, den: 0 }, "den 0 is the null sentinel");
+		assert_eq!(
+			r(3, 0),
+			QuercusRational { num: 0, den: 0 },
+			"den 0 is the null sentinel"
+		);
 	}
 
 	#[test]
@@ -563,7 +601,10 @@ mod tests {
 		assert!(!quercus_core_rational_is_nan(r(1, 2)));
 		// The INT_MAX sentinel propagates NaN through arithmetic.
 		let nan = quercus_core_rational_add(r(i32::MAX as i64, 1), r(i32::MAX as i64, 1));
-		assert!(quercus_core_rational_is_nan(nan), "overflow sentinel: {nan:?}");
+		assert!(
+			quercus_core_rational_is_nan(nan),
+			"overflow sentinel: {nan:?}"
+		);
 
 		assert_eq!(quercus_core_rational_cmp(r(1, 2), r(2, 3)), -1);
 		assert_eq!(quercus_core_rational_cmp(r(1, 2), r(1, 2)), 0);
@@ -599,7 +640,10 @@ mod tests {
 		let timebase = r(1, 25);
 		let ts = quercus_core_rational_time_to_timestamp(timebase, r(2, 1));
 		assert_eq!(ts, 50);
-		assert_eq!(quercus_core_rational_timestamp_to_time(timebase, ts), r(2, 1));
+		assert_eq!(
+			quercus_core_rational_timestamp_to_time(timebase, ts),
+			r(2, 1)
+		);
 	}
 
 	#[test]
@@ -663,7 +707,10 @@ mod tests {
 		p.colorspace[..name.len()].copy_from_slice(name);
 		let native = p.to_native();
 		let back = QuercusVideoParams::from_native(&native);
-		assert_eq!((back.width, back.height, back.format, back.channel_count), (1920, 1080, 4, 4));
+		assert_eq!(
+			(back.width, back.height, back.format, back.channel_count),
+			(1920, 1080, 4, 4)
+		);
 		assert_eq!((back.time_base_num, back.time_base_den), (1, 25));
 		assert_eq!(&back.colorspace[..6], b"acescg");
 		assert!(quercus_core_videoparams_is_valid(&back));
@@ -677,6 +724,9 @@ mod tests {
 
 		// Null reads are safe.
 		assert!(!quercus_core_videoparams_is_valid(std::ptr::null()));
-		assert_eq!(quercus_core_videoparams_bytes_per_pixel(std::ptr::null()), -1);
+		assert_eq!(
+			quercus_core_videoparams_bytes_per_pixel(std::ptr::null()),
+			-1
+		);
 	}
 }

@@ -32,7 +32,10 @@
 //!
 //! CPP-PARITY: src/task/src/precache/precachetask.h
 
+use quercus_core::texture;
 use quercus_core::videoparams::VideoParams;
+use quercus_render::ticket;
+use std::mem;
 
 use crate::error::Result;
 use crate::nodeops::{self, NodeRef};
@@ -74,7 +77,13 @@ impl PreCacheTask {
 
 		// The render target is the footage node itself (pre-cache fills
 		// that footage's frame cache).
-		let render = RenderTask::new(base, video_params, footage.clone(), Default::default(), None);
+		let render = RenderTask::new(
+			base,
+			video_params,
+			footage.clone(),
+			Default::default(),
+			None,
+		);
 
 		PreCacheTask {
 			render,
@@ -99,13 +108,13 @@ impl TaskBehavior for PreCacheTask {
 		// No color manager / frame-cache handles exist on the direct
 		// ticket path (the arena keys the cache by the footage node
 		// identity — see `RenderTask::build_video_ticket`).
-		self.render.set_render_inputs(0 /* k_online */, false, range);
+		self.render
+			.set_render_inputs(0 /* k_online */, false, range);
 
 		// Drive the render with `self` as the subclass behavior (the C++
 		// virtual dispatch receiver); the render is temporarily moved out to
 		// avoid a self-referential borrow and put back before returning.
-		let mut render =
-			std::mem::replace(&mut self.render, crate::render::RenderTask::placeholder());
+		let mut render = mem::replace(&mut self.render, crate::render::RenderTask::placeholder());
 		let result = render.render(task, self);
 		self.render = render;
 
@@ -114,7 +123,7 @@ impl TaskBehavior for PreCacheTask {
 }
 
 impl RenderTaskBehavior for PreCacheTask {
-	fn frame_downloaded(&mut self, task: &mut Task, frame: &quercus_core::texture::Texture) -> Result<()> {
+	fn frame_downloaded(&mut self, task: &mut Task, frame: &texture::Texture) -> Result<()> {
 		// Do nothing: pre-cache just fills the frame cache (the direct
 		// ticket arena records the render through the ticket's cache
 		// identity; see the module docs).
@@ -122,11 +131,7 @@ impl RenderTaskBehavior for PreCacheTask {
 		Ok(())
 	}
 
-	fn audio_downloaded(
-		&mut self,
-		task: &mut Task,
-		buffer: &quercus_render::ticket::AudioSamples,
-	) -> Result<()> {
+	fn audio_downloaded(&mut self, task: &mut Task, buffer: &ticket::AudioSamples) -> Result<()> {
 		// Pre-cache doesn't cache any audio.
 		let _ = (task, buffer);
 		Ok(())

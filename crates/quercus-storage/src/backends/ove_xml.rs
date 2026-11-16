@@ -32,10 +32,15 @@
 //! written uncompressed. Unknown option bits are ignored too (M10 §2.2).
 
 use crate::backend::LoadResult;
-use crate::error::{Error, QUERCUSSTORAGE_OK, QUERCUSSTORAGE_TOO_NEW, QUERCUSSTORAGE_TOO_OLD, QUERCUSSTORAGE_UNKNOWN_VERSION};
+use crate::error::{
+	Error, QUERCUSSTORAGE_OK, QUERCUSSTORAGE_TOO_NEW, QUERCUSSTORAGE_TOO_OLD,
+	QUERCUSSTORAGE_UNKNOWN_VERSION,
+};
+use crate::handle;
 use crate::nodeutil::ProjectArc;
 use crate::uri::StorageUri;
 use quercus_node::serializer::{probe_version, VersionProbe};
+use std::fs;
 
 /// The ove-xml backend (`file://` + `.ove`).
 pub struct OveXmlBackend;
@@ -55,17 +60,12 @@ impl OveXmlBackend {
 		uri: &StorageUri,
 		_options: u32,
 	) -> crate::error::Result<()> {
-		let path = uri
-			.local_path()
-			.ok_or(Error::Invalid)?
-			.to_string();
+		let path = uri.local_path().ok_or(Error::Invalid)?.to_string();
 		let xml = {
-			let guard = project
-				.lock()
-				.map_err(|_| Error::State)?;
+			let guard = project.lock().map_err(|_| Error::State)?;
 			crate::nodeutil::serializer_save(&guard)?
 		};
-		std::fs::write(&path, xml).map_err(|e| Error::Io(e.to_string()))?;
+		fs::write(&path, xml).map_err(|e| Error::Io(e.to_string()))?;
 		Ok(())
 	}
 }
@@ -90,11 +90,8 @@ impl crate::backend::StorageBackend for OveXmlBackend {
 	}
 
 	fn load(&self, uri: &StorageUri) -> crate::error::Result<LoadResult> {
-		let path = uri
-			.local_path()
-			.ok_or(Error::Invalid)?
-			.to_string();
-		let xml = std::fs::read_to_string(&path).map_err(|e| Error::Io(e.to_string()))?;
+		let path = uri.local_path().ok_or(Error::Invalid)?.to_string();
+		let xml = fs::read_to_string(&path).map_err(|e| Error::Io(e.to_string()))?;
 
 		let probe = probe_version(&xml).ok_or_else(|| {
 			Error::Format(format!("'{}' is not a parseable project document", path))
@@ -119,7 +116,7 @@ impl crate::backend::StorageBackend for OveXmlBackend {
 
 	fn save(
 		&self,
-		project: crate::handle::CHandle,
+		project: handle::CHandle,
 		uri: &StorageUri,
 		options: u32,
 	) -> crate::error::Result<()> {

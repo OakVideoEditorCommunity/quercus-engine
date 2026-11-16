@@ -7,6 +7,11 @@
 //! the SDK exposes plain free functions.
 
 use std::ffi::c_void;
+use std::mem;
+use std::panic;
+use std::ptr;
+use std::slice;
+use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -47,8 +52,18 @@ struct QuercusConfigSourceVTable {
 /// The only supported config-source vtable ABI version.
 const CONFIG_SOURCE_ABI_VERSION: u32 = 1;
 
-#[cfg_attr(all(windows, feature = "engine-cdylib"), link(name = "quercus_engine.dll.lib", kind = "dylib", modifiers = "+verbatim"))]
-#[cfg_attr(all(not(windows), feature = "engine-cdylib"), link(name = "quercus_engine", kind = "dylib"))]
+#[cfg_attr(
+	all(windows, feature = "engine-cdylib"),
+	link(
+		name = "quercus_engine.dll.lib",
+		kind = "dylib",
+		modifiers = "+verbatim"
+	)
+)]
+#[cfg_attr(
+	all(not(windows), feature = "engine-cdylib"),
+	link(name = "quercus_engine", kind = "dylib")
+)]
 unsafe extern "C" {
 	fn quercus_core_config_set(
 		group: *const u8,
@@ -165,7 +180,12 @@ unsafe extern "C" {
 		buf_len: usize,
 	) -> i32;
 	#[cfg(target_os = "linux")]
-	fn quercus_core_displayicc_x11_monitor_fingerprint_at(x: f64, y: f64, buf: *mut u8, buf_len: usize) -> i32;
+	fn quercus_core_displayicc_x11_monitor_fingerprint_at(
+		x: f64,
+		y: f64,
+		buf: *mut u8,
+		buf_len: usize,
+	) -> i32;
 }
 
 /// A failed engine state call.
@@ -277,7 +297,7 @@ fn arg(s: &str) -> (*const u8, usize) {
 fn opt_arg(s: Option<&str>) -> (*const u8, usize) {
 	match s {
 		Some(s) => (s.as_ptr(), s.len()),
-		None => (std::ptr::null(), 0),
+		None => (ptr::null(), 0),
 	}
 }
 
@@ -450,7 +470,7 @@ unsafe extern "C" fn config_source_load(userdata: *mut c_void, buf: *mut u8, cap
 	// stays alive until the paired drop trampoline runs.
 	let state = unsafe { &*(userdata as *const SourceBox) };
 	// A panic inside the host source must not unwind across the C ABI.
-	let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	let loaded = panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		state
 			.source
 			.lock()
@@ -465,7 +485,7 @@ unsafe extern "C" fn config_source_load(userdata: *mut c_void, buf: *mut u8, cap
 		let n = text.len().min(cap - 1);
 		// SAFETY: `buf` is writable for `cap` bytes; `n < cap`.
 		unsafe {
-			std::ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
+			ptr::copy_nonoverlapping(text.as_ptr(), buf, n);
 			*buf.add(n) = 0;
 		}
 	}
@@ -498,14 +518,14 @@ unsafe extern "C" fn config_source_save(
 		&[][..]
 	} else {
 		// SAFETY: the engine passes `len` readable bytes for this call.
-		unsafe { std::slice::from_raw_parts(data, len) }
+		unsafe { slice::from_raw_parts(data, len) }
 	};
-	let Ok(toml) = std::str::from_utf8(bytes) else {
+	let Ok(toml) = str::from_utf8(bytes) else {
 		return false;
 	};
 	// SAFETY: see `config_source_load`.
 	let state = unsafe { &*(userdata as *const SourceBox) };
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		state
 			.source
 			.lock()
@@ -532,7 +552,7 @@ unsafe extern "C" fn config_source_drop(userdata: *mut c_void) {
 	}
 	// The source's destructor may panic; keep any unwind inside the
 	// trampoline.
-	let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		// SAFETY: reclaims exactly the Box<SourceBox> handed to the engine.
 		let state = unsafe { Box::from_raw(userdata as *mut SourceBox) };
 		state.active.store(false, Ordering::Release);
@@ -578,7 +598,7 @@ pub fn set_config_source(source: Box<dyn ConfigSource>) -> Result<ConfigSourceRe
 		active: active.clone(),
 	}));
 	let vt = QuercusConfigSourceVTable {
-		struct_size: std::mem::size_of::<QuercusConfigSourceVTable>() as u32,
+		struct_size: mem::size_of::<QuercusConfigSourceVTable>() as u32,
 		abi_version: CONFIG_SOURCE_ABI_VERSION,
 		load: Some(config_source_load),
 		save: Some(config_source_save),
@@ -664,15 +684,13 @@ where
 		let message = if message.is_null() {
 			""
 		} else {
-			std::str::from_utf8(unsafe { std::slice::from_raw_parts(message, len) }).unwrap_or("")
+			str::from_utf8(unsafe { slice::from_raw_parts(message, len) }).unwrap_or("")
 		};
 		// SAFETY: `userdata` is the Box<F> handed to the engine below and
 		// stays alive until the paired drop trampoline runs.
 		let callback = unsafe { &*(userdata as *const F) };
 		// A panic must not unwind across the C ABI.
-		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-			callback(level, message)
-		}));
+		let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| callback(level, message)));
 	}
 
 	/// C trampoline that reclaims the log-sink closure after the engine
@@ -712,7 +730,7 @@ where
 			true
 		}
 		None => {
-			unsafe { quercus_core_log_set_sink(None, std::ptr::null_mut(), None) };
+			unsafe { quercus_core_log_set_sink(None, ptr::null_mut(), None) };
 			true
 		}
 	}
@@ -742,12 +760,14 @@ pub fn color_set_pipeline_settings(
 
 /// The working color space's setting string.
 pub fn color_working_space() -> String {
-	string_out(|buf, len| unsafe { quercus_core_color_get_working_space(buf, len) }).unwrap_or_default()
+	string_out(|buf, len| unsafe { quercus_core_color_get_working_space(buf, len) })
+		.unwrap_or_default()
 }
 
 /// The output gamut's setting string.
 pub fn color_output_gamut() -> String {
-	string_out(|buf, len| unsafe { quercus_core_color_get_output_gamut(buf, len) }).unwrap_or_default()
+	string_out(|buf, len| unsafe { quercus_core_color_get_output_gamut(buf, len) })
+		.unwrap_or_default()
 }
 
 /// The output transfer's setting string.
@@ -882,7 +902,7 @@ impl Drop for CancelAtom {
 /// The raw handle, for APIs taking a token (e.g.
 /// [`crate::codec::decoder_probe`]).
 pub(crate) fn atom_ptr(atom: Option<&CancelAtom>) -> *const std::ffi::c_void {
-	atom.map_or(std::ptr::null(), |a| a.ptr)
+	atom.map_or(ptr::null(), |a| a.ptr)
 }
 
 #[cfg(test)]
@@ -893,12 +913,19 @@ mod tests {
 	fn idiomatic_config_uses_full_keys_and_native_rust_types() {
 		let config = Config::global();
 		config.set("QuercusSdkConfigObject", "value").expect("set");
-		assert_eq!(config.get("QuercusSdkConfigObject").as_deref(), Some("value"));
-		config.set_bool("QuercusSdkConfigBool", true).expect("set bool");
+		assert_eq!(
+			config.get("QuercusSdkConfigObject").as_deref(),
+			Some("value")
+		);
+		config
+			.set_bool("QuercusSdkConfigBool", true)
+			.expect("set bool");
 		assert!(config.get_bool("QuercusSdkConfigBool", false));
 		config.set_i64("QuercusSdkConfigInt", 42).expect("set int");
 		assert_eq!(config.get_i64("QuercusSdkConfigInt", 0), 42);
-		config.set_f64("QuercusSdkConfigFloat", 1.5).expect("set float");
+		config
+			.set_f64("QuercusSdkConfigFloat", 1.5)
+			.expect("set float");
 		assert_eq!(config.get_f64("QuercusSdkConfigFloat", 0.0), 1.5);
 		assert_eq!(config.get("QuercusSdkConfigMissing"), None);
 	}
@@ -913,7 +940,10 @@ mod tests {
 
 		config_set_bool(group, "flag", true).expect("set_bool");
 		assert!(config_get_bool(group, "flag", false));
-		assert!(config_get_bool(group, "unset", true), "fallback on missing key");
+		assert!(
+			config_get_bool(group, "unset", true),
+			"fallback on missing key"
+		);
 
 		config_set_i64(group, "count", -42).expect("set_i64");
 		assert_eq!(config_get_i64(group, "count", 0), -42);

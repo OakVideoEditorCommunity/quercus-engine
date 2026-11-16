@@ -19,6 +19,9 @@
 
 use crate::id::NodeId;
 use crate::node::{Category, NodeBehavior, NodeCore};
+use crate::serializer;
+use quercus_core::Rational;
+use std::any;
 
 /// Track media type (values match C++ `Track::Type`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,7 +146,10 @@ impl TrackBehavior {
 	/// array and `arraymap_in`; the Rust model keeps block membership in
 	/// [`TrackBehavior::blocks`]).
 	pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
-		(NodeCore::new(), Box::new(TrackBehavior::new(TrackType::Video)))
+		(
+			NodeCore::new(),
+			Box::new(TrackBehavior::new(TrackType::Video)),
+		)
 	}
 
 	/// Block at `index` (None out of range).
@@ -282,7 +288,7 @@ impl TrackBehavior {
 
 	/// Total length (end of the last block; C++ `Track::get_length`).
 	pub fn length(&self, blocks: &dyn BlockRange) -> quercus_core::Rational {
-		let mut end = quercus_core::Rational::new(0, 1);
+		let mut end = Rational::new(0, 1);
 		for b in &self.blocks {
 			let out = blocks.out(*b);
 			if out > end {
@@ -358,7 +364,10 @@ impl TrackListBehavior {
 	/// the inherited `enabled_in` (the list's state lives in the
 	/// behavior; the C++ `TrackList` is a plain QObject, not a node).
 	pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
-		(NodeCore::new(), Box::new(TrackListBehavior::new(TrackType::Video)))
+		(
+			NodeCore::new(),
+			Box::new(TrackListBehavior::new(TrackType::Video)),
+		)
 	}
 
 	/// Track at `index`.
@@ -382,7 +391,7 @@ impl TrackListBehavior {
 	/// Combined length of the longest track (C++
 	/// `TrackList::get_total_length`).
 	pub fn total_length(&self, tracks: &dyn TrackRange) -> quercus_core::Rational {
-		let mut longest = quercus_core::Rational::new(0, 1);
+		let mut longest = Rational::new(0, 1);
 		for t in &self.tracks {
 			let len = tracks.length(*t);
 			if len > longest {
@@ -425,7 +434,7 @@ impl NodeBehavior for TrackBehavior {
 	/// Custom project save (C++ `Track::SaveCustom` writes only the
 	/// height; the type/muted/locked and the block/track-list
 	/// references are Rust additions that older readers skip).
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = core;
 		writer.text_element("type", &self.kind.to_c().to_string());
 		writer.text_element("index", &self.index.to_string());
@@ -448,11 +457,7 @@ impl NodeBehavior for TrackBehavior {
 	/// ids resolved by the serializer's post-load pass; a track saved by
 	/// C++ carries only `<height>`, so the kind is filled from the
 	/// sequence `track_in_%1` connection when the custom has none.
-	fn load_custom(
-		&mut self,
-		_core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, _core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		while reader.next_start_element() {
 			match reader.name() {
 				"type" => {
@@ -467,7 +472,11 @@ impl NodeBehavior for TrackBehavior {
 					}
 				}
 				"index" => {
-					self.index = reader.read_element_text().trim().parse().unwrap_or(self.index)
+					self.index = reader
+						.read_element_text()
+						.trim()
+						.parse()
+						.unwrap_or(self.index)
 				}
 				"muted" => self.muted = reader.read_element_text().trim() == "1",
 				"locked" => self.locked = reader.read_element_text().trim() == "1",
@@ -479,14 +488,14 @@ impl NodeBehavior for TrackBehavior {
 						.unwrap_or(self.height)
 				}
 				"tracklist" => {
-					self.track_list = crate::serializer::parse_node_ref(&reader.read_element_text())
+					self.track_list = serializer::parse_node_ref(&reader.read_element_text())
 				}
 				"blocks" => {
 					self.blocks.clear();
 					while reader.next_start_element() {
 						if reader.name() == "block" {
 							if let Some(id) =
-								crate::serializer::parse_node_ref(&reader.read_element_text())
+								serializer::parse_node_ref(&reader.read_element_text())
 							{
 								self.blocks.push(id);
 							}
@@ -501,11 +510,11 @@ impl NodeBehavior for TrackBehavior {
 		true
 	}
 
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		Some(self)
 	}
 
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		Some(self)
 	}
 }
@@ -539,7 +548,7 @@ impl NodeBehavior for TrackListBehavior {
 	/// Custom project save: the list kind, array base and its node
 	/// references (the C++ `TrackList` has no serialization of its own —
 	/// it is a plain QObject owned by the sequence).
-	fn save_custom(&self, core: &NodeCore, writer: &mut dyn crate::serializer::XmlWrite) {
+	fn save_custom(&self, core: &NodeCore, writer: &mut dyn serializer::XmlWrite) {
 		let _ = core;
 		writer.text_element("type", &self.kind.to_c().to_string());
 		writer.text_element("arraybase", &self.array_base.to_string());
@@ -557,11 +566,7 @@ impl NodeBehavior for TrackListBehavior {
 
 	/// Custom project load; references resolve in the serializer's
 	/// post-load pass.
-	fn load_custom(
-		&mut self,
-		_core: &mut NodeCore,
-		reader: &mut dyn crate::serializer::XmlRead,
-	) -> bool {
+	fn load_custom(&mut self, _core: &mut NodeCore, reader: &mut dyn serializer::XmlRead) -> bool {
 		while reader.next_start_element() {
 			match reader.name() {
 				"type" => {
@@ -579,14 +584,14 @@ impl NodeBehavior for TrackListBehavior {
 					self.array_base = reader.read_element_text().trim().parse().unwrap_or(0)
 				}
 				"sequence" => {
-					self.sequence = crate::serializer::parse_node_ref(&reader.read_element_text())
+					self.sequence = serializer::parse_node_ref(&reader.read_element_text())
 				}
 				"tracks" => {
 					self.tracks.clear();
 					while reader.next_start_element() {
 						if reader.name() == "track" {
 							if let Some(id) =
-								crate::serializer::parse_node_ref(&reader.read_element_text())
+								serializer::parse_node_ref(&reader.read_element_text())
 							{
 								self.tracks.push(id);
 							}
@@ -601,11 +606,11 @@ impl NodeBehavior for TrackListBehavior {
 		true
 	}
 
-	fn as_any(&self) -> Option<&dyn std::any::Any> {
+	fn as_any(&self) -> Option<&dyn any::Any> {
 		Some(self)
 	}
 
-	fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+	fn as_any_mut(&mut self) -> Option<&mut dyn any::Any> {
 		Some(self)
 	}
 }

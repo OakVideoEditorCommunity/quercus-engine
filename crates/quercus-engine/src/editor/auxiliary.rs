@@ -4,6 +4,9 @@ use crate::codec::copy_str_out;
 use crate::coretypes::QuercusTimeRange;
 use crate::editor::EditorSessionHandle;
 use crate::handle::NativeMirror;
+#[cfg(test)]
+use quercus_core::{Rational, TimeRange};
+use quercus_timeline::marker;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -23,7 +26,7 @@ pub struct MarkerMetadata {
 }
 
 impl MarkerMetadata {
-	fn from_marker(marker: &quercus_timeline::marker::TimelineMarker) -> Self {
+	fn from_marker(marker: &marker::TimelineMarker) -> Self {
 		Self {
 			time: *marker.time(),
 			color: marker.color(),
@@ -164,38 +167,57 @@ pub(crate) fn add_marker_for_test(session: *mut EditorSessionHandle, name: &str)
 	markers
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
-		.add_marker(quercus_timeline::marker::TimelineMarker::with_time(
+		.add_marker(marker::TimelineMarker::with_time(
 			3,
-			quercus_core::TimeRange::new(quercus_core::Rational::new(1, 1), quercus_core::Rational::new(2, 1)),
+			TimeRange::new(Rational::new(1, 1), Rational::new(2, 1)),
 			name,
 		));
 }
 
 #[cfg(test)]
 mod tests {
+	use crate::editor;
 	use crate::node::QUERCUS_NODE_ID_INVALID;
+	use quercus_storage::error;
+	use std::ptr;
 
 	#[test]
 	fn null_handles_fail_closed() {
 		unsafe {
-			assert!(crate::editor::quercus_editor_project(std::ptr::null()).is_null());
-			assert!(!crate::editor::quercus_editor_bind_project_to_library(std::ptr::null_mut()));
-			assert!(!crate::editor::quercus_editor_unbind(std::ptr::null_mut()));
-			assert!(!crate::editor::quercus_editor_storage_bound(std::ptr::null()));
-			assert!(!crate::editor::quercus_editor_set_current_sequence(std::ptr::null_mut(), 0));
+			assert!(editor::quercus_editor_project(ptr::null()).is_null());
+			assert!(!editor::quercus_editor_bind_project_to_library(
+				ptr::null_mut()
+			));
+			assert!(!editor::quercus_editor_unbind(ptr::null_mut()));
+			assert!(!editor::quercus_editor_storage_bound(ptr::null()));
+			assert!(!editor::quercus_editor_set_current_sequence(
+				ptr::null_mut(),
+				0
+			));
 			assert_eq!(
-				crate::editor::quercus_editor_current_sequence(std::ptr::null()),
+				editor::quercus_editor_current_sequence(ptr::null()),
 				QUERCUS_NODE_ID_INVALID
 			);
-			assert_eq!(crate::editor::auxiliary::quercus_editor_marker_count(std::ptr::null()), 0);
 			assert_eq!(
-				crate::editor::auxiliary::quercus_editor_marker_name_at(std::ptr::null(), 0, std::ptr::null_mut(), 0),
+				editor::auxiliary::quercus_editor_marker_count(ptr::null()),
+				0
+			);
+			assert_eq!(
+				editor::auxiliary::quercus_editor_marker_name_at(
+					ptr::null(),
+					0,
+					ptr::null_mut(),
+					0
+				),
 				-1
 			);
-			assert!(!crate::editor::auxiliary::quercus_editor_workarea(std::ptr::null(), std::ptr::null_mut()));
+			assert!(!editor::auxiliary::quercus_editor_workarea(
+				ptr::null(),
+				ptr::null_mut()
+			));
 			assert_eq!(
-				crate::editor::quercus_editor_save(std::ptr::null(), "x".as_ptr(), 1, 0),
-				quercus_storage::error::QUERCUSSTORAGE_E_INVALID
+				editor::quercus_editor_save(ptr::null(), "x".as_ptr(), 1, 0),
+				error::QUERCUSSTORAGE_E_INVALID
 			);
 		}
 	}

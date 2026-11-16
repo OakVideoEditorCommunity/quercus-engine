@@ -304,9 +304,9 @@ fn image_effect_clip_image_pairing() {
 		plugin: dummy_plugin(EffectDescriptor::new()),
 		context: "OfxImageEffectContextFilter".into(),
 		params: ParamSetInstance { params: vec![] },
-		clips: vec![Box::new(quercus_ofx_plugin::clip::ClipInstance::from_descriptor(
-			&clip_desc,
-		))],
+		clips: vec![Box::new(
+			quercus_ofx_plugin::clip::ClipInstance::from_descriptor(&clip_desc),
+		)],
 		node_identity: std::sync::atomic::AtomicUsize::new(0),
 		destroyed: std::sync::atomic::AtomicBool::new(false),
 		sequence_range: std::sync::Mutex::new(None),
@@ -346,10 +346,7 @@ fn image_effect_clip_image_pairing() {
 	for (i, v) in [0.1f32, 0.2, 0.3, 1.0].iter().enumerate() {
 		frame.data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
 	}
-	inst.clips[0].set_input_texture(
-		Some(quercus_core::texture::Texture::wrap_frame(frame)),
-		0.0,
-	);
+	inst.clips[0].set_input_texture(Some(quercus_core::texture::Texture::wrap_frame(frame)), 0.0);
 	// 注意另取句柄：上面未找到路径的 clip_get_handle 把 clip_h 置空了。
 	let mut img_clip: *mut c_void = std::ptr::null_mut();
 	unsafe {
@@ -788,12 +785,7 @@ fn multithread_suite_spawned_callbacks() {
 		// 注意传 `&*set`（Arc 负载）而非 `&set`（Arc 结构体）。
 		unsafe {
 			assert_eq!(
-				(ps.get_int)(
-					&*set as *const _ as *mut c_void,
-					name.as_ptr(),
-					0,
-					&mut v
-				),
+				(ps.get_int)(&*set as *const _ as *mut c_void, name.as_ptr(), 0, &mut v),
 				OK
 			);
 		}

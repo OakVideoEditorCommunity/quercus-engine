@@ -432,8 +432,9 @@ pub fn set_clip_gain(project: &ProjectRef, clip: NodeId, gain: f64) -> Result<()
 					.graph
 					.get_mut(clip)
 					.and_then(|entry| entry.behavior.as_any_mut())
-					.and_then(|behavior| behavior.downcast_mut::<quercus_node::block::ClipBlockBehavior>())
-				{
+					.and_then(|behavior| {
+						behavior.downcast_mut::<quercus_node::block::ClipBlockBehavior>()
+					}) {
 					clip.core.audio_gain = gain;
 				}
 			},
@@ -442,8 +443,9 @@ pub fn set_clip_gain(project: &ProjectRef, clip: NodeId, gain: f64) -> Result<()
 					.graph
 					.get_mut(clip)
 					.and_then(|entry| entry.behavior.as_any_mut())
-					.and_then(|behavior| behavior.downcast_mut::<quercus_node::block::ClipBlockBehavior>())
-				{
+					.and_then(|behavior| {
+						behavior.downcast_mut::<quercus_node::block::ClipBlockBehavior>()
+					}) {
 					clip.core.audio_gain = old;
 				}
 			},

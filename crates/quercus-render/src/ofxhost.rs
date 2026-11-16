@@ -40,10 +40,14 @@
 //! with no client installed the evaluator keeps using the in-process
 //! quercusplugin executor.
 
+use quercus_core::miscutils;
 use std::collections::HashMap;
+use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::ptr;
+use std::result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
@@ -138,7 +142,7 @@ struct HostInner {
 }
 
 struct WaitState {
-	results: HashMap<u64, std::result::Result<Frame, String>>,
+	results: HashMap<u64, result::Result<Frame, String>>,
 	dead: bool,
 }
 
@@ -313,7 +317,7 @@ impl OfxHost {
 	/// [`SubmitError::Failed`] for a permanently dead host, an unwritable input
 	/// or a failed result; [`SubmitError::Died`] when no host/pool/stdin is
 	/// available, the stdin write fails, or the host exits while waiting.
-	fn attempt(&self, job: u64, frames: &HostJobFrames) -> std::result::Result<Frame, SubmitError> {
+	fn attempt(&self, job: u64, frames: &HostJobFrames) -> result::Result<Frame, SubmitError> {
 		let mut inner = lock(&self.inner);
 		if inner.permanently_dead {
 			return Err(SubmitError::Failed(
@@ -492,7 +496,7 @@ impl OfxHost {
 			command.env(key, value);
 		}
 		// A GUI Quercus spawning a console child would flash a console window.
-		quercus_core::miscutils::hide_console_window(&mut command);
+		miscutils::hide_console_window(&mut command);
 		let mut child = command
 			.spawn()
 			.map_err(|e| Error::Failed(format!("spawn OFX host {}: {e}", bin.display())))?;
@@ -591,15 +595,15 @@ fn resolve_host_bin(config: &OfxHostConfig) -> Result<PathBuf> {
 	if let Some(path) = &config.host_bin {
 		return Ok(path.clone());
 	}
-	if let Ok(path) = std::env::var("QUERCUS_WORKER_BIN") {
+	if let Ok(path) = env::var("QUERCUS_WORKER_BIN") {
 		return Ok(PathBuf::from(path));
 	}
-	let exe = std::env::current_exe()
+	let exe = env::current_exe()
 		.map_err(|e| Error::Failed(format!("resolve quercus-worker: current exe: {e}")))?;
 	let candidate = exe
 		.parent()
 		.ok_or_else(|| Error::Failed("resolve quercus-worker: no exe parent".into()))?
-		.join(format!("quercus-worker{}", std::env::consts::EXE_SUFFIX));
+		.join(format!("quercus-worker{}", env::consts::EXE_SUFFIX));
 	if candidate.exists() {
 		return Ok(candidate);
 	}
@@ -620,7 +624,7 @@ fn resolve_host_bin(config: &OfxHostConfig) -> Result<PathBuf> {
 /// Returns a message when the pool has no free slot, the frame payload is
 /// larger than one slot, or publishing fails; the slot is released in every
 /// error path.
-fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> std::result::Result<u32, String> {
+fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> result::Result<u32, String> {
 	let pool = region.pool();
 	let mut slot = 0u32;
 	if !unsafe { pool.acquire(&mut slot) } {
@@ -639,7 +643,7 @@ fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> std::result::Resu
 	// SAFETY: `slot` was just acquired from this live pool; the copy and
 	// meta fill are the producer side of the SPSC protocol.
 	unsafe {
-		std::ptr::copy_nonoverlapping(frame.data.as_ptr(), pool.slot_data(slot), bytes);
+		ptr::copy_nonoverlapping(frame.data.as_ptr(), pool.slot_data(slot), bytes);
 		let meta = &mut *pool.meta(slot);
 		*meta = Default::default();
 		meta.width = frame.width;
@@ -670,10 +674,7 @@ fn write_input_frame(region: &ShmRegionView, frame: &Frame) -> std::result::Resu
 /// Returns a message when the slot is missing or arrives out of order, the
 /// metadata is invalid, or the announced size exceeds the region's slot (the
 /// copy is then truncated to the slot size).
-fn read_output_frame(
-	region: &ShmRegionView,
-	slot: u32,
-) -> std::result::Result<Frame, String> {
+fn read_output_frame(region: &ShmRegionView, slot: u32) -> result::Result<Frame, String> {
 	let pool = region.pool();
 	let mut consumed = 0u32;
 	if !unsafe { pool.consume(&mut consumed) } {
@@ -750,7 +751,8 @@ fn spawn_reader(
 						cv.notify_all();
 					}
 					Some(TYPE_PLUGIN_PROGRESS) => {
-						let msg: PluginProgressMsg = serde_json::from_value(value).unwrap_or_default();
+						let msg: PluginProgressMsg =
+							serde_json::from_value(value).unwrap_or_default();
 						if let Some(cb) = plugin_progress_cb() {
 							cb(msg.label, msg.message, msg.fraction);
 						}
@@ -790,9 +792,7 @@ mod tests {
 	}
 
 	fn small_texture() -> Texture {
-		Texture::wrap_frame(
-			generate_frame(Rational::new(0, 1), (4, 4), PixelFormat::F32).unwrap(),
-		)
+		Texture::wrap_frame(generate_frame(Rational::new(0, 1), (4, 4), PixelFormat::F32).unwrap())
 	}
 
 	#[test]

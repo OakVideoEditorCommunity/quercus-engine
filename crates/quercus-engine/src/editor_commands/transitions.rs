@@ -9,10 +9,14 @@
 use super::prelude::*;
 use super::{editing::*, generators::*, media::*, moving::*, project::*, sequence::*, tracks::*};
 
-
 /// The transition block joining `prev` to `next` on `track`, when one is
 /// already wired between them.
-pub(crate) fn transition_between(g: &Graph, track: NodeId, prev: NodeId, next: NodeId) -> Option<NodeId> {
+pub(crate) fn transition_between(
+	g: &Graph,
+	track: NodeId,
+	prev: NodeId,
+	next: NodeId,
+) -> Option<NodeId> {
 	track_behavior(g, track)
 		.map(|t| t.blocks.clone())
 		.unwrap_or_default()
@@ -115,8 +119,18 @@ pub(crate) fn transition_commands(
 		Some(node_ref(p, prev)),
 	)
 	.to_command();
-	let from = connect_command(p, prev, block, quercus_node::block::transition_input::OUT_BLOCK)?;
-	let to = connect_command(p, next, block, quercus_node::block::transition_input::IN_BLOCK)?;
+	let from = connect_command(
+		p,
+		prev,
+		block,
+		quercus_node::block::transition_input::OUT_BLOCK,
+	)?;
+	let to = connect_command(
+		p,
+		next,
+		block,
+		quercus_node::block::transition_input::IN_BLOCK,
+	)?;
 	Ok((block, vec![insert, from, to]))
 }
 

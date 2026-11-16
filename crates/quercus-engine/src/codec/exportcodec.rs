@@ -59,7 +59,10 @@ mod tests {
 	fn validity_and_count() {
 		assert!(quercus_codec_codec_is_valid(0));
 		assert!(quercus_codec_codec_is_valid(18));
-		assert!(!quercus_codec_codec_is_valid(19), "Count is not a real codec");
+		assert!(
+			!quercus_codec_codec_is_valid(19),
+			"Count is not a real codec"
+		);
 		assert!(!quercus_codec_codec_is_valid(-1));
 		assert_eq!(quercus_codec_codec_count(), 19);
 	}
@@ -73,7 +76,10 @@ mod tests {
 
 		// Invalid codec: -1, buffer untouched.
 		buf[0] = b'x';
-		assert_eq!(quercus_codec_codec_get_name(99, buf.as_mut_ptr(), buf.len()), -1);
+		assert_eq!(
+			quercus_codec_codec_get_name(99, buf.as_mut_ptr(), buf.len()),
+			-1
+		);
 
 		// Query mode still reports the required length.
 		assert_eq!(quercus_codec_codec_get_name(12, std::ptr::null_mut(), 0), 3);

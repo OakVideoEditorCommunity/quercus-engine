@@ -25,6 +25,7 @@
 //! The image_effect suite's imageMemory* functions share this ledger.
 
 use std::alloc::Layout;
+use std::panic;
 use std::sync::Mutex;
 
 use crate::suites::status;
@@ -105,7 +106,7 @@ unsafe extern "C" fn memory_alloc(
 	byte_size: usize,
 	out: *mut *mut c_void,
 ) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		if out.is_null() {
 			return status::ERR_VALUE;
 		}
@@ -140,7 +141,7 @@ unsafe extern "C" fn memory_alloc(
 /// never dereferences), but yields `kOfxStatErrBadHandle`.
 /// The call may be made from any thread (the ledger is protected by a mutex).
 unsafe extern "C" fn memory_free(data: *mut c_void) -> c_int {
-	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+	panic::catch_unwind(panic::AssertUnwindSafe(|| {
 		if free(data as *mut u8) {
 			status::OK
 		} else {

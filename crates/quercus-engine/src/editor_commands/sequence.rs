@@ -8,8 +8,10 @@
 
 #![allow(unused_imports)]
 use super::prelude::*;
-use super::{edit_menu::*, editing::*, generators::*, media::*, moving::*, project::*, tracks::*, transitions::*};
-
+use super::{
+	edit_menu::*, editing::*, generators::*, media::*, moving::*, project::*, tracks::*,
+	transitions::*,
+};
 
 /// The project's multicam nodes (the wizard/sequence drop rewire uses the
 /// one whose source sequence matches).
@@ -160,7 +162,11 @@ pub fn block_core_of(g: &Graph, node: NodeId) -> Option<&BlockCore> {
 
 /// Mutate the block core at `node` (any block kind). Returns `false` and
 /// leaves the graph untouched when `node` is not a block.
-pub(crate) fn with_block_core_mut(g: &mut Graph, node: NodeId, f: impl FnOnce(&mut BlockCore)) -> bool {
+pub(crate) fn with_block_core_mut(
+	g: &mut Graph,
+	node: NodeId,
+	f: impl FnOnce(&mut BlockCore),
+) -> bool {
 	let Some(entry) = g.get_mut(node) else {
 		return false;
 	};
@@ -224,11 +230,7 @@ pub(crate) fn gcd(a: i64, b: i64) -> i64 {
 		b = a % b;
 		a = t;
 	}
-	if a == 0 {
-		1
-	} else {
-		a
-	}
+	if a == 0 { 1 } else { a }
 }
 
 /// Convert rational seconds to integer timebase units.

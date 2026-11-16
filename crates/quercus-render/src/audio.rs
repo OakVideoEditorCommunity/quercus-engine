@@ -36,6 +36,7 @@
 //! project save.
 
 use std::collections::HashMap;
+use std::f64;
 
 use quercus_node::value::NodeValue;
 use serde::{Deserialize, Serialize};
@@ -259,7 +260,7 @@ impl Biquad {
 /// 48 kHz coefficients).
 fn k_weighting(rate: f64) -> (Biquad, Biquad) {
 	let rate = rate.max(1.0);
-	let pi = std::f64::consts::PI;
+	let pi = f64::consts::PI;
 
 	// Stage 1: +4 dB high shelf at ~1.68 kHz.
 	let f0 = 1681.974_450_955_533;

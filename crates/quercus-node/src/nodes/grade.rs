@@ -46,6 +46,9 @@
 //!   slope at `0.0` instead of dividing by zero.
 
 use crate::factory::NodeMeta;
+use crate::handle;
+use crate::id;
+use crate::input;
 use crate::jobs::{Job, ShaderJobPayload};
 use crate::node::{Category, NodeBehavior, NodeCore};
 
@@ -199,16 +202,18 @@ impl NodeBehavior for GradeNode {
 
 		table.push(
 			crate::value::ValueType::Texture,
-			crate::value::NodeValue::Texture(crate::handle::make_owned(Job::ShaderJob(ShaderJobPayload {
-				node_id: crate::id::NodeId::INVALID,
-				time,
-				iterations: 1,
-				type_id: self.type_id().to_string(),
-				shader_id: String::new(),
-				effect_input: core.effect_input.clone(),
-				params,
-				iterative_input: String::new(),
-			}))),
+			crate::value::NodeValue::Texture(handle::make_owned(Job::ShaderJob(
+				ShaderJobPayload {
+					node_id: id::NodeId::INVALID,
+					time,
+					iterations: 1,
+					type_id: self.type_id().to_string(),
+					shader_id: String::new(),
+					effect_input: core.effect_input.clone(),
+					params,
+					iterative_input: String::new(),
+				},
+			))),
 			None,
 		);
 	}
@@ -231,12 +236,12 @@ impl NodeBehavior for GradeNode {
 pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 	let mut core = NodeCore::new();
 
-	let mut tex = crate::input::Input::new(
+	let mut tex = input::Input::new(
 		TEXTURE_INPUT,
 		crate::value::ValueType::Texture,
 		crate::value::NodeValue::None,
 	);
-	tex.flags |= crate::input::flags::NOT_KEYFRAMABLE;
+	tex.flags |= input::flags::NOT_KEYFRAMABLE;
 	core.add_input(tex);
 
 	add_float_input(&mut core, BLACKPOINT_INPUT, 0.0);
@@ -254,7 +259,7 @@ pub fn create() -> (NodeCore, Box<dyn NodeBehavior>) {
 /// Add a float input with its default. The reference declares no range
 /// for these parameters, so no `min`/`max` properties are attached.
 fn add_float_input(core: &mut NodeCore, id: &str, default: f64) {
-	core.add_input(crate::input::Input::new(
+	core.add_input(input::Input::new(
 		id,
 		crate::value::ValueType::Float,
 		crate::value::NodeValue::Float(default),
@@ -281,145 +286,150 @@ pub fn register(meta: &mut Vec<NodeMeta>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::value::{NodeValue, NodeValueTable, ValueType};
-    use quercus_core::Rational;
+	use super::*;
+	use crate::value::{NodeValue, NodeValueTable, ValueType};
+	use quercus_core::Rational;
 
-    #[test]
-    fn input_names() {
-        let n = GradeNode;
-        assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
-        assert_eq!(n.input_name(BLACKPOINT_INPUT), "Black Point");
-        assert_eq!(n.input_name(WHITEPOINT_INPUT), "White Point");
-        assert_eq!(n.input_name(BLACK_INPUT), "Black Output");
-        assert_eq!(n.input_name(WHITE_INPUT), "White Output");
-        assert_eq!(n.input_name(GAMMA_INPUT), "Gamma");
-        assert_eq!(n.input_name("other_in"), "other_in");
-    }
+	#[test]
+	fn input_names() {
+		let n = GradeNode;
+		assert_eq!(n.input_name(TEXTURE_INPUT), "Input");
+		assert_eq!(n.input_name(BLACKPOINT_INPUT), "Black Point");
+		assert_eq!(n.input_name(WHITEPOINT_INPUT), "White Point");
+		assert_eq!(n.input_name(BLACK_INPUT), "Black Output");
+		assert_eq!(n.input_name(WHITE_INPUT), "White Output");
+		assert_eq!(n.input_name(GAMMA_INPUT), "Gamma");
+		assert_eq!(n.input_name("other_in"), "other_in");
+	}
 
-    #[test]
-    fn create_wires_inputs_and_flags() {
-        let (core, behavior) = create();
-        assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.grade");
-        assert_eq!(behavior.name(), "Grade");
-        assert_eq!(behavior.categories(), &[Category::Color]);
-        let tex = core.get_input(TEXTURE_INPUT).unwrap();
-        assert_ne!(tex.flags & crate::input::flags::NOT_KEYFRAMABLE, 0);
-        assert_eq!(
-            core.get_input(BLACKPOINT_INPUT).unwrap().default,
-            NodeValue::Float(0.0)
-        );
-        assert_eq!(
-            core.get_input(WHITEPOINT_INPUT).unwrap().default,
-            NodeValue::Float(1.0)
-        );
-        assert_eq!(
-            core.get_input(BLACK_INPUT).unwrap().default,
-            NodeValue::Float(0.0)
-        );
-        assert_eq!(
-            core.get_input(WHITE_INPUT).unwrap().default,
-            NodeValue::Float(1.0)
-        );
-        assert_eq!(
-            core.get_input(GAMMA_INPUT).unwrap().default,
-            NodeValue::Float(1.0)
-        );
-        assert_eq!(core.effect_input, TEXTURE_INPUT);
-        assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
-    }
+	#[test]
+	fn create_wires_inputs_and_flags() {
+		let (core, behavior) = create();
+		assert_eq!(behavior.type_id(), "org.olivevideoeditor.Olive.grade");
+		assert_eq!(behavior.name(), "Grade");
+		assert_eq!(behavior.categories(), &[Category::Color]);
+		let tex = core.get_input(TEXTURE_INPUT).unwrap();
+		assert_ne!(tex.flags & crate::input::flags::NOT_KEYFRAMABLE, 0);
+		assert_eq!(
+			core.get_input(BLACKPOINT_INPUT).unwrap().default,
+			NodeValue::Float(0.0)
+		);
+		assert_eq!(
+			core.get_input(WHITEPOINT_INPUT).unwrap().default,
+			NodeValue::Float(1.0)
+		);
+		assert_eq!(
+			core.get_input(BLACK_INPUT).unwrap().default,
+			NodeValue::Float(0.0)
+		);
+		assert_eq!(
+			core.get_input(WHITE_INPUT).unwrap().default,
+			NodeValue::Float(1.0)
+		);
+		assert_eq!(
+			core.get_input(GAMMA_INPUT).unwrap().default,
+			NodeValue::Float(1.0)
+		);
+		assert_eq!(core.effect_input, TEXTURE_INPUT);
+		assert_ne!(core.flags & crate::node::flags::VIDEO_EFFECT, 0);
+	}
 
-    #[test]
-    fn value_no_texture_pushes_nothing() {
-        let (core, behavior) = create();
-        let mut table = NodeValueTable::default();
-        behavior.value(
-            &core,
-            &crate::value::NodeValueRow::default(),
-            Rational::new(0, 1),
-            &mut table,
-        );
-        assert!(table.is_empty());
-    }
+	#[test]
+	fn value_no_texture_pushes_nothing() {
+		let (core, behavior) = create();
+		let mut table = NodeValueTable::default();
+		behavior.value(
+			&core,
+			&crate::value::NodeValueRow::default(),
+			Rational::new(0, 1),
+			&mut table,
+		);
+		assert!(table.is_empty());
+	}
 
-    #[test]
-    fn value_with_texture_pushes_shader_job_with_resolved_params() {
-        let (core, behavior) = create();
-        let inputs = crate::value::NodeValueRow::from([(
-            TEXTURE_INPUT.to_string(),
-            NodeValue::Texture(crate::handle::CHandle::null()),
-        )]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
-            panic!("expected a texture-typed value");
-        };
-        let payload =
-            unsafe { crate::jobs::shader_job(handle) }
-                .expect("shader job pushed");
-        assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.grade");
-        assert_eq!(payload.effect_input, TEXTURE_INPUT);
-        assert_eq!(
-            payload.params.get(BLACKPOINT_INPUT),
-            Some(&NodeValue::Float(0.0))
-        );
-        assert_eq!(
-            payload.params.get(WHITEPOINT_INPUT),
-            Some(&NodeValue::Float(1.0))
-        );
-        assert_eq!(payload.params.get(BLACK_INPUT), Some(&NodeValue::Float(0.0)));
-        assert_eq!(payload.params.get(WHITE_INPUT), Some(&NodeValue::Float(1.0)));
-        assert_eq!(payload.params.get(GAMMA_INPUT), Some(&NodeValue::Float(1.0)));
-    }
+	#[test]
+	fn value_with_texture_pushes_shader_job_with_resolved_params() {
+		let (core, behavior) = create();
+		let inputs = crate::value::NodeValueRow::from([(
+			TEXTURE_INPUT.to_string(),
+			NodeValue::Texture(crate::handle::CHandle::null()),
+		)]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
+			panic!("expected a texture-typed value");
+		};
+		let payload = unsafe { crate::jobs::shader_job(handle) }.expect("shader job pushed");
+		assert_eq!(payload.type_id, "org.olivevideoeditor.Olive.grade");
+		assert_eq!(payload.effect_input, TEXTURE_INPUT);
+		assert_eq!(
+			payload.params.get(BLACKPOINT_INPUT),
+			Some(&NodeValue::Float(0.0))
+		);
+		assert_eq!(
+			payload.params.get(WHITEPOINT_INPUT),
+			Some(&NodeValue::Float(1.0))
+		);
+		assert_eq!(
+			payload.params.get(BLACK_INPUT),
+			Some(&NodeValue::Float(0.0))
+		);
+		assert_eq!(
+			payload.params.get(WHITE_INPUT),
+			Some(&NodeValue::Float(1.0))
+		);
+		assert_eq!(
+			payload.params.get(GAMMA_INPUT),
+			Some(&NodeValue::Float(1.0))
+		);
+	}
 
-    #[test]
-    fn value_row_values_win_over_defaults() {
-        let (mut core, behavior) = create();
-        core.set_standard_value(BLACKPOINT_INPUT, -1, NodeValue::Float(0.0));
-        let inputs = crate::value::NodeValueRow::from([
-            (
-                TEXTURE_INPUT.to_string(),
-                NodeValue::Texture(crate::handle::CHandle::null()),
-            ),
-            (BLACKPOINT_INPUT.to_string(), NodeValue::Float(0.1)),
-        ]);
-        let mut table = NodeValueTable::default();
-        behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
-        let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
-            panic!("expected a texture-typed value");
-        };
-        let payload =
-            unsafe { crate::jobs::shader_job(handle) }
-                .expect("shader job pushed");
-        assert_eq!(
-            payload.params.get(BLACKPOINT_INPUT),
-            Some(&NodeValue::Float(0.1))
-        );
-    }
+	#[test]
+	fn value_row_values_win_over_defaults() {
+		let (mut core, behavior) = create();
+		core.set_standard_value(BLACKPOINT_INPUT, -1, NodeValue::Float(0.0));
+		let inputs = crate::value::NodeValueRow::from([
+			(
+				TEXTURE_INPUT.to_string(),
+				NodeValue::Texture(crate::handle::CHandle::null()),
+			),
+			(BLACKPOINT_INPUT.to_string(), NodeValue::Float(0.1)),
+		]);
+		let mut table = NodeValueTable::default();
+		behavior.value(&core, &inputs, Rational::new(0, 1), &mut table);
+		let Some(NodeValue::Texture(handle)) = table.get(ValueType::Texture) else {
+			panic!("expected a texture-typed value");
+		};
+		let payload = unsafe { crate::jobs::shader_job(handle) }.expect("shader job pushed");
+		assert_eq!(
+			payload.params.get(BLACKPOINT_INPUT),
+			Some(&NodeValue::Float(0.1))
+		);
+	}
 
-    #[test]
-    fn shader_declares_uniforms_and_avoids_switch() {
-        let code = GradeNode.shader_code("").unwrap();
-        for uniform in [
-            "tex_in",
-            BLACKPOINT_INPUT,
-            WHITEPOINT_INPUT,
-            BLACK_INPUT,
-            WHITE_INPUT,
-            GAMMA_INPUT,
-        ] {
-            assert!(code.contains(uniform), "uniform {uniform} declared");
-        }
-        assert!(code.contains("ove_texcoord"));
-        assert!(code.contains("frag_color"));
-        assert!(!code.contains("switch"), "naga rejects GLSL switch");
-    }
+	#[test]
+	fn shader_declares_uniforms_and_avoids_switch() {
+		let code = GradeNode.shader_code("").unwrap();
+		for uniform in [
+			"tex_in",
+			BLACKPOINT_INPUT,
+			WHITEPOINT_INPUT,
+			BLACK_INPUT,
+			WHITE_INPUT,
+			GAMMA_INPUT,
+		] {
+			assert!(code.contains(uniform), "uniform {uniform} declared");
+		}
+		assert!(code.contains("ove_texcoord"));
+		assert!(code.contains("frag_color"));
+		assert!(!code.contains("switch"), "naga rejects GLSL switch");
+	}
 
-    #[test]
-    fn duplicate_clones() {
-        let (core, behavior) = create();
-        let dup = behavior.duplicate(&core).unwrap();
-        assert_eq!(dup.name(), "Grade");
-        assert_eq!(dup.type_id(), "org.olivevideoeditor.Olive.grade");
-    }
+	#[test]
+	fn duplicate_clones() {
+		let (core, behavior) = create();
+		let dup = behavior.duplicate(&core).unwrap();
+		assert_eq!(dup.name(), "Grade");
+		assert_eq!(dup.type_id(), "org.olivevideoeditor.Olive.grade");
+	}
 }

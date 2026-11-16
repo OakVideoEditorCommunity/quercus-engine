@@ -12,6 +12,7 @@ use quercus_ofx_plugin::instance::{OfxRangeD, OfxRectD, RenderScale};
 use quercus_ofx_plugin::node_factory;
 use quercus_ofx_plugin::render::{self, PIXEL_FORMAT_F32, VideoParams};
 use quercus_ofx_plugin::render_driver::{self, RenderJob};
+use std::slice;
 
 use crate::handle::NativeMirror;
 
@@ -115,7 +116,7 @@ pub unsafe extern "C" fn quercus_ofx_instance_render_frame(
 			return false;
 		}
 		let bytes = unsafe {
-			std::slice::from_raw_parts(src as *const u8, src_w as usize * src_h as usize * 4 * 4)
+			slice::from_raw_parts(src as *const u8, src_w as usize * src_h as usize * 4 * 4)
 		};
 		match f32_texture(src_w, src_h, bytes) {
 			Some(tex) => Some(tex),
@@ -151,7 +152,7 @@ pub unsafe extern "C" fn quercus_ofx_instance_render_frame(
 	if frame.data.len() < row * (dst_hu - 1) + tight {
 		return false;
 	}
-	let out_slice = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, tight * dst_hu) };
+	let out_slice = unsafe { slice::from_raw_parts_mut(dst as *mut u8, tight * dst_hu) };
 	for y in 0..dst_hu {
 		out_slice[y * tight..(y + 1) * tight]
 			.copy_from_slice(&frame.data[y * row..y * row + tight]);

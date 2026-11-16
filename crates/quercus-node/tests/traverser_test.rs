@@ -246,7 +246,13 @@ impl NodeBehavior for Echo {
 	fn duplicate(&self, _c: &NodeCore) -> Option<Box<dyn NodeBehavior>> {
 		Some(Box::new(Echo))
 	}
-	fn value(&self, _c: &NodeCore, inputs: &NodeValueRow, _t: Rational, table: &mut NodeValueTable) {
+	fn value(
+		&self,
+		_c: &NodeCore,
+		inputs: &NodeValueRow,
+		_t: Rational,
+		table: &mut NodeValueTable,
+	) {
 		if let Some(v) = inputs.get("val_in") {
 			table.push(ValueType::Float, v.clone(), None);
 		}
@@ -261,7 +267,11 @@ fn unconnected_input_evaluates_keyframes_at_time() {
 	use quercus_node::keyframe::Keyframe;
 	let mut g = Graph::new();
 	let mut core = NodeCore::new();
-	core.add_input(Input::new("val_in", ValueType::Float, NodeValue::Float(0.0)));
+	core.add_input(Input::new(
+		"val_in",
+		ValueType::Float,
+		NodeValue::Float(0.0),
+	));
 	core.keyframe_track_mut("val_in", -1).set_key(Keyframe {
 		time: Rational::new(0, 1),
 		value: NodeValue::Float(0.0),
@@ -326,12 +336,21 @@ fn connected_input_uses_adjusted_time() {
 			traverse: bool,
 		) -> TimeRange {
 			if input == "val_in" && traverse {
-				TimeRange::new(time.in_() * Rational::new(2, 1), time.out() * Rational::new(2, 1))
+				TimeRange::new(
+					time.in_() * Rational::new(2, 1),
+					time.out() * Rational::new(2, 1),
+				)
 			} else {
 				time
 			}
 		}
-		fn value(&self, _c: &NodeCore, inputs: &NodeValueRow, _t: Rational, table: &mut NodeValueTable) {
+		fn value(
+			&self,
+			_c: &NodeCore,
+			inputs: &NodeValueRow,
+			_t: Rational,
+			table: &mut NodeValueTable,
+		) {
 			if let Some(v) = inputs.get("val_in") {
 				table.push(ValueType::Rational, v.clone(), None);
 			}
@@ -346,7 +365,11 @@ fn connected_input_uses_adjusted_time() {
 	let mut t = Traverser::new();
 	let mut hooks = Noop;
 	let table = t
-		.evaluate(&g, &EvalRequest::new(consumer, Rational::new(3, 1)), &mut hooks)
+		.evaluate(
+			&g,
+			&EvalRequest::new(consumer, Rational::new(3, 1)),
+			&mut hooks,
+		)
 		.unwrap();
 	assert_eq!(
 		table.get(ValueType::Rational),
@@ -390,7 +413,11 @@ fn time_offset_node_shifts_upstream_evaluation_time() {
 	let mut t = Traverser::new();
 	let mut hooks = Noop;
 	let table = t
-		.evaluate(&g, &EvalRequest::new(offset, Rational::new(10, 1)), &mut hooks)
+		.evaluate(
+			&g,
+			&EvalRequest::new(offset, Rational::new(10, 1)),
+			&mut hooks,
+		)
 		.unwrap();
 	assert_eq!(
 		table.get(ValueType::Rational),

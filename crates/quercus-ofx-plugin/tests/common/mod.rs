@@ -27,7 +27,11 @@
 // 因此某个二进制里未用到的条目仍属于共享夹具 API。
 #![allow(dead_code)]
 
+use std::env;
+use std::fs;
 use std::path::PathBuf;
+use std::process;
+use std::sync;
 
 /// Name of the environment variable through which the build system injects the plugin path.
 pub const TEST_PLUGIN_ENV: &str = "QUERCUS_TEST_PLUGIN_DIR";
@@ -36,10 +40,10 @@ pub const TEST_PLUGIN_ENV: &str = "QUERCUS_TEST_PLUGIN_DIR";
 /// when not injected, the bundle directory is assembled on the spot from the shared library built by build.rs; when neither is usable
 /// it returns None and the caller skips).
 pub fn test_plugin_dir() -> Option<PathBuf> {
-	if let Some(p) = std::env::var_os(TEST_PLUGIN_ENV) {
+	if let Some(p) = env::var_os(TEST_PLUGIN_ENV) {
 		return Some(PathBuf::from(p));
 	}
-	static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+	static BUNDLE: sync::OnceLock<Option<PathBuf>> = sync::OnceLock::new();
 	BUNDLE
 		.get_or_init(|| {
 			let out = PathBuf::from(env!("OUT_DIR"));
@@ -51,8 +55,8 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 			if !lib.is_file() {
 				return None;
 			}
-			let bundle = std::env::temp_dir()
-				.join(format!("quercus-test-plugin-{}", std::process::id()))
+			let bundle = env::temp_dir()
+				.join(format!("quercus-test-plugin-{}", process::id()))
 				.join("quercus-test-plugin.ofx.bundle");
 			let platform = if cfg!(target_os = "macos") {
 				"MacOS"
@@ -62,7 +66,7 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 				"Linux-x86-64"
 			};
 			let bin_dir = bundle.join("Contents").join(platform);
-			std::fs::create_dir_all(&bin_dir).ok()?;
+			fs::create_dir_all(&bin_dir).ok()?;
 			// Windows 上必须有 .dll 扩展名：LoadLibrary 会对无扩展名的
 			// 模块名自动追加 ".dll"，名为 "plugin" 的文件将加载失败。
 			let target = bin_dir.join(if cfg!(target_os = "windows") {
@@ -71,7 +75,7 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 				"plugin"
 			});
 			if !target.exists() {
-				std::fs::copy(&lib, &target).ok()?;
+				fs::copy(&lib, &target).ok()?;
 			}
 			Some(bundle)
 		})
@@ -96,7 +100,7 @@ pub fn golden_dir() -> PathBuf {
 /// There are no GL cases in phase 1: enabled by an explicit environment variable (GL acceptance needs manual local confirmation;
 /// CI always skips).
 pub fn gpu_available() -> bool {
-	std::env::var_os("QUERCUS_GPU_TESTS").is_some()
+	env::var_os("QUERCUS_GPU_TESTS").is_some()
 }
 
 /// Function form of the common skip macro: prints the reason and returns early when a precondition is not met.
@@ -108,7 +112,7 @@ pub fn skip(reason: &str) {
 /// Serialize host-singleton tests: tests in the same binary would otherwise trample each other's
 /// init/shutdown/scan (the process singleton has no lock); every case that touches the host surface goes through this.
 pub fn with_host(f: impl FnOnce()) {
-	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	static LOCK: sync::Mutex<()> = sync::Mutex::new(());
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	f();
 }

@@ -7,6 +7,7 @@
 //! `repr(C)` from quercus-codec and is declared identically in the C header.
 
 use std::ffi::{CStr, c_void};
+use std::ptr;
 
 use quercus_codec::error::{Error, QUERCUSCODEC_OK};
 use quercus_codec::task::{
@@ -79,7 +80,7 @@ pub unsafe extern "C" fn quercus_codec_task_set_submit_cb(
 	userdata: *mut c_void,
 ) {
 	match cb {
-		None => set_task_submit_cb(None, std::ptr::null_mut()),
+		None => set_task_submit_cb(None, ptr::null_mut()),
 		Some(cb) => {
 			// The registry is a process-lifetime singleton, so leaking one
 			// adapter closure per registration is deliberate (the common
@@ -192,7 +193,10 @@ mod tests {
 		QUERCUSCODEC_OK
 	}
 
-	fn proxy_request(input: &std::ffi::CString, output: &std::ffi::CString) -> QuercusCodecTaskRequest {
+	fn proxy_request(
+		input: &std::ffi::CString,
+		output: &std::ffi::CString,
+	) -> QuercusCodecTaskRequest {
 		QuercusCodecTaskRequest {
 			kind: 1,
 			input_filename: input.as_ptr(),

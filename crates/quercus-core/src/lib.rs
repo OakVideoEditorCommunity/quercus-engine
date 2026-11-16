@@ -56,39 +56,39 @@ pub mod xmlutils;
 #[cfg(test)]
 #[doc(hidden)]
 pub mod test_support {
-    use std::sync::Mutex;
+	use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+	static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Process-wide lock guarding tests that mutate global config/env state.
-    ///
-    /// Hold this for the duration of any test (or helper) that sets/removes
-    /// `QUERCUS_CONFIG_DIR` or touches the shared configuration temp path.
-    pub fn env_lock() -> &'static Mutex<()> {
-        &ENV_LOCK
-    }
+	/// Process-wide lock guarding tests that mutate global config/env state.
+	///
+	/// Hold this for the duration of any test (or helper) that sets/removes
+	/// `QUERCUS_CONFIG_DIR` or touches the shared configuration temp path.
+	pub fn env_lock() -> &'static Mutex<()> {
+		&ENV_LOCK
+	}
 }
 
 mod rational;
 mod samplefmt;
 mod timerange;
 
-/// Shared ABI value-handle type (see [`handle::CHandle`]).
-pub mod handle;
-pub mod color;
-pub mod texture;
-pub mod frame;
 pub mod backend;
-pub mod lut;
+pub mod color;
 #[doc(hidden)]
 pub mod cpuparallel;
+pub mod frame;
+/// Shared ABI value-handle type (see [`handle::CHandle`]).
+pub mod handle;
+pub mod lut;
+pub mod texture;
 
 pub use handle::CHandle;
 pub use rational::Rational;
 pub use samplefmt::{PixelFormat, SampleFormat};
 
+pub use timerange::{TimeRange, TimeRangeList};
 /// The wgpu generation the engine and the UI share (M2/M5). Re-exported
 /// so consumers of the external-import API can name texture formats
 /// without another dependency on the same major version.
 pub use wgpu;
-pub use timerange::{TimeRange, TimeRangeList};
