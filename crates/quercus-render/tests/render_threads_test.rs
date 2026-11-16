@@ -24,6 +24,7 @@
 //! service slot are process-wide, so every test here serializes on `LOCK`
 //! and each creates and tears its manager down explicitly.
 
+use quercus_codec::gpuinterop;
 use quercus_codec::testmedia;
 use quercus_core::backend;
 use quercus_core::color;
@@ -799,6 +800,7 @@ fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 		assert!(backend.decode_service().wait_idle(), "service drained");
 	}
 	backend::reset_gpu_transfer_counters();
+	gpuinterop::reset_import_counters();
 	let mut rendered = 0u64;
 	for &time in &times {
 		let texture = render_video(viewer_params(&uuid, viewer, time));
@@ -810,10 +812,13 @@ fn pipeline_graph_playback_has_zero_gpu_readbacks() {
 	}
 	let (uploads, downloads) = backend::gpu_transfer_counters();
 	assert_eq!(downloads, 0, "playback must not read the frame back to CPU");
-	assert_eq!(
-		uploads, rendered,
-		"one decode upload per frame until M5 imports the decode surface"
-	);
+	let imported = gpuinterop::HW_IMPORTS.load(Ordering::Relaxed);
+	if imported == 0 {
+		assert_eq!(uploads, rendered, "staged frames upload once per frame");
+	} else {
+		assert!(imported >= rendered, "every rendered frame was imported");
+		assert_eq!(uploads, 0, "imported frames must not upload again");
+	}
 	drop(guard);
 	let _ = fs::remove_file(&path);
 }
@@ -842,6 +847,7 @@ fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 		assert!(backend.decode_service().wait_idle(), "service drained");
 	}
 	backend::reset_gpu_transfer_counters();
+	gpuinterop::reset_import_counters();
 	// The transition seam: V1 blends A/B, V2 composites underneath and V3
 	// sweeps the result with Opacity(0.75).
 	let texture = render_video(viewer_params(&uuid, viewer, Rational::new(1, 1)));
@@ -854,10 +860,13 @@ fn pipeline_layered_playback_has_zero_gpu_readbacks() {
 		downloads, 0,
 		"multi-track/transition/adjustment playback must not read back"
 	);
-	assert_eq!(
-		uploads, 3,
-		"each decoded clip uploads exactly once (A, B, C); the passes are GPU→GPU"
-	);
+	let imported = gpuinterop::HW_IMPORTS.load(Ordering::Relaxed);
+	if imported == 0 {
+		assert_eq!(uploads, 3, "staged clips upload exactly once (A, B, C)");
+	} else {
+		assert!(imported >= 3, "all three clips were imported");
+		assert_eq!(uploads, 0, "imported clips must not upload again");
+	}
 	// The adjustment sweep must have participated: the final alpha is the
 	// Opacity(0.75) value (readback only for the assertion, after the
 	// counter sample above).
