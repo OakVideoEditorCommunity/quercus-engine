@@ -12,14 +12,14 @@ license = "GPL-3.0-or-later"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# 共享 ABI 类型（CHandle 等，单库化统一，见 docs/zh/plans/riir/single-lib.md）。
-# 模块桥改直接 Rust 调用（单库化，见 docs/zh/plans/riir/single-lib.md）；
-# 只允许零依赖起步。确需引入的 crate 必须在 README 登记理由。
+# Shared ABI types (CHandle etc., unified by the single-library consolidation; see docs/zh/plans/riir/single-lib.md).
+# The module bridge now uses direct Rust calls (single-library consolidation; see docs/zh/plans/riir/single-lib.md);
+# start from zero dependencies only. Any crate that really must be added has to be registered with its reason in the README.
 quercus-core = { version = "=0.7.2", path = "../quercus-core" }
 quercus-undo = { version = "=0.7.2", path = "../quercus-undo" }
 quercus-node = { version = "=0.7.2", path = "../quercus-node" }
 quercus-render = { version = "=0.7.2", path = "../quercus-render" }
-# Error derive（Display + std::error::Error，见 src/error.rs）；理由已登记 README。
+# Error derive (Display + std::error::Error, see src/error.rs); the rationale is registered in the README.
 thiserror = "2"
 
 # Linux OpenFX GL zero-copy: EGL/GL are loaded dynamically so the crate
@@ -41,12 +41,13 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [features]
-# 历史 feature（原桥测试桩开关）：单库化后 quercusnode/quercusrender/quercusundo
-# 以 path 依赖直连，句柄式调用面改为本地桩（见 src/node.rs /
-# src/render.rs 的 `// STUB` 标记），本 feature 无 cfg 使用点——
-# 保留以避免工作区/构建脚本 `--features test-stubs` 断裂。
+# Legacy feature (formerly the bridge test-stub switch): after the single-library
+# consolidation quercusnode/quercusrender/quercusundo are direct path dependencies and
+# the handle-style call surface became local stubs (see the `// STUB` markers in
+# src/node.rs / src/render.rs); this feature has no cfg use sites — kept so that
+# workspace/build-script `--features test-stubs` does not break.
 test-stubs = []
 
 [build-dependencies]
-# C shim 编译（message suite 的 variadic 入口）；理由已登记 README。
+# C shim compilation (the message suite's variadic entry points); the rationale is registered in the README.
 cc = "1"

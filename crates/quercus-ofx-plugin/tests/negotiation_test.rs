@@ -38,7 +38,7 @@ const TEST_PLUGIN_ID: &str = "org.quercus.test-plugin";
 /// Scan and create an instance; returns None (skip) when unavailable.
 fn create_instance() -> Option<Arc<RefBox<Instance>>> {
 	if common::test_plugin_scan_dir().is_none() {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return None;
 	}
 	let dir = common::test_plugin_scan_dir().unwrap();
@@ -59,11 +59,14 @@ fn clip_preferences_component_depth_matrix() {
 			Host::global().shutdown();
 			return;
 		};
-		let prefs = inst.value.get_clip_preferences().expect("协商应成功");
+		let prefs = inst
+			.value
+			.get_clip_preferences()
+			.expect("negotiation should succeed");
 		assert_eq!(prefs.output_components, "OfxImageComponentRGBA");
 		assert_eq!(prefs.output_bit_depth, "OfxBitDepthFloat");
 		assert_eq!(prefs.frame_rate, 24.0);
-		// 回灌：clip 实例属性带上了协商结果（clipGetPropertySet 读）。
+		// Write-back: the clip instance properties carry the negotiation result (read via clipGetPropertySet).
 		let output = inst
 			.value
 			.clips
@@ -112,7 +115,7 @@ fn region_of_definition_default_and_override() {
 				0.0,
 				quercus_ofx_plugin::instance::RenderScale { x: 1.0, y: 1.0 },
 			)
-			.expect("getRoD 应成功");
+			.expect("getRoD should succeed");
 		assert_eq!((rod.x1, rod.y1, rod.x2, rod.y2), (0.0, 0.0, 1920.0, 1080.0));
 		Host::global().shutdown();
 	});
@@ -141,10 +144,10 @@ fn regions_of_interest_writeback() {
 				quercus_ofx_plugin::instance::RenderScale { x: 1.0, y: 1.0 },
 				region,
 			)
-			.expect("getRoI 应成功");
-		assert_eq!(rois.len(), 2, "clips 数与 RoI 数一致");
-		// RoI 只对输入 clip 有意义：Source 回写 region；Output 是
-		// 宿主预定义的默认（零），渲染驱动只用输入条目。
+			.expect("getRoI should succeed");
+		assert_eq!(rois.len(), 2, "clip count matches RoI count");
+		// RoI is only meaningful for input clips: Source writes back the region; Output is
+		// the host-defined default (zero), and the render driver only uses input entries.
 		let source = rois
 			.get(
 				inst.value
@@ -171,8 +174,14 @@ fn is_identity_shortcircuit() {
 			Host::global().shutdown();
 			return;
 		};
-		let identity = inst.value.is_identity(1.5).expect("isIdentity 应成功");
-		assert!(identity.is_none(), "测试插件恒非透传：{identity:?}");
+		let identity = inst
+			.value
+			.is_identity(1.5)
+			.expect("isIdentity should succeed");
+		assert!(
+			identity.is_none(),
+			"test plugin is never passthrough: {identity:?}"
+		);
 		Host::global().shutdown();
 	});
 }
@@ -187,7 +196,10 @@ fn field_passthrough() {
 			return;
 		};
 		let prefs = inst.value.get_clip_preferences().unwrap();
-		assert_eq!(prefs.field, "OfxFieldNone", "插件声明的 field 应透传");
+		assert_eq!(
+			prefs.field, "OfxFieldNone",
+			"plugin-declared field is passed through"
+		);
 		Host::global().shutdown();
 	});
 }
@@ -207,13 +219,13 @@ fn sequence_render_brackets() {
 			max: 200.0,
 		};
 		assert!(inst.value.begin_sequence_render(range).is_ok());
-		// begin 后实例记录该序列范围（timeline 上下文的 getTimeBounds
-		// 读它）。
+		// After begin the instance records the sequence range (read by the timeline
+		// context's getTimeBounds).
 		let stored = *inst.value.sequence_range.lock().unwrap();
-		let stored = stored.expect("begin_sequence_render 必须登记范围");
+		let stored = stored.expect("begin_sequence_render must record the range");
 		assert_eq!((stored.min, stored.max), (10.0, 200.0));
 		assert!(inst.value.end_sequence_render(range).is_ok());
-		// end 后清除。
+		// Cleared after end.
 		assert!(inst.value.sequence_range.lock().unwrap().is_none());
 
 		Host::global().shutdown();

@@ -59,7 +59,7 @@ pub type Texture = quercus_core::texture::Texture;
 /// A quercusrender CPU frame (a value type).
 pub type Frame = quercus_core::texture::Frame;
 
-// ---- 桥调用面（值型实现；原 CHandle 桩随单库化重写）----------------------
+// ---- Bridge call surface (value-type implementation; CHandle stub ported)----------------------
 
 /// Whether a texture is a placeholder (dummy: transparent black, never uploaded).
 ///
@@ -76,7 +76,7 @@ pub fn texture_is_dummy(texture: &Texture) -> bool {
 pub fn texture_get_frame(texture: &Texture) -> crate::error::Result<Frame> {
 	texture
 		.to_frame()
-		.map_err(|e| crate::error::Error::Failed(format!("纹理 readback 失败：{e}")))
+		.map_err(|e| crate::error::Error::Failed(format!("texture readback failed: {e}")))
 }
 
 /// The texture's video parameters (size + pixel format; the old `texture_get_params`
@@ -117,7 +117,7 @@ pub fn texture_create(
 	if bpc == 0 {
 		return Err(Error::Invalid);
 	}
-	// 行跨度推导通道数（RGB 3 通道等非常规分量）。
+	// Derive channel count from row stride (unconventional components such as RGB 3-channel).
 	if linesize > 0 && w > 0 && (linesize as usize).is_multiple_of(w * bpc) {
 		frame.channels = (linesize as usize / (w * bpc)) as i32;
 	}
@@ -227,32 +227,37 @@ mod tests {
 		params.width = 3;
 		params.height = 2;
 		params.format = PIXEL_FORMAT_F32;
-		// 紧凑 3×2 RGBA F32：3*4*4 = 48 B/行。
+		// Tight 3×2 RGBA F32: 3*4*4 = 48 B/row.
 		let tight = 3 * 4 * 4;
 		let mut pixels = vec![0u8; tight * 2];
 		for (i, b) in pixels.iter_mut().enumerate() {
 			*b = (i % 251) as u8;
 		}
-		let tex = texture_create(&params, &pixels, 0).expect("紧凑行应可创建");
+		let tex =
+			texture_create(&params, &pixels, 0).expect("tightly packed rows should be creatable");
 		assert!(!texture_is_dummy(&tex));
-		let frame = texture_get_frame(&tex).expect("CPU 帧应可读");
+		let frame = texture_get_frame(&tex).expect("CPU frame should be readable");
 		assert_eq!(frame.width, 3);
 		assert_eq!(frame.height, 2);
 		assert_eq!(frame.channels, 4);
 		assert_eq!(frame.linesize_bytes(), tight);
 		assert_eq!(frame.data, pixels);
-		// 行跨度变体（每行 4 字节填充）。
+		// Row-stride variant (4 bytes of padding per row).
 		let row = tight + 4;
 		let mut padded = vec![0u8; row * 2];
 		for y in 0..2 {
 			padded[y * row..y * row + tight].copy_from_slice(&pixels[y * tight..(y + 1) * tight]);
 		}
-		let tex = texture_create(&params, &padded, row as i32).expect("带填充行应可创建");
+		let tex =
+			texture_create(&params, &padded, row as i32).expect("padded rows should be creatable");
 		let frame = texture_get_frame(&tex).unwrap();
-		assert_eq!(frame.data, pixels, "填充行应剥离为紧凑存储");
-		// 像素不足 → Invalid。
+		assert_eq!(
+			frame.data, pixels,
+			"padded rows should be stripped to tight storage"
+		);
+		// Insufficient pixels → Invalid.
 		assert!(texture_create(&params, &padded[..row * 2 - 1], row as i32).is_err());
-		// 无效尺寸 → Invalid。
+		// Invalid size → Invalid.
 		let mut bad = params;
 		bad.width = 0;
 		assert!(texture_create(&bad, &pixels, 0).is_err());

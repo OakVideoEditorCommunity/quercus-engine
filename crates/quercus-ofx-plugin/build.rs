@@ -30,9 +30,10 @@ fn main() {
 		.file("cbits/ofx_param_shim.c")
 		.warnings(true)
 		.compile("ofx_param_shim");
-	// 最小测试插件（M11 §2.4）：共享库（dlopen 目标），运行时由
-	// common::test_plugin_dir 装配成 bundle 目录。
-	// cc 的 compile() 只产静态库，直接调系统编译器出 dylib/so。
+	// Minimal test plugin (M11 §2.4): shared library (dlopen target); at run
+	// time common::test_plugin_dir assembles it into a bundle directory.
+	// cc's compile() only produces static libs, so call the system compiler
+	// directly to get a dylib/so.
 	println!("cargo:rerun-if-changed=cbits/quercus_test_plugin.c");
 	build_test_plugin();
 }
@@ -82,8 +83,8 @@ fn build_test_plugin() {
 		"-o".to_string(),
 		format!("{out}/quercus_test_plugin.{ext}"),
 	];
-	// GL 端到端测试：插件 GL 变体在 macOS 上真实绘制（glClear），需要
-	// OpenGL.framework。
+	// GL end-to-end test: the plugin's GL variant really draws on macOS
+	// (glClear), so it needs OpenGL.framework.
 	if cfg!(target_os = "macos") {
 		args.push("-framework".into());
 		args.push("OpenGL".into());
@@ -95,6 +96,6 @@ fn build_test_plugin() {
 	let status = Command::new(&cc)
 		.args(&args)
 		.status()
-		.expect("编译测试插件失败");
-	assert!(status.success(), "测试插件编译失败");
+		.expect("failed to build test plugin");
+	assert!(status.success(), "test plugin build failed");
 }

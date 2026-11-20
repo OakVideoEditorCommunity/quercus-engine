@@ -101,7 +101,7 @@ use std::sync::Arc;
 use crate::image::Image;
 use crate::render::VideoParams;
 
-// ---- 对外 API（平台无关签名；实现按平台 cfg 分派）----------------------
+// ---- Public API (platform-independent signatures; impl dispatched by platform cfg) ----
 
 /// Whether the TEST build may touch the real CGL context on macOS. The
 /// headless CI runner cannot exercise Apple's GL reliably (parallel unit
@@ -388,7 +388,7 @@ pub fn is_current() -> bool {
 	imp::is_current()
 }
 
-// ---- 平台实现 ----------------------------------------------------------
+// ---- Platform implementations ------------------------------------------
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -397,7 +397,7 @@ mod imp {
 	use std::ffi::{c_char, c_void};
 	use std::sync::{Arc, Mutex, OnceLock};
 
-	// ---- OpenGL 常量（GL 规范值，非 OFX 宏）----
+	// ---- OpenGL constants (GL spec values, not OFX macros) ----
 	const GL_TEXTURE_2D: u32 = 0x0DE1;
 	const GL_RGBA: u32 = 0x1908;
 	const GL_UNSIGNED_BYTE: u32 = 0x1401;
@@ -419,20 +419,20 @@ mod imp {
 	const GL_VERSION: u32 = 0x1F02;
 	const GL_NO_ERROR: u32 = 0;
 
-	// CGL 像素格式属性（CGLPixelFormatAttribute，CGL.h）。
+	// CGL pixel format attributes (CGLPixelFormatAttribute, CGL.h).
 	const K_CGL_PFA_OPENGL_PROFILE: i32 = 99;
 	const K_CGLOGLP_VERSION_3_2_CORE: i32 = 0x3200;
 	const K_CGL_PFA_ALLOW_OFFLINE_RENDERERS: i32 = 96;
 	const K_CGL_PFA_COLOR_SIZE: i32 = 8;
 	const K_CGL_PFA_ALPHA_SIZE: i32 = 11;
 
-	// macOS：CGL + OpenGL 的 FFI 声明（直接链接 OpenGL.framework）。
+	// macOS: FFI declarations for CGL + OpenGL (linked directly against OpenGL.framework).
 	//
 	// # Safety
 	//
-	// 全部是系统 framework 导出函数；指针参数语义见各函数注释。
-	// CGL* 类型用 `*mut c_void` 表示不透明对象指针（CGLContextObj /
-	// CGLPixelFormatObj）。
+	// All are functions exported by the system framework; for pointer-argument
+	// semantics see each function's comment. CGL* types are represented as
+	// `*mut c_void` opaque object pointers (CGLContextObj / CGLPixelFormatObj).
 	#[link(name = "OpenGL", kind = "framework")]
 	unsafe extern "C" {
 		/// Selects a pixel format from an attribute list (returns kCGLNoError=0
@@ -504,17 +504,20 @@ mod imp {
 		pixel_format: *mut c_void,
 	}
 
-	// SAFETY: CGL 上下文对象可在任意线程经 CGLSetCurrentContext 置为
-	// current，但不能同时被两条线程使用——本模块用全局 Mutex 串行化
-	// 一切置 current 与 GL 调用，指针只在线程间传递（Arc 共享）而从不
-	// 并发解引用；Drop 只在进程退出（单线程）执行。Send/Sync 因此安全。
+	// SAFETY: a CGL context object can be made current on any thread via
+	// CGLSetCurrentContext, but not on two threads at once — this module
+	// serializes every make-current and GL call under a global Mutex; the
+	// pointer is only passed between threads (Arc-shared) and never
+	// dereferenced concurrently; Drop only runs at process exit (single
+	// threaded). Send/Sync are therefore sound.
 	unsafe impl Send for GlContext {}
 	unsafe impl Sync for GlContext {}
 
 	impl Drop for GlContext {
 		fn drop(&mut self) {
-			// SAFETY: 进程退出期单线程；先清 current 再销毁对象，顺序
-			// 满足 CGL 文档（context 必须先取消 current 再 destroy）。
+			// SAFETY: single-threaded during process exit; current is cleared
+			// before destroying the objects, the order CGL documents requires
+			// (a context must be unset current before it is destroyed).
 			unsafe {
 				CGLSetCurrentContext(std::ptr::null_mut());
 				if !self.ctx.is_null() {
@@ -546,7 +549,7 @@ mod imp {
 		let res = GL_CONTEXT.get_or_init(create_context);
 		match res {
 			Ok(c) => Ok(c),
-			Err(e) => Err(err(&format!("CGL 上下文创建失败：{e}"))),
+			Err(e) => Err(err(&format!("CGL context creation failed: {e}"))),
 		}
 	}
 
@@ -566,9 +569,10 @@ mod imp {
 	/// destroys the already selected pixel format. `context` wraps that error
 	/// as `Error::Failed` and caches it.
 	fn create_context() -> Result<Arc<GlContext>, String> {
-		// SAFETY: CGLChoosePixelFormat 把像素格式对象写入 pix；属性表
-		// 以 0 结尾（kCGLPFAOpenGLProfile 之后是 profile 值、kCGLPFA
-		// AllowOfflineRenderers 后跟 1；见 CGL.h 的 attr 配对约定）。
+		// SAFETY: CGLChoosePixelFormat writes the pixel-format object into pix;
+		// the attribute list is 0-terminated (the profile value follows
+		// kCGLPFAOpenGLProfile and 1 follows kCGLPFAAllowOfflineRenderers; see
+		// the attr pairing convention in CGL.h).
 		let attrs = [
 			K_CGL_PFA_OPENGL_PROFILE,
 			K_CGLOGLP_VERSION_3_2_CORE,
@@ -582,20 +586,20 @@ mod imp {
 		];
 		unsafe {
 			let mut pix: *mut c_void = std::ptr::null_mut();
-			// npix 是 CGL 的 out 参数（像素格式计数）；本桥不需要，但
-			// 必须给足实参（CGL 会写它）。
+			// npix is a CGL out parameter (pixel-format count); this bridge does
+			// not need it, but the argument must still be supplied (CGL writes it).
 			let mut npix: i32 = 0;
 			let st = CGLChoosePixelFormat(attrs.as_ptr(), &mut pix, &mut npix);
 			if st != 0 || pix.is_null() {
-				return Err(format!("CGLChoosePixelFormat 失败：{st}"));
+				return Err(format!("CGLChoosePixelFormat failed: {st}"));
 			}
 			let mut ctx: *mut c_void = std::ptr::null_mut();
-			// share = NULL：无共享组（本进程唯一 GL 使用方，无需与其他
-			// 上下文共享命名空间）。
+			// share = NULL: no share group (this process is the only GL user and
+			// needs no namespace shared with other contexts).
 			let st = CGLCreateContext(pix, std::ptr::null_mut(), &mut ctx);
 			if st != 0 || ctx.is_null() {
 				CGLDestroyPixelFormat(pix);
-				return Err(format!("CGLCreateContext 失败：{st}"));
+				return Err(format!("CGLCreateContext failed: {st}"));
 			}
 			Ok(Arc::new(GlContext {
 				ctx,
@@ -612,8 +616,9 @@ mod imp {
 		_ctx: Arc<GlContext>,
 	}
 
-	// 当前线程的 acquire 嵌套深度。>0 = 本线程已持外层 guard（上下文
-	// 已 current）；嵌套 acquire 只递增深度，不重取锁。
+	// This thread's acquire nesting depth. >0 = this thread already holds an
+	// outer guard (context already current); nested acquire only bumps the
+	// depth, it does not re-take the lock.
 	thread_local! {
 		static ACQUIRE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 	}
@@ -648,7 +653,7 @@ mod imp {
 		let ctx = context()?.clone();
 		let depth = ACQUIRE_DEPTH.with(|d| d.get());
 		if depth > 0 {
-			// 嵌套：上下文已 current（外层 guard 持有期），只递增深度。
+			// Nested: the context is already current (outer guard held); only bump the depth.
 			ACQUIRE_DEPTH.with(|d| d.set(depth + 1));
 			return Ok(GlGuard {
 				_inner: GuardInner {
@@ -658,12 +663,12 @@ mod imp {
 			});
 		}
 		let guard = lock();
-		// SAFETY: ctx 是有效 CGLContextObj；置 current 后本线程可发 GL
-		// 命令。失败返回非 0。
+		// SAFETY: ctx is a valid CGLContextObj; once current, this thread may
+		// issue GL commands. Returns non-zero on failure.
 		let st = unsafe { CGLSetCurrentContext(ctx.ctx) };
 		if st != 0 {
 			drop(guard);
-			return Err(err(&format!("CGLSetCurrentContext 失败：{st}")));
+			return Err(err(&format!("CGLSetCurrentContext failed: {st}")));
 		}
 		ACQUIRE_DEPTH.with(|d| d.set(1));
 		Ok(GlGuard {
@@ -678,17 +683,17 @@ mod imp {
 		fn drop(&mut self) {
 			let depth = ACQUIRE_DEPTH.with(|d| d.get());
 			if depth <= 1 {
-				// 最外层：清 current（NULL）并释放全局锁。LIFO 栈纪律
-				// 保证外层 drop 前所有嵌套 guard 已 drop（深度归 1），
-				// 故 _lock 必为 Some。
+				// Outermost: clear current (NULL) and release the global lock.
+				// LIFO stack discipline guarantees every nested guard is already
+				// dropped (depth back to 1), so _lock is always Some.
 				ACQUIRE_DEPTH.with(|d| d.set(0));
-				// SAFETY: 清 current（NULL）后放锁；见模块文档的线程模型。
+				// SAFETY: clear current (NULL) then release the lock; see the module docs.
 				unsafe {
 					CGLSetCurrentContext(std::ptr::null_mut());
 				}
 				drop(self._lock.take());
 			} else {
-				// 嵌套 guard drop：只递减深度，不清 current/不放锁。
+				// Nested guard drop: decrement depth only; do not clear current or release the lock.
 				ACQUIRE_DEPTH.with(|d| d.set(depth - 1));
 			}
 		}
@@ -726,10 +731,10 @@ mod imp {
 	/// for test assertions. Requires the context to be current (`glGetError`
 	/// acts on the current context).
 	fn check_error(what: &str) -> crate::error::Result<()> {
-		// SAFETY: glGetError 无参数，读取当前上下文的错误状态。
+		// SAFETY: glGetError takes no arguments; it reads the current context's error state.
 		let e = unsafe { glGetError() };
 		if e != GL_NO_ERROR {
-			Err(err(&format!("{what} 失败：GL error 0x{e:x}")))
+			Err(err(&format!("{what} failed: GL error 0x{e:x}")))
 		} else {
 			Ok(())
 		}
@@ -741,7 +746,9 @@ mod imp {
 		match params.format {
 			f if f == crate::render::PIXEL_FORMAT_F32 => Ok((GL_RGBA32F, GL_FLOAT, 4)),
 			f if f == crate::render::PIXEL_FORMAT_U8 => Ok((GL_RGBA8, GL_UNSIGNED_BYTE, 1)),
-			f => Err(err(&format!("目标帧格式 {f} 不支持 GL 输出（仅 F32/U8）"))),
+			f => Err(err(&format!(
+				"target format {f} unsupported for GL (F32/U8 only)"
+			))),
 		}
 	}
 
@@ -763,13 +770,13 @@ mod imp {
 	/// to be current.
 	fn new_texture(w: i32, h: i32, internal: u32) -> crate::error::Result<u32> {
 		if w <= 0 || h <= 0 {
-			return Err(err("纹理尺寸非法"));
+			return Err(err("invalid texture size"));
 		}
 		unsafe {
 			let mut tex: u32 = 0;
 			glGenTextures(1, &mut tex);
 			if tex == 0 {
-				return Err(err("glGenTextures 失败"));
+				return Err(err("glGenTextures failed"));
 			}
 			glBindTexture(GL_TEXTURE_2D, tex);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
@@ -777,8 +784,9 @@ mod imp {
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as i32);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as i32);
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-			// internalformat 是 GLenum（无符号）；C 签名里 glTexImage2D
-			// 的 internalformat 实为 GLint——此处值 < 2^31 安全。
+			// internalformat is a GLenum (unsigned); in the C signature
+			// glTexImage2D's internalformat is really GLint — safe here since
+			// the value is < 2^31.
 			glTexImage2D(
 				GL_TEXTURE_2D,
 				0,
@@ -838,12 +846,12 @@ mod imp {
 	/// current.
 	pub fn create_input_texture(w: i32, h: i32, pixels: &[u8]) -> crate::error::Result<i32> {
 		let tex = new_texture(w, h, GL_RGBA32F)?;
-		// 上传 F32 RGBA 像素（紧凑，行优先；先确保 unpack alignment=1）。
+		// Upload F32 RGBA pixels (tightly packed, row-major; ensure unpack alignment=1 first).
 		let expected = (w as usize) * (h as usize) * 4 * 4;
 		if pixels.len() != expected {
 			let _ = delete_gl_texture(tex as i32);
 			return Err(err(&format!(
-				"输入像素长度 {} 与 w*h*4*4={expected} 不符",
+				"input pixel length {} does not match w*h*4*4={expected}",
 				pixels.len()
 			)));
 		}
@@ -864,7 +872,7 @@ mod imp {
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 			glBindTexture(GL_TEXTURE_2D, 0);
 		}
-		check_error("输入纹理上传")?;
+		check_error("input texture upload")?;
 		Ok(tex as i32)
 	}
 
@@ -877,8 +885,9 @@ mod imp {
 		if name <= 0 {
 			return;
 		}
-		// SAFETY: name 是之前 glGenTextures 产出的纹理名；删除后不可
-		// 再用（本桥保证不再引用）。要求上下文 current。
+		// SAFETY: name is a texture name previously produced by glGenTextures;
+		// it must not be used after deletion (this bridge guarantees no further
+		// references). Requires a current context.
 		unsafe {
 			let t = name as u32;
 			glDeleteTextures(1, &t);
@@ -902,13 +911,13 @@ mod imp {
 	/// context to be current.
 	pub fn create_fbo(tex: i32, _w: i32, _h: i32) -> crate::error::Result<i32> {
 		if tex <= 0 {
-			return Err(err("FBO 附着纹理无效"));
+			return Err(err("invalid FBO attachment texture"));
 		}
 		unsafe {
 			let mut fbo: u32 = 0;
 			glGenFramebuffers(1, &mut fbo);
 			if fbo == 0 {
-				return Err(err("glGenFramebuffers 失败"));
+				return Err(err("glGenFramebuffers failed"));
 			}
 			glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 			glFramebufferTexture2D(
@@ -922,7 +931,7 @@ mod imp {
 			if status != GL_FRAMEBUFFER_COMPLETE {
 				glDeleteFramebuffers(1, &fbo);
 				glBindFramebuffer(GL_FRAMEBUFFER, 0);
-				return Err(err(&format!("FBO 不完整：0x{status:x}")));
+				return Err(err(&format!("FBO incomplete: 0x{status:x}")));
 			}
 			Ok(fbo as i32)
 		}
@@ -936,7 +945,7 @@ mod imp {
 	/// to be current. The render driver binds it once before and once after
 	/// the render action, ensuring the plugin has not re-bound the output FBO.
 	pub fn bind_fbo(fbo: i32) {
-		// SAFETY: 绑定 0（系统帧缓冲）或本桥创建的 FBO 名。
+		// SAFETY: binds 0 (system framebuffer) or an FBO name created by this bridge.
 		unsafe {
 			glBindFramebuffer(GL_FRAMEBUFFER, fbo as u32);
 		}
@@ -952,7 +961,7 @@ mod imp {
 		if fbo <= 0 {
 			return;
 		}
-		// SAFETY: fbo 是本桥 glGenFramebuffers 的产物；删除前先解除绑定。
+		// SAFETY: fbo is a product of this bridge's glGenFramebuffers; unbind before deleting.
 		unsafe {
 			glBindFramebuffer(GL_FRAMEBUFFER, 0);
 			let f = fbo as u32;
@@ -968,7 +977,7 @@ mod imp {
 	/// binding the output FBO; the plugin may change the viewport, so it is set
 	/// again before readback. Requires the context to be current.
 	pub fn set_viewport(w: i32, h: i32) {
-		// SAFETY: 视口是 GL 上下文状态，直接写。
+		// SAFETY: the viewport is GL context state; write it directly.
 		unsafe {
 			glViewport(0, 0, w, h);
 		}
@@ -1049,7 +1058,7 @@ mod imp {
 		let src_row = w * 4 * bpc;
 		let dst_row = w * 4 * 4;
 		for y in 0..h {
-			// 垂直翻转：GL 读回原点在左下，帧缓冲原点在左上。
+			// Vertical flip: GL readback origin is bottom-left, framebuffer origin top-left.
 			let src_y = h - 1 - y;
 			let src = &raw[src_y * src_row..(src_y + 1) * src_row];
 			let d = &mut dst[y * dst_row..(y + 1) * dst_row];
@@ -1088,7 +1097,7 @@ mod imp {
 	/// state and does not clear anything itself. Used by FBO tests and the
 	/// failure purple screen. Requires the context to be current.
 	pub fn gl_clear_color(r: f32, g: f32, b: f32, a: f32) {
-		// SAFETY: 写当前上下文的 clear 颜色状态。
+		// SAFETY: writes the current context's clear-color state.
 		unsafe {
 			glClearColor(r, g, b, a);
 		}
@@ -1102,7 +1111,7 @@ mod imp {
 	/// plugin's normal render path issues its own GL commands. Requires the
 	/// context to be current.
 	pub fn gl_clear() {
-		// SAFETY: 清除当前绑定帧缓冲的颜色缓冲。
+		// SAFETY: clears the color buffer of the currently bound framebuffer.
 		unsafe {
 			glClear(GL_COLOR_BUFFER_BIT);
 		}
@@ -1118,8 +1127,8 @@ mod imp {
 	/// context or a null pointer); the `gl_context_is_real` test uses it to
 	/// prove that a real driver context exists.
 	pub fn gl_version_string() -> Option<String> {
-		// SAFETY: glGetString 返回当前上下文内驻字符串；拷贝成 Rust
-		// String 后再返回，不持指针。
+		// SAFETY: glGetString returns a string resident in the current context;
+		// it is copied into a Rust String before returning, no pointer is kept.
 		unsafe {
 			let p = glGetString(GL_VERSION);
 			if p.is_null() {
@@ -1131,7 +1140,7 @@ mod imp {
 	}
 }
 
-// ---- Linux：EGL + GL_EXT_memory_object_fd（真正 GPU 零拷贝） ----------
+// ---- Linux: EGL + GL_EXT_memory_object_fd (true GPU zero-copy) ---------
 
 /// A GL texture created from a Vulkan `OPAQUE_FD` memory object.
 ///
@@ -2441,7 +2450,7 @@ mod imp {
 	}
 }
 
-// ---- Windows：WGL + GL_EXT_memory_object_win32 ------------------------
+// ---- Windows: WGL + GL_EXT_memory_object_win32 ------------------------
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -3517,7 +3526,7 @@ mod imp {
 	/// treat it as fatal.
 	pub fn acquire() -> crate::error::Result<GlGuard> {
 		Err(crate::error::Error::Failed(
-			"gl_bridge: 平台无 GL 实现（Linux/Windows stub）".into(),
+			"gl_bridge: no platform GL implementation (Linux/Windows stub)".into(),
 		))
 	}
 
@@ -3530,7 +3539,7 @@ mod imp {
 	/// touches no GL state.
 	pub fn create_output_texture(_w: i32, _h: i32, _p: &VideoParams) -> crate::error::Result<i32> {
 		Err(crate::error::Error::Failed(
-			"gl_bridge: 平台无 GL 实现".into(),
+			"gl_bridge: no platform GL implementation".into(),
 		))
 	}
 
@@ -3542,7 +3551,7 @@ mod imp {
 	/// stub validates nothing, uploads nothing, and just errors.
 	pub fn create_input_texture(_w: i32, _h: i32, _p: &[u8]) -> crate::error::Result<i32> {
 		Err(crate::error::Error::Failed(
-			"gl_bridge: 平台无 GL 实现".into(),
+			"gl_bridge: no platform GL implementation".into(),
 		))
 	}
 
@@ -3563,7 +3572,7 @@ mod imp {
 	/// no objects; callers fall back to CPU or the GL readback path as usual.
 	pub fn create_fbo(_tex: i32, _w: i32, _h: i32) -> crate::error::Result<i32> {
 		Err(crate::error::Error::Failed(
-			"gl_bridge: 平台无 GL 实现".into(),
+			"gl_bridge: no platform GL implementation".into(),
 		))
 	}
 
@@ -3601,7 +3610,7 @@ mod imp {
 		_p: &VideoParams,
 	) -> crate::error::Result<Arc<Image>> {
 		Err(crate::error::Error::Failed(
-			"gl_bridge: 平台无 GL 实现".into(),
+			"gl_bridge: no platform GL implementation".into(),
 		))
 	}
 

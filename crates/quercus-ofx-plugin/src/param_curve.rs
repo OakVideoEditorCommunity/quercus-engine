@@ -161,13 +161,13 @@ impl Curve {
 		if x >= self.points[n - 1].key {
 			return self.points[n - 1].value;
 		}
-		// 定位所在段：points[i].key <= x < points[i+1].key。
+		// Locate the segment: points[i].key <= x < points[i+1].key.
 		let i = self.points.partition_point(|p| p.key <= x) - 1;
 		let a = self.points[i];
 		let b = self.points[i + 1];
 		let h = b.key - a.key;
 		if h <= 0.0 {
-			return a.value; // 防御：重复 key（不变量保证不出现）
+			return a.value; // Defensive: duplicate key (invariants rule it out)
 		}
 		let t = (x - a.key) / h;
 		let t2 = t * t;
@@ -229,16 +229,19 @@ impl Curve {
 	}
 }
 
-// ---- 曲线集 ↔ JSON（节点输入 / 工程序列化的值载荷）--------------------
+// ---- Curve set ↔ JSON (node input / project serialization value payload) ----
 //
-// 格式（确定性、紧凑，无空白）：
+// Format (deterministic, compact, no whitespace):
 //   {"curves":[[{"key":0.0,"value":0.0,"slope":1.0},...],...]}
-// 外层按 dimension 顺序一维一条曲线；每维一个控制点对象，字段序固定
-// key/value/slope。数值用 Rust 最短往返格式化（`{}`）。非有限值 JSON
-// 无标准写法，取对称 token：NaN → `null`，+Inf → `"inf"`，
-// -Inf → `"-inf"`（字符串字面量；解析器对称处理，有限值恒为裸数字）。
-// 解析器容忍空白与字段乱序；结构不符 → None（调用方按字符串族静默
-// 路径处理）。手写实现，不引入 serde（crate 无该依赖）。
+// The outer level holds one curve per dimension in dimension order; each
+// control-point object has the fixed field order key/value/slope. Numbers use
+// Rust's shortest round-trip formatting (`{}`). JSON has no standard spelling
+// for non-finite values, so symmetric tokens are used: NaN → `null`, +Inf →
+// `"inf"`, -Inf → `"-inf"` (string literals; the parser handles them
+// symmetrically, finite values are always bare numbers).
+// The parser tolerates whitespace and out-of-order fields; a structural
+// mismatch → None (callers process it along the silent string-family path).
+// Hand-written implementation, no serde (the crate has no such dependency).
 
 /// Serializes a curve set to compact JSON (no whitespace) as a node input default
 /// value and as the payload a plugin writes back to a node input.
@@ -567,8 +570,8 @@ mod tests {
 		for x in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
 			assert!(close(c.evaluate(x), x, 1e-12), "identity at {x}");
 		}
-		// 非默认 range（插件改 OfxParamPropParametricRange 后，
-		// 新曲线的默认 default 相应平移）。
+		// Non-default range (after the plugin changes OfxParamPropParametricRange,
+		// the new curve's default default shifts accordingly).
 		let c = Curve::identity(0.0, 255.0);
 		assert!(close(c.evaluate(128.0), 128.0, 1e-12));
 	}
@@ -584,21 +587,22 @@ mod tests {
 			c.points.iter().map(|p| p.slope).collect::<Vec<_>>(),
 			vec![0.5, 1.0, 1.5]
 		);
-		// 插值性质：控制点处精确命中。
+		// Interpolation property: exact hit at control points.
 		assert_eq!(c.evaluate(0.0), 0.0);
 		assert_eq!(c.evaluate(0.5), 0.25);
 		assert_eq!(c.evaluate(1.0), 1.0);
-		// 中点解析值（t = 1/2 段内，精确二进制分数）。
+		// Analytic midpoint values (t = 1/2 within a segment, exact binary fractions).
 		assert_eq!(c.evaluate(0.125), 0.05078125);
 		assert_eq!(c.evaluate(0.25), 0.09375);
 		assert_eq!(c.evaluate(0.75), 0.59375);
-		// 形状：单调递增；首段在抛物线 y = x² 之上（Hermite 端点
-		// 用弦斜率、中点用中心差分 → 首段整体上凸）。
+		// Shape: monotonically increasing; the first segment lies above the
+		// parabola y = x² (Hermite endpoint uses chord slope, midpoint uses
+		// central difference → the first segment is overall convex).
 		let xs = [0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9];
 		for w in xs.windows(2) {
 			assert!(c.evaluate(w[0]) < c.evaluate(w[1]));
 		}
-		assert!(c.evaluate(0.25) > 0.25 * 0.25); // 高于抛物线采样点
+		assert!(c.evaluate(0.25) > 0.25 * 0.25); // above the sampled parabola point
 	}
 
 	/// Out-of-range clamping: x outside the first/last key → endpoint value.
@@ -618,22 +622,22 @@ mod tests {
 	#[test]
 	fn upsert_and_delete_keep_evaluation_consistent() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)]);
-		// 插入中点（返回 true = 新增），求值在其 key 处精确命中。
+		// Insert a midpoint (returns true = added); evaluation hits exactly at its key.
 		assert!(c.upsert(0.3, 0.7));
 		assert_eq!(c.len(), 3);
 		assert_eq!(c.evaluate(0.3), 0.7);
-		// 有序性保持。
+		// Ordering preserved.
 		let keys: Vec<f64> = c.points.iter().map(|p| p.key).collect();
 		assert_eq!(keys, vec![0.0, 0.3, 1.0]);
-		// 同 key 覆盖（返回 false = 覆盖），数量不变。
+		// Same-key overwrite (returns false = overwrite), count unchanged.
 		assert!(!c.upsert(0.3, 0.5));
 		assert_eq!(c.len(), 3);
 		assert_eq!(c.evaluate(0.3), 0.5);
-		// 删除 → 恢复双点（恒等；非 2 幂 key 处逐位有舍入）。
+		// Delete → back to two points (identity; per-bit rounding at non-power-of-2 keys).
 		c.delete_nth(1).unwrap();
 		assert_eq!(c.len(), 2);
 		assert!(close(c.evaluate(0.3), 0.3, 1e-12));
-		// 越界删除 → Err。
+		// Out-of-range delete → Err.
 		assert!(c.delete_nth(2).is_err());
 	}
 
@@ -641,12 +645,12 @@ mod tests {
 	#[test]
 	fn set_nth_reorders_on_key_change() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)]);
-		// 把第 0 点挪到 0.75（原第 1、2 点之前……之后）。
+		// Move point 0 to 0.75 (before the original points 1, 2 … after).
 		c.set_nth(0, 0.75, 0.75).unwrap();
 		let pairs: Vec<(f64, f64)> = c.points.iter().map(|p| (p.key, p.value)).collect();
 		assert_eq!(pairs, vec![(0.5, 0.5), (0.75, 0.75), (1.0, 1.0)]);
 		assert_eq!(c.evaluate(0.75), 0.75);
-		// 越界 nth → Err。
+		// Out-of-range nth → Err.
 		assert!(c.set_nth(3, 0.9, 0.9).is_err());
 	}
 
@@ -657,8 +661,8 @@ mod tests {
 	fn slope_editing_changes_evaluation() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)]);
 		assert_eq!(c.evaluate(0.25), 0.25);
-		// 显式编辑 slope（宿主/测试路径；suite 无 slope 入口，
-		// 但字段公开即契约的一部分）。
+		// Explicit slope edit (host/test path; the suite has no slope entry point,
+		// but a public field is part of the contract).
 		c.points[0].slope = 0.0;
 		c.points[1].slope = 0.0;
 		assert_eq!(c.evaluate(0.25), 0.15625);
@@ -696,7 +700,7 @@ mod tests {
 			json,
 			r#"{"curves":[[{"key":0,"value":0,"slope":1},{"key":1,"value":1,"slope":1}]]}"#
 		);
-		let back = curves_from_json(&json).expect("应可解析");
+		let back = curves_from_json(&json).expect("should parse");
 		assert_eq!(back, curves);
 	}
 
@@ -705,15 +709,15 @@ mod tests {
 	#[test]
 	fn json_roundtrip_multidim_and_slope() {
 		let mut c = Curve::from_pairs(&[(0.0, 0.0), (0.5, 0.25), (1.0, 1.0)]);
-		c.points[1].slope = 0.0; // 显式编辑（字段公开即契约）
+		c.points[1].slope = 0.0; // Explicit edit (public field is contract)
 		let curves = vec![c.clone(), Curve::identity(0.0, 255.0)];
 		let json = curves_to_json(&curves);
-		let back = curves_from_json(&json).expect("应可解析");
+		let back = curves_from_json(&json).expect("should parse");
 		assert_eq!(back.len(), 2);
 		assert_eq!(back, curves);
 		assert_eq!(back[0].points[1].slope, 0.0);
 		assert_eq!(back[1].points[1].key, 255.0);
-		// 求值不受序列化影响。
+		// Evaluation unaffected by serialization.
 		assert_eq!(back[0].evaluate(0.5), 0.25);
 	}
 
@@ -739,12 +743,12 @@ mod tests {
 			json,
 			r#"{"curves":[[{"key":0,"value":null,"slope":0},{"key":1,"value":"inf","slope":"-inf"}]]}"#
 		);
-		let back = curves_from_json(&json).expect("应可解析");
+		let back = curves_from_json(&json).expect("should parse");
 		assert!(back[0].points[0].value.is_nan());
 		assert_eq!(back[0].points[1].value, f64::INFINITY);
 		assert_eq!(back[0].points[1].slope, f64::NEG_INFINITY);
 
-		// 空曲线（DeleteAll 后）与空集。
+		// Empty curve (after DeleteAll) and empty set.
 		let curves = vec![Curve::empty(), Curve::empty()];
 		let json = curves_to_json(&curves);
 		assert_eq!(json, r#"{"curves":[[],[]]}"#);
@@ -759,10 +763,10 @@ mod tests {
 	#[test]
 	fn json_parser_tolerances() {
 		let curves = vec![Curve::from_pairs(&[(0.0, 0.0), (1.0, 1.0)])];
-		// 空白 + 字段乱序。
+		// Whitespace + out-of-order fields.
 		let spaced = r#"{ "curves" : [ [ { "slope" : 1 , "key" : 0 , "value" : 0 } , { "key" : 1 , "value" : 1 , "slope" : 1 } ] ] }"#;
 		assert_eq!(curves_from_json(spaced).unwrap(), curves);
-		// 结构不符 → None。
+		// Structural mismatch → None.
 		for bad in [
 			"",
 			"{}",
@@ -773,9 +777,9 @@ mod tests {
 			r#"{"curves":[[{"key":0}]]"#,
 			r#"{"curves":[[{"key":0,"value":0,"slope":0}]]}junk"#,
 		] {
-			assert!(curves_from_json(bad).is_none(), "应拒绝：{bad}");
+			assert!(curves_from_json(bad).is_none(), "should reject: {bad}");
 		}
-		// 缺 slope 字段 → 0（宽容）。
+		// Missing slope field → 0 (lenient).
 		let no_slope = r#"{"curves":[[{"key":0,"value":0}]]}"#;
 		let back = curves_from_json(no_slope).unwrap();
 		assert_eq!(back[0].points[0].slope, 0.0);

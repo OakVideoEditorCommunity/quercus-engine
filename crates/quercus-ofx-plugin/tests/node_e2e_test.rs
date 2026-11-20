@@ -96,11 +96,11 @@ impl NodeBehavior for ConstSource {
 /// unavailable).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return false;
 	};
 	if Host::global().cache.scan_path(&dir).is_err() {
-		common::skip("测试插件扫描失败");
+		common::skip("test plugin scan failed");
 		return false;
 	}
 	node_factory::register_plugin_nodes();
@@ -110,18 +110,20 @@ fn scan_and_register() -> bool {
 /// Takes the render texture out of the output table (the real texture box
 /// after resolve).
 fn rendered_texture(table: &quercus_node::value::NodeValueTable) -> Texture {
-	let NodeValue::Texture(handle) = table.get(ValueType::Texture).expect("根输出应有纹理")
+	let NodeValue::Texture(handle) = table
+		.get(ValueType::Texture)
+		.expect("root output should have a texture")
 	else {
-		panic!("纹理槽不是 Texture 值");
+		panic!("texture slot is not a Texture value");
 	};
 	unsafe { handle::get_checked::<Texture>(handle) }
 		.cloned()
-		.expect("纹理盒必须是渲染产物（PluginJobPayload 已 resolve）")
+		.expect("texture box must be the render product (PluginJobPayload already resolved)")
 }
 
 fn first_pixel(texture: &Texture) -> [f32; 4] {
 	let Texture::Cpu(frame) = texture else {
-		panic!("期望 CPU 帧");
+		panic!("expected a CPU frame");
 	};
 	let mut out = [0f32; 4];
 	for i in 0..4 {
@@ -143,11 +145,11 @@ fn plugin_nodes_register_with_translated_inputs() {
 		let entries = Factory::global().dynamic_entries();
 		assert!(
 			entries.iter().any(|m| m.type_id == PLUGIN_ID),
-			"CPU 变体应注册为动态节点"
+			"CPU variant should be registered as a dynamic node"
 		);
 		assert!(
 			entries.iter().any(|m| m.type_id == IDENTITY_ID),
-			"identity 变体应注册为动态节点"
+			"identity variant should be registered as a dynamic node"
 		);
 		let meta = entries.iter().find(|m| m.type_id == PLUGIN_ID).unwrap();
 		assert_eq!(meta.sub_category, "Filter");
@@ -155,23 +157,23 @@ fn plugin_nodes_register_with_translated_inputs() {
 
 		let (core, behavior) = Factory::global()
 			.create_any(PLUGIN_ID)
-			.expect("create_any 应建出插件节点");
+			.expect("create_any should create the plugin node");
 
-		// gain：Double → Float，默认 0.0，显示名 Gain，带 display
-		// min/max 属性（-2/2）。
-		let gain = core.get_input("gain").expect("gain 输入");
+		// gain: Double → Float, default 0.0, display name Gain, with display
+		// min/max properties (-2/2).
+		let gain = core.get_input("gain").expect("gain input");
 		assert_eq!(gain.value_type, ValueType::Float);
 		assert_eq!(gain.default, NodeValue::Float(0.0));
 		assert_eq!(gain.display_name, "Gain");
-		// min/max/tooltip 属性 C++ 只对颜色输入设置
-		// （plugin.cpp:407-430 的 k_color 分支）；Double 参数无。
+		// The C++ only sets min/max/tooltip properties for colour inputs
+		// (the k_color branch in plugin.cpp:407-430); Double parameters have none.
 		assert!(gain
 			.properties
 			.iter()
 			.all(|(k, _)| k != "min" && k != "max"));
 
-		// mode：Choice → Combo，两个选项 Fast/High。
-		let mode = core.get_input("mode").expect("mode 输入");
+		// mode: Choice → Combo, two options Fast/High.
+		let mode = core.get_input("mode").expect("mode input");
 		assert_eq!(mode.value_type, ValueType::Combo);
 		let options: Vec<String> = mode
 			.properties
@@ -179,29 +181,32 @@ fn plugin_nodes_register_with_translated_inputs() {
 			.filter(|(k, _)| k == "combo_option")
 			.map(|(_, v)| match v {
 				NodeValue::Text(s) => s.clone(),
-				_ => panic!("combo_option 应是 Text"),
+				_ => panic!("combo_option should be Text"),
 			})
 			.collect();
 		assert_eq!(options, vec!["Fast".to_string(), "High".to_string()]);
 
-		// debug：secret → hidden。
-		let debug = core.get_input("debug").expect("debug 输入");
-		assert!(debug.flags & input::flags::HIDDEN != 0, "secret 参数应隐藏");
+		// debug: secret → hidden.
+		let debug = core.get_input("debug").expect("debug input");
+		assert!(
+			debug.flags & input::flags::HIDDEN != 0,
+			"secret parameter should be hidden"
+		);
 
-		// label：String → Text。
-		let label = core.get_input("label").expect("label 输入");
+		// label: String → Text.
+		let label = core.get_input("label").expect("label input");
 		assert_eq!(label.value_type, ValueType::Text);
 
-		// Source clip → 纹理输入；effect_input 选中 Source。
-		let source = core.get_input("Source").expect("Source 输入");
+		// Source clip → texture input; effect_input selects Source.
+		let source = core.get_input("Source").expect("Source input");
 		assert_eq!(source.value_type, ValueType::Texture);
 		assert_eq!(core.effect_input, "Source");
 
-		// 行为是持真实实例句柄的 PluginNode。
+		// The behavior is a PluginNode holding a real instance handle.
 		let plugin = behavior
 			.as_any()
 			.and_then(|a| a.downcast_ref::<nodes::plugin::PluginNode>())
-			.expect("行为应是 PluginNode");
+			.expect("behavior should be a PluginNode");
 		assert!(!plugin.instance_handle().is_null());
 
 		Host::global().shutdown();
@@ -229,7 +234,7 @@ fn plugin_renders_constant_frame_end_to_end() {
 		let plug_id = graph.add_node(core, behavior);
 		graph
 			.connect(src_id, plug_id, "Source", -1)
-			.expect("Source 连接");
+			.expect("Source connection");
 
 		let mut traverser = Traverser::new();
 		let mut hooks = eval::RenderEvalHooks::new();
@@ -239,11 +244,11 @@ fn plugin_renders_constant_frame_end_to_end() {
 				&EvalRequest::new(plug_id, Rational::new(0, 1)),
 				&mut hooks,
 			)
-			.expect("evaluate 应成功");
+			.expect("evaluate should succeed");
 
 		let texture = rendered_texture(&table);
 		assert_eq!(texture.size(), (4, 4));
-		// 测试插件 render 无视输入，填常量 0.5（alpha=1）。
+		// The test plugin's render ignores its inputs and fills the constant 0.5 (alpha=1).
 		assert_eq!(first_pixel(&texture), [0.5, 0.5, 0.5, 1.0]);
 
 		Host::global().shutdown();
@@ -274,7 +279,7 @@ fn identity_variant_passes_source_through() {
 		let plug_id = graph.add_node(core, behavior);
 		graph
 			.connect(src_id, plug_id, "Source", -1)
-			.expect("Source 连接");
+			.expect("Source connection");
 
 		let mut traverser = Traverser::new();
 		let mut hooks = eval::RenderEvalHooks::new();
@@ -284,7 +289,7 @@ fn identity_variant_passes_source_through() {
 				&EvalRequest::new(plug_id, Rational::new(0, 1)),
 				&mut hooks,
 			)
-			.expect("evaluate 应成功");
+			.expect("evaluate should succeed");
 
 		let texture = rendered_texture(&table);
 		assert_eq!(first_pixel(&texture), [0.25, 0.75, 0.5, 1.0]);
@@ -304,10 +309,10 @@ fn param_overrides_reach_instance() {
 		}
 		let inst = Host::global()
 			.create_instance(PLUGIN_ID, None)
-			.expect("实例");
+			.expect("instance");
 		let id = node_factory::register_instance(inst.clone());
 
-		// 数值覆盖（gain = 1.25）。
+		// Numeric override (gain = 1.25).
 		let job_values = [(
 			"gain".to_string(),
 			quercus_node::value::NodeValue::Float(1.25),
@@ -331,11 +336,11 @@ fn param_overrides_reach_instance() {
 			clear_destination: false,
 			interactive: false,
 		};
-		render_driver::render_frame(&inst.value, &job).expect("render_frame 应成功");
+		render_driver::render_frame(&inst.value, &job).expect("render_frame should succeed");
 		let gain = inst.value.params.find("gain").unwrap().get();
 		assert_eq!(gain, param::ParamValue::Double([1.25, 0.0, 0.0], 1));
 
-		// NaN 覆盖回退默认（gain 默认 0.0）。
+		// NaN override falls back to the default (gain defaults to 0.0).
 		let pod_nan = vec![(
 			"gain".to_string(),
 			quercus_ofx_plugin::node::Value::float(f64::NAN),
@@ -353,7 +358,7 @@ fn param_overrides_reach_instance() {
 			clear_destination: false,
 			interactive: false,
 		};
-		render_driver::render_frame(&inst.value, &job).expect("NaN 覆盖不应失败");
+		render_driver::render_frame(&inst.value, &job).expect("NaN override should not fail");
 		assert_eq!(
 			inst.value.params.find("gain").unwrap().get(),
 			param::ParamValue::Double([0.0, 0.0, 0.0], 1)

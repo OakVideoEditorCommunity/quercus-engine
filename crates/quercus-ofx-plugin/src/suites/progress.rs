@@ -286,7 +286,7 @@ mod tests {
 	/// the abort query is true (sticky).
 	#[test]
 	fn update_cancel_and_abort() {
-		// 无报告器（渲染外）：静默 OK。
+		// No reporter (outside render): silent OK.
 		set_current(None);
 		let s = suite_v1();
 		unsafe {
@@ -298,7 +298,7 @@ mod tests {
 			assert_eq!((s.end)(std::ptr::null_mut()), status::OK);
 		}
 
-		// 带取消回调：update → REPLY_NO；is_cancelled 为真。
+		// With a cancelling callback: update → REPLY_NO; is_cancelled is true.
 		set_current(Some(unsafe {
 			ProgressReporter::new(cancel_cb, std::ptr::null_mut())
 		}));

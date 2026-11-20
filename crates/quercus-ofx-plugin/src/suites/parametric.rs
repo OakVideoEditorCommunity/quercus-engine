@@ -102,7 +102,7 @@ pub struct ParametricParameterSuiteV1 {
 		unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
 }
 
-// ---- 句柄解析 -----------------------------------------------------------
+// ---- handle resolution --------------------------------------------------
 
 /// param handle: a definition during describe (value = default), an instance
 /// during instance phase. `Def` holds `&mut` (Set/Add/Delete edit the default
@@ -165,7 +165,7 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	code
 }
 
-// ---- 模型存取 -----------------------------------------------------------
+// ---- model access -------------------------------------------------------
 
 /// Fetch the parameter curves (Def = default value, Instance = current
 /// value). A value that is not a parametric curve → BadHandle (the suite
@@ -292,7 +292,7 @@ fn ensure_curve(curves: &mut Vec<Curve>, ci: usize, range: (f64, f64)) -> &mut C
 	&mut curves[ci]
 }
 
-// ---- suite 函数 ---------------------------------------------------------
+// ---- suite functions ----------------------------------------------------
 
 /// `parametricParamGetValue`: evaluate the `curve_index`-th curve at
 /// `parametric_position`.

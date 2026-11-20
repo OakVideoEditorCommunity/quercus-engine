@@ -43,13 +43,14 @@ pub(crate) type MessageHandler =
 static HANDLER: sync::Mutex<(Option<MessageHandler>, usize)> = sync::Mutex::new((None, 0));
 
 // ---------------------------------------------------------------------------
-// 持久消息计数（检查器效果卡的徽标数据源，阶段 6b）
+// Persistent message count (badge data source for the inspector effect card, phase 6b)
 // ---------------------------------------------------------------------------
 //
-// C++ 侧 `OlivePluginInstance::persistentErrors_` 按实例累计持久消息，
-// 并 emit `node_->message_count_changed()`。这里以实例 handle（props
-// 地址，见 [`crate::suites::tag`]）为键累计计数；app 检查器经
-// [`crate::node_factory::instance_from_id`] 拿实例后按 props 地址查询。
+// The C++ side's `OlivePluginInstance::persistentErrors_` accumulates persistent
+// messages per instance, and emits `node_->message_count_changed()`. Here we count
+// under the instance handle key (the props address, see [`crate::suites::tag`]); the
+// app inspector gets the instance via [`crate::node_factory::instance_from_id`] and
+// then queries by props address.
 
 static PERSISTENT: sync::OnceLock<sync::Mutex<HashMap<usize, usize>>> = sync::OnceLock::new();
 
@@ -126,7 +127,7 @@ const K_MESSAGE_QUESTION: &[u8] = b"OfxMessageQuestion";
 /// * `type_` - a NUL-terminated message-type string; a null pointer returns `false` (call sites
 ///   normally reject that first).
 fn is_question(type_: *const c_char) -> bool {
-	// 空指针已在调用点拦截；此处仍防御（CStr::from_ptr 的调用方义务）。
+	// Null pointer is caught at the call site; defensive here too (caller obligation of CStr::from_ptr).
 	if type_.is_null() {
 		return false;
 	}
@@ -157,8 +158,8 @@ pub unsafe extern "C" fn quercus_ofx_message_impl(
 		if type_.is_null() || message.is_null() {
 			return status::FAILED;
 		}
-		// 持久消息：按实例 handle（剥标签后的 props 地址）累计计数
-		// （徽标数据源；C++ persistentErrors_ 的等价物）。
+		// Persistent messages: count under the instance handle (props address after tag strip)
+		// (badge data source; equivalent of C++ persistentErrors_).
 		if !_handle.is_null() {
 			let key = crate::suites::tag::strip(_handle) as usize;
 			let mut map = persistent_slot().lock().unwrap_or_else(|e| e.into_inner());
@@ -167,7 +168,7 @@ pub unsafe extern "C" fn quercus_ofx_message_impl(
 		}
 		let (handler, userdata) = handler();
 		if let Some(h) = handler {
-			// 头文件契约：返回值 0/1 即答复 NO/YES。
+			// Header contract: return value 0/1 means answer NO/YES.
 			let answer = unsafe { h(type_, message, userdata) };
 			return if answer != 0 {
 				status::REPLY_YES
@@ -175,7 +176,7 @@ pub unsafe extern "C" fn quercus_ofx_message_impl(
 				status::REPLY_NO
 			};
 		}
-		// Headless 默认：stderr（C++ fprintf 的 Rust 等价物）。
+		// Headless default: stderr (Rust equivalent of C++ fprintf).
 		eprintln!(
 			"OFX message: {}",
 			unsafe { CStr::from_ptr(message) }.to_string_lossy()
@@ -303,7 +304,7 @@ mod tests {
 			)
 		};
 
-		// 出口答 YES → REPLY_YES。
+		// Exit answers YES → REPLY_YES.
 		assert_eq!(r, status::REPLY_YES);
 		assert_eq!(captured.len(), 1);
 		assert_eq!(captured[0].0, "OfxMessageError");
@@ -396,7 +397,7 @@ mod tests {
 		assert_eq!(persistent_message_count(key), 2);
 		clear_persistent_messages(key);
 		assert_eq!(persistent_message_count(key), 0);
-		// 空 handle 不计数。
+		// Null handle is not counted.
 		unsafe {
 			quercus_ofx_message_impl(
 				std::ptr::null_mut(),

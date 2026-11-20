@@ -151,7 +151,7 @@ fn fetch_suite_registry() {
 	] {
 		assert!(
 			fetch_suite(name, version).is_some(),
-			"{name} v{version} 应可取"
+			"{name} v{version} should be available"
 		);
 	}
 	assert!(fetch_suite("OfxPropertySuite", 2).is_none());
@@ -175,7 +175,7 @@ fn property_suite_roundtrip() {
 	let s = property_suite();
 	let name = cs("width");
 
-	// set → get round-trip。
+	// set → get round-trip.
 	unsafe {
 		assert_eq!((s.set_int)(h, name.as_ptr(), 0, 1920), OK);
 	}
@@ -185,14 +185,14 @@ fn property_suite_roundtrip() {
 	}
 	assert_eq!(v, 1920);
 
-	// getDimension。
+	// getDimension.
 	let mut dim = 0;
 	unsafe {
 		assert_eq!((s.get_dimension)(h, name.as_ptr(), &mut dim), OK);
 	}
 	assert_eq!(dim, 1);
 
-	// 越界读 → BadIndex；未定义 → Unknown。
+	// Out-of-bounds read → BadIndex; undefined → Unknown.
 	unsafe {
 		assert_eq!((s.get_int)(h, name.as_ptr(), 5, &mut v), BAD_INDEX);
 	}
@@ -201,12 +201,12 @@ fn property_suite_roundtrip() {
 		assert_eq!((s.get_int)(h, nope.as_ptr(), 0, &mut v), UNKNOWN);
 	}
 
-	// propReset：第 1 期明确不支持（无默认值快照）→ ErrUnsupported。
+	// propReset: explicitly unsupported in phase 1 (no default-value snapshot) → ErrUnsupported.
 	unsafe {
 		assert_eq!((s.reset)(h, name.as_ptr()), UNSUPPORTED);
 	}
 
-	// 空 handle → BadHandle。
+	// Null handle → BadHandle.
 	unsafe {
 		assert_eq!(
 			(s.get_int)(std::ptr::null_mut(), name.as_ptr(), 0, &mut v),
@@ -229,20 +229,20 @@ fn memory_suite_ledger() {
 		assert_eq!((s.alloc)(std::ptr::null_mut(), 256, &mut a), OK);
 	}
 	assert!(!a.is_null());
-	// 内存可用且对齐（f32 写读）。
+	// Memory is usable and aligned (f32 write/read).
 	unsafe {
 		let f = a as *mut f32;
 		*f = 1.5f32;
 		assert_eq!(*f, 1.5f32);
 		assert_eq!(a as usize % 16, 0);
 	}
-	// 释放；free(NULL) no-op；重复/未知 → BadHandle。
+	// Release; free(NULL) is a no-op; repeat/unknown → BadHandle.
 	unsafe {
 		assert_eq!((s.free)(a), OK);
 		assert_eq!((s.free)(std::ptr::null_mut()), OK);
 		assert_eq!((s.free)(a), BAD_HANDLE);
 	}
-	// 零尺寸。
+	// Zero size.
 	let mut z: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!((s.alloc)(std::ptr::null_mut(), 0, &mut z), OK);
@@ -261,7 +261,7 @@ fn image_effect_clip_image_pairing() {
 	let s = image_effect_suite();
 	let h = tag::make(&desc.props as *const PropertySet, tag::DESCRIPTOR);
 
-	// clipDefine + 属性读写（props 在偏移 0）。
+	// clipDefine + property read/write (props at offset 0).
 	let mut clip: *mut c_void = std::ptr::null_mut();
 	let name = cs("Source");
 	unsafe {
@@ -285,7 +285,7 @@ fn image_effect_clip_image_pairing() {
 		assert_eq!(CStr::from_ptr(out).to_bytes(), b"SourceLabel");
 	}
 
-	// getPropertySet/getParamSet：返回 effect 本体。
+	// getPropertySet/getParamSet: return the effect itself.
 	let mut props: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!((s.get_property_set)(h, &mut props), OK);
@@ -294,7 +294,7 @@ fn image_effect_clip_image_pairing() {
 		assert_eq!(props, h);
 	}
 
-	// 实例期 clipGetHandle（手工构造实例 + clip 实例）。
+	// Instance-phase clipGetHandle (manually constructed instance + clip instance).
 	let clip_desc = quercus_ofx_plugin::descriptor::ClipDescriptor {
 		props: PropertySet::new(),
 		name: "Source".into(),
@@ -325,7 +325,7 @@ fn image_effect_clip_image_pairing() {
 		);
 	}
 	assert_eq!(tag::kind(clip_h), tag::CLIP);
-	// 未找到 → BadHandle（HS:2067-2070）。
+	// Not found → BadHandle (HS:2067-2070).
 	let nope = cs("Nope");
 	unsafe {
 		assert_eq!(
@@ -334,9 +334,9 @@ fn image_effect_clip_image_pairing() {
 		);
 	}
 
-	// clipGetImage/clipReleaseImage 配对：输入 clip 排入一帧后 get
-	// 取到登记在存活表的图像；release 摘除；二次 release → BadHandle
-	// （HS:2053-2068 的 releaseReference 配对）。
+	// clipGetImage/clipReleaseImage pairing: after the input clip queues a frame, get
+	// obtains the image registered in the liveness ledger; release removes it; a second release → BadHandle
+	// (the releaseReference pairing at HS:2053-2068).
 	let mut frame = quercus_render::eval::generate_frame(
 		quercus_core::Rational::new(0, 1),
 		(2, 2),
@@ -347,7 +347,7 @@ fn image_effect_clip_image_pairing() {
 		frame.data[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
 	}
 	inst.clips[0].set_input_texture(Some(quercus_core::texture::Texture::wrap_frame(frame)), 0.0);
-	// 注意另取句柄：上面未找到路径的 clip_get_handle 把 clip_h 置空了。
+	// Note the separate handle: the earlier not-found clip_get_handle nulled clip_h.
 	let mut img_clip: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!(
@@ -360,7 +360,7 @@ fn image_effect_clip_image_pairing() {
 		assert_eq!(
 			(s.clip_get_image)(img_clip, 0.0, std::ptr::null(), &mut img),
 			OK,
-			"clipGetImage 抓取排入的输入帧"
+			"clipGetImage fetches the queued input frame"
 		);
 	}
 	assert!(!img.is_null());
@@ -370,7 +370,7 @@ fn image_effect_clip_image_pairing() {
 		assert_eq!(
 			(s.clip_release_image)(img),
 			BAD_HANDLE,
-			"二次 release 必须 BadHandle（存活表已摘除）"
+			"second release must return BadHandle (removed from the live table)"
 		);
 	}
 }
@@ -384,7 +384,7 @@ fn image_effect_clip_image_pairing() {
 /// self-edits are written back to the bound node's input by an undo command.
 #[test]
 fn param_suite_roundtrip_and_change_action() {
-	// describe 期。
+	// describe phase.
 	let desc = EffectDescriptor::new();
 	let s = param_suite();
 	let dhandle = tag::make(&desc.props as *const PropertySet, tag::DESCRIPTOR);
@@ -402,12 +402,12 @@ fn param_suite_roundtrip_and_change_action() {
 	unsafe {
 		assert_eq!((s.param_get_value)(ph, &mut v), OK);
 	}
-	assert_eq!(v, 0.0, "describe 期 getValue 应为默认值");
-	// describe 期 set → BadHandle（HS verifyMagic 语义）。
+	assert_eq!(v, 0.0, "getValue should return the default during describe");
+	// describe-phase set → BadHandle (HS verifyMagic semantics).
 	unsafe {
 		assert_eq!((s.param_set_value)(ph, 42.0), BAD_HANDLE);
 	}
-	// paramGetHandle 按名取；未找到 → Unknown。
+	// paramGetHandle looks up by name; not found → Unknown.
 	let mut ph2: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!(
@@ -424,7 +424,7 @@ fn param_suite_roundtrip_and_change_action() {
 		);
 	}
 
-	// 实例期 round-trip。
+	// Instance-phase round-trip.
 	let (_inst, ih) = make_instance();
 	let mut gain: *mut c_void = std::ptr::null_mut();
 	let mut pos: *mut c_void = std::ptr::null_mut();
@@ -447,38 +447,38 @@ fn param_suite_roundtrip_and_change_action() {
 			assert_eq!(tag::kind(*out), tag::PARAM_INSTANCE);
 		}
 
-		// Integer。
+		// Integer.
 		assert_eq!((s.param_set_value)(gain, 7), OK);
 		let mut iv = 0;
 		assert_eq!((s.param_get_value)(gain, &mut iv), OK);
 		assert_eq!(iv, 7);
 
-		// Double2D。
+		// Double2D.
 		assert_eq!((s.param_set_value)(pos, 1.5, -2.5), OK);
 		let (mut x, mut y) = (0.0, 0.0);
 		assert_eq!((s.param_get_value)(pos, &mut x, &mut y), OK);
 		assert_eq!((x, y), (1.5, -2.5));
 
-		// RGB。
+		// RGB.
 		assert_eq!((s.param_set_value)(color, 0.1, 0.2, 0.3), OK);
 		let (mut r, mut g, mut b) = (0.0, 0.0, 0.0);
 		assert_eq!((s.param_get_value)(color, &mut r, &mut g, &mut b), OK);
 		assert_eq!((r, g, b), (0.1, 0.2, 0.3));
 
-		// Boolean。
+		// Boolean.
 		assert_eq!((s.param_set_value)(enabled, 1), OK);
 		let mut e = 0;
 		assert_eq!((s.param_get_value)(enabled, &mut e), OK);
 		assert_eq!(e, 1);
 
-		// String（get 返回内驻指针）。
+		// String (get returns an interior pointer).
 		let hello = cs("hello");
 		assert_eq!((s.param_set_value)(label, hello.as_ptr()), OK);
 		let mut p: *mut c_char = std::ptr::null_mut();
 		assert_eq!((s.param_get_value)(label, &mut p), OK);
 		assert_eq!(CStr::from_ptr(p).to_bytes(), b"hello");
 
-		// AtTime == 当前值（无动画）。
+		// AtTime == current value (no animation).
 		assert_eq!((s.param_get_value_at_time)(gain, 12.0, &mut iv), OK);
 		assert_eq!(iv, 7);
 		assert_eq!((s.param_set_value_at_time)(gain, 12.0, 9), OK);
@@ -487,9 +487,9 @@ fn param_suite_roundtrip_and_change_action() {
 		assert_eq!(iv2, 9);
 	}
 
-	// paramSetValue → instanceChanged 回写（经 PARAM_OWNER 登记表，
-	// pub(crate)）由 crate 内测试
-	// `suites::param::tests::set_value_writes_back_to_bound_node` 覆盖。
+	// paramSetValue → instanceChanged write-back (through the PARAM_OWNER registry,
+	// pub(crate)) is covered by the crate-internal test
+	// `suites::param::tests::set_value_writes_back_to_bound_node`.
 }
 
 /// paramGetValueAtTime/paramSetValueAtTime and the keyframe family
@@ -512,7 +512,7 @@ fn param_keyframe_family() {
 	unsafe {
 		assert_eq!((s.param_get_num_keys)(opacity, &mut nkeys), OK);
 	}
-	assert_eq!(nkeys, 0, "无动画支持：恒 0 个关键帧");
+	assert_eq!(nkeys, 0, "no animation support: always 0 keyframes");
 
 	let mut kt = 0.0;
 	unsafe {
@@ -521,14 +521,14 @@ fn param_keyframe_family() {
 	let mut ki = 0;
 	unsafe {
 		assert_eq!((s.param_get_key_index)(opacity, 1.0, 0, &mut ki), BAD_INDEX);
-		// 删除与拷贝：无关键帧 → no-op OK。
+		// Delete and copy: no keyframes → no-op OK.
 		assert_eq!((s.param_delete_key)(opacity, 1.0), OK);
 		assert_eq!((s.param_delete_all_keys)(opacity), OK);
 		assert_eq!(
 			(s.param_copy)(opacity, opacity, 1.0, 1.0, std::ptr::null()),
 			OK
 		);
-		// editBegin/End 括号。
+		// editBegin/End brackets.
 		assert_eq!((s.param_edit_begin)(opacity), OK);
 		assert_eq!((s.param_edit_end)(opacity), OK);
 	}
@@ -570,7 +570,7 @@ fn message_suite_v1_v2() {
 	let fmt = cs("v=%d s=%s f=%f");
 	let str_arg = cs("quercus");
 	unsafe {
-		// 答复 YES → kOfxStatReplyYes（12）。
+		// Answer YES → kOfxStatReplyYes (12).
 		assert_eq!(
 			(s.message)(
 				std::ptr::null_mut(),
@@ -592,7 +592,7 @@ fn message_suite_v1_v2() {
 		captured[0].1
 	);
 
-	// NULL format → Failed（C++ olivehost.cpp:267）。
+	// NULL format → Failed (C++ olivehost.cpp:267).
 	unsafe {
 		assert_eq!(
 			(s.message)(
@@ -605,7 +605,7 @@ fn message_suite_v1_v2() {
 		);
 	}
 
-	// 注销出口 → headless 默认：普通消息 OK。
+	// Unregister the exit → headless default: ordinary messages OK.
 	set_handler(None, std::ptr::null_mut());
 	let msg = cs("ask");
 	unsafe {
@@ -614,9 +614,9 @@ fn message_suite_v1_v2() {
 			OK
 		);
 	}
-	// question 类型 + 无出口 → REPLY_NO（13）。用无占位符的格式串：
-	// 占位符没有对应的变长参数是 UB（glibc 上 vsnprintf 对野指针
-	// strlen 直接 SIGSEGV；macOS 上恰好读到可映射内存才没崩）。
+	// question type + no exit → REPLY_NO (13). Use a format string without placeholders:
+	// a placeholder with no matching vararg is UB (on glibc, vsnprintf runs
+	// strlen on a wild pointer and SIGSEGVs; on macOS it happened to hit mapped memory, so it did not crash).
 	let q = cs("OfxMessageQuestion");
 	let plain = cs("really?");
 	unsafe {
@@ -663,7 +663,7 @@ fn progress_suite_forwarding() {
 	}
 	assert_eq!(seen, vec![0.25, 0.75]);
 
-	// 取消回调：update → REPLY_NO。
+	// Cancelling callback: update → REPLY_NO.
 	set_current(Some(unsafe {
 		ProgressReporter::new(cancel_progress, std::ptr::null_mut())
 	}));
@@ -686,7 +686,7 @@ fn timeline_suite_values() {
 	let mut min = 0.0;
 	let mut max = 0.0;
 
-	// 无上下文。
+	// No context.
 	unsafe {
 		assert_eq!((s.get_time)(handle, &mut t), OK);
 		assert_eq!(t, 0.0);
@@ -694,7 +694,7 @@ fn timeline_suite_values() {
 		assert_eq!((min, max), (0.0, 0.0));
 	}
 
-	// 注入上下文。
+	// Inject a context.
 	set_render_ctx(Some(RenderCtx {
 		time: 42.5,
 		scale: RenderScale { x: 1.0, y: 1.0 },
@@ -721,9 +721,9 @@ fn multithread_suite_spawned_callbacks() {
 	let s = multithread_suite();
 	let ps = property_suite();
 
-	// 共享属性集：每线程一个计数器属性，各写 1000 次。
-	// （测试自身即"插件"：工作线程经 multiThread 起，回调 property
-	// suite——与插件场景同构。）
+	// Shared property set: one counter property per thread, each written 1000 times.
+	// (The test itself is the "plugin": worker threads started via multiThread call back into the property
+	// suite — isomorphic to the plugin scenario.)
 	let set = std::sync::Arc::new(PropertySet::new());
 	for i in 0..8 {
 		let name = Box::leak(format!("ctr{i}").into_boxed_str());
@@ -761,7 +761,7 @@ fn multithread_suite_spawned_callbacks() {
 		}
 	}
 
-	// 宿主线程身份。
+	// Host thread identity.
 	let mut idx = 0;
 	let mut spawned = 1;
 	unsafe {
@@ -771,28 +771,28 @@ fn multithread_suite_spawned_callbacks() {
 		assert_eq!(spawned, 0);
 	}
 
-	// 8 线程各 1000 次增量：最终值恰为 1000（无丢写 = 无竞争）。
-	// 注意传 `&*set`（Arc 负载）而非 `&set`（Arc 结构体）。
+	// 8 threads, 1000 increments each: the final value is exactly 1000 (no lost writes = no contention).
+	// Note: pass `&*set` (the Arc payload), not `&set` (the Arc struct).
 	let raw: *const PropertySet = &*set;
 	unsafe {
 		assert_eq!((s.multi_thread)(counter_worker, 8, raw as *mut c_void), OK);
 	}
 	for i in 0..8 {
-		// C 侧按 NUL 结尾读名字——必须经 cs() 包成 CString（裸
-		// `str::as_ptr()` 不带 NUL，CStr::from_ptr 会读越界）。
+		// The C side reads names as NUL-terminated — must wrap through cs() into a CString (a bare
+		// `str::as_ptr()` has no NUL, and CStr::from_ptr would read out of bounds).
 		let name = cs(&format!("ctr{i}"));
 		let mut v = 0;
-		// 注意传 `&*set`（Arc 负载）而非 `&set`（Arc 结构体）。
+		// Note: pass `&*set` (the Arc payload), not `&set` (the Arc struct).
 		unsafe {
 			assert_eq!(
 				(ps.get_int)(&*set as *const _ as *mut c_void, name.as_ptr(), 0, &mut v),
 				OK
 			);
 		}
-		assert_eq!(v, 1000, "线程 {i} 的计数应无丢失");
+		assert_eq!(v, 1000, "thread {i} count should not be lost");
 	}
 
-	// 0 线程：no-op。
+	// 0 threads: no-op.
 	unsafe {
 		assert_eq!(
 			(s.multi_thread)(counter_worker, 0, std::ptr::null_mut()),

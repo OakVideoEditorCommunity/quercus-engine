@@ -99,10 +99,10 @@ pub struct Interact {
 	pub destroyed: AtomicBool,
 }
 
-// SAFETY: effect_handle 是不透明令牌（同 [`crate::property::Value::Pointer`]，
-// 从不在此对象上解引用）；entry 是函数指针，调用永远发生在宿主控制的
-// action 分发点；其余字段（Arc/Mutex/AtomicBool/PropertySet）均线程安全。
-// Interact 经 Instance.interact 字段跨线程可达，因此 Send/Sync 成立。
+// SAFETY: effect_handle is an opaque token (like [`crate::property::Value::Pointer`],
+// never dereferenced here); entry is a function pointer, calls always occur at a
+// host-controlled action dispatch; the other fields (Arc/Mutex/AtomicBool/PropertySet)
+// are thread-safe. Interact is reachable across threads via Instance.interact → Send/Sync.
 unsafe impl Send for Interact {}
 unsafe impl Sync for Interact {}
 
@@ -191,14 +191,14 @@ impl Interact {
 		time: f64,
 		background_image: Option<*mut c_void>,
 	) -> i32 {
-		// 1. GL current 整个 draw action（插件发原生 GL 命令或经 Draw
-		//    suite；失败即无法绘制 → 不触达插件）。
+		// 1. GL current for the whole draw action (the plugin issues native GL commands or goes
+		//    through the Draw suite; on failure it cannot draw → the plugin is not reached).
 		let _guard = match gl_bridge::acquire() {
 			Ok(g) => g,
 			Err(_) => return status::ERR_MISSING_HOST_FEATURE,
 		};
 
-		// 2. Draw suite 上下文（存活注册；draw 返回后摘除）。
+		// 2. Draw suite context (registered live; removed after draw returns).
 		let draw_ctx = crate::suites::draw::make_context(viewport_size, pixel_scale);
 
 		let in_args = PropertySet::new();
@@ -235,8 +235,8 @@ impl Interact {
 			self.effect_instance_prop(),
 		);
 
-		// 3. interact 实例属性同步（kOfxInteractPropPixelScale 等是实例
-		//    属性集上只读的"当前状态"，ofxInteract.h:58）。
+		// 3. interact instance property sync (kOfxInteractPropPixelScale etc. are read-only
+		//    "current state" on the instance property set, ofxInteract.h:58).
 		self.props.define(
 			crate::host::PROP_INTERACT_PIXEL_SCALE,
 			vec![Value::Double(pixel_scale.0), Value::Double(pixel_scale.1)],
@@ -274,8 +274,8 @@ impl Interact {
 	/// * `time` - current render time, in seconds.
 	fn pen_in_args(&self, pen_viewport: (f64, f64), pressure: f64, time: f64) -> PropertySet {
 		let (ps_x, ps_y) = self.pixel_scale();
-		// canonical = viewport 像素 / pixelScale（pixelScale 是
-		// canonical→屏幕像素的换算比例）。
+		// canonical = viewport pixels / pixelScale (pixelScale is the
+		// canonical→screen-pixel conversion ratio).
 		let in_args = PropertySet::new();
 		in_args.set_one(
 			crate::host::PROP_EFFECT_INSTANCE,
@@ -498,7 +498,7 @@ fn init_interact_props(props: &PropertySet) {
 		crate::host::PROP_INTERACT_BACKGROUND_COLOUR,
 		vec![Value::Double(0.0), Value::Double(0.0), Value::Double(0.0)],
 	);
-	// 帧缓冲位深：离屏 FBO 是 RGBA32F → 每分量 32 bit，含 alpha。
+	// Framebuffer bit depth: the offscreen FBO is RGBA32F → 32 bits per component, including alpha.
 	props.set_one(crate::host::PROP_INTERACT_BIT_DEPTH, Value::Int(32));
 	props.set_one(crate::host::PROP_INTERACT_HAS_ALPHA, Value::Int(1));
 }
@@ -529,7 +529,7 @@ fn read_double2(props: &PropertySet, name: &str) -> Option<(f64, f64)> {
 	Some((x, y))
 }
 
-// ---- OfxInteractSuiteV1（ofxInteract.h:534-544）------------------------
+// ---- OfxInteractSuiteV1 (ofxInteract.h:534-544) ------------------------
 
 /// Resolves a C handle into an `Interact` reference.
 ///
@@ -560,7 +560,7 @@ fn resolve_interact(handle: *mut c_void) -> Result<&'static Interact, c_int> {
 		if tag::kind(handle) != tag::INTERACT {
 			return Err(status::ERR_BAD_HANDLE);
 		}
-		// Interact 的 props 在偏移 0：剥标签后的地址即 &Interact。
+		// Interact props are at offset 0: the tag-stripped address is &Interact.
 		Ok(&*(tag::strip(handle) as *const Interact))
 	}
 }

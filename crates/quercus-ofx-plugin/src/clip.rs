@@ -105,11 +105,11 @@ impl ClipInstance {
 				),
 			);
 		}
-		// OfxImageClipPropConnected（ofxsImageEffect.cpp:1106 的
-		// `Clip::isConnected()` 是无默认值强读——缺这个属性时，CImg 这类
-		// 带可选 mask clip 的插件直接抛
-		// PropertyUnknownToHost → MissingHostFeature 紫帧）。默认 0
-		// （未连接），挂接输入纹理时由 set_input_texture 置 1。
+		// OfxImageClipPropConnected (ofxsImageEffect.cpp:1106's
+		// `Clip::isConnected()` is a strong read without a default — when this property is missing,
+		// plugins with an optional mask clip such as CImg immediately throw
+		// PropertyUnknownToHost → MissingHostFeature purple frame). Default 0
+		// (not connected); set_input_texture sets it to 1 when an input texture is attached.
 		props.set_one(
 			crate::host::PROP_CLIP_CONNECTED,
 			crate::property::Value::Int(0),
@@ -259,7 +259,9 @@ impl ClipInstance {
 
 		let _ = (time, scale);
 		if region.is_some() {
-			return Err(Error::Failed("fetch_image 子区域第 1 期不支持".into()));
+			return Err(Error::Failed(
+				"fetch_image sub-region not supported in Phase 1".into(),
+			));
 		}
 		let texture = self
 			.input_texture
@@ -267,11 +269,11 @@ impl ClipInstance {
 			.unwrap_or_else(|e| e.into_inner())
 			.clone()
 			.ok_or(Error::NotFound)?;
-		// 占位纹理（dummy）：视作无输入。
+		// Placeholder texture (dummy): treated as no input.
 		if texture.is_dummy() {
 			return Err(Error::NotFound);
 		}
-		// 纹理 → CPU 帧（GPU 纹理后端下载；帧随 drop 释放）。
+		// Texture → CPU frame (GPU textures downloaded via the backend; frame released on drop).
 		let frame = crate::render::texture_get_frame(&texture)?;
 		let params = frame.video_params();
 		let format = params.format;
@@ -281,11 +283,11 @@ impl ClipInstance {
 			&& format != quercus_core::PixelFormat::F16 as i32
 		{
 			return Err(Error::Failed(format!(
-				"输入帧格式 {format} 不支持（仅 U8/U16/F16/F32）"
+				"input frame format {format} not supported (only U8/U16/F16/F32)"
 			)));
 		}
 		let (w, h) = (params.width as f64, params.height as f64);
-		// 分量按协商结果（getClipPreferences 已写入 clip.props）。
+		// Components per negotiation result (getClipPreferences already wrote clip.props).
 		let components =
 			components_from_props(&self.props).unwrap_or(crate::image::Components::Rgba);
 
@@ -301,14 +303,14 @@ impl ClipInstance {
 		);
 		let src = frame.data();
 		if src.is_null() {
-			return Err(Error::Failed("帧无数据".into()));
+			return Err(Error::Failed("frame has no data".into()));
 		}
-		// 行优先 + 格式转换（帧行跨度经 linesize 读取——真实
-		// quercusrender 帧可有行填充；目标 Image 恒紧凑 F32）。
-		// U8/U16/F16 输入归一化到 [0,1] 浮点（对齐 oliveclip.cpp
-		// setInputTexture 的 swscale 转换路径：插件侧永远见到协商位
-		// 深）；F32/转换结果中的 NaN/Inf 清洗为 0（oliveclip.cpp
-		// copy_pixels 的 scrub——CImg 对 NaN 未定义行为）。
+		// Row-major + format conversion (frame row stride read via linesize — real
+		// quercusrender frames may have row padding; destination Image is always tightly packed F32).
+		// U8/U16/F16 inputs are normalized to [0,1] floats (matching oliveclip.cpp
+		// setInputTexture's swscale conversion path: the plugin always sees the negotiated
+		// depth); NaN/Inf in F32/conversion results is scrubbed to 0 (oliveclip.cpp
+		// copy_pixels' scrub — CImg has undefined behaviour for NaN).
 		let channels = components.channel_count();
 		let samples_per_row = (w as usize) * channels;
 		let src_bpc = match format {
@@ -367,10 +369,10 @@ impl ClipInstance {
 		if scrubbed {
 			eprintln!("[PLUGIN] NaN/Inf scrubbed from input frame data during fetch");
 		}
-		// 位深协商（设计约束：管线全链路 ACEScg + F32；插件不支持
-		// F32 时输入图像转成协商位深——输出端在 render 驱动转回
-		// F32）。clip props 的 PixelDepth 由协商流程
-		// （set_video_params）写入；缺省 = F32。
+		// Bit-depth negotiation (design constraint: pipeline is ACEScg + F32 end-to-end;
+		// when the plugin does not support F32 the input image is converted to the negotiated
+		// depth — the output side converts back to F32 in the render driver). The clip props'
+		// PixelDepth is written by the negotiation flow (set_video_params); default = F32.
 		let negotiated = self
 			.props
 			.get(crate::image::K_IMAGE_EFFECT_PROP_PIXEL_DEPTH, 0)
@@ -421,22 +423,24 @@ impl ClipInstance {
 		let params = frame.video_params();
 		if params.format != PIXEL_FORMAT_F32 {
 			return Err(Error::Failed(format!(
-				"输出帧格式 {} 非 F32（第 1 期约束）",
+				"output frame format {} is not F32 (Phase 1 constraint)",
 				params.format
 			)));
 		}
 		let (w, h) = (params.width as usize, params.height as usize);
-		// 图像与帧必须同尺寸（全链路 F32；宽高/行宽/总长逐项校验）。
+		// Image and frame must match in size (F32 end-to-end; validate width/height/row width/total length).
 		let tight = w * image.components().channel_count() * 4;
 		if tight != image.row_bytes() || tight * h != image.pixels().len() {
-			return Err(Error::Failed("图像尺寸与输出帧不一致".into()));
+			return Err(Error::Failed(
+				"image size does not match the output frame".into(),
+			));
 		}
 		let dst = frame.data_mut();
 		if dst.is_null() {
-			return Err(Error::Failed("输出帧无数据".into()));
+			return Err(Error::Failed("output frame has no data".into()));
 		}
-		// 行优先拷贝（目标帧行跨度经 linesize 读取——真实 quercusrender
-		// 帧可有行填充；M11 §4 修复同 fetch_image）。
+		// Row-major copy (destination frame row stride read via linesize — real quercusrender
+		// frames may have row padding; same M11 §4 fix as fetch_image).
 		let row = frame.linesize_bytes();
 		let row = if row > 0 { row } else { tight };
 		let dst_bytes = unsafe { std::slice::from_raw_parts_mut(dst, row * h) };
@@ -446,21 +450,23 @@ impl ClipInstance {
 			let s = y * tight;
 			dst_bytes[d..d + tight].copy_from_slice(&pixels[s..s + tight]);
 		}
-		// 写回目标纹理：CPU 纹理的 `to_frame` 是深拷贝，必须把改写
-		// 后的帧放回本体（同 render_driver::write_output_frame 的值
-		// 模型修复）；GPU 目标纹理：拷贝只落在下载帧上，经后端
-		// upload 回写。
+		// Write back to the destination texture: for a CPU texture `to_frame` is a deep copy, so the
+		// modified frame must be put back into the original (same value-model fix as
+		// render_driver::write_output_frame); for a GPU destination texture the copy only lands
+		// on the downloaded frame, so upload it back through the backend.
 		match &mut texture {
 			crate::render::Texture::Cpu(f) => {
 				f.data = frame.data;
 			}
 			crate::render::Texture::Gpu { token, ctx, .. } => {
 				ctx.upload(*token, &frame)
-					.map_err(|e| Error::Failed(format!("输出纹理上传失败：{e}")))?;
+					.map_err(|e| Error::Failed(format!("output texture upload failed: {e}")))?;
 			}
-			// 未解析的平面纹理不会成为插件输出目标（解码路径会先解析）。
+			// Unresolved planar textures never become a plugin output target (the decode path resolves them first).
 			crate::render::Texture::Planar(_) => {
-				return Err(Error::Failed("平面纹理不能作为插件输出目标".into()));
+				return Err(Error::Failed(
+					"planar texture cannot be a plugin output target".into(),
+				));
 			}
 		}
 		Ok(texture)
@@ -474,7 +480,7 @@ impl ClipInstance {
 	pub fn frame_range(&self) -> crate::error::Result<OfxRangeD> {
 		let _ = OfxRangeD::default();
 		Err(crate::error::Error::Failed(
-			"frame_range 待 renderer 桥".into(),
+			"frame_range pending renderer bridge".into(),
 		))
 	}
 }

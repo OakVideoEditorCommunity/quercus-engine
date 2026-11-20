@@ -106,7 +106,7 @@ unsafe extern "C" fn capture_msg(
 
 fn first_pixel(texture: &Texture) -> [f32; 4] {
 	let Texture::Cpu(frame) = texture else {
-		panic!("期望 CPU 帧");
+		panic!("expected a CPU frame");
 	};
 	let mut out = [0f32; 4];
 	for i in 0..4 {
@@ -119,11 +119,11 @@ fn first_pixel(texture: &Texture) -> [f32; 4] {
 /// skip).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return false;
 	};
 	if Host::global().cache.scan_path(&dir).is_err() {
-		common::skip("测试插件扫描失败");
+		common::skip("test plugin scan failed");
 		return false;
 	}
 	node_factory::register_plugin_nodes();
@@ -135,14 +135,16 @@ fn scan_and_register() -> bool {
 #[test]
 fn gl_plugin_renders_through_real_gl_path() {
 	common::with_host(|| {
-		// Windows 的 WGL 桥现在也是真实实现；无 GL 的机器会在下面
-		// gl_available() 处跳过。
+		// The Windows WGL bridge is now a real implementation too; machines without
+		// GL skip at gl_available() below.
 		if !common::gpu_available() {
-			common::skip("GL 测试需 QUERCUS_GPU_TESTS（本机 GPU 验收；CI 一律跳过）");
+			common::skip(
+				"GL tests require QUERCUS_GPU_TESTS (local GPU acceptance; always skipped in CI)",
+			);
 			return;
 		}
 		if !gl_bridge::gl_available() {
-			common::skip("本机无可用 GL 上下文");
+			common::skip("no usable GL context on this machine");
 			return;
 		}
 		if !scan_and_register() {
@@ -154,7 +156,7 @@ fn gl_plugin_renders_through_real_gl_path() {
 
 		let inst = Host::global()
 			.create_instance(GL_PLUGIN_ID, None)
-			.expect("GL 变体实例应可建");
+			.expect("GL variant instance should be creatable");
 		let reg = node_factory::register_instance(inst.clone());
 
 		let dst = eval::generate_frame(Rational::new(0, 1), (4, 4), PixelFormat::F32).unwrap();
@@ -172,23 +174,23 @@ fn gl_plugin_renders_through_real_gl_path() {
 			interactive: false,
 		};
 		let (out, _rois) =
-			render_driver::render_frame(&inst.value, &job).expect("GL render_frame 应成功");
+			render_driver::render_frame(&inst.value, &job).expect("GL render_frame should succeed");
 
 		node_factory::unregister_instance(reg);
 		suites::message::set_handler(None, ptr::null_mut());
 		Host::global().shutdown();
 
-		// 1. 输出像素 = 插件 GL 清屏色（CPU 路径恒 0.5，可区分）。
+		// 1. Output pixels = plugin GL clear colour (CPU path is always 0.5, so distinguishable).
 		let px = first_pixel(&out);
 		for (i, v) in [0.1, 0.2, 0.3, 1.0].iter().enumerate() {
 			assert!(
 				(px[i] - v).abs() < 1e-4,
-				"GL 回读像素[{i}] = {}，期望 {v}（GL 路径未生效？）",
+				"GL read-back pixel[{i}] = {}, expected {v} (is the GL path active?)",
 				px[i]
 			);
 		}
 
-		// 2. 真实 GL 纹理名（非零）+ 3. attach/detach 配对。
+		// 2. Real GL texture name (non-zero) + 3. attach/detach pairing.
 		let msg: Vec<&str> = captured.iter().map(|(_, m)| m.as_str()).collect();
 		for need in [
 			"gl-attached",
@@ -198,21 +200,21 @@ fn gl_plugin_renders_through_real_gl_path() {
 		] {
 			assert!(
 				msg.iter().any(|m| m.contains(need)),
-				"应捕获到 {need}，实际 {msg:?}"
+				"should have captured {need}, got {msg:?}"
 			);
 		}
 		for m in msg.iter().filter(|m| m.contains("gl-source-index=")) {
 			let v: i32 = m.rsplit('=').next().unwrap().parse().unwrap();
 			assert!(
 				v > 0,
-				"输入 clip 的 OpenGLTextureIndex 应为真实非零 GL 名，got {v}"
+				"input clip's OpenGLTextureIndex should be a real non-zero GL name, got {v}"
 			);
 		}
 		for m in msg.iter().filter(|m| m.contains("gl-output-index=")) {
 			let v: i32 = m.rsplit('=').next().unwrap().parse().unwrap();
 			assert!(
 				v > 0,
-				"输出 clip 的 OpenGLTextureIndex 应为真实非零 GL 名，got {v}"
+				"output clip's OpenGLTextureIndex should be a real non-zero GL name, got {v}"
 			);
 		}
 	});
@@ -226,18 +228,18 @@ fn gl_plugin_renders_through_real_gl_path() {
 fn gl_plugin_renders_zero_copy() {
 	common::with_host(|| {
 		if !common::gpu_available() {
-			common::skip("零拷贝 GL 测试需 QUERCUS_GPU_TESTS");
+			common::skip("zero-copy GL tests require QUERCUS_GPU_TESTS");
 			return;
 		}
 		let Some(ctx) = quercus_core::backend::gpu_or_skip("OFX zero-copy") else {
 			return;
 		};
 		if !ctx.supports_gl_zerocopy() {
-			common::skip("当前 Vulkan 上下文不支持 OPAQUE_FD 导出");
+			common::skip("current Vulkan context does not support OPAQUE_FD export");
 			return;
 		}
 		if !gl_bridge::gl_available() {
-			common::skip("本机无可用 EGL/GL 上下文");
+			common::skip("no usable EGL/GL context on this machine");
 			return;
 		}
 		if !scan_and_register() {
@@ -246,7 +248,7 @@ fn gl_plugin_renders_zero_copy() {
 
 		let inst = Host::global()
 			.create_instance(GL_PLUGIN_ID, None)
-			.expect("GL 变体实例应可建");
+			.expect("GL variant instance should be creatable");
 		let reg = node_factory::register_instance(inst.clone());
 
 		let (w, h) = (64, 64);
@@ -373,7 +375,7 @@ fn gl_plugin_falls_back_to_cpu_without_gl_renderer() {
 
 		let inst = Host::global()
 			.create_instance(GL_PLUGIN_ID, None)
-			.expect("GL 变体实例应可建");
+			.expect("GL variant instance should be creatable");
 		let reg = node_factory::register_instance(inst.clone());
 
 		let dst = eval::generate_frame(Rational::new(0, 1), (4, 4), PixelFormat::F32).unwrap();
@@ -389,19 +391,23 @@ fn gl_plugin_falls_back_to_cpu_without_gl_renderer() {
 			clear_destination: false,
 			interactive: false,
 		};
-		let (out, _rois) =
-			render_driver::render_frame(&inst.value, &job).expect("CPU 回退 render_frame 应成功");
+		let (out, _rois) = render_driver::render_frame(&inst.value, &job)
+			.expect("CPU fallback render_frame should succeed");
 
 		node_factory::unregister_instance(reg);
 		suites::message::set_handler(None, ptr::null_mut());
 		Host::global().shutdown();
 
 		let px = first_pixel(&out);
-		assert_eq!(px, [0.5, 0.5, 0.5, 1.0], "无 GL 渲染器应走 CPU 恒 0.5");
-		// 未走 GL：不应有 gl-* 消息流。
+		assert_eq!(
+			px,
+			[0.5, 0.5, 0.5, 1.0],
+			"without a GL renderer the CPU path should output a constant 0.5"
+		);
+		// Did not go through GL: no gl-* message stream expected.
 		assert!(
 			!captured.iter().any(|(_, m)| m.contains("gl-output-index")),
-			"CPU 回退不应产生 GL suite 消息"
+			"CPU fallback should not emit GL suite messages"
 		);
 	});
 }

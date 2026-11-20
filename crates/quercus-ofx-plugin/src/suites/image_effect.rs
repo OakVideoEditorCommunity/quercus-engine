@@ -150,7 +150,7 @@ fn resolve_effect(handle: *mut c_void) -> Result<EffectRef<'static>, c_int> {
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
 	}
-	// 两者 props 均在偏移 0（句柄约定）。
+	// Both have props at offset 0 (handle convention).
 	unsafe {
 		match tag::kind(handle) {
 			tag::DESCRIPTOR => Ok(EffectRef::Descriptor(
@@ -248,16 +248,17 @@ unsafe extern "C" fn clip_define(
 			EffectRef::Instance(_) => return Err(status::ERR_BAD_HANDLE),
 		};
 		let clip = ClipDescriptor::new(n);
-		// 重复定义：替换原 Box（HS map 覆盖语义）。必须是新的 Box：
-		// 旧句柄随即失效（测试断言 clip != clip2），复用同一分配会
-		// 破坏这一 C ABI 契约，故此处保留 `Box::new`。
+		// Redefinition: replaces the old Box (HS map-overwrite semantics). It
+		// must be a new Box: the old handle becomes invalid immediately (tests
+		// assert clip != clip2); reusing the same allocation would break that
+		// C ABI contract, so `Box::new` stays here.
 		#[allow(clippy::replace_box)]
 		if let Some(existing) = desc.clips.iter_mut().find(|c| c.name == n) {
 			*existing = Box::new(clip);
 		} else {
 			desc.clips.push(Box::new(clip));
 		}
-		// 地址取自已入盒的对象（栈上临时变量在移动后失效）。
+		// The address comes from the boxed object (a stack temporary would dangle after the move).
 		let clip = desc
 			.clips
 			.iter()
@@ -306,7 +307,7 @@ unsafe extern "C" fn clip_get_handle(
 		};
 		unsafe { *clip = handle };
 		if !property_set.is_null() {
-			// props 在偏移 0：clip handle 与 props handle 同值。
+			// props at offset 0: the clip handle and the props handle are the same value.
 			unsafe { *property_set = handle };
 		}
 		Ok(())
@@ -362,8 +363,9 @@ unsafe extern "C" fn clip_get_image(
 		}
 		unsafe { *out = ptr::null_mut() };
 		let c = resolve_clip(clip)?;
-		// Output clip：返回当前渲染的输出图像（render 驱动经 TLS
-		// 设置；对应 HS 渲染期输出图像挂在 Output clip 上）。
+		// Output clip: returns the current render's output image (set by the
+		// render driver via TLS; corresponding to HS attaching the render-time
+		// output image to the Output clip).
 		if c.name == "Output" {
 			if let Some(image) = crate::suites::current_output() {
 				let addr = &image.props as *const _ as usize;
@@ -376,14 +378,14 @@ unsafe extern "C" fn clip_get_image(
 			}
 			return Err(status::FAILED);
 		}
-		// 区域（可空）：像素坐标的可选 bounds。
+		// Region (nullable): optional bounds in pixel coordinates.
 		let region = if region.is_null() {
 			None
 		} else {
 			Some(unsafe { *(region as *const OfxRectD) })
 		};
-		// 渲染比例取自当前渲染上下文（HS 的 clip 在 render 期从
-		// in_args 拿到 scale；本设计经 TLS，见 suites::RenderCtx）。
+		// The render scale comes from the current render context (HS's clip gets
+		// the scale from in_args during render; this design uses TLS, see suites::RenderCtx).
 		let scale = crate::suites::render_ctx()
 			.map(|ctx| ctx.scale)
 			.unwrap_or(RenderScale { x: 1.0, y: 1.0 });
@@ -596,7 +598,7 @@ unsafe extern "C" fn image_memory_lock(memory: *mut c_void, out: *mut *mut c_voi
 		if out.is_null() {
 			return Err(status::ERR_VALUE);
 		}
-		// 账本里的地址即数据指针（分配即就绪，无 HS 的延迟分配）。
+		// The ledger address is the data pointer (immediate allocation; no HS deferred allocation).
 		unsafe { *out = memory };
 		Ok(())
 	})
@@ -669,7 +671,7 @@ mod tests {
 		}
 		assert_eq!(tag::kind(clip), tag::CLIP);
 
-		// 属性 suite 直接读写 clip handle（props 在偏移 0）。
+		// The property suite reads and writes the clip handle directly (props at offset 0).
 		let ps = crate::suites::property::suite_v1();
 		let label_prop = cs(crate::param::PROP_LABEL);
 		let optional_prop = cs(crate::descriptor::CLIP_OPTIONAL);
@@ -684,11 +686,11 @@ mod tests {
 		unsafe {
 			assert_eq!((ps.get_string)(clip, label_prop.as_ptr(), 0, &mut out), 0);
 			assert_eq!(CStr::from_ptr(out).to_bytes(), b"SourceLabel");
-			// 可选性标记：插件写 Optional=1。
+			// Optionality flag: the plugin writes Optional=1.
 			assert_eq!((ps.set_int)(clip, optional_prop.as_ptr(), 0, 1), 0);
 		}
 
-		// getPropertySet / getParamSet：返回 effect 本体 handle。
+		// getPropertySet / getParamSet: return the effect's own handle.
 		let mut props: *mut c_void = std::ptr::null_mut();
 		unsafe {
 			assert_eq!((s.get_property_set)(h, &mut props), 0);
@@ -697,7 +699,7 @@ mod tests {
 			assert_eq!(props, h);
 		}
 
-		// 重复 clipDefine：替换（旧句柄失效，HS 一致）。
+		// Repeated clipDefine: replaces (the old handle becomes invalid, matching HS).
 		let mut clip2: *mut c_void = std::ptr::null_mut();
 		unsafe {
 			assert_eq!((s.clip_define)(h, name.as_ptr(), &mut clip2), 0);
@@ -705,7 +707,7 @@ mod tests {
 		assert_ne!(clip, clip2);
 		assert_eq!(desc.clips.len(), 1);
 
-		// 空 out / 空 handle → BadHandle。
+		// Null out / null handle → BadHandle.
 		unsafe {
 			assert_eq!(
 				(s.clip_define)(h, name.as_ptr(), std::ptr::null_mut()),
@@ -728,7 +730,7 @@ mod tests {
 			assert_eq!((s.abort)(dh), status::ERR_BAD_HANDLE);
 			assert_eq!((s.abort)(std::ptr::null_mut()), status::ERR_BAD_HANDLE);
 		}
-		// 实例期：未取消 → 0（OFX 契约：0 = 继续，非 0 = 中止）。
+		// Instance phase: not cancelled → 0 (OFX contract: 0 = continue, non-zero = abort).
 		let inst = std::sync::Arc::new(crate::instance::Instance {
 			props: PropertySet::new(),
 			plugin: std::sync::Arc::new(crate::host::Plugin {
@@ -780,12 +782,12 @@ mod tests {
 				0
 			);
 			assert!(!mem.is_null());
-			// lock 返回数据指针（第 1 期 = 句柄本身）。
+			// lock returns the data pointer (phase 1: the handle itself).
 			let mut ptr: *mut c_void = std::ptr::null_mut();
 			assert_eq!((s.image_memory_lock)(mem, &mut ptr), 0);
 			assert_eq!(ptr, mem);
 			assert_eq!((s.image_memory_unlock)(mem), 0);
-			// 未知指针 free → BadHandle。
+			// free of an unknown pointer → BadHandle.
 			assert_eq!(
 				(s.image_memory_free)(0xdeadbeef as *mut c_void),
 				status::ERR_BAD_HANDLE

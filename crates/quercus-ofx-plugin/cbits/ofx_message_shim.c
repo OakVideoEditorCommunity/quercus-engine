@@ -17,12 +17,13 @@
  */
 
 /*
- * OFX Message suite 的 C 入口。stable Rust 无法定义 C-variadic 函数
- * （c_variadic 仍不稳定）：v1 的 '...' 与 v2 的 va_list 都在这里
- * vsnprintf 成定长缓冲，再转发给 Rust 实现 quercus_ofx_message_impl。
+ * C entry points for the OFX Message suite. Stable Rust cannot define
+ * C-variadic functions (c_variadic is still unstable): v1's '...' and v2's
+ * va_list are both vsnprintf'd into a fixed-size buffer here, then forwarded
+ * to the Rust implementation quercus_ofx_message_impl.
  *
- * 编译：build.rs（cc crate）；符号随 staticlib 进入 libquercusplugin
- * （corrosion 链接期无需额外接线）。
+ * Build: build.rs (cc crate); the symbols reach libquercusplugin via the
+ * staticlib (corrosion needs no extra link wiring at link time).
  */
 
 #include <stdarg.h>
@@ -31,16 +32,17 @@
 extern int quercus_ofx_message_impl(void *handle, const char *type,
                                 const char *id, const char *message);
 
-/* 消息缓冲上限（镜像 C++ 侧 format_message 的 1024 惯例，
- * olivehost.cpp:99；超长截断不报错）。 */
+/* Message buffer limit (mirrors the C++ side's 1024 convention in
+ * format_message, olivehost.cpp:99; overlong output is truncated without
+ * error). */
 #define QUERCUS_MSG_BUF_SIZE 1024
 
 static int forward(void *handle, const char *type, const char *id,
                    const char *format, va_list args)
 {
     if (!format) {
-        /* C++ 侧 !format → kOfxStatFailed（olivehost.cpp:267）；
-         * 以 NULL message 通知 Rust 侧。 */
+        /* C++ side: !format → kOfxStatFailed (olivehost.cpp:267); signal the
+         * Rust side with a NULL message. */
         return quercus_ofx_message_impl(handle, type, id, NULL);
     }
 

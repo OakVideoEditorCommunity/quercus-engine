@@ -44,7 +44,7 @@ fn define_and_replace() {
 	assert_eq!(s.dimension("a"), 2);
 	assert!(val_eq(&s.get("a", 0).unwrap(), &Value::Int(1)));
 
-	// 同名整体替换：旧值数组连同维度一起被覆盖。
+	// Whole-property replacement under the same name: the old value array is overwritten along with its dimension.
 	s.define("a", vec![Value::Int(9)]);
 	assert_eq!(s.dimension("a"), 1);
 	assert!(val_eq(&s.get("a", 0).unwrap(), &Value::Int(9)));
@@ -76,19 +76,19 @@ fn set_at_semantics() {
 	let s = PropertySet::new();
 	s.define("a", vec![Value::Int(1), Value::Int(2)]);
 
-	// 覆盖命中下标，维度不变。
+	// Overwrites the matching index; dimension unchanged.
 	assert!(s.set_at("a", 0, Value::Int(9)).is_ok());
 	assert!(val_eq(&s.get("a", 0).unwrap(), &Value::Int(9)));
 	assert_eq!(s.dimension("a"), 2);
 
-	// 越界写：维度固定语义（不自动扩容）→ NotFound。
+	// Out-of-bounds write: dimension is fixed (no auto-grow) → NotFound.
 	assert!(matches!(
 		s.set_at("a", 2, Value::Int(3)),
 		Err(Error::NotFound)
 	));
 	assert_eq!(s.dimension("a"), 2);
 
-	// 缺失属性：NotFound。
+	// Missing property: NotFound.
 	assert!(matches!(
 		s.set_at("b", 0, Value::Int(1)),
 		Err(Error::NotFound)
@@ -100,7 +100,7 @@ fn set_at_semantics() {
 #[test]
 fn typed_roundtrip() {
 	let s = PropertySet::new();
-	let non_ascii = CString::new("你好，wörld ✓").unwrap();
+	let non_ascii = CString::new("hello, wörld ✓").unwrap();
 	let raw = 0x1234usize as *mut c_void;
 
 	s.define("ints", vec![Value::Int(-7)]);
@@ -116,7 +116,7 @@ fn typed_roundtrip() {
 	));
 	assert!(val_eq(&s.get("ptrs", 0).unwrap(), &Value::Pointer(raw)));
 
-	// 空串也是合法属性值。
+	// The empty string is a valid property value too.
 	s.set_one("empty", Value::String(CString::new("").unwrap()));
 	assert!(val_eq(
 		&s.get("empty", 0).unwrap(),
@@ -134,7 +134,7 @@ fn remove_semantics() {
 	assert!(s.get("a", 0).is_none());
 	assert_eq!(s.dimension("a"), 0);
 
-	// 缺失属性 remove：no-op，不崩。
+	// remove on a missing property: no-op, no crash.
 	s.remove("a");
 	s.remove("never-existed");
 }
@@ -150,13 +150,13 @@ fn snapshot_is_isolated() {
 	assert_eq!(snap.len(), 1);
 	assert_eq!(snap[0].name, "a");
 
-	// 后续对属性集的修改不影响快照。
+	// Later modifications to the property set do not affect the snapshot.
 	s.set_at("a", 0, Value::Int(2)).unwrap();
 	s.set_one("b", Value::Int(3));
 	assert_eq!(snap.len(), 1);
 	assert!(val_eq(&snap[0].values[0], &Value::Int(1)));
 
-	// 反向隔离：改快照不回写属性集（深拷贝验证）。
+	// Isolation in the other direction: mutating the snapshot does not write back to the property set (deep-copy check).
 	let mut snap = snap;
 	snap[0].values[0] = Value::Int(99);
 	assert!(val_eq(&s.get("a", 0).unwrap(), &Value::Int(2)));
@@ -167,7 +167,7 @@ fn snapshot_is_isolated() {
 /// suites and must be thread-safe).
 #[test]
 fn concurrent_access() {
-	// 线程要求 'static：经 Arc 共享属性集（对应插件线程经句柄共享）。
+	// Threads require 'static: share the property set through Arc (matching plugin threads sharing via a handle).
 	let s = Arc::new(PropertySet::new());
 	let names: Vec<&'static str> = (0..32).map(leak_name).collect();
 	for (i, name) in names.iter().enumerate() {
@@ -177,17 +177,17 @@ fn concurrent_access() {
 	let threads: Vec<_> = (0..32usize)
 		.map(|i| {
 			let s = Arc::clone(&s);
-			// &'static str 是 Copy：拷贝进闭包，线程各自持名。
+			// &'static str is Copy: copied into the closure, each thread holds its own name.
 			let name = names[i];
 			thread::spawn(move || {
 				for k in 0..500 {
-					// 读永远合法（属性始终存在、维度恒为 1）。
+					// Reads are always valid (the property always exists, dimension always 1).
 					assert!(s.get(name, 0).is_some());
 					if i % 2 == 0 {
-						// 偶数线程：set_at 覆盖（不改维度）。
+						// Even threads: set_at overwrite (dimension unchanged).
 						s.set_at(name, 0, Value::Int((i + k) as i32)).unwrap();
 					} else {
-						// 奇数线程：define 整体替换（维度同样恒为 1）。
+						// Odd threads: define whole-property replacement (dimension likewise always 1).
 						s.define(name, vec![Value::Int((i as i32) - k as i32)]);
 					}
 				}
@@ -198,7 +198,7 @@ fn concurrent_access() {
 		t.join().unwrap();
 	}
 
-	// 数据自洽：32 个属性全部存活、维度未被撑大。
+	// Data consistency: all 32 properties survive and their dimension was never inflated.
 	for name in names.iter() {
 		assert_eq!(s.dimension(name), 1);
 		assert!(s.get(name, 0).is_some());

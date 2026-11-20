@@ -5,448 +5,526 @@
 > **not stable** and may change in any release without notice. Use
 > `quercus-engine-rs` (or the C ABI via `quercus-engine`) instead.
 
-# quercusplugin Rust crate（M11 第 1+2 期实现状态）
+# quercusplugin Rust crate (M11 phase 1+2 implementation status)
 
-> 状态：**M11 第 1、2 期已实现**（第 2 期：GL 渲染路径 +
-> ofxColour + pluginrenderer 渲染驱动收编）。原声明底稿（类型与
-> 函数签名 + 文档注释即规约）已由实现方填充；`src/` 内已无
-> `todo!()`。
-> 计划：docs/zh/plans/riir/M11-ofx-host.md。
+> Status: **M11 phases 1 and 2 implemented** (phase 2: GL render path +
+> ofxColour + pluginrenderer render driver absorbed). The original
+> declaration draft (types and function signatures + doc comments as the
+> contract) has been filled in by the implementer; there is no `todo!()`
+> left in `src/`.
+> Plan: docs/zh/plans/riir/M11-ofx-host.md.
 
-## 结构
+## Structure
 
 ```
 src/
-  lib.rs        crate 文档、模块图、FFI 纪律
-  error.rs      错误码（与 include/plugin/error.h 一一对应）
-  handle.rs     RefBox 边界容器（Host::create_instance 返回值类型）
-  property.rs   PropertySet：OFX 属性集的存储与类型化读写
-  suites/       插件调进来的 C 函数表（unsafe trampoline 层）
-    mod.rs      fetchSuite 注册表 + 渲染/GL 上下文 TLS
+  lib.rs        crate docs, module map, FFI discipline
+  error.rs      error codes (one-to-one with include/plugin/error.h)
+  handle.rs     RefBox boundary container (Host::create_instance return type)
+  property.rs   PropertySet: storage and typed read/write of OFX property sets
+  suites/       C function tables plugins call in (unsafe trampoline layer)
+    mod.rs      fetchSuite registry + render/GL context TLS
     property.rs memory.rs image_effect.rs param.rs
     message.rs  progress.rs timeline.rs multithread.rs
-    gl_render.rs OfxImageEffectOpenGLRenderSuiteV1（M11 §4 新增）
-    draw.rs     OfxDrawSuiteV1（OFX 1.5，interact 绘制；真实 GL 渲染）
-    interact.rs OfxInteractSuiteV1 + Interact 宿主对象（interact 宿主）
-  host.rs       Host 单例：bundle 扫描、插件缓存、action 分发
-  descriptor.rs EffectDescriptor/ClipDescriptor（describe 的产物）
-  instance.rs   Instance：action 调用面（render/协商/RoD/RoI/isIdentity/
-                render_gl/GetOutputColourspace）
-  render_driver.rs pluginrenderer.cpp 渲染流程收编（M11 §4 新增）
-  clip.rs       ClipInstance：clip↔quercusrender 纹理桥（render.rs）
-  image.rs      Image：帧缓冲/纹理的 OFX 视图
-  param.rs      12 种参数实例 + param↔quercusnode 桥（node.rs/undo）
+    gl_render.rs OfxImageEffectOpenGLRenderSuiteV1 (new in M11 §4)
+    draw.rs     OfxDrawSuiteV1 (OFX 1.5, interact drawing; real GL rendering)
+    interact.rs OfxInteractSuiteV1 + Interact host object (interact host)
+  host.rs       Host singleton: bundle scanning, plugin cache, action dispatch
+  descriptor.rs EffectDescriptor/ClipDescriptor (products of describe)
+  instance.rs   Instance: action call surface (render/negotiation/RoD/RoI/
+                isIdentity/render_gl/GetOutputColourspace)
+  render_driver.rs pluginrenderer.cpp render flow absorbed (new in M11 §4)
+  clip.rs       ClipInstance: clip↔quercusrender texture bridge (render.rs)
+  image.rs      Image: OFX view of framebuffers/textures
+  param.rs      12 parameter instances + param↔quercusnode bridge (node.rs/undo)
   progress.rs   PluginProgressReporter
-  node.rs       quercusnode 桥：节点值 POD、身份注册表、undoable 回写
-  render.rs     quercusrender 桥：Texture/Frame/Renderer 值类型调用面
+  node.rs       quercusnode bridge: node value POD, identity registry, undoable write-back
+  render.rs     quercusrender bridge: Texture/Frame/Renderer value type call surface
 ```
 
-## 插件搜索路径
+## Plugin search paths
 
-`host::PluginCache::scan` 按以下顺序扫描（重复路径去重、不存在的目录
-跳过；bundle 递归扫描，深度 3）：
+`host::PluginCache::scan` scans in the following order (duplicate paths
+deduplicated, nonexistent directories skipped; bundles scanned recursively,
+depth 3):
 
-| 层级 | 路径 |
+| Level | Path |
 | --- | --- |
-| 用户级（`$HOME`） | `$HOME/.OFX/Plugins`、`$HOME/.local/share/OFX/Plugins`、`$HOME/.local/share/olive/ofx/Plugins`；macOS 另含 `$HOME/Library/OFX/Plugins` |
-| 系统级（OFX 规范） | macOS `/Library/OFX/Plugins`；Linux `/usr/OFX/Plugins`、`/usr/local/OFX/Plugins`；Windows `%ProgramFiles%\Common Files\OFX\Plugins`（`%ProgramFiles%` 未设置时回退 `C:\Program Files\Common Files\OFX\Plugins`） |
-| app-relative（Olive 对齐） | `../OFX/Plugins`、`../share/olive/ofx/Plugins`、`../lib/olive/ofx/Plugins` |
-| 环境变量 | `OFX_PLUGIN_PATH`（OFX 官方）、`OLIVE_OFX_PLUGIN_PATH`、`OLIVE_PLUGIN_PATH`（Olive 扩展）；平台路径分隔符（Unix `:` / Windows `;`） |
+| User-level (`$HOME`) | `$HOME/.OFX/Plugins`, `$HOME/.local/share/OFX/Plugins`, `$HOME/.local/share/olive/ofx/Plugins`; macOS additionally includes `$HOME/Library/OFX/Plugins` |
+| System-level (OFX spec) | macOS `/Library/OFX/Plugins`; Linux `/usr/OFX/Plugins`, `/usr/local/OFX/Plugins`; Windows `%ProgramFiles%\Common Files\OFX\Plugins` (falls back to `C:\Program Files\Common Files\OFX\Plugins` when `%ProgramFiles%` is unset) |
+| app-relative (Olive alignment) | `../OFX/Plugins`, `../share/olive/ofx/Plugins`, `../lib/olive/ofx/Plugins` |
+| Environment variables | `OFX_PLUGIN_PATH` (official OFX), `OLIVE_OFX_PLUGIN_PATH`, `OLIVE_PLUGIN_PATH` (Olive extensions); platform path separator (Unix `:` / Windows `;`) |
 
-## 桥布局决策（M11 第 1 期冻结；第 2 期增补；单库化修订）
+## Bridge layout decisions (frozen in M11 phase 1; extended in phase 2; single-library revision)
 
-单库化（single-lib unification）后 `bridge/`（C ABI 导入）与
-`ffi.rs`（导出层）已删除：quercusundo/quercusnode/quercusrender 以 path 依赖
-直连，桥改用直接 Rust 类型。
+After the single-library consolidation, `bridge/` (C ABI imports) and
+`ffi.rs` (export layer) were deleted: quercusundo/quercusnode/quercusrender
+are now direct path dependencies, and the bridges use direct Rust types.
 
-- **`node::Value`** = `include/node/node.h:93` 的 `quercusnode_value`
-  POD，字段逐字一致（`type`/`num`/`den`/`f[4]`；`type` 取值见
-  `node_value_type`）。字符串族输入（k_file/k_text/k_font/
-  k_str_combo）无 POD 表示，走 `set_input_string_undoable`。
-  `Value::to_node_value`/`Value::from_node_value` 与
-  `quercusnode::value::NodeValue` 互转（按 POD kind；STRING 族无数据）。
-- **节点绑定与回写**（`node.rs`）：进程级身份注册表
-  `register_node(project, id)` → 打包身份
-  （`quercusnode::id::NodeId::identity()`）→
-  `Instance::bind_node(identity)`；`node_from_identity` 按身份反查
-  `NodeRef { project, id }`（弱引用映射，project 释放后自然失效）。
-  `set_input_undoable`/`set_input_string_undoable` 构造未执行的
-  `quercusundo::undocommand::UndoCommand`（closure-vtable 模式，与
-  `quercusnode::ops::set_value_at_time_command` 同构）：redo 锁 project、
-  `graph.get_mut(id)`、`NodeCore::set_standard_value`；undo 回放
-  创建期快照的旧值。失败（未知输入/失效节点/非字符串族输入）
-  返回 `NodeBridgeError`，调用方按 no-op 处理。
-- **纹理/帧/渲染器值类型**（`render.rs`）：
-  `Texture = quercusrender::texture::Texture`、`Frame =
-  quercusrender::texture::Frame`（值语义，drop 自动释放后端 token，
-  原 `texture_free`/`frame_free` 调用面删除）、
-  `Renderer = Arc<dyn quercusrender::backend::GpuContextLike>`（渲染器
-  即后端上下文）。`texture_create(params, pixels, linesize)` 构造
-  CPU 包装纹理（行跨度感知拷贝，GPU 上传由后端延迟）；
+- **`node::Value`** = the `quercusnode_value` POD from
+  `include/node/node.h:93`, fields character-for-character identical
+  (`type`/`num`/`den`/`f[4]`; for `type` values see `node_value_type`).
+  String-family inputs (k_file/k_text/k_font/k_str_combo) have no POD
+  representation; they go through `set_input_string_undoable`.
+  `Value::to_node_value`/`Value::from_node_value` convert to/from
+  `quercusnode::value::NodeValue` (by POD kind; STRING family has no data).
+- **Node binding and write-back** (`node.rs`): process-level identity
+  registry `register_node(project, id)` → packed identity
+  (`quercusnode::id::NodeId::identity()`) →
+  `Instance::bind_node(identity)`; `node_from_identity` looks up
+  `NodeRef { project, id }` by identity (weak-reference map, naturally
+  invalidated after the project is released).
+  `set_input_undoable`/`set_input_string_undoable` build an unexecuted
+  `quercusundo::undocommand::UndoCommand` (closure-vtable pattern,
+  isomorphic to `quercusnode::ops::set_value_at_time_command`): redo locks
+  the project, `graph.get_mut(id)`, `NodeCore::set_standard_value`; undo
+  replays the old value snapshotted at creation. Failure (unknown input/
+  invalidated node/non-string-family input) returns `NodeBridgeError`, and
+  the caller treats it as a no-op.
+- **Texture/frame/renderer value types** (`render.rs`):
+  `Texture = quercusrender::texture::Texture`, `Frame =
+  quercusrender::texture::Frame` (value semantics, drop automatically
+  releases the backend token, the original `texture_free`/`frame_free`
+  call surface is deleted),
+  `Renderer = Arc<dyn quercusrender::backend::GpuContextLike>` (the
+  renderer is the backend context). `texture_create(params, pixels,
+  linesize)` constructs a CPU wrapper texture (line-stride-aware copy,
+  GPU upload deferred to the backend);
   `texture_get_frame`/`texture_get_params`/
-  `renderer_is_open_gl` 为真实实现。**保留桩**：`texture_id` 恒 0
-  ——wgpu 后端无 OpenGL 纹理名，GL suite 的 `OpenGLTextureIndex`
-  属性与 use_opengl 决策据此回退 CPU 路径。
-  `ClipInstance::set_output_texture` 挂入后，`store_output_image`
-  取 CPU 帧整帧拷贝（全链路 F32，尺寸不符明确报错；GPU 目标经
-  `GpuContextLike::upload` 回写）。
-- **undo 打包** = 直接经 `quercusundo::undocommand::UndoCommand`；
-  paramEditBegin/End 的编辑事务在 `Instance` 上维护深度与累积
-  multi（C++ `submit_undo_command` 语义：事务内子命令立即 redo
-  生效并并入 multi，editEnd 整体 redo+释放）。
-- **param↔node 值转换**（`param.rs`）：`set_from_node`（节点→插件，
-  按参数类型映射，维度截断/补零）、`to_node_value`（插件→节点，
-  RGB 补 alpha=1，与 C++ `RGBInstance::set` 一致）。字符串参数经
-  `node::set_input_string_undoable`。
-- **节点绑定**：`Instance::bind_node(identity)`（C++ `set_node_handle`
-  的 Rust 侧）；回写只在 `ChangeReason::PluginEdited` 触发，未绑定/
-  身份查无时 no-op。
+  `renderer_is_open_gl` are real implementations. **Retained stub**:
+  `texture_id` always 0 — the wgpu backend has no OpenGL texture name, so
+  the GL suite's `OpenGLTextureIndex` property and the use_opengl decision
+  fall back to the CPU path accordingly.
+  After `ClipInstance::set_output_texture` is attached, `store_output_image`
+  takes a full-frame copy of the CPU frame (F32 end to end, clear error on
+  size mismatch; GPU targets are written back via `GpuContextLike::upload`).
+- **undo packaging** = directly through `quercusundo::undocommand::UndoCommand`;
+  the paramEditBegin/End edit transaction maintains a depth and accumulated
+  multi on `Instance` (C++ `submit_undo_command` semantics: subcommands
+  inside a transaction redo immediately and are merged into multi, and
+  editEnd redos the whole thing and releases it).
+- **param↔node value conversion** (`param.rs`): `set_from_node` (node→plugin,
+  mapped by parameter type, dimension truncated/zero-padded),
+  `to_node_value` (plugin→node, RGB padded with alpha=1, consistent with
+  C++ `RGBInstance::set`). String parameters go through
+  `node::set_input_string_undoable`.
+- **Node binding**: `Instance::bind_node(identity)` (the Rust side of
+  C++ `set_node_handle`); write-back only triggers on
+  `ChangeReason::PluginEdited`, and is a no-op when unbound or when the
+  identity is not found.
 
-## M11 第 2 期：GL 路径 + ofxColour + 渲染驱动
+## M11 phase 2: GL path + ofxColour + render driver
 
-### GL 渲染路径
+### GL render path
 
-- `suites/gl_render.rs`：OfxImageEffectOpenGLRenderSuiteV1
-  （clipLoadTexture / clipFreeTexture / flushResources），语义对照
-  ofxGPURender.h（vendored）与 HostSupport 插件侧（ofxhImageEffect.cpp:
-  2296-2367）。纹理句柄是属性集（12 个属性：OpenGLTextureIndex/
-  OpenGLTextureTarget/PixelDepth/Components/PreMultiplication/
-  RenderScale/PixelAspectRatio/Bounds/ROD/RowBytes/Field/
-  UniqueIdentifier）；存活表持有 Box<PropertySet>（句柄地址稳定）。
-  **OpenGLTextureIndex 是真实 GL 纹理名**（GL 模式；0 = CPU 回退）。
-  Output clip 的渲染目标绑定由宿主完成（等价 C++
-  `attach_output_texture`）；clipFreeTexture 对 Output 不删纹理（宿主
-  回读后删除）。
-- GL render action：`Instance::render_gl`（与 CPU `render` 并存）——
-  action 序列 kOfxActionOpenGLContextAttached → render（in args 带
-  kOfxImageEffectPropOpenGLEnabled=1）→ OpenGLContextDetached；
-  渲染结果留在 FBO 附着的输出 GL 纹理上，render 返回后宿主
-  **glReadPixels 回读**装帧（方案 B，见下）。
-- **GL 上下文规则**（ofxGPURender.h "OpenGL Current Context"）：宿主
-  只在 Render/Begin/EndSequenceRender/Attach/Detach 期间要求上下文
-  current——本实现的约定是 render 驱动一次 `gl_bridge::acquire` 整个
-  GL render action（上下文 current 到 guard drop），suite 回调期间
-  恒 current。
-- 格式协商：插件描述符声明 kOfxImageEffectPropOpenGLRenderSupported
-  （"false"/"true"/"needed"）与 kOfxOpenGLPropPixelDepth（可选位深
-  列表）；宿主 `pick_gl_pixel_depth` 按管线 F32 约束选型（声明列表
-  不含 Float → GL 模式不可行，回退 CPU）。use_opengl 决策在
-  render_driver（插件 GL 声明 + 深度协商 + 桥可用）。
+- `suites/gl_render.rs`: OfxImageEffectOpenGLRenderSuiteV1
+  (clipLoadTexture / clipFreeTexture / flushResources), semantics
+  cross-checked against ofxGPURender.h (vendored) and the HostSupport
+  plugin side (ofxhImageEffect.cpp:2296-2367). The texture handle is a
+  property set (12 properties: OpenGLTextureIndex/OpenGLTextureTarget/
+  PixelDepth/Components/PreMultiplication/RenderScale/PixelAspectRatio/
+  Bounds/ROD/RowBytes/Field/UniqueIdentifier); the live table holds
+  Box<PropertySet> (handle address stable). **OpenGLTextureIndex is a real
+  GL texture name** (GL mode; 0 = CPU fallback). The render target binding
+  of the Output clip is done by the host (equivalent to C++
+  `attach_output_texture`); clipFreeTexture does not delete the Output
+  texture (the host deletes it after read-back).
+- GL render action: `Instance::render_gl` (coexisting with the CPU `render`)
+  — action sequence kOfxActionOpenGLContextAttached → render (in args carry
+  kOfxImageEffectPropOpenGLEnabled=1) → OpenGLContextDetached; the render
+  result stays on the output GL texture attached to the FBO, and after
+  render returns the host **reads it back with glReadPixels** to assemble
+  the frame (approach B, see below).
+- **GL context rules** (ofxGPURender.h "OpenGL Current Context"): the host
+  requires the context current only during
+  Render/Begin/EndSequenceRender/Attach/Detach — this implementation's
+  convention is that the render driver calls `gl_bridge::acquire` once for
+  the whole GL render action (context current until the guard drops), and
+  it is always current during suite callbacks.
+- Format negotiation: the plugin descriptor declares
+  kOfxImageEffectPropOpenGLRenderSupported ("false"/"true"/"needed") and
+  kOfxOpenGLPropPixelDepth (optional bit-depth list); the host's
+  `pick_gl_pixel_depth` selects according to the pipeline F32 constraint
+  (declared list without Float → GL mode infeasible, fall back to CPU).
+  The use_opengl decision is in render_driver (plugin GL declaration +
+  depth negotiation + bridge availability).
 
-### GL 互操作桥（方案 B 落地，`gl_bridge.rs`）
+### GL interop bridge (approach B landed, `gl_bridge.rs`)
 
-- **macOS 真实实现**（Core OpenGL / CGL，`OpenGL.framework` 直链，
-  无新 crate）：进程级共享离屏上下文（3.2 core profile、offline
-  renderer 允许），`acquire()` 全局串行 + 置当前线程 current。为每次
-  GL 渲染建输出 GL 纹理（尺寸 = 目标帧；F32 → RGBA32F、U8 → RGBA8）
-  + FBO 挂载；插件直接画进 FBO；render 返回后 `glReadPixels` 回读
-  （垂直翻转、U8 归一化 F32），与 CPU 路径输出格式一致。
-- 输入 clip 在 GL 模式经桥上传为真实 GL 纹理（clipFreeTexture 删除）。
-- GL 失败回退 CPU（对齐现有失败语义）。Linux（EGL）/Windows（WGL）
-  预留 cfg stub。
-- 验证：`gl_bridge.rs` 单元测试（clear 已知颜色 → 回读逐像素断言，
-  `QUERCUS_GPU_TESTS` 门）+ `tests/gl_render_test.rs` 端到端（GL 测试插件
-  真实走 GL 路径、输出已知颜色）。
+- **macOS real implementation** (Core OpenGL / CGL, linked directly against
+  `OpenGL.framework`, no new crate): process-level shared offscreen context
+  (3.2 core profile, offline renderer allowed), `acquire()` globally
+  serialized + makes current on the calling thread. For each GL render,
+  create an output GL texture (size = target frame; F32 → RGBA32F,
+  U8 → RGBA8) + FBO attachment; the plugin draws directly into the FBO;
+  after render returns, `glReadPixels` reads back (vertical flip,
+  U8 normalized to F32), matching the CPU path output format.
+- Input clips in GL mode are uploaded through the bridge as real GL textures
+  (deleted by clipFreeTexture).
+- GL failure falls back to CPU (consistent with existing failure semantics).
+  Linux (EGL)/Windows (WGL) have reserved cfg stubs.
+- Verification: `gl_bridge.rs` unit tests (clear a known color → read back
+  and assert per pixel, gated by `QUERCUS_GPU_TESTS`) + `tests/gl_render_test.rs`
+  end to end (the GL test plugin really takes the GL path, outputs a known
+  color).
 
-### ofxColour（OFX 1.4）
+### ofxColour (OFX 1.4)
 
-- 宿主描述符声明 OCIO 色彩管理（kOfxImageEffectPropColourManagementStyle
-  = OCIO + AvailableConfigs = ofx-native-v1.5_aces-v1.3_ocio-v2.3）；
-  实例期协商属性（style/config/OCIOConfig=ocio://default，工作空间
-  ACEScg 经 clip 色彩空间属性传达）。
-- 输入 clip 的 kOfxImageClipPropColourspace 宿主写为 ACEScg；
-  GetOutputColourspace action（`Instance::get_output_colourspace`）：
-  偏好列表采纳 + "OfxColourspace_<clip>" 交叉引用解析
-  （`resolve_colourspace`），结果写回输出 clip
-  （`set_output_colourspace`）；插件未实现 → 第一个输入 clip 的
-  色彩空间（规范默认）。
-- 描述符预定义 GL/colour 属性（ofxGPURender.h/ofxColour.h）：HostSupport
-  的 propSet 不创建属性（返回 ErrUnknown），宿主预定义属性宇宙——
-  第 1 期缺 GL/colour 声明，第 2 期补齐（见"第 1 期修复"）。
+- The host descriptor declares OCIO color management
+  (kOfxImageEffectPropColourManagementStyle = OCIO + AvailableConfigs =
+  ofx-native-v1.5_aces-v1.3_ocio-v2.3); instance-time negotiated properties
+  (style/config/OCIOConfig=ocio://default, working space ACEScg conveyed
+  via clip color space properties).
+- The host writes the input clip's kOfxImageClipPropColourspace as ACEScg;
+  GetOutputColourspace action (`Instance::get_output_colourspace`):
+  adopt the preference list + resolve "OfxColourspace_<clip>" cross-references
+  (`resolve_colourspace`), then write the result back to the output clip
+  (`set_output_colourspace`); plugin not implementing it → the color space
+  of the first input clip (spec default).
+- Descriptor predefines GL/colour properties (ofxGPURender.h/ofxColour.h):
+  HostSupport's propSet does not create properties (returns ErrUnknown), the
+  host predefines the property universe — phase 1 lacked GL/colour
+  declarations, phase 2 filled them in (see "Phase 1 fixes").
 
-### render_driver（pluginrenderer.cpp 收编）
+### render_driver (pluginrenderer.cpp absorbed)
 
-- `render_driver.rs`：`PluginRenderer::render_plugin`（1857 行 C++
-  的渲染流程部分）的 Rust 移植——实例锁、use_opengl 决策、多输入
-  clip 收集（effect_input_id / inputs 表 / SimpleSource 回退）、
-  getClipPreferences、RoI/RoD 设定、getRegionOfInterest（失败按默认
-  整帧继续，C++ 对 BadHandle 即如此）、输出 clip 格式、isIdentity
-  短路（透传帧直接拷贝，不调 render action）、参数覆盖
-  （apply_param_overrides 移植）、CPU/GL 渲染与输出装配。
-- 序列括号：`render_begin_sequence`/`render_end_sequence` 的 C ABI
-  （quercusrender 对同一实例的一批帧先 begin 后 end，中间逐帧
-  `render_job`）。
-- 目标形态：quercusrender 的 PluginJob 退化为一次 C ABI 调用
-  `quercusplugin_instance_render_job`（instance.h 新增，见下）。
+- `render_driver.rs`: Rust port of `PluginRenderer::render_plugin` (the
+  render-flow portion of the 1857-line C++) — instance lock, use_opengl
+  decision, multi-input clip collection (effect_input_id / inputs table /
+  SimpleSource fallback), getClipPreferences, RoI/RoD setup,
+  getRegionOfInterest (on failure continues with the default full frame,
+  as C++ does for BadHandle), output clip format, isIdentity short-circuit
+  (identity frames copied directly without calling the render action),
+  parameter overrides (apply_param_overrides port), CPU/GL rendering and
+  output assembly.
+- Sequence brackets: `render_begin_sequence`/`render_end_sequence` C ABI
+  (quercusrender begins once and then ends after a batch of frames for the
+  same instance, with per-frame `render_job` in between).
+- Target shape: quercusrender's PluginJob degrades to a single C ABI call
+  `quercusplugin_instance_render_job` (new in instance.h, see below).
 
-### include/plugin/instance.h 新增（M11 §4，既有签名不变）
+### include/plugin/instance.h additions (M11 §4, existing signatures unchanged)
 
-- `quercusplugin_instance_render_begin_sequence` / `render_end_sequence`：
-  序列括号。
+- `quercusplugin_instance_render_begin_sequence` / `render_end_sequence`:
+  sequence brackets.
 - `quercusplugin_instance_render_job(instance, dst, time, clear, interactive,
-  effect_input_id, src, inputs[], values[], renderer)`：一帧渲染的
-  单一调用；`quercusplugin_job_value`（参数覆盖）/`quercusplugin_job_texture`
-  （输入 clip 纹理）两个 POD 随附。GL 契约（上下文 current + 输出
-  附着）见头文件文档注释。
+  effect_input_id, src, inputs[], values[], renderer)`: the single call for
+  rendering one frame; two PODs come with it: `quercusplugin_job_value`
+  (parameter overrides) / `quercusplugin_job_texture` (input clip textures).
+  The GL contract (context current + output attached) is in the header's
+  doc comment.
 
-## OFX Interact 宿主（interact + Draw suite，M11 §5）
+## OFX Interact host (interact + Draw suite, M11 §5)
 
-插件自定义 UI 的宿主侧：Interact 实例在主进程创建（UI 事件宿主），与
-worker 进程里的渲染实例并存（OFX 允许同一插件多实例）。
+Host side of plugin custom UI: Interact instances are created in the main
+process (UI event host), coexisting with render instances in worker
+processes (OFX allows multiple instances of the same plugin).
 
-- **`suites/interact.rs`**：
-  - `Instance::new_interact`（任务契约）：取插件声明的 overlay interact
-    入口（kOfxImageEffectPluginPropOverlayInteractV2 优先、V1 次之；未
-    声明则插件 main entry）→ 建 `Interact`（属性表 + tagged INTERACT
-    handle）→ 发 `kOfxActionNewInteract`。插件返回 OK → Some；返回
-    ReplyDefault 且未声明 overlay 入口（无 interact）→ None；错误 → None。
-  - 生命周期：`describe`（kOfxActionDescribe == kOfxActionDescribeInteract）
-    → `create_instance`（kOfxActionCreateInstance）→ 事件 → `destroy`
-    （kOfxActionDestroyInstance）；**与效果实例同生命周期**——实例销毁
-    （`Instance::notify_destroy`）时先连带销毁 interact。
-  - 调用面（宿主→插件，返回值如实透传）：`draw(viewport, pixel_scale,
-    time, background)`、`pen_motion(pen_pos, pen_down)`、`pen_down`、
-    `pen_up`、`key_down(key_sym, key_string)`、`key_up`、`idle`（任务契约
-    的 kOfxInteractActionIdle，属宿主扩展）、`gain_focus`/`lose_focus`。
-    pen 坐标为视口像素，inArgs 另带 canonical 位置（viewport/像素比）、
-    viewport 位置、压力（两态笔映射 0/1）；key 带 kOfxPropKeySym
-    （ofxKeySyms.h 关键码）+ kOfxPropKeyString。返回 kOfxStatOK = 插件
-    已处理（宿主不再把事件给其他对象），ReplyDefault = 未处理。
-  - `OfxInteractSuiteV1`（ofxInteract.h:534）：interactSwapBuffers /
-    interactRedraw 把请求记入 `swap_requested`/`redraw_requested`
-    （app 侧轮询面）；interactGetPropertySet 返回 interact 属性集句柄。
-  - interact 属性集走现有 property suite：PixelScale / ViewportSize /
-    BackgroundImage / SuggestedColour / SlaveToParam / BackgroundColour /
-    BitDepth / HasAlpha（ofxInteract.h 的 PropertiesInteract；ViewportSize
-    取 OFX 1.3 名 "OfxInteractPropViewport"、BackgroundImage 与 Idle 为
-    任务契约扩展）。
-- **`suites/draw.rs`**（`OfxDrawSuiteV1`，OFX 1.5，vendored ofxDrawSuite.h）：
-  getColour / setColour / setLineWidth / setLineStipple / draw / drawText。
-  状态（colour/lineWidth/stipple）保存在 `DrawContext`（每次 draw action
-  创建、经存活表注册，draw 返回摘除——draw 外调用 → kOfxStatFailed）。
-  GL 绘制是**真实渲染**：gl_bridge 的 CGL 上下文是 3.2 core（无固定管
-  线），draw 用最小着色器 + VAO/VBO 按正交投影画线/矩形/多边形/椭圆，
-  非不透明色按 "over" 合成。drawText 无字体光栅化器 → 如实返回
-  kOfxStatErrUnsupported。非 macOS 无 GL 桥 → kOfxStatFailed。
-- **GL 上下文模型**：宿主在调 draw 前经 `gl_bridge::acquire` 保持
-  current 整个 action（与 WG1 渲染路径同模型）；`acquire` 支持同线程
-  可重入（测试"一次 acquire 覆盖 FBO 装配 → draw → 回读"）。
-- vendored 头新增：`ofxDrawSuite.h`、`ofxKeySyms.h`（kOfxPropKeySym/
-  kOfxPropKeyString + kOfxKey_*）、`ofxPixels.h`（OfxRGBAColourF）——
-  官方 openfx（BSD-3-Clause），与既有 vendored 头同源。
-- 验证：`tests/interact_test.rs`（生命周期 + 事件参数逐条断言插件侧
-  marker 记录；Escape key_down 的 ReplyDefault 透传；实例销毁连带
-  destroy）+ GL draw 端到端（`QUERCUS_GPU_TESTS` 门：插件 glClear 暗背景 +
-  Draw suite setColour(0.9,0.1,0.2,1) + draw(Rectangle) → 回读断言矩形
-  颜色与背景）。
+- **`suites/interact.rs`**:
+  - `Instance::new_interact` (task contract): take the plugin-declared
+    overlay interact entry (kOfxImageEffectPluginPropOverlayInteractV2
+    preferred, V1 next; if undeclared, the plugin main entry) → create
+    `Interact` (property table + tagged INTERACT handle) → send
+    `kOfxActionNewInteract`. Plugin returns OK → Some; returns
+    ReplyDefault with no declared overlay entry (no interact) → None;
+    error → None.
+  - Lifecycle: `describe` (kOfxActionDescribe == kOfxActionDescribeInteract)
+    → `create_instance` (kOfxActionCreateInstance) → events → `destroy`
+    (kOfxActionDestroyInstance); **same lifecycle as the effect instance** —
+    when the instance is destroyed (`Instance::notify_destroy`), the
+    interact is destroyed first along with it.
+  - Call surface (host→plugin, return values passed through as-is):
+    `draw(viewport, pixel_scale, time, background)`,
+    `pen_motion(pen_pos, pen_down)`, `pen_down`, `pen_up`,
+    `key_down(key_sym, key_string)`, `key_up`, `idle` (the task contract's
+    kOfxInteractActionIdle, a host extension), `gain_focus`/`lose_focus`.
+    Pen coordinates are viewport pixels; inArgs additionally carry the
+    canonical position (viewport/pixel ratio), viewport position, pressure
+    (two-state pen maps to 0/1); key carries kOfxPropKeySym (key codes from
+    ofxKeySyms.h) + kOfxPropKeyString. Returns kOfxStatOK = the plugin
+    handled it (the host no longer gives the event to other objects),
+    ReplyDefault = not handled.
+  - `OfxInteractSuiteV1` (ofxInteract.h:534): interactSwapBuffers /
+    interactRedraw record the request into `swap_requested`/`redraw_requested`
+    (app-side polling surface); interactGetPropertySet returns the interact
+    property set handle.
+  - The interact property set uses the existing property suite: PixelScale /
+    ViewportSize / BackgroundImage / SuggestedColour / SlaveToParam /
+    BackgroundColour / BitDepth / HasAlpha (PropertiesInteract of
+    ofxInteract.h; ViewportSize uses the OFX 1.3 name "OfxInteractPropViewport",
+    BackgroundImage and Idle are task-contract extensions).
+- **`suites/draw.rs`** (`OfxDrawSuiteV1`, OFX 1.5, vendored ofxDrawSuite.h):
+  getColour / setColour / setLineWidth / setLineStipple / draw / drawText.
+  State (colour/lineWidth/stipple) lives in `DrawContext` (created per draw
+  action, registered in the live table, removed when draw returns — calling
+  outside draw → kOfxStatFailed). GL drawing is **real rendering**: gl_bridge's
+  CGL context is 3.2 core (no fixed pipeline), so draw uses a minimal shader
+  + VAO/VBO to draw lines/rectangles/polygons/ellipses under an orthographic
+  projection, with non-opaque colors composited "over". drawText has no font
+  rasterizer → returns kOfxStatErrUnsupported as-is. Non-macOS has no GL
+  bridge → kOfxStatFailed.
+- **GL context model**: before calling draw, the host keeps the context
+  current for the whole action via `gl_bridge::acquire` (same model as the
+  WG1 render path); `acquire` supports same-thread reentrancy (test: "one
+  acquire covers FBO setup → draw → read-back").
+- New vendored headers: `ofxDrawSuite.h`, `ofxKeySyms.h` (kOfxPropKeySym/
+  kOfxPropKeyString + kOfxKey_*), `ofxPixels.h` (OfxRGBAColourF) — from
+  official openfx (BSD-3-Clause), same origin as the existing vendored
+  headers.
+- Verification: `tests/interact_test.rs` (lifecycle + item-by-item assertions
+  of event parameters against the plugin-side marker records; ReplyDefault
+  pass-through of Escape key_down; destroy on instance teardown) + GL draw
+  end to end (`QUERCUS_GPU_TESTS` gate: plugin glClear dark background +
+  Draw suite setColour(0.9,0.1,0.2,1) + draw(Rectangle) → read back and
+  assert rectangle color and background).
 
-app 接线（WG3b）公共 API：`Instance::new_interact` / `Instance::interact` /
-`Instance::describe_interact`、`Interact::{describe, create_instance, draw,
+app wiring (WG3b) public API: `Instance::new_interact` / `Instance::interact` /
+`Instance::describe_interact`, `Interact::{describe, create_instance, draw,
 pen_motion, pen_down, pen_up, key_down, key_up, idle, gain_focus, lose_focus,
-destroy, props, swap_requested, redraw_requested}`、`host::KEY_*` 关键码、
-`fetch_suite("OfxInteractSuite"/"OfxDrawSuite", 1)`。
+destroy, props, swap_requested, redraw_requested}`, `host::KEY_*` key codes,
+`fetch_suite("OfxInteractSuite"/"OfxDrawSuite", 1)`.
 
-## 与 M11 §3.5 验收的对照（第 1+2 期现状）
+## Comparison with M11 §3.5 acceptance (phase 1+2 status)
 
-| 验收项 | 状态 |
+| Acceptance item | Status |
 | --- | --- |
-| 0 期 golden master 全绿（描述符 diff 空、CPU 渲染 bit 一致） | **未达成**：0 期基建（`tests/ofx/` 的快照/帧库）尚未生成，`golden_test.rs` 对应用例 `#[ignore]`（原因见各用例 doc）；渲染 golden 另依赖真 libquercusrender 的桥。 |
-| 测试插件 round-trip + CImg 全量 describe/协商冒烟 | **部分**：测试插件 round-trip 绿（suites/ffi/lifecycle/negotiation/colour/gl/driver）；CImg 全量冒烟被本机 CImg bundle（Natron 分支，属性套件句柄语义不兼容）所阻——`#[ignore]`；`system_misc_ofx_bundle_smoke` 在本机 Misc bundle（同样为 Natron 分支，describe 返回 MissingHostFeature）上 skip，兼容 bundle 的机器照常断言。 |
-| 生命周期：create/destroy 配对、重复 scan、render 中途 cancel、alive 无泄漏 | **达成**：lifecycle_test 全绿（含 256 次循环与 stub 渲染取消）。 |
-| nm：libquercusnode/libquercusrender→libquercusplugin C++ 符号为 0；HostSupport 移出构建 | 由外层 CMake 接线验证（本 crate 侧：ffi.rs 仅导出 C ABI）。 |
-| cargo test（host 内部单测）+ ctest（C ABI 层）双绿 | **达成**（cargo test 两种模式全绿；ctest 属 standalone 树外层）。 |
-| M11 §4：GL 路径 + ofxColour + pluginrenderer 收编 | **达成**（本机验证）：OpenGLRender suite v1 + render_gl（GL 上下文/格式协商规则按 ofxGPURender.h）；ofxColour 属性族 + GetOutputColourspace（ACEScg 工作空间）；render_driver 收编 + render_job C ABI（见上）。GL golden（EXR 容差）需 0 期基建 + 本机 GPU 人工确认（`QUERCUS_GPU_TESTS` 门）。 |
+| Phase 0 golden master all green (empty descriptor diff, CPU render bit-identical) | **Not achieved**: phase 0 infrastructure (snapshot/frame library under `tests/ofx/`) has not been generated yet, the corresponding cases in `golden_test.rs` are `#[ignore]` (reason in each case's doc); the render golden additionally depends on the bridge to the real libquercusrender. |
+| Test plugin round-trip + CImg full describe/negotiation smoke test | **Partial**: test plugin round-trip green (suites/ffi/lifecycle/negotiation/colour/gl/driver); the CImg full smoke test is blocked by the local CImg bundle (Natron branch, incompatible property-suite handle semantics) — `#[ignore]`; `system_misc_ofx_bundle_smoke` skips on the local Misc bundle (also a Natron branch, describe returns MissingHostFeature), machines with a compatible bundle assert as usual. |
+| Lifecycle: create/destroy pairing, repeated scan, mid-render cancel, no leak while alive | **Achieved**: lifecycle_test all green (including 256 iterations and stub render cancellation). |
+| nm: libquercusnode/libquercusrender→libquercusplugin C++ symbols = 0; HostSupport moved out of the build | Verified by the outer CMake wiring (on this crate's side: ffi.rs only exports the C ABI). |
+| cargo test (host internal unit tests) + ctest (C ABI layer) both green | **Achieved** (cargo test all green in both modes; ctest belongs to the outer standalone tree). |
+| M11 §4: GL path + ofxColour + pluginrenderer absorbed | **Achieved** (verified locally): OpenGLRender suite v1 + render_gl (GL context/format negotiation rules per ofxGPURender.h); ofxColour property family + GetOutputColourspace (ACEScg working space); render_driver absorbed + render_job C ABI (see above). GL golden (EXR tolerance) needs phase 0 infrastructure + manual confirmation on the local GPU (`QUERCUS_GPU_TESTS` gate). |
 
-## 实现纪律（实现方必读）
+## Implementation discipline (mandatory reading for implementers)
 
-1. panic 不得越过插件 FFI：suite 分发表（`suites/mod.rs`）与宿主侧
-   插件调用点各自 `catch_unwind` 兜底并映射错误码。
-2. 实例以 `Arc<RefBox<Instance>>` 传（`RefBox` 为 facade 边界类型，
-   见 `handle.rs`）；跨 FFI 的裸指针只指向堆上稳定对象（props/
-   tag 打标），永不外露其地址含义。
-3. 共享状态（插件缓存、instance 注册表、线程表）一律 `Mutex`；
-   插件可能在其自起线程回调任意 suite（MultiThread suite 存活期）。
-4. OFX 语义以 HostSupport 的行为为参照系；每个协商/时序实现点
-   必须注释对应 HostSupport 文件行号。
-5. 错误码、句柄布局、字符串两段式与 `include/plugin/*.h` 逐字一致。
-6. 依赖政策：**优先使用成熟第三方 crate**（serde/quick-xml/thiserror
-   等），不重复造轮子。选型要求：crates.io 有维护、许可
-   MIT/Apache-2.0/BSD（GPL 兼容）；新增依赖在 README 登记名称与
-   理由。OTIO 等大型既有 C++ 库绝不重写——继续经其 C ABI/桥接层
-   使用。
-7. 跨期句柄（suite 返回的纹理/图像句柄）必须指向**堆上稳定对象**
-   （Box/Arc）——栈上临时对象在 suite 返回后悬垂（M11 第 2 期
-   gl_render 初版踩过，见"第 1 期修复"）。
+1. panic must not cross the plugin FFI: the suite dispatch table
+   (`suites/mod.rs`) and the host-side plugin call sites each `catch_unwind`
+   as a backstop and map error codes.
+2. Instances are passed as `Arc<RefBox<Instance>>` (`RefBox` is the facade
+   boundary type, see `handle.rs`); raw pointers crossing FFI only point to
+   heap-stable objects (props/tag tagging), and their address meaning is
+   never exposed.
+3. Shared state (plugin cache, instance registry, thread table) is always
+   `Mutex`; a plugin may call back into any suite from a thread it starts
+   (MultiThread suite lifetime).
+4. OFX semantics take HostSupport behavior as the reference frame; each
+   negotiation/timing implementation point must be commented with the
+   corresponding HostSupport file line numbers.
+5. Error codes, handle layouts, two-part strings are character-for-character
+   consistent with `include/plugin/*.h`.
+6. Dependency policy: **prefer mature third-party crates** (serde/quick-xml/
+   thiserror etc.), don't reinvent the wheel. Selection requirements:
+   maintained on crates.io, license MIT/Apache-2.0/BSD (GPL-compatible);
+   new dependencies register name and rationale in README. Large existing
+   C++ libraries like OTIO are never rewritten — continue to use them via
+   their C ABI/bridge layer.
+7. Cross-phase handles (texture/image handles returned by suites) must point
+   to **heap-stable objects** (Box/Arc) — stack temporaries dangle after the
+   suite returns (hit in the initial gl_render version of M11 phase 2, see
+   "Phase 1 fixes").
 
-## 已知技术点（实现方注意）
+## Known technical points (for implementers)
 
-- **C 变长参数**：`paramGetValue`/`paramSetValue` 等是 variadic。
-  stable Rust 不能 *定义* C-variadic 函数（`c_variadic` 仍不稳定）。
-  两个选项：(a) 这几个函数用 nightly 的 `c_variadic`；(b) 用
-  build.rs 编一个几十行的 C shim 只承载 variadic 入口再转发。
-  选 (b) 保持 stable toolchain。`core::ffi::VaList` 类型本身稳定，
-  仅"定义 variadic fn"受限。
-  **已落地**：message suite 的 v1/v2 入口即 C shim
-  （cbits/ofx_message_shim.c，build.rs 经 `cc` 编译；`cc` 仅 build
-  依赖，理由见下）。param suite 的 variadic 同理（届时同方案）。
-- **依赖登记**：`cc`（build-dependencies）——编译 C shim 的唯一
-  稳妥方式（手写 `Command::new("cc")` 无法处理跨平台 flag/交叉编译；
-  零运行时依赖不变）。M11 第 2 期未新增依赖。
-- **依赖登记**：`thiserror`（dependencies）——为 crate 错误枚举
-  （src/error.rs）派生 `Display` + `std::error::Error` 的惯例实现；
-  项目内其他模块（quercusotio 等）已采用同版本（"2"），避免手写样板。
-- **依赖登记**：`libloading` + `libc`（仅 Linux target）——OpenFX GL
-  真正 GPU 零拷贝需要 EGL/GL 动态加载（避免无 GL 头文件/库的构建环境
-  硬链接）以及 `dup(2)` 导出 fd；两者均只在 Linux 编译，不影响
-  macOS/Windows 构建。
-- suite 函数表经 `suite_v1()` 等 accessor 暴露（`static` 初始化
-  放 lazy/OnceLock 里），`fetch_suite` 只查表。
-- **GL 上下文归属**：quercusplugin 不持有 GL 上下文（C ABI 无
-  make-current 函数）；render_job 的 GL 契约要求调用方（quercusrender）
-  置上下文 current 并附着输出纹理。GL 纹理上传/回读经 quercusrender C
-  ABI（其内部确保上下文）。
+- **C varargs**: `paramGetValue`/`paramSetValue` etc. are variadic.
+  Stable Rust cannot *define* C-variadic functions (`c_variadic` is still
+  unstable). Two options: (a) use nightly `c_variadic` for these few
+  functions; (b) compile a few-dozen-line C shim with build.rs that carries
+  only the variadic entry and forwards. Choose (b) to stay on the stable
+  toolchain. The `core::ffi::VaList` type itself is stable; only "defining a
+  variadic fn" is restricted.
+  **Landed**: the message suite's v1/v2 entries are the C shim
+  (cbits/ofx_message_shim.c, compiled by build.rs via `cc`; `cc` is a
+  build-only dependency, rationale below). The param suite's variadic works
+  the same way (same approach when the time comes).
+- **Dependency registration**: `cc` (build-dependencies) — the only reliable
+  way to compile the C shim (hand-rolled `Command::new("cc")` cannot handle
+  cross-platform flags/cross compilation; zero runtime dependencies
+  unchanged). M11 phase 2 added no new dependencies.
+- **Dependency registration**: `thiserror` (dependencies) — for deriving the
+  conventional `Display` + `std::error::Error` impls for the crate error
+  enum (src/error.rs); other modules in the project (quercusotio etc.)
+  already use the same version ("2"), avoiding hand-written boilerplate.
+- **Dependency registration**: `libloading` + `libc` (Linux target only) —
+  real GPU zero-copy for OpenFX GL needs EGL/GL dynamic loading (avoiding
+  hard links in build environments without GL headers/libraries) and
+  `dup(2)` to export fds; both compile only on Linux, without affecting
+  macOS/Windows builds.
+- Suite function tables are exposed via accessors like `suite_v1()`
+  (`static` initialization lives in lazy/OnceLock), `fetch_suite` only looks
+  up the table.
+- **GL context ownership**: quercusplugin does not own a GL context (the
+  C ABI has no make-current function); the GL contract of render_job
+  requires the caller (quercusrender) to make the context current and attach
+  the output texture. GL texture upload/read-back goes through the
+  quercusrender C ABI (which ensures the context internally).
 
-## 第 1 期修复（M11 第 2 期发现并修复的 phase-1 缺陷）
+## Phase 1 fixes (phase-1 defects found and fixed during M11 phase 2)
 
-1. **ffi::quercusplugin_instance_render 泄漏帧句柄**：render 失败路径
-   `?` 提前返回时不释放 `frame`（texture_get_frame 的保留引用）。
-   修复：统一走 `render_driver::write_output_frame`，所有路径释放。
-2. **CPU 拷贝假设紧凑行**：fetch_image / store_output_image / ffi
-   render 用紧凑行宽拷贝——真实 quercusrender 帧可有行填充。修复：
-   新增 `frame_linesize_bytes` 导入，行优先拷贝按 linesize。
-3. **描述符未预定义 GL/colour 属性**：属性 suite 的 propSet 对未
-   定义属性返回 ErrUnknown（与 HostSupport 一致：宿主预定义属性
-   宇宙）；第 1 期描述符表缺 kOfxImageEffectPropOpenGLRenderSupported/
-   kOfxOpenGLPropPixelDepth/ofxColour 族 → 插件无法声明 GL/colour
-   能力。修复：`init_descriptor_props` 补齐预定义（默认
-   "false"/空数组/None）。
+1. **ffi::quercusplugin_instance_render leaks the frame handle**: on the
+   render failure path the early `?` return does not release `frame` (the
+   retained reference from texture_get_frame). Fix: uniformly go through
+   `render_driver::write_output_frame`, which releases on all paths.
+2. **CPU copy assumes tight rows**: fetch_image / store_output_image / ffi
+   render copy with tight row width — real quercusrender frames may have row
+   padding. Fix: add the `frame_linesize_bytes` import, row-first copy by
+   linesize.
+3. **Descriptor does not predefine GL/colour properties**: the property
+   suite's propSet returns ErrUnknown for undefined properties (consistent
+   with HostSupport: the host predefines the property universe); the phase 1
+   descriptor table lacked kOfxImageEffectPropOpenGLRenderSupported/
+   kOfxOpenGLPropPixelDepth/ofxColour family → plugins could not declare
+   GL/colour capability. Fix: `init_descriptor_props` fills in the predefined
+   ones (default "false"/empty array/None).
 
-## 阶段 6a：OpenFX 引擎接线（quercusnode/quercusrender/quercusplugin 收编）
+## Stage 6a: OpenFX engine wiring (quercusnode/quercusrender/quercusplugin absorbed)
 
-把 OFX 插件接进 quercusnode 节点工厂与 quercusrender 评估环的接线层
-（此前插件侧只有宿主/suite/渲染驱动，未进节点图）。全部落在
-crates/，不动 src/（app）与 gpui/。
+The wiring layer that connects OFX plugins into the quercusnode node factory
+and the quercusrender evaluation loop (previously the plugin side had only
+host/suite/render driver and did not enter the node graph). Everything lands
+in crates/, src/ (app) and gpui/ untouched.
 
-- **`node_factory.rs`（新增）**：
-  - 实例注册表：`register_instance/instance_from_id/unregister_instance`
-    （u64 键 ↔ `Arc<RefBox<Instance>>`；进程级存活，对齐 C++ 工厂
-    持有；节点经 [`quercusnode::nodes::plugin::PluginInstanceHandle`]
-    持键）。
-  - `register_plugin_nodes()`：遍历宿主插件缓存，filter 上下文优先
-    （否则首个），经 `Factory::register_dynamic` 注册动态节点条目
-    （已存在 id 跳过，对齐 C++ existing_ids）。返回新注册 id 列表。
-  - 参数翻译 `build_core`：15 类 OFX 参数 → quercusnode 输入（类型表、
-    默认值缓存、颜色语义启发式、combo ChoiceOrder 排序、secret→
-    hidden、ui_group/ui_page、min/max/tooltip、clip→纹理输入、
-    effect_input 选择），逐条对齐 engine/node/plugins/plugin.cpp。
-  - `install_render_executor()`：把 render_driver 装进
-    `quercusrender::eval::set_plugin_executor`（依赖反转），duplicator
-    装进 `quercusnode::nodes::plugin::set_plugin_duplicator`。
-  - `set_project_extent(w,h)`：normalised 坐标默认值换算基准。
-- **`gl_bridge.rs`（方案 B 落地）**：`texture_id` 桩的 GL 互操作评估
-  结论——方案 A（wgpu-hal GL 互操作）在 macOS 不可行（Metal 后端无
-  GL 命名空间）；**方案 B（独立离屏 GL 上下文 + 回读）已落地**：
-  macOS CGL 离屏上下文（进程级共享、`acquire()` 串行 + current）、
-  输出 GL 纹理/FBO 挂载、glReadPixels 回读装帧（垂直翻转、格式转
-  换）、输入 clip 真实 GL 纹理上传。use_opengl 决策与 GL suite 的
-  OpenGLTextureIndex 接通真实 GL 名。Linux（EGL）/Windows（WGL）
-  预留 cfg stub。验证：单元测试（clear → 回读断言）+ 端到端
-  （GL 测试插件真实渲染）经 `QUERCUS_GPU_TESTS` 门。
-- **`progress.rs`**：新增 `UiProgressReporter` trait +
-  `ReporterFactory` + `set_reporter_factory`（app 注入点）。render
-  未装 C 回调时装静默报告器，progressStart 携 (label,message) 经
-  工厂现造 UI 报告器；update 返回 false 即取消。
-- **`suites/timeline.rs`**：新增 `ViewerTimeInfo` +
-  `ActiveViewerProvider` + `set_active_viewer_provider`（app 注入
-  点）。timeline suite 的 getTime/getTimeBounds 在渲染上下文缺失时
-  回退活动 viewer 时间源。
-- **`render_driver.rs`**：`apply_param_overrides` 增 Double 标量
-  NaN/Inf 清洗（回退默认并告警）+ Min/Max 钳制（对齐
-  pluginrenderer.cpp:155-177）。
-- **`clip.rs`**：`fetch_image` 支持 U8/U16/F16 输入帧归一化转 F32
-  （对齐 oliveclip.cpp setInputTexture 的格式转换路径）；转换中的
-  NaN/Inf 清洗为 0（oliveclip.cpp copy_pixels 的 scrub）；新增
-  `f16_to_f32` 手写位转换。
-- **quercusrender `eval.rs`**：`JobSpec::Plugin` 扩为携带
-  instance/time/effect_input_id/inputs/values；新增
-  `PluginExecutor` + `set_plugin_executor` 依赖反转槽；
-  `process_plugin_job` 经执行器出帧，失败回退紫帧 (1,0,1,1)；
-  `RenderEvalHooks` 实现 `RenderHooks::resolve` 解
-  `PluginJobPayload` 盒并执行。
-- **quercusnode**：`factory.rs` 动态注册面（`register_dynamic`/
-  `dynamic_entries`/`create_any` 等）；`nodes/plugin.rs` 重写为
-  PluginJobPayload 值模型 + duplicator 槽；`traverser.rs` 纹理输入
-  直通；`handle.rs` `get_checked<T>` 按 TypeId 判别盒类型。
+- **`node_factory.rs` (new)**:
+  - Instance registry: `register_instance/instance_from_id/unregister_instance`
+    (u64 key ↔ `Arc<RefBox<Instance>>`; process-level lifetime, aligned with
+    C++ factory ownership; nodes hold the key via
+    [`quercusnode::nodes::plugin::PluginInstanceHandle`]).
+  - `register_plugin_nodes()`: iterate the host plugin cache, filter context
+    preferred (otherwise first), register dynamic node entries via
+    `Factory::register_dynamic` (skip existing ids, aligned with C++
+    existing_ids). Returns the list of newly registered ids.
+  - Parameter translation `build_core`: 15 kinds of OFX parameters →
+    quercusnode inputs (type table, default value cache, color semantics
+    heuristic, combo ChoiceOrder sorting, secret→hidden, ui_group/ui_page,
+    min/max/tooltip, clip→texture input, effect_input selection), aligned
+    item by item with engine/node/plugins/plugin.cpp.
+  - `install_render_executor()`: install render_driver into
+    `quercusrender::eval::set_plugin_executor` (dependency inversion), and
+    duplicator into `quercusnode::nodes::plugin::set_plugin_duplicator`.
+  - `set_project_extent(w,h)`: basis for converting normalized coordinate
+    defaults.
+- **`gl_bridge.rs` (approach B landed)**: conclusion of the GL interop
+  evaluation for the `texture_id` stub — approach A (wgpu-hal GL interop) is
+  infeasible on macOS (the Metal backend has no GL namespace); **approach B
+  (independent offscreen GL context + read-back) has landed**: macOS CGL
+  offscreen context (process-level shared, `acquire()` serialized + current),
+  output GL texture/FBO attachment, glReadPixels read-back frame assembly
+  (vertical flip, format conversion), real GL texture upload for input clips.
+  The use_opengl decision and the GL suite's OpenGLTextureIndex are wired to
+  real GL names. Linux (EGL)/Windows (WGL) reserved cfg stubs. Verification:
+  unit tests (clear → read-back assertion) + end to end (GL test plugin real
+  rendering) behind the `QUERCUS_GPU_TESTS` gate.
+- **`progress.rs`**: new `UiProgressReporter` trait +
+  `ReporterFactory` + `set_reporter_factory` (app injection point). When no
+  C callback is installed at render time, a silent reporter is used;
+  progressStart carries (label,message) and creates a UI reporter on the fly
+  through the factory; update returning false means cancel.
+- **`suites/timeline.rs`**: new `ViewerTimeInfo` +
+  `ActiveViewerProvider` + `set_active_viewer_provider` (app injection
+  point). The timeline suite's getTime/getTimeBounds fall back to the active
+  viewer time source when the render context is missing.
+- **`render_driver.rs`**: `apply_param_overrides` gains Double scalar
+  NaN/Inf scrubbing (falls back to default and warns) + Min/Max clamping
+  (aligned with pluginrenderer.cpp:155-177).
+- **`clip.rs`**: `fetch_image` supports normalizing U8/U16/F16 input frames
+  to F32 (aligned with the format conversion path of oliveclip.cpp
+  setInputTexture); NaN/Inf scrubbed to 0 during conversion (oliveclip.cpp
+  copy_pixels scrub); new hand-written `f16_to_f32` bit conversion.
+- **quercusrender `eval.rs`**: `JobSpec::Plugin` expanded to carry
+  instance/time/effect_input_id/inputs/values; new `PluginExecutor` +
+  `set_plugin_executor` dependency inversion slot; `process_plugin_job`
+  produces frames via the executor, falls back to a purple frame (1,0,1,1)
+  on failure; `RenderEvalHooks` implements `RenderHooks::resolve` to unwrap
+  the `PluginJobPayload` box and execute.
+- **quercusnode**: `factory.rs` dynamic registration surface
+  (`register_dynamic`/`dynamic_entries`/`create_any` etc.); `nodes/plugin.rs`
+  rewritten as the PluginJobPayload value model + duplicator slot;
+  `traverser.rs` texture inputs pass-through; `handle.rs` `get_checked<T>`
+  discriminates box types by TypeId.
 
-app 接线（阶段 6b，不在本 crate 范围）经这些公共入口接入：
-`node_factory::register_plugin_nodes`、
-`progress::set_reporter_factory`、
-`suites::timeline::set_active_viewer_provider`、
-`node_factory::set_project_extent`、
-`quercusnode::factory::Factory::global().dynamic_entries/create_any`。
+app wiring (stage 6b, out of this crate's scope) connects through these
+public entry points:
+`node_factory::register_plugin_nodes`,
+`progress::set_reporter_factory`,
+`suites::timeline::set_active_viewer_provider`,
+`node_factory::set_project_extent`,
+`quercusnode::factory::Factory::global().dynamic_entries/create_any`.
 
-## 测试
+## Tests
 
-运行（全量，含渲染像素路径的 quercusrender 测试桩）：
+Run (full, including the quercusrender test stubs for the render pixel path):
 
 ```sh
 cargo test --features test-stubs
-cargo tarpaulin --out stdout --features test-stubs   # 覆盖率门槛
+cargo tarpaulin --out stdout --features test-stubs   # coverage gate
 ```
 
-- 默认 `cargo test` 亦可：桥经 dlsym 解析 quercusrender/quercusnode/quercusundo
-  符号（缺失时渲染/回写边界给出可解释错误），桩相关用例不编译；
-- `--features test-stubs`：库内 quercusrender/quercusnode/quercusundo 桩
-  （`bridge::*::stub`），ffi/clip/param 的桥调用（含像素读写、
-  节点回写、undo 打包）全链路可跑——**覆盖率以该模式为准**
-  （M11 第 1 期实测 82.93% 行覆盖；第 2 期门槛 ≥80%，见 COVERAGE）；
-- 最小测试插件（cbits/quercus_test_plugin.c，四个入口：
+- Default `cargo test` also works: the bridge resolves quercusrender/quercusnode/
+  quercusundo symbols via dlsym (gives explainable errors at the render/
+  write-back boundary when missing), stub-related cases are not compiled;
+- `--features test-stubs`: in-library quercusrender/quercusnode/quercusundo
+  stubs (`bridge::*::stub`), all bridge calls in ffi/clip/param (including
+  pixel read/write, node write-back, undo packaging) are runnable end to end
+  — **coverage is measured in this mode** (M11 phase 1 measured 82.93% line
+  coverage; phase 2 gate ≥80%, see COVERAGE);
+- Minimal test plugin (cbits/quercus_test_plugin.c, four entries:
   org.quercus.test-plugin / org.quercus.test-plugin.gl /
-  org.quercus.test-plugin.identity / org.quercus.test-plugin.interact）由
-  build.rs 编译为共享库，
-  `common::test_plugin_dir` 运行时装配成 bundle；不可用时相关用例
-  skip；
-- 宿主单例无锁：触碰宿主面的用例经 `common::with_host` 串行化。
-- **系统级冒烟**：`bridge_test::system_misc_ofx_bundle_smoke` 在
-  `/Library/OFX/Plugins/Misc.ofx.bundle` 存在时扫描→describe→
-  create_instance→协商；本机 bundle 为 Natron 分支（describe 返回
-  MissingHostFeature）时 skip（README 已记录），兼容 bundle 的机器
-  照常断言。
-- **GL 用例策略**（`gl_render_test.rs`）：`test-stubs` 模式下桩 GL
-  渲染器（renderer_is_open_gl/texture_create/texture_id 等）模拟
-  GPU——suite 往返、GL render 路径（attach/detach 配对、插件经
-  message 上报纹理索引）、错误路径全链路可跑；默认模式（无
-  libquercusrender）断言优雅降级（GL suite 无上下文 →
-  MissingHostFeature、render 回退 CPU）。真实 GPU golden 为
-  `QUERCUS_GPU_TESTS` 门（`common::gpu_available`），CI 跳过。
-- **golden 用例**（`golden_test.rs`）因 M11 0 期基建（tests/ofx/ 的
-  快照与帧库）尚未生成而 `#[ignore]`（原因写在各用例 doc）；其中
-  CImg 全量冒烟另受本机 CImg bundle 的 Natron 分支句柄语义所阻
-  （详见用例注释），真实插件路径由 Misc 系统冒烟覆盖。
+  org.quercus.test-plugin.identity / org.quercus.test-plugin.interact) is
+  compiled by build.rs into a shared library, and
+  `common::test_plugin_dir` assembles it into a bundle at run time; related
+  cases skip when unavailable;
+- The host singleton is lock-free: cases that touch the host surface are
+  serialized via `common::with_host`.
+- **System-level smoke test**: `bridge_test::system_misc_ofx_bundle_smoke`
+  scans→describe→create_instance→negotiate when
+  `/Library/OFX/Plugins/Misc.ofx.bundle` exists; skips when the local bundle
+  is a Natron branch (describe returns MissingHostFeature) (already recorded
+  in README), machines with a compatible bundle assert as usual.
+- **GL test case strategy** (`gl_render_test.rs`): in `test-stubs` mode the
+  stub GL renderer (renderer_is_open_gl/texture_create/texture_id etc.)
+  simulates the GPU — suite round-trips, the GL render path (attach/detach
+  pairing, plugin reports texture index via message), and error paths are
+  all runnable end to end; default mode (no libquercusrender) asserts
+  graceful degradation (GL suite without context → MissingHostFeature,
+  render falls back to CPU). The real GPU golden is behind the
+  `QUERCUS_GPU_TESTS` gate (`common::gpu_available`), skipped in CI.
+- **golden cases** (`golden_test.rs`) are `#[ignore]` because M11 phase 0
+  infrastructure (the snapshot and frame library under tests/ofx/) has not
+  been generated yet (reason written in each case's doc); the CImg full
+  smoke test is additionally blocked by the Natron branch handle semantics
+  of the local CImg bundle (see the case comments); the real plugin path is
+  covered by the Misc system smoke test.
 
-TDD：测试声明与实现声明同步冻结（tests/，函数体 `todo!()`）：
+TDD: test declarations and implementation declarations are frozen together
+(tests/, function bodies `todo!()`):
 
-- `handle_test.rs` / `property_test.rs` — 基础设施契约（RefBox
-  容器、属性集语义、并发）。
-- `suites_test.rs` — 八张 suite 的 round-trip（经最小测试插件，
-  "插件视角"的 HostSupport 兼容性背书）。
-- `ffi_host_test.rs` / `ffi_instance_test.rs` — C ABI 出口契约
-  （每函数一正常一错误路径；两段式字符串边界）。
-- `lifecycle_test.rs` — 创建/销毁配对、重复扫描、渲染取消原子性、
-  256 次循环无泄漏、并发实例。
-- `negotiation_test.rs` — 协商重灾区专项（分量/位深矩阵、RoD/RoI、
-  isIdentity、field 透传、sequence 括号）。
-- `colour_test.rs` — ofxColour 属性族 + GetOutputColourspace 往返
-  （偏好采纳、交叉引用解析、输出写回；ACEScg 工作空间）。
-- `gl_render_test.rs` — GL suite 往返/错误路径/像素深度协商矩阵 +
-  GL render 路径端到端（无 GPU 优雅跳过策略见上）。
-- `interact_test.rs` — Interact 宿主：生命周期 + 事件调用面（插件侧
-  marker 逐条断言）、Escape 状态透传、实例销毁连带、draw 真实 GL 渲染
-  断言（`QUERCUS_GPU_TESTS` 门）。
-- `render_driver_test.rs` — render_job CPU 路径（序列括号、多输入、
-  参数覆盖、isIdentity 透传像素断言、无桩降级）。
-- `bridge_test.rs` — node/render/undo 三桥（`--features test-stubs`
-  全链路；默认模式走 dlsym 缺失的降级路径）+ Misc 系统冒烟。
-- `golden_test.rs` — 描述符快照 diff + CPU bit 级/GL 容差渲染
-  golden + F32+ACEScg 链路断言（0 期基建未落地，见上）。
-- `common/mod.rs` — 测试插件定位、golden 目录、GPU 门、skip 约定。
+- `handle_test.rs` / `property_test.rs` — infrastructure contract (RefBox
+  container, property set semantics, concurrency).
+- `suites_test.rs` — round-trip for the eight suites (via the minimal test
+  plugin, "plugin perspective" HostSupport compatibility endorsement).
+- `ffi_host_test.rs` / `ffi_instance_test.rs` — C ABI export contract (one
+  normal and one error path per function; two-part string boundaries).
+- `lifecycle_test.rs` — create/destroy pairing, repeated scans, render
+  cancellation atomicity, 256 iterations without leaks, concurrent instances.
+- `negotiation_test.rs` — the negotiation hard-hit area (component/bit-depth
+  matrix, RoD/RoI, isIdentity, field pass-through, sequence brackets).
+- `colour_test.rs` — ofxColour property family + GetOutputColourspace
+  round-trip (preference adoption, cross-reference resolution, output
+  write-back; ACEScg working space).
+- `gl_render_test.rs` — GL suite round-trip/error paths/pixel depth
+  negotiation matrix + GL render path end to end (graceful skip without GPU,
+  see above).
+- `interact_test.rs` — Interact host: lifecycle + event call surface
+  (item-by-item assertions on the plugin-side marker), Escape state
+  pass-through, instance teardown, draw real GL rendering assertions
+  (`QUERCUS_GPU_TESTS` gate).
+- `render_driver_test.rs` — render_job CPU path (sequence brackets, multiple
+  inputs, parameter overrides, isIdentity pass-through pixel assertions,
+  degradation without stubs).
+- `bridge_test.rs` — the node/render/undo three bridges
+  (`--features test-stubs` full chain; default mode takes the degraded path
+  of missing dlsym) + Misc system smoke test.
+- `golden_test.rs` — descriptor snapshot diff + CPU bit-exact/GL tolerance
+  render golden + F32+ACEScg chain assertions (phase 0 infrastructure not
+  landed, see above).
+- `common/mod.rs` — test plugin location, golden directory, GPU gate, skip
+  conventions.

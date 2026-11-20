@@ -37,7 +37,7 @@ const TEST_PLUGIN_ID: &str = "org.quercus.test-plugin";
 /// Scans and creates an instance; returns None when unavailable (skip).
 fn scan_and_create(id: &str) -> Option<Arc<RefBox<Instance>>> {
 	if common::test_plugin_scan_dir().is_none() {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return None;
 	}
 	let dir = common::test_plugin_scan_dir().unwrap();
@@ -65,7 +65,7 @@ fn host_declares_ocio_capability() {
 		host.props
 			.dimension("OfxImageEffectPropColourManagementAvailableConfigs"),
 		1,
-		"可用配置至少含 ofx-native-v1.5_aces-v1.3_ocio-v2.3"
+		"available configs must include ofx-native-v1.5_aces-v1.3_ocio-v2.3"
 	);
 	assert_eq!(
 		prop_str(&host.props, "OfxImageEffectPropOpenGLRenderSupported").as_deref(),
@@ -107,7 +107,7 @@ fn instance_and_clip_colourspace_props() {
 		assert_eq!(
 			prop_str(&source.props, "OfxImageClipPropColourspace").as_deref(),
 			Some("ACEScg"),
-			"输入 clip 色彩空间 = 工作空间"
+			"input clip colourspace = working space"
 		);
 		let output = inst
 			.value
@@ -119,7 +119,7 @@ fn instance_and_clip_colourspace_props() {
 			prop_str(&output.props, "OfxImageClipPropColourspace")
 				.map(|s| s.is_empty())
 				.unwrap_or(true),
-			"输出 clip 色彩空间在 GetOutputColourspace 前未设"
+			"output clip colourspace not set before GetOutputColourspace"
 		);
 	});
 }
@@ -136,8 +136,11 @@ fn get_output_colourspace_cross_reference() {
 		let cs = inst
 			.value
 			.get_output_colourspace(&[])
-			.expect("GetOutputColourspace 应成功");
-		assert_eq!(cs, "ACEScg", "交叉引用 OfxColourspace_Source → ACEScg");
+			.expect("GetOutputColourspace should succeed");
+		assert_eq!(
+			cs, "ACEScg",
+			"cross-reference OfxColourspace_Source -> ACEScg"
+		);
 		inst.value.set_output_colourspace(&cs);
 		let output = inst
 			.value
@@ -148,7 +151,7 @@ fn get_output_colourspace_cross_reference() {
 		assert_eq!(
 			prop_str(&output.props, "OfxImageClipPropColourspace").as_deref(),
 			Some("ACEScg"),
-			"输出 clip 已写回解析后的色彩空间"
+			"output clip has the resolved colourspace written back"
 		);
 	});
 }
@@ -164,8 +167,11 @@ fn get_output_colourspace_preferred() {
 		let cs = inst
 			.value
 			.get_output_colourspace(&["ACEScg".to_string(), "linear".to_string()])
-			.expect("GetOutputColourspace 应成功");
-		assert_eq!(cs, "ACEScg", "偏好列表第一个被采纳");
+			.expect("GetOutputColourspace should succeed");
+		assert_eq!(
+			cs, "ACEScg",
+			"first entry in the preference list is adopted"
+		);
 	});
 }
 
@@ -180,12 +186,12 @@ fn resolve_colourspace_edge_cases() {
 			inst.value
 				.resolve_colourspace("OfxColourspace_NoSuchClip".to_string()),
 			"OfxColourspace_NoSuchClip",
-			"未知 clip 引用保持原样"
+			"unknown clip reference is returned unchanged"
 		);
 		assert_eq!(
 			inst.value.resolve_colourspace("ACEScg".to_string()),
 			"ACEScg",
-			"非交叉引用原样返回"
+			"non-cross-reference is returned unchanged"
 		);
 	});
 }

@@ -2,24 +2,24 @@ use super::*;
 
 #[test]
 fn f16_to_f32_covers_special_values() {
-	// 常规值：1.0 = 0x3C00，-2.0 = 0xC000，0.5 = 0x3800。
+	// Regular values: 1.0 = 0x3C00, -2.0 = 0xC000, 0.5 = 0x3800.
 	assert_eq!(f16_to_f32(0x3C00), 1.0);
 	assert_eq!(f16_to_f32(0xC000), -2.0);
 	assert_eq!(f16_to_f32(0x3800), 0.5);
-	// 零与负零。
+	// Zero and negative zero.
 	assert_eq!(f16_to_f32(0x0000), 0.0);
 	assert_eq!(f16_to_f32(0x8000).to_bits(), (0.0f32).to_bits() | (1 << 31));
-	// 非规格数：最小正规格数 2^-14 ≈ 0.00006104；2^-24 是最小非
-	// 规格数之一。
+	// Subnormals: smallest positive normal is 2^-14 ≈ 0.00006104; 2^-24 is one of the
+	// smallest subnormals.
 	assert!((f16_to_f32(0x0400) - 2f32.powi(-14)).abs() < 1e-12);
 	assert!((f16_to_f32(0x0001) - 2f32.powi(-24)).abs() < 1e-12);
-	// Inf/NaN。
+	// Inf/NaN.
 	assert!(f16_to_f32(0x7C00).is_infinite() && f16_to_f32(0x7C00) > 0.0);
 	assert!(f16_to_f32(0xFC00).is_infinite() && f16_to_f32(0xFC00) < 0.0);
 	assert!(f16_to_f32(0x7E00).is_nan());
 }
 
-// ---- fetch_image / store_output_image / 协商矩阵 ----------------------
+// ---- fetch_image / store_output_image / negotiation matrix ----------------------
 
 fn cs(s: &str) -> std::ffi::CString {
 	std::ffi::CString::new(s).unwrap()
@@ -46,8 +46,8 @@ fn frame_with(
 ) -> crate::render::Frame {
 	let mut frame = crate::render::Frame::new();
 	frame.set_video_params(video_params(w, h, format as i32));
-	assert!(frame.allocate(), "测试帧应可分配");
-	assert_eq!(frame.data.len(), bytes.len(), "测试字节长度");
+	assert!(frame.allocate(), "test frame should be allocatable");
+	assert_eq!(frame.data.len(), bytes.len(), "test byte length");
 	frame.data.copy_from_slice(bytes);
 	frame
 }
@@ -189,7 +189,7 @@ fn fetch_image_rejects_region_and_unusable_input() {
 /// scrubbing.
 #[test]
 fn fetch_image_converts_all_input_depths() {
-	// U8：归一化到 [0,1]。
+	// U8: normalized to [0,1].
 	let c = test_clip("Source");
 	connect(
 		&c,
@@ -204,7 +204,7 @@ fn fetch_image_converts_all_input_depths() {
 	assert!((got[2] - 128.0 / 255.0).abs() < 1e-7);
 	assert!((got[3] - 64.0 / 255.0).abs() < 1e-7);
 
-	// U16。
+	// U16.
 	let c = test_clip("Source");
 	let mut bytes = Vec::new();
 	for v in [0u16, 65535, 32768, 1] {
@@ -220,7 +220,7 @@ fn fetch_image_converts_all_input_depths() {
 	assert!((got[2] - 32768.0 / 65535.0).abs() < 1e-7);
 	assert!((got[3] - 1.0 / 65535.0).abs() < 1e-7);
 
-	// F16：NaN/Inf 清洗为 0，普通值与 -0 保留。
+	// F16: NaN/Inf scrubbed to 0, ordinary values and -0 preserved.
 	let c = test_clip("Source");
 	let mut bytes = Vec::new();
 	for v in [0x3C00u16, 0x7E00, 0x7C00, 0x8000] {
@@ -232,11 +232,11 @@ fn fetch_image_converts_all_input_depths() {
 			.unwrap(),
 	);
 	assert_eq!(got[0], 1.0);
-	assert_eq!(got[1], 0.0, "F16 NaN 应清洗为 0");
-	assert_eq!(got[2], 0.0, "F16 Inf 应清洗为 0");
-	assert_eq!(got[3].to_bits(), 0x8000_0000, "-0 应保留");
+	assert_eq!(got[1], 0.0, "F16 NaN should be scrubbed to 0");
+	assert_eq!(got[2], 0.0, "F16 Inf should be scrubbed to 0");
+	assert_eq!(got[3].to_bits(), 0x8000_0000, "-0 should be preserved");
 
-	// F32：NaN/Inf 清洗为 0。
+	// F32: NaN/Inf scrubbed to 0.
 	let c = test_clip("Source");
 	let mut bytes = Vec::new();
 	for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.5] {
@@ -257,7 +257,7 @@ fn fetch_image_converts_all_input_depths() {
 #[test]
 fn fetch_image_rejects_unsupported_format() {
 	let c = test_clip("Source");
-	// U10 = 4 字节/通道打包格式；管线仅支持 U8/U16/F16/F32。
+	// U10 = packed 4 bytes/channel format; the pipeline supports only U8/U16/F16/F32.
 	connect(
 		&c,
 		frame_with(1, 1, quercus_core::PixelFormat::U10, &[0u8; 16]),
@@ -310,21 +310,21 @@ fn fetch_image_negotiated_depth() {
 fn store_output_image_cpu_paths() {
 	let image = f32_image(2, 2, 0.25);
 
-	// 未挂输出纹理 → NotFound。
+	// No output texture attached → NotFound.
 	let c = test_clip("Output");
 	assert!(matches!(
 		c.store_output_image(&image),
 		Err(crate::error::Error::NotFound)
 	));
 
-	// dummy 输出纹理 → NotFound。
+	// dummy output texture → NotFound.
 	c.set_output_texture(Some(crate::render::Texture::dummy()), 0.0);
 	assert!(matches!(
 		c.store_output_image(&image),
 		Err(crate::error::Error::NotFound)
 	));
 
-	// 非 F32 输出帧 → Failed。
+	// Non-F32 output frame → Failed.
 	let c = test_clip("Output");
 	c.set_output_texture(
 		Some(crate::render::Texture::wrap_frame(frame_with(
@@ -340,7 +340,7 @@ fn store_output_image_cpu_paths() {
 		Err(crate::error::Error::Failed(_))
 	));
 
-	// 尺寸不符 → Failed。
+	// Size mismatch → Failed.
 	let c = test_clip("Output");
 	c.set_output_texture(
 		Some(crate::render::Texture::wrap_frame(f32_frame(3, 1, 0.0))),
@@ -351,7 +351,7 @@ fn store_output_image_cpu_paths() {
 		Err(crate::error::Error::Failed(_))
 	));
 
-	// 成功：整帧拷贝回输出纹理。
+	// Success: the whole frame is copied back into the output texture.
 	let c = test_clip("Output");
 	c.set_output_texture(
 		Some(crate::render::Texture::wrap_frame(f32_frame(2, 2, 0.0))),
@@ -420,7 +420,7 @@ fn store_output_image_gpu_upload() {
 		assert_eq!(uploads[0].1.data.as_slice(), image.pixels());
 	}
 
-	// 上传失败 → Failed。
+	// Upload failure → Failed.
 	let ctx = std::sync::Arc::new(FakeGpu {
 		uploads: std::sync::Mutex::new(Vec::new()),
 		fail_upload: true,

@@ -125,7 +125,7 @@ fn edit_transaction_nesting_and_multi() {
 	let inst = make_instance(entry_ok, vec![]);
 	assert!(!inst.in_edit());
 
-	// 嵌套 begin：首次进入重置事务状态。
+	// Nested begin: the first entry resets the transaction state.
 	inst.edit_begin();
 	inst.edit_begin();
 	inst.submit_undo_command(UndoCommand::from_closures(|| {}, || {}), "one");
@@ -140,12 +140,12 @@ fn edit_transaction_nesting_and_multi() {
 	{
 		let e = inst.edit.lock().unwrap_or_else(|e| e.into_inner());
 		assert_eq!(e.multi.as_ref().expect("multi").multi_child_count(), 2);
-		assert_eq!(e.first_label, "one", "首条标签保持");
+		assert_eq!(e.first_label, "one", "first label preserved");
 	}
-	// 内层 end：仍在事务内，multi 保留。
+	// Inner end: still inside the transaction, the multi is kept.
 	inst.edit_end();
 	assert!(inst.in_edit());
-	// 外层 end：redo 并清空。
+	// Outer end: redo and clear.
 	inst.edit_end();
 	assert!(!inst.in_edit());
 	{
@@ -154,10 +154,10 @@ fn edit_transaction_nesting_and_multi() {
 		assert_eq!(e.param_count, 0);
 		assert!(e.first_label.is_empty());
 	}
-	// 事务外 end：depth 不越界。
+	// end outside a transaction: depth does not go out of bounds.
 	inst.edit_end();
 
-	// 新事务重新计数（首进入重置分支）。
+	// A new transaction counts afresh (the first entry takes the reset branch).
 	inst.edit_begin();
 	{
 		let e = inst.edit.lock().unwrap_or_else(|e| e.into_inner());
@@ -166,7 +166,7 @@ fn edit_transaction_nesting_and_multi() {
 	}
 	inst.edit_end();
 
-	// 事务外提交 → 立即 redo。
+	// Submit outside a transaction → redo immediately.
 	let ran = Arc::new(AtomicBool::new(false));
 	let flag = ran.clone();
 	inst.submit_undo_command(
@@ -210,14 +210,14 @@ unsafe extern "C" fn entry_prefs_wrong_types(
 #[test]
 fn clip_preferences_default_and_reply_default_paths() {
 	let inst = make_instance(entry_ok, vec![clip("Source"), clip("Output")]);
-	let prefs = inst.get_clip_preferences().expect("默认协商");
+	let prefs = inst.get_clip_preferences().expect("default negotiation");
 	assert_eq!(prefs.output_components, "OfxImageComponentRGBA");
 	assert_eq!(prefs.output_bit_depth, "OfxBitDepthFloat");
 	assert_eq!(prefs.pixel_aspect_ratio, 1.0);
-	// 插件未回写 → out args 的预置帧率 1.0。
+	// The plugin writes nothing back → the out args preset frame rate 1.0.
 	assert_eq!(prefs.frame_rate, 1.0);
 	assert_eq!(prefs.field, "");
-	// per-clip 回灌（分量/位深/PAR）。
+	// per-clip feed-back (components/bit depth/PAR).
 	let source = inst.clips.iter().find(|c| c.name == "Source").unwrap();
 	assert_eq!(
 		prop_string(&source.props, crate::image::K_IMAGE_EFFECT_PROP_COMPONENTS).as_deref(),
@@ -232,10 +232,10 @@ fn clip_preferences_default_and_reply_default_paths() {
 		Some(PropValue::Double(d)) if d == 1.0
 	));
 
-	// ReplyDefault 同样被接受。
+	// ReplyDefault is accepted as well.
 	let inst = make_instance(entry_default, vec![clip("Output")]);
 	assert!(inst.get_clip_preferences().is_ok());
-	// 失败状态 → Err。
+	// Failure status → Err.
 	let inst = make_instance(entry_err, vec![clip("Output")]);
 	assert!(inst.get_clip_preferences().is_err());
 }
@@ -243,7 +243,9 @@ fn clip_preferences_default_and_reply_default_paths() {
 #[test]
 fn clip_preferences_wrong_out_types_fall_back() {
 	let inst = make_instance(entry_prefs_wrong_types, vec![clip("Output")]);
-	let prefs = inst.get_clip_preferences().expect("类型不符应回退");
+	let prefs = inst
+		.get_clip_preferences()
+		.expect("wrong types should fall back");
 	assert_eq!(prefs.output_components, "OfxImageComponentRGBA");
 	assert_eq!(prefs.output_bit_depth, "OfxBitDepthFloat");
 	assert_eq!(prefs.pixel_aspect_ratio, 1.0);
@@ -318,7 +320,8 @@ fn region_of_definition_and_roi_paths() {
 		(rois[0].x1, rois[0].y1, rois[0].x2, rois[0].y2),
 		(1.0, 2.0, 3.0, 4.0)
 	);
-	// 插件未回写的 clip 保持 out args 的预置零值（per-clip 预定义）。
+	// A clip the plugin does not write back keeps the preset zero values from
+	// the out args (per-clip predefinition).
 	assert_eq!(
 		(rois[1].x1, rois[1].y1, rois[1].x2, rois[1].y2),
 		(0.0, 0.0, 0.0, 0.0)
@@ -370,16 +373,16 @@ fn is_identity_paths() {
 	assert_eq!(time, 2.5);
 	assert_eq!(name, "Source");
 
-	// 透传时间非 Double → 回退输入时间。
+	// Pass-through time is not a Double → falls back to the input time.
 	let inst = make_instance(entry_identity_time_int, vec![]);
 	let (time, name) = inst.is_identity(1.25).unwrap().expect("identity");
 	assert_eq!(time, 1.25);
 	assert_eq!(name, "Source");
 
-	// 空 identity → None。
+	// Empty identity → None.
 	let inst = make_instance(entry_ok, vec![]);
 	assert!(inst.is_identity(0.0).unwrap().is_none());
-	// 插件失败 → 视为非透传（不致命）。
+	// Plugin failure → treated as not identity (not fatal).
 	let inst = make_instance(entry_err, vec![]);
 	assert!(inst.is_identity(0.0).unwrap().is_none());
 }
@@ -429,32 +432,32 @@ fn fake_renderer() -> crate::render::Renderer {
 
 #[test]
 fn render_paths_and_progress_reporters() {
-	// facade 取消标记 → 入口即短路。
+	// facade cancel flag → the entry short-circuits immediately.
 	let inst = make_instance(entry_err, vec![]);
 	inst.cancel
 		.store(true, std::sync::atomic::Ordering::Relaxed);
 	assert!(inst.render(0.0, scale(), window(), out_image()).is_err());
 
-	// facade 进度回调分支。
+	// facade progress-callback branch.
 	let inst = make_instance(entry_ok, vec![]);
 	*inst.progress_cb.lock().unwrap_or_else(|e| e.into_inner()) = Some((progress_cb, 0));
 	inst.render(0.0, scale(), window(), out_image())
-		.expect("带回调的 render");
+		.expect("render with callback");
 
-	// UI 工厂分支（无回调 + factory 已注册）。
+	// UI factory branch (no callback + factory registered).
 	static FACTORY_LOCK: Mutex<()> = Mutex::new(());
 	let _g = FACTORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	crate::progress::set_reporter_factory(Some(Arc::new(|_, _| Box::new(NoopUi))));
 	let inst = make_instance(entry_ok, vec![]);
 	let result = inst.render(0.0, scale(), window(), out_image());
 	crate::progress::set_reporter_factory(None);
-	result.expect("带 UI 工厂的 render");
+	result.expect("render with UI factory");
 
-	// 插件 render 失败 → Err。
+	// Plugin render fails → Err.
 	let inst = make_instance(entry_err, vec![]);
 	assert!(inst.render(0.0, scale(), window(), out_image()).is_err());
 
-	// in-args：GL 开关两态。
+	// in-args: both GL switch states.
 	let gl = Instance::render_in_args(0.0, scale(), window(), true);
 	assert!(matches!(
 		gl.get(crate::host::PROP_GL_ENABLED, 0),
@@ -492,7 +495,7 @@ unsafe extern "C" fn entry_gl_render_fails(
 
 #[test]
 fn render_gl_paths() {
-	// 成功：attach → render → detach；位深列表空 → 默认 F32。
+	// Success: attach → render → detach; empty bit-depth list → default F32.
 	let inst = make_instance(entry_ok, vec![]);
 	inst.render_gl(
 		0.0,
@@ -503,9 +506,9 @@ fn render_gl_paths() {
 		Some(7),
 	)
 	.expect("GL render");
-	assert!(crate::suites::gl_ctx().is_none(), "GL 上下文已清理");
+	assert!(crate::suites::gl_ctx().is_none(), "GL context cleaned up");
 
-	// 插件声明 F32 位深列表 → pick 命中分支。
+	// Plugin declares an F32 bit-depth list → pick takes the hit branch.
 	let inst = make_instance(entry_ok, vec![]);
 	inst.plugin.descriptor.props.define(
 		crate::host::PROP_GL_PIXEL_DEPTH,
@@ -519,9 +522,9 @@ fn render_gl_paths() {
 		crate::render::Texture::dummy(),
 		None,
 	)
-	.expect("声明位深的 GL render");
+	.expect("GL render with declared bit depth");
 
-	// attach 失败 → 清理 + Err。
+	// attach fails → cleanup + Err.
 	let inst = make_instance(entry_gl_attach_fails, vec![]);
 	assert!(inst
 		.render_gl(
@@ -535,7 +538,7 @@ fn render_gl_paths() {
 		.is_err());
 	assert!(crate::suites::gl_ctx().is_none());
 
-	// render 失败 → detach 仍发 + Err。
+	// render fails → detach is still sent + Err.
 	let inst = make_instance(entry_gl_render_fails, vec![]);
 	assert!(inst
 		.render_gl(
@@ -548,7 +551,7 @@ fn render_gl_paths() {
 		)
 		.is_err());
 
-	// 取消 → 入口即短路。
+	// Cancel → the entry short-circuits immediately.
 	let inst = make_instance(entry_ok, vec![]);
 	inst.cancel
 		.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -613,7 +616,7 @@ unsafe extern "C" fn entry_colourspace_int(
 
 #[test]
 fn output_colourspace_paths() {
-	// OK + 直值。
+	// OK + a direct value.
 	let inst = make_instance(
 		entry_colourspace_value,
 		vec![clip("Source"), clip("Output")],
@@ -622,7 +625,7 @@ fn output_colourspace_paths() {
 		inst.get_output_colourspace(&["sRGB".to_string()]).unwrap(),
 		"ACEScg"
 	);
-	// 写回 Output clip。
+	// Write back to the Output clip.
 	inst.set_output_colourspace("sRGB");
 	assert_eq!(
 		prop_string(
@@ -638,14 +641,15 @@ fn output_colourspace_paths() {
 		Some("sRGB")
 	);
 
-	// 交叉引用解析为所引 clip 的实际色彩空间。
+	// A cross-reference resolves to the referenced clip's actual colour space.
 	let inst = make_instance(
 		entry_colourspace_cross,
 		vec![clip("Source"), clip("Output")],
 	);
 	let expected = prop_string(&inst.clips[0].props, crate::host::PROP_CLIP_COLOURSPACE).unwrap();
 	assert_eq!(inst.get_output_colourspace(&[]).unwrap(), expected);
-	// 所引 clip 的色彩空间类型不符 → 原样返回引用串。
+	// The referenced clip's colour-space type mismatches → the reference string
+	// is returned unchanged.
 	inst.clips[0]
 		.props
 		.set_one(crate::host::PROP_CLIP_COLOURSPACE, PropValue::Int(1));
@@ -653,38 +657,38 @@ fn output_colourspace_paths() {
 		inst.get_output_colourspace(&[]).unwrap(),
 		"OfxColourspace_Source"
 	);
-	// 查无引用 clip / 非引用原样返回。
+	// Unknown referenced clip / non-reference returned unchanged.
 	assert_eq!(
 		inst.resolve_colourspace("OfxColourspace_Nope".into()),
 		"OfxColourspace_Nope"
 	);
 	assert_eq!(inst.resolve_colourspace("sRGB".into()), "sRGB");
 
-	// OK 但空值 → Err；OK 但非 String → Err。
+	// OK but empty value → Err; OK but not a String → Err.
 	let inst = make_instance(entry_ok, vec![clip("Output")]);
 	assert!(inst.get_output_colourspace(&[]).is_err());
 	let inst = make_instance(entry_colourspace_int, vec![clip("Output")]);
 	assert!(inst.get_output_colourspace(&[]).is_err());
 
-	// ReplyDefault：第一个输入 clip 的色彩空间。
+	// ReplyDefault: the first input clip's colour space.
 	let inst = make_instance(entry_default, vec![clip("Source"), clip("Output")]);
 	let expected = prop_string(&inst.clips[0].props, crate::host::PROP_CLIP_COLOURSPACE).unwrap();
 	assert_eq!(inst.get_output_colourspace(&[]).unwrap(), expected);
-	// 无输入 clip → 空串。
+	// No input clip → empty string.
 	let inst = make_instance(entry_default, vec![clip("Output")]);
 	assert_eq!(inst.get_output_colourspace(&[]).unwrap(), "");
-	// 输入 clip 无 colourspace 属性 → 空串。
+	// The input clip has no colourspace property → empty string.
 	let inst = make_instance(entry_default, vec![clip("Source")]);
 	inst.clips[0]
 		.props
 		.remove(crate::host::PROP_CLIP_COLOURSPACE);
 	assert_eq!(inst.get_output_colourspace(&[]).unwrap(), "");
 
-	// 其它状态码 → Err。
+	// Any other status code → Err.
 	let inst = make_instance(entry_err, vec![clip("Output")]);
 	assert!(inst.get_output_colourspace(&[]).is_err());
 
-	// 无 Output clip → set_output_colourspace no-op。
+	// No Output clip → set_output_colourspace is a no-op.
 	let inst = make_instance(entry_ok, vec![clip("Source")]);
 	inst.set_output_colourspace("x");
 }
@@ -740,12 +744,12 @@ fn sequence_render_paths() {
 		.unwrap_or_else(|e| e.into_inner())
 		.is_none());
 
-	// GL 变体（in args 带 OpenGLEnabled）。
+	// GL variant (in args carry OpenGLEnabled).
 	let inst = make_instance(entry_ok, vec![]);
 	inst.begin_sequence_render_gl(range).expect("gl begin");
 	inst.end_sequence_render_gl(range).expect("gl end");
 
-	// 失败状态 → Err（end 仍清 range）。
+	// Failure status → Err (end still clears the range).
 	let inst = make_instance(entry_begin_fails, vec![]);
 	assert!(inst.begin_sequence_render(range).is_err());
 	let inst = make_instance(entry_end_fails, vec![]);
@@ -756,7 +760,7 @@ fn sequence_render_paths() {
 		.unwrap_or_else(|e| e.into_inner())
 		.is_none());
 
-	// in-args：GL 开关两态。
+	// in-args: both GL switch states.
 	let gl = Instance::sequence_in_args(range, true);
 	assert!(matches!(
 		gl.get(crate::host::PROP_GL_ENABLED, 0),
@@ -827,23 +831,25 @@ unsafe extern "C" fn overlay_default(
 
 #[test]
 fn new_interact_and_describe_paths() {
-	// 未创建 → interact None / describe BadHandle。
+	// Not created → interact None / describe BadHandle.
 	let inst = make_instance(entry_ok, vec![]);
 	assert!(inst.interact().is_none());
 	assert_eq!(inst.describe_interact(), status::ERR_BAD_HANDLE);
 
-	// ReplyDefault 且未声明 overlay → 无 interact。
+	// ReplyDefault with no overlay declared → no interact.
 	let inst = make_instance(entry_default, vec![]);
 	assert!(inst.new_interact().is_none());
 
-	// main entry 接受 NewInteract → 创建；describe 走 main entry。
+	// The main entry accepts NewInteract → creates; describe goes through the
+	// main entry.
 	let inst = make_instance(entry_ok, vec![]);
 	let interact = inst.new_interact().expect("new_interact");
 	assert_eq!(inst.describe_interact(), status::OK);
 	assert!(inst.interact().is_some());
 	assert_eq!(Arc::strong_count(&interact), 2);
 
-	// 声明 overlay 入口 + ReplyDefault → 仍创建（官方 describe/create 序列）。
+	// Overlay entry declared + ReplyDefault → still creates (official
+	// describe/create sequence).
 	let inst = make_instance(overlay_default, vec![]);
 	inst.plugin.descriptor.props.set_one(
 		crate::host::PROP_OVERLAY_INTERACT_V2,
