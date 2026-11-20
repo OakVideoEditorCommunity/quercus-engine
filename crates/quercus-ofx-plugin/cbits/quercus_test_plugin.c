@@ -21,11 +21,12 @@
  * 运行时装配成 quercus-test-plugin.ofx.bundle 供 host 扫描）。
  *
  * filter 上下文：
- *  - 参数：gain（Double，默认 0）
+ *  - 参数：gain（Double，默认 0）、animatedGain（Double，默认 0，
+ *    animates=1，display -2..2；render 在 action time 读取）
  *  - clip：Source（输入，RGBA）、Output
  *  - describe/describeInContext 建参数与 clip；
  *  - getClipPreferences：全链路 F32+RGBA、帧率 24；
- *  - render：把输出图像填成常量 0.5（RGBA float），alpha=1；
+ *  - render：把输出图像填成 0.5 + animatedGain（RGBA float），alpha=1；
  *  - getRoD：project size；getRoI：原样返回 region；
  *  - isIdentity：不设 → 非透传；
  *  - begin/endSequenceRender：记日志（状态码 OK）。
@@ -243,6 +244,15 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
         g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMax, 0, max);
     }
 
+    st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypeDouble, "animatedGain", &paramProps);
+    if (st != kOfxStatOK)
+        return st;
+    propSetString(paramProps, kOfxPropLabel, 0, "Animated Gain");
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDefault, 0, 0.0);
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMin, 0, -2.0);
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMax, 0, 2.0);
+    g_propSuite->propSetInt(paramProps, kOfxParamPropAnimates, 0, 1);
+
     st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypeChoice, "mode", &paramProps);
     if (st != kOfxStatOK)
         return st;
@@ -335,6 +345,17 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     if (st != kOfxStatOK)
         return st;
 
+    /* animatedGain：在 action time 经参数套件读取。 */
+    OfxParamHandle p = NULL;
+    st = g_paramSuite->paramGetHandle((OfxParamSetHandle)inst, "animatedGain", &p, NULL);
+    if (st != kOfxStatOK)
+        return st;
+    double v = 0.0;
+    st = g_paramSuite->paramGetValueAtTime(p, time, &v);
+    if (st != kOfxStatOK)
+        return st;
+    const float level = (float)(0.5 + v);
+
     OfxPropertySetHandle image = NULL;
     st = g_imageEffectSuite->clipGetImage(clip, time, NULL, &image);
     if (st != kOfxStatOK)
@@ -360,13 +381,13 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     int w = bounds[2] - bounds[0];
     int h = bounds[3] - bounds[1];
     if (data && w > 0 && h > 0) {
-        /* 常量 0.5（RGBA float）；alpha=1。 */
+        /* 常量 0.5 + animatedGain（RGBA float）；alpha=1。 */
         for (int y = 0; y < h; y++) {
             float *row = (float *)((char *)data + (size_t)y * (size_t)rowBytes);
             for (int x = 0; x < w; x++) {
-                row[x * 4 + 0] = 0.5f;
-                row[x * 4 + 1] = 0.5f;
-                row[x * 4 + 2] = 0.5f;
+                row[x * 4 + 0] = level;
+                row[x * 4 + 1] = level;
+                row[x * 4 + 2] = level;
                 row[x * 4 + 3] = 1.0f;
             }
         }
