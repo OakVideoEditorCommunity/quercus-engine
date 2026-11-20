@@ -436,7 +436,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle);
-	assert_eq!(cache.count(), 5, "测试插件导出 5 个效果");
+	assert_eq!(cache.count(), 6, "测试插件导出 6 个效果");
 	assert!(cache.find("org.quercus.test-plugin").is_some());
 	assert_eq!(
 		cache
@@ -449,7 +449,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 
 	// 同一 bundle 二次加载 → 路径去重（直接 dlclose 返回）。
 	cache.load_bundle(&bundle);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	assert_eq!(
 		cache
 			.binaries
@@ -479,10 +479,10 @@ fn load_bundle_ignores_duplicate_plugin_identifiers() {
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle1);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	// 第二个 bundle 的 identifier 全部重复 → 忽略，但二进制登记两份。
 	cache.load_bundle(&bundle2);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	assert_eq!(
 		cache
 			.binaries

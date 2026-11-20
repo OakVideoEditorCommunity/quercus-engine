@@ -872,6 +872,128 @@ static OfxStatus mainEntryInteractEffect(const char *action, const void *handle,
     return mainEntry(action, handle, inArgs, outArgs);
 }
 
+/* ---------- mask 变体：可选 mask clip fixture ----------
+ *
+ * filter 上下文，clip：Source、Mask（OfxImageClipPropOptional=1 且
+ * OfxImageClipPropIsMask=1）、Output。确定性行为（文档化契约）：
+ *  - Mask 已连接（OfxImageClipPropConnected=1）：输出 RGB = Source RGB
+ *    × Mask 红通道，alpha = Source alpha；
+ *  - Mask 未连接：Source 原样透传（输出 == Source）。
+ * 其余 action 与 CPU 插件相同。 */
+static OfxStatus actionDescribeMask(const void *handle)
+{
+    OfxStatus st = actionDescribe(handle, 0);
+    if (st != kOfxStatOK)
+        return st;
+
+    const char *comps[] = { kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha };
+    OfxPropertySetHandle clipProps = NULL;
+    st = g_imageEffectSuite->clipDefine((OfxImageEffectHandle)handle, "Mask", &clipProps);
+    if (st != kOfxStatOK)
+        return st;
+    propSetStringN(clipProps, kOfxImageEffectPropSupportedComponents, 3, comps);
+    propSetString(clipProps, kOfxPropLabel, 0, "Mask");
+    g_propSuite->propSetInt(clipProps, kOfxImageClipPropOptional, 0, 1);
+    g_propSuite->propSetInt(clipProps, kOfxImageClipPropIsMask, 0, 1);
+    return kOfxStatOK;
+}
+
+/* 取 clip 的当前图像基址/行跨度/边界；失败返回非 OK。 */
+static OfxStatus getClipPixels(OfxImageClipHandle clip, double time, OfxPropertySetHandle *image,
+                               float **data, int *rowBytes, int bounds[4])
+{
+    void *ptr = NULL;
+    OfxStatus st = g_imageEffectSuite->clipGetImage(clip, time, NULL, image);
+    if (st != kOfxStatOK)
+        return st;
+    propGetPointer(*image, kOfxImagePropData, 0, &ptr);
+    propGetInt(*image, kOfxImagePropRowBytes, 0, rowBytes);
+    propGetIntN(*image, kOfxImagePropBounds, 4, bounds);
+    *data = (float *)ptr;
+    return kOfxStatOK;
+}
+
+static OfxStatus actionRenderMask(OfxImageEffectHandle inst, OfxPropertySetHandle inArgs)
+{
+    double time = 0.0;
+    propGetDouble(inArgs, kOfxPropTime, 0, &time);
+
+    OfxImageClipHandle outClip = NULL, srcClip = NULL, maskClip = NULL;
+    OfxPropertySetHandle outProps = NULL, srcProps = NULL, maskProps = NULL;
+    OfxStatus st = g_imageEffectSuite->clipGetHandle(inst, "Output", &outClip, &outProps);
+    if (st != kOfxStatOK)
+        return st;
+    st = g_imageEffectSuite->clipGetHandle(inst, "Source", &srcClip, &srcProps);
+    if (st != kOfxStatOK)
+        return st;
+    st = g_imageEffectSuite->clipGetHandle(inst, "Mask", &maskClip, &maskProps);
+    if (st != kOfxStatOK)
+        return st;
+
+    int maskConnected = 0;
+    propGetInt(maskProps, kOfxImageClipPropConnected, 0, &maskConnected);
+
+    OfxPropertySetHandle outImg = NULL, srcImg = NULL, maskImg = NULL;
+    float *out = NULL, *src = NULL, *mask = NULL;
+    int outRow = 0, srcRow = 0, maskRow = 0;
+    int outB[4] = { 0, 0, 0, 0 }, srcB[4] = { 0, 0, 0, 0 }, maskB[4] = { 0, 0, 0, 0 };
+
+    st = getClipPixels(outClip, time, &outImg, &out, &outRow, outB);
+    if (st != kOfxStatOK)
+        return st;
+    st = getClipPixels(srcClip, time, &srcImg, &src, &srcRow, srcB);
+    if (st == kOfxStatOK && maskConnected) {
+        st = getClipPixels(maskClip, time, &maskImg, &mask, &maskRow, maskB);
+    }
+    if (st == kOfxStatOK && out && src) {
+        int w = outB[2] - outB[0];
+        int h = outB[3] - outB[1];
+        int sw = srcB[2] - srcB[0];
+        int sh = srcB[3] - srcB[1];
+        if (sw < w) w = sw;
+        if (sh < h) h = sh;
+        if (mask) {
+            int mw = maskB[2] - maskB[0];
+            int mh = maskB[3] - maskB[1];
+            if (mw < w) w = mw;
+            if (mh < h) h = mh;
+        }
+        for (int y = 0; y < h; y++) {
+            float *orow = (float *)((char *)out + (size_t)y * (size_t)outRow);
+            const float *srow = (const float *)((const char *)src + (size_t)y * (size_t)srcRow);
+            const float *mrow =
+                mask ? (const float *)((const char *)mask + (size_t)y * (size_t)maskRow) : NULL;
+            for (int x = 0; x < w; x++) {
+                float k = mrow ? mrow[x * 4 + 0] : 1.0f;
+                orow[x * 4 + 0] = srow[x * 4 + 0] * k;
+                orow[x * 4 + 1] = srow[x * 4 + 1] * k;
+                orow[x * 4 + 2] = srow[x * 4 + 2] * k;
+                orow[x * 4 + 3] = srow[x * 4 + 3];
+            }
+        }
+    }
+
+    if (maskImg)
+        g_imageEffectSuite->clipReleaseImage(maskImg);
+    if (srcImg)
+        g_imageEffectSuite->clipReleaseImage(srcImg);
+    g_imageEffectSuite->clipReleaseImage(outImg);
+    return st;
+}
+
+static OfxStatus mainEntryMask(const char *action, const void *handle,
+                               OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
+{
+    if (strcmp(action, kOfxActionDescribe) == 0 ||
+        strcmp(action, kOfxImageEffectActionDescribeInContext) == 0) {
+        return actionDescribeMask(handle);
+    }
+    if (strcmp(action, kOfxImageEffectActionRender) == 0) {
+        return actionRenderMask((OfxImageEffectHandle)handle, inArgs);
+    }
+    return mainEntry(action, handle, inArgs, outArgs);
+}
+
 /* ---------- 导出 ---------- */
 
 static const OfxPlugin test_plugin = {
@@ -925,9 +1047,20 @@ static const OfxPlugin test_plugin_slow = {
     /* mainEntry */ mainEntrySlow,
 };
 
+/* 可选 mask clip fixture（Resolve 21 适用性报告：可选 OFX mask 输入）。 */
+static const OfxPlugin test_plugin_mask = {
+    /* pluginApi */ kOfxImageEffectPluginApi,
+    /* apiVersion */ kOfxImageEffectPluginApiVersion,
+    /* pluginIdentifier */ "org.quercus.test-plugin.mask",
+    /* pluginVersionMajor */ 1,
+    /* pluginVersionMinor */ 0,
+    /* setHost */ setHost,
+    /* mainEntry */ mainEntryMask,
+};
+
 OfxExport int OfxGetNumberOfPlugins(void)
 {
-    return 5;
+    return 6;
 }
 
 OfxExport OfxPlugin *OfxGetPlugin(int nth)
@@ -942,5 +1075,7 @@ OfxExport OfxPlugin *OfxGetPlugin(int nth)
         return (OfxPlugin *)&test_plugin_interact;
     if (nth == 4)
         return (OfxPlugin *)&test_plugin_slow;
+    if (nth == 5)
+        return (OfxPlugin *)&test_plugin_mask;
     return NULL;
 }
