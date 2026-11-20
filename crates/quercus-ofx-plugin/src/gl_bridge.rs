@@ -96,6 +96,7 @@
 
 use crate::error;
 use quercus_core::backend;
+use std::env;
 use std::sync::Arc;
 
 use crate::image::Image;
