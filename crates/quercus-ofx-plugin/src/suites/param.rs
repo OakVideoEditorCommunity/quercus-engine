@@ -101,7 +101,7 @@ pub struct ParameterSuiteV1 {
 	pub param_edit_end: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
 
-// ---- 句柄解析 -----------------------------------------------------------
+// ---- handle resolution --------------------------------------------------
 
 /// param-set handle: at describe time this is the effect descriptor, at
 /// instance time the instance (getParamSet returns the same handle as the
@@ -130,7 +130,7 @@ fn resolve_param_set(handle: *mut c_void) -> Result<ParamSetRef<'static>, c_int>
 	if handle.is_null() {
 		return Err(status::ERR_BAD_HANDLE);
 	}
-	// 两种对象 props 均在偏移 0（句柄约定）。
+	// props of both object kinds are at offset 0 (handle convention).
 	unsafe {
 		match tag::kind(handle) {
 			tag::DESCRIPTOR => Ok(ParamSetRef::Descriptor(
@@ -211,7 +211,7 @@ fn caught(f: impl FnOnce() -> Result<(), c_int>) -> c_int {
 	code
 }
 
-// ---- 变长参数实现（C shim 转发）----------------------------------------
+// ---- variadic parameter implementation (C shim forwarding) --------------
 
 impl ParamKind {
 	/// Convert the integer type tag passed in by the C shim into [`ParamKind`].
@@ -320,7 +320,7 @@ fn write_value(v: &ParamValue, kind: ParamKind, out: *mut c_void) -> Result<(), 
 				_ => err(),
 			},
 			ParamKind::Str | ParamKind::StrChoice => {
-				// 字符串走 ofx_param_get_string_impl（内驻指针）。
+				// Strings go through ofx_param_get_string_impl (interior pointer).
 				err()
 			}
 		}
@@ -419,7 +419,7 @@ pub(crate) fn notify_changed(param_props: usize, name: &str) {
 		.get(&param_props)
 		.copied();
 	if let Some(inst_addr) = owner {
-		// instance 的 props 在偏移 0（句柄约定）。
+		// instance props are at offset 0 (handle convention).
 		let inst = unsafe { &*(inst_addr as *const Instance) };
 		crate::param::notify_instance_changed(inst, name, ChangeReason::PluginEdited);
 	}
@@ -630,13 +630,13 @@ pub unsafe extern "C" fn ofx_param_set_string_impl(
 /// stay valid for the duration of the call.
 pub unsafe extern "C" fn ofx_param_missing_feature_impl(param: *mut c_void) -> c_int {
 	caught(|| {
-		// handle 合法性仍检查（空/坏句柄 → BadHandle）。
+		// Handle validity is still checked (null/bad handle → BadHandle).
 		let _ = resolve_param(param)?;
 		Err(status::ERR_MISSING_HOST_FEATURE)
 	})
 }
 
-// ---- 非变长入口 ----------------------------------------------------------
+// ---- non-variadic entry points ------------------------------------------
 
 /// `paramDefine`: during describe, defines a parameter on the effect descriptor
 /// and outputs its handle.
@@ -679,14 +679,14 @@ unsafe extern "C" fn param_define(
 		unsafe { *property_set = ptr::null_mut() };
 		let t = unsafe { c_name(param_type)? };
 		let n = unsafe { c_name(name)? };
-		// 仅 describe 期（HS: SetDescriptor 专属，实例期 dynamic_cast
-		// 失败 → BadHandle）。
+		// Describe phase only (HS: SetDescriptor-only; at instance time dynamic_cast
+		// fails → BadHandle).
 		let desc = match resolve_param_set(param_set)? {
 			ParamSetRef::Descriptor(d) => d,
 			ParamSetRef::Instance(_) => return Err(status::ERR_BAD_HANDLE),
 		};
-		// 类型合法性（kind_of_type 之外还有无值类与 parametric；
-		// parametric 的曲线值走 OfxParametricParameterSuite）。
+		// Type validity (beyond kind_of_type there are valueless types and parametric;
+		// parametric curve values go through OfxParametricParameterSuite).
 		let valid = crate::param::kind_of_type(t).is_some()
 			|| matches!(
 				t,
@@ -702,8 +702,8 @@ unsafe extern "C" fn param_define(
 		}
 		let def = ParamDef::new(n, t);
 		desc.params.push(Box::new(def));
-		// 地址必须取自已入盒的对象（栈上临时变量在 push 后失效，
-		// 句柄会指向死内存——Box 负载地址在 Vec 重分配时稳定）。
+		// The address must be taken from the boxed object (a stack temporary is invalid after push,
+		// the handle would point at dead memory — a Box payload address is stable across Vec realloc).
 		let def = desc.params.last().expect("just pushed");
 		let addr = &def.props as *const _ as usize;
 		unsafe { *property_set = tag::make(addr as *const property::PropertySet, tag::PARAM_DEF) };
@@ -759,7 +759,7 @@ unsafe extern "C" fn param_get_handle(
 		};
 		unsafe { *param = handle };
 		if !property_set.is_null() {
-			// props 在偏移 0：param handle 与 props handle 同值。
+			// props at offset 0: param handle and props handle are the same value.
 			unsafe { *property_set = handle };
 		}
 		Ok(())

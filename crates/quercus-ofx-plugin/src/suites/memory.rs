@@ -53,7 +53,7 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<Block>> {
 
 /// Allocate and record. Returns a raw pointer; `None` on failure (OOM/invalid layout).
 pub(crate) fn alloc(size: usize) -> Option<*mut u8> {
-	// 零尺寸分配：Layout 要求非零，取 1 字节兜底（free 按同布局回收）。
+	// Zero-size alloc: Layout requires non-zero → fall back to 1 byte (free reclaims same layout).
 	let layout = Layout::from_size_align(size.max(1), ALIGN).ok()?;
 	let ptr = unsafe { std::alloc::alloc(layout) };
 	if ptr.is_null() {
@@ -115,7 +115,7 @@ unsafe extern "C" fn memory_alloc(
 				unsafe { *out = ptr as *mut c_void };
 				status::OK
 			}
-			// 与 HS 一致：分配失败 → kOfxStatErrMemory（ofxhHost.cpp:35）。
+			// Same as HS: allocation failure → kOfxStatErrMemory (ofxhHost.cpp:35).
 			None => status::ERR_MEMORY,
 		}
 	}))

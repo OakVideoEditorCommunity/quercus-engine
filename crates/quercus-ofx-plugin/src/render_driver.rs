@@ -123,9 +123,9 @@ pub fn begin_sequence(
 	gl: Option<Renderer>,
 ) -> crate::error::Result<()> {
 	if gl.is_some() {
-		// GL 模式：ofxGPURender.h "OpenGL Current Context" 要求
-		// BeginSequenceRender 期间上下文 current（插件可能在此分配 GL
-		// 资源）。acquire 覆盖整个 action；返回即清 current。
+		// GL mode: ofxGPURender.h "OpenGL Current Context" requires the
+		// context to be current during BeginSequenceRender (the plugin may
+		// allocate GL resources here). acquire covers the whole action; on return it clears current.
 		let _guard = crate::gl_bridge::acquire()?;
 		inst.begin_sequence_render_gl(range)
 	} else {
@@ -180,12 +180,12 @@ pub fn render_frame(
 ) -> crate::error::Result<(Texture, Vec<(String, OfxRectD)>)> {
 	use crate::error::Error;
 
-	// 1. 实例锁（pluginrenderer.cpp:1436-1444：OlivePluginInstance 非
-	// 线程安全，并发 setInputTexture/renderAction 会毁内部状态）。
+	// 1. Instance lock (pluginrenderer.cpp:1436-1444: OlivePluginInstance is not
+	// thread-safe; concurrent setInputTexture/renderAction corrupts internal state).
 	let _lock = inst.render_lock.lock().unwrap_or_else(|e| e.into_inner());
-	// 取消检查必须在任何插件调用之前（shutdown 后入口已卸载）。
+	// Cancel check must precede any plugin call (entry points are unloaded after shutdown).
 	if inst.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-		return Err(Error::Failed("已取消".into()));
+		return Err(Error::Failed("cancelled".into()));
 	}
 
 	// Before the GL context is first created, tell the bridge which GPU
@@ -203,11 +203,12 @@ pub fn render_frame(
 		}
 	}
 
-	// 2. use_opengl（pluginrenderer.cpp:1446-1457）：插件声明 GL 支持
-	// 且渲染器是 OpenGL 且像素深度协商可行（管线 F32 满足插件
-	// kOfxOpenGLPropPixelDepth 声明）且目标纹理有有效 GL 名（= 桥能为
-	// 目标帧建出真实 GL 纹理 ⟺ 离屏上下文可用，[`crate::gl_bridge`]）。
-	// 任一不满足 → 回退 CPU 路径（GL 分支在下方真正渲染）。
+	// 2. use_opengl (pluginrenderer.cpp:1446-1457): plugin declares GL support
+	// and renderer is OpenGL and pixel-depth negotiation is viable (pipeline
+	// F32 satisfies the plugin's kOfxOpenGLPropPixelDepth declaration) and the
+	// destination texture has a valid GL name (= bridge can create a real GL
+	// texture for the destination frame ⟺ offscreen context available, [`crate::gl_bridge`]).
+	// Any unmet condition → fall back to CPU path (GL branch does the actual render below).
 	let use_opengl = match job.renderer.as_ref() {
 		// CPU-only by default: the OpenFX GL path shares the engine's
 		// external-memory/Vulkan state and has produced device-lost crashes
@@ -237,12 +238,12 @@ pub fn render_frame(
 		_ => false,
 	};
 
-	// 目标帧与参数（F32 校验；输出装配的依据）。dst 取本地副本：
-	// 值型纹理下输出装配写回副本，随返回值交付（job.dst 只读）。
+	// Destination frame and params (F32 validation; basis for output assembly). dst takes a local copy:
+	// value-type textures: assembly writes back to the copy and returns it (job.dst read-only).
 	let (dst_params, w, h) = read_dst(&job.dst)?;
 	let mut dst = job.dst.clone();
 	let par = pixel_aspect(&dst_params);
-	// 规范坐标的 RoI/RoD（pluginrenderer.cpp:1595-1603：x2 = 宽 × PAR）。
+	// RoI/RoD in canonical coordinates (pluginrenderer.cpp:1595-1603: x2 = width × PAR).
 	let region_of_interest = OfxRectD {
 		x1: 0.0,
 		y1: 0.0,
@@ -250,7 +251,7 @@ pub fn render_frame(
 		y2: h,
 	};
 
-	// 3. 输入纹理收集（pluginrenderer.cpp:1518-1552）。
+	// 3. Input texture collection (pluginrenderer.cpp:1518-1552).
 	for clip in &inst.clips {
 		if clip.name == "Output" {
 			continue;
@@ -262,7 +263,7 @@ pub fn render_frame(
 		}
 	}
 
-	// 4. getClipPreferences（pluginrenderer.cpp:1554-1594）。
+	// 4. getClipPreferences (pluginrenderer.cpp:1554-1594).
 	let prefs = inst.get_clip_preferences()?;
 	if std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
 		eprintln!(
@@ -274,18 +275,23 @@ pub fn render_frame(
 		"OfxImageComponentRGBA" => crate::image::Components::Rgba,
 		"OfxImageComponentRGB" => crate::image::Components::Rgb,
 		"OfxImageComponentAlpha" => crate::image::Components::Alpha,
-		_ => return Err(Error::Failed("协商分量未知".into())),
+		_ => return Err(Error::Failed("unknown negotiated components".into())),
 	};
-	// 位深协商（设计约束：管线全链路 ACEScg + F32；插件不支持 F32
-	// 时按插件协商的位深渲染——输入图像转低、输出转回 F32，而不是
-	// 直接失败）。GL 路径强制 F32：GL 纹理按管线格式创建，位深由
-	// kOfxOpenGLPropPixelDepth 另行协商，clip props 必须与插件实际
-	// 见到的图像一致。olive 像素格式号：0=u8, 2=u16, 3=f16, 4=f32。
+	// Bit-depth negotiation (design constraint: pipeline is ACEScg + F32 end-to-end;
+	// when the plugin does not support F32, render at the depth the plugin negotiated — inputs
+	// converted down, outputs converted back to F32, instead of failing outright). GL path forces
+	// F32: GL textures are created in the pipeline format, depth is negotiated separately via
+	// kOfxOpenGLPropPixelDepth, and clip props must match the images the plugin actually sees.
+	// Olive pixel format numbers: 0=u8, 2=u16, 3=f16, 4=f32.
 	let (depth, depth_format) = if use_opengl {
 		(crate::image::BitDepth::Float, 4)
 	} else {
-		let d = crate::image::BitDepth::from_ofx(&prefs.output_bit_depth)
-			.ok_or_else(|| Error::Failed(format!("协商位深未知：{}", prefs.output_bit_depth)))?;
+		let d = crate::image::BitDepth::from_ofx(&prefs.output_bit_depth).ok_or_else(|| {
+			Error::Failed(format!(
+				"unknown negotiated bit depth: {}",
+				prefs.output_bit_depth
+			))
+		})?;
 		let f = match d {
 			crate::image::BitDepth::Byte => 0,
 			crate::image::BitDepth::Short => 2,
@@ -295,17 +301,17 @@ pub fn render_frame(
 		(d, f)
 	};
 
-	// 5. 输出 clip：RoD + 输出纹理挂接（pluginrenderer.cpp:1603-1606）。
+	// 5. Output clip: RoD + output texture attachment (pluginrenderer.cpp:1603-1606).
 	let output_clip = inst
 		.clips
 		.iter()
 		.find(|c| c.name == "Output")
-		.ok_or_else(|| Error::Failed("实例无 Output clip".into()))?;
+		.ok_or_else(|| Error::Failed("instance has no Output clip".into()))?;
 	output_clip.set_region_of_definition(region_of_interest, job.time);
 	output_clip.set_output_texture(Some(dst.clone()), job.time);
 
-	// 6. 输入 clip：RoD 与格式（pluginrenderer.cpp:1627-1665；位深按
-	// 协商结果——非 F32 插件的输入图像在 fetch 时转低）。
+	// 6. Input clips: RoD and format (pluginrenderer.cpp:1627-1665; depth per
+	// negotiation — input images for non-F32 plugins are converted down on fetch).
 	for clip in &inst.clips {
 		if clip.name == "Output" {
 			continue;
@@ -316,17 +322,17 @@ pub fn render_frame(
 		}
 	}
 
-	// 7. getRegionOfInterest（pluginrenderer.cpp:1666-1680）。RoI 为
-	// 建议值：失败按默认整帧继续（C++ 对 BadHandle 如此；本管线
-	// 输入整帧提供，RoI 只作记录）。
+	// 7. getRegionOfInterest (pluginrenderer.cpp:1666-1680). RoI is advisory:
+	// on failure continue with the default full frame (C++ does the same for BadHandle; this pipeline
+	// supplies full-frame inputs, RoI is recorded only).
 	let rois = inst
 		.get_regions_of_interest(job.time, RenderScale { x: 1.0, y: 1.0 }, region_of_interest)
 		.unwrap_or_else(|_| inst.clips.iter().map(|_| region_of_interest).collect());
 
-	// 8. 输出 clip 格式（pluginrenderer.cpp:1686-1697；位深按协商）。
+	// 8. Output clip format (pluginrenderer.cpp:1686-1697; depth per negotiation).
 	output_clip.set_video_params(depth_format, components.channel_count() as i32);
 
-	// 渲染窗口（像素坐标；pluginrenderer.cpp:1699-1704）。
+	// Render window (pixel coordinates; pluginrenderer.cpp:1699-1704).
 	let render_window = OfxRectD {
 		x1: 0.0,
 		y1: 0.0,
@@ -334,17 +340,17 @@ pub fn render_frame(
 		y2: h,
 	};
 
-	// 9. isIdentity 短路（ofxRendering "Identity Effects"）：插件声明
-	// 本帧等价于某输入 clip → 直接透传该 clip 在透传时间的帧。
+	// 9. isIdentity short-circuit (ofxRendering "Identity Effects"): plugin declares
+	// this frame equivalent to some input clip → pass through that clip's frame at the pass-through time.
 	if let Some((t, clip_name)) = inst.is_identity(job.time)? {
 		passthrough(inst, &clip_name, t, &mut dst)?;
 		return Ok((dst, zip_rois(inst, &rois)));
 	}
 
-	// 10. 参数覆盖（pluginrenderer.cpp:1729-1731 + 132-290）。
+	// 10. Parameter overrides (pluginrenderer.cpp:1729-1731 + 132-290).
 	apply_param_overrides(inst, &job.values);
 
-	// 11. render action。
+	// 11. render action.
 	if !use_opengl {
 		let output = std::sync::Arc::new(Image::allocate(
 			depth,
@@ -375,8 +381,8 @@ pub fn render_frame(
 				p.as_ptr()
 			);
 		}
-		// 输出装配（pluginrenderer.cpp:1762-1834 的 CPU 路径）：插件
-		// 协商了低位深时先转回管线工作格式（全链路 F32/ACEScg）。
+		// Output assembly (CPU path of pluginrenderer.cpp:1762-1834): when the plugin
+		// negotiated a lower depth, convert back to the pipeline working format first (F32/ACEScg end-to-end).
 		let f32_output;
 		let output_f32 = if depth == crate::image::BitDepth::Float {
 			&*output
@@ -386,9 +392,9 @@ pub fn render_frame(
 		};
 		write_output_frame(&mut dst, output_f32)?;
 	} else {
-		// Linux/OpenFX 真正 GPU 零拷贝：输入/输出都是同一 Vulkan 分配，
-		// 插件直接写输出 GL 纹理，无 glReadPixels / CPU frame。不可用
-		// 时回退下面的旧 GL 回读路径。
+		// Linux/OpenFX true GPU zero-copy: input/output are the same Vulkan allocation,
+		// the plugin writes the output GL texture directly, no glReadPixels / CPU frame. When
+		// unavailable, fall back to the old GL read-back path below.
 		#[cfg(any(target_os = "linux", target_os = "windows"))]
 		{
 			match try_render_gl_zerocopy(
@@ -407,12 +413,12 @@ pub fn render_frame(
 				}
 			}
 		}
-		// GL 路径（方案 B，见 [`crate::gl_bridge`]）：宿主自建离屏
-		// 上下文，为输出帧建 GL 纹理 + FBO（插件直接画进附着的输出
-		// 纹理，等价 C++ attach_output_texture），render 返回后
-		// glReadPixels 回读装帧（pluginrenderer.cpp:1784-1834 的 GL
-		// 分支 + 本实现的回读装配）。GL 失败回退 CPU（对齐现有失败
-		// 语义；最终失败仍上抛）。
+		// GL path (option B, see [`crate::gl_bridge`]): host creates its own offscreen
+		// context, creates a GL texture + FBO for the output frame (plugin draws directly
+		// into the attached output texture, equivalent to C++ attach_output_texture); after
+		// render returns, glReadPixels read-back assembles the frame (GL branch of
+		// pluginrenderer.cpp:1784-1834 + this implementation's read-back assembly). GL failure
+		// falls back to CPU (matching existing failure semantics; final failure is still propagated).
 		match render_gl_frame(
 			inst,
 			job,
@@ -424,7 +430,7 @@ pub fn render_frame(
 		) {
 			Ok(image) => write_output_frame(&mut dst, &image)?,
 			Err(gl_err) => {
-				eprintln!("[PLUGIN] GL 渲染失败，回退 CPU：{gl_err}");
+				eprintln!("[PLUGIN] GL render failed, falling back to CPU: {gl_err}");
 				let output = std::sync::Arc::new(Image::allocate(
 					depth,
 					components,
@@ -441,7 +447,7 @@ pub fn render_frame(
 					render_window,
 					output.clone(),
 				)?;
-				// 同主 CPU 路径：低位深协商的输出先转回 F32 再装帧。
+				// Same as the main CPU path: lower-depth negotiated outputs are converted back to F32 before assembly.
 				let f32_output;
 				let output_f32 = if depth == crate::image::BitDepth::Float {
 					&*output
@@ -479,16 +485,16 @@ fn render_gl_frame(
 ) -> crate::error::Result<std::sync::Arc<Image>> {
 	use crate::error::Error;
 
-	// 离屏上下文（进程级共享；本线程 current 直到 guard drop）。
+	// Offscreen context (process-wide shared; current on this thread until guard drop).
 	let _guard = crate::gl_bridge::acquire()?;
 	let (wpx, hpx) = (w as i32, h as i32);
-	// 输出 GL 纹理 + FBO 挂载（GL_RGBA32F/GL_RGBA8 按目标帧格式）。
+	// Output GL texture + FBO attachment (GL_RGBA32F/GL_RGBA8 per destination frame format).
 	let gl_tex = crate::gl_bridge::create_output_texture(wpx, hpx, dst_params)?;
 	let fbo = crate::gl_bridge::create_fbo(gl_tex, wpx, hpx)?;
 	crate::gl_bridge::bind_fbo(fbo);
 	crate::gl_bridge::set_viewport(wpx, hpx);
 
-	// render action（OpenGLEnabled=1；输出纹理真实名经 GlCtx 注入）。
+	// render action (OpenGLEnabled=1; real output texture name injected via GlCtx).
 	let render_res = inst.render_gl(
 		job.time,
 		scale,
@@ -498,20 +504,20 @@ fn render_gl_frame(
 		Some(gl_tex),
 	);
 
-	// 回读前防御性重绑 FBO + 视口（规范下插件不解除输出绑定，但个别
-	// 插件可能改绑/改视口——重绑保证 glReadPixels 读的是输出纹理）。
+	// Defensively rebind FBO + viewport before read-back (per spec the plugin does not unbind the output,
+	// but some may rebind/change the viewport — rebinding ensures glReadPixels reads the output texture).
 	crate::gl_bridge::bind_fbo(fbo);
 	crate::gl_bridge::set_viewport(wpx, hpx);
 
-	// 回读（FBO 仍绑定、输出 GL 纹理仍存活）。
+	// Read-back (FBO still bound, output GL texture still alive).
 	let readback = crate::gl_bridge::read_pixels_to_image(wpx, hpx, dst_params);
 
-	// 清理（guard drop 时清 current 并放锁）。
+	// Cleanup (guard drop clears current and releases the lock).
 	crate::gl_bridge::delete_fbo(fbo);
 	crate::gl_bridge::delete_gl_texture(gl_tex);
 
 	render_res?;
-	readback.map_err(|e| Error::Failed(format!("GL 回读失败：{e}")))
+	readback.map_err(|e| Error::Failed(format!("GL readback failed: {e}")))
 }
 
 /// Linux/OpenFX GL zero-copy: import the destination and every GPU
@@ -706,7 +712,7 @@ fn read_dst(dst: &Texture) -> crate::error::Result<(render::VideoParams, f64, f6
 	let params = render::texture_get_params(dst);
 	if params.format != render::PIXEL_FORMAT_F32 {
 		return Err(Error::Failed(format!(
-			"输出帧格式 {} 非 F32（Phase 2 约束）",
+			"output frame format {} is not F32 (Phase 2 constraint)",
 			params.format
 		)));
 	}
@@ -787,9 +793,9 @@ fn pick_input(clip_name: &str, job: &RenderJob) -> Option<Texture> {
 			return Some(tex.clone());
 		}
 	}
-	// SimpleSource 回退（pluginrenderer.cpp:1534-1543：
-	// kOfxImageEffectSimpleSourceClipName 取 k_texture_input，再回退
-	// job.src）。
+	// SimpleSource fallback (pluginrenderer.cpp:1534-1543:
+	// kOfxImageEffectSimpleSourceClipName resolves to k_texture_input, then falls back
+	// to job.src).
 	if clip_name == "Source" {
 		return job.src.clone();
 	}
@@ -827,7 +833,7 @@ fn passthrough(
 		.clips
 		.iter()
 		.find(|c| c.name == clip_name)
-		.ok_or_else(|| Error::Failed(format!("isIdentity 引用未知 clip {clip_name}")))?;
+		.ok_or_else(|| Error::Failed(format!("isIdentity references unknown clip {clip_name}")))?;
 	let image = clip.fetch_image(t, RenderScale { x: 1.0, y: 1.0 }, None)?;
 	write_output_frame(dst, &image)
 }
@@ -859,9 +865,9 @@ fn apply_param_overrides(inst: &Instance, values: &[(String, crate::node::Value)
 		let Some(mut pv) = crate::param::param_value_from_node(v, &p.def.ofx_type) else {
 			continue;
 		};
-		// Double 标量的 NaN/Inf 清洗 + Min/Max 钳制
-		// （pluginrenderer.cpp:155-177：坏值回退默认并告警，再按
-		// kOfxParamPropMin/Max 钳制；多维 Double 族 C++ 无此检查）。
+		// Double scalar NaN/Inf cleaning + Min/Max clamping
+		// (pluginrenderer.cpp:155-177: bad values fall back to the default with a warning, then clamp to
+		// kOfxParamPropMin/Max; multi-dimensional Double families get no such check in C++).
 		if p.def.ofx_type == crate::param::TYPE_DOUBLE {
 			if let crate::param::ParamValue::Double(d, 1) = &mut pv {
 				if d[0].is_nan() || d[0].is_infinite() {
@@ -912,20 +918,24 @@ fn prop_double(props: &crate::property::PropertySet, name: &str, index: usize) -
 /// (`Texture::Gpu` branch).
 pub(crate) fn write_output_frame(dst: &mut Texture, image: &Image) -> crate::error::Result<()> {
 	use crate::error::Error;
-	// CPU 纹理就地写入；GPU 纹理经下载帧改写后 upload 回写。
+	// CPU texture: write in place; GPU texture: modify the downloaded frame then upload it back.
 	let mut frame = render::texture_get_frame(dst)?;
 	let params = frame.video_params();
 	if params.format != render::PIXEL_FORMAT_F32 {
-		return Err(Error::Failed("输出帧格式非 F32（Phase 2 约束）".into()));
+		return Err(Error::Failed(
+			"output frame format is not F32 (Phase 2 constraint)".into(),
+		));
 	}
 	let (w, h) = (params.width as usize, params.height as usize);
 	let tight = w * image.components().channel_count() * 4;
 	if tight != image.row_bytes() || tight * h != image.pixels().len() {
-		return Err(Error::Failed("图像尺寸与输出帧不一致".into()));
+		return Err(Error::Failed(
+			"image size does not match the output frame".into(),
+		));
 	}
 	let dst_ptr = frame.data_mut();
 	if dst_ptr.is_null() {
-		return Err(Error::Failed("输出帧无数据".into()));
+		return Err(Error::Failed("output frame has no data".into()));
 	}
 	let row = frame.linesize_bytes();
 	let row = if row > 0 { row } else { tight };
@@ -937,18 +947,20 @@ pub(crate) fn write_output_frame(dst: &mut Texture, image: &Image) -> crate::err
 		dst_bytes[d..d + tight].copy_from_slice(&pixels[s..s + tight]);
 	}
 	match dst {
-		// 就地写回（值型 CPU 纹理：to_frame 是拷贝，必须写回本体）。
+		// Write back in place (value-type CPU texture: to_frame is a copy, must write back into the original).
 		Texture::Cpu(f) => {
 			f.data = frame.data;
 		}
-		// GPU 目标纹理：拷贝只落在下载帧上，经后端 upload 回写。
+		// GPU destination texture: the copy only lands in the downloaded frame, upload it back via the backend.
 		Texture::Gpu { token, ctx, .. } => {
 			ctx.upload(*token, &frame)
-				.map_err(|e| Error::Failed(format!("输出纹理上传失败：{e}")))?;
+				.map_err(|e| Error::Failed(format!("output texture upload failed: {e}")))?;
 		}
-		// 未解析的平面纹理不会成为插件输出目标（解码路径会先解析）。
+		// Unresolved planar textures never become a plugin output target (the decode path resolves them first).
 		Texture::Planar(_) => {
-			return Err(Error::Failed("平面纹理不能作为插件输出目标".into()));
+			return Err(Error::Failed(
+				"planar texture cannot be a plugin output target".into(),
+			));
 		}
 	}
 	Ok(())

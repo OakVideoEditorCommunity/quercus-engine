@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::suites::{render_ctx, status};
 
 // ---------------------------------------------------------------------------
-// app 注入点：活动 viewer 时间源
+// app injection point: active viewer time source
 // ---------------------------------------------------------------------------
 
 /// Time information of the active viewer (the minimal set used as the
@@ -148,7 +148,7 @@ unsafe extern "C" fn timeline_get_time(handle: *mut c_void, time: *mut c_double)
 			if time.is_null() {
 				return status::ERR_VALUE;
 			}
-			// 渲染上下文 → 活动 viewer → 0（headless 默认）。
+			// Render context → active viewer → 0 (headless default).
 			*time = render_ctx()
 				.map(|c| c.time)
 				.or_else(|| active_viewer().map(|v| v.time))
@@ -216,7 +216,7 @@ unsafe extern "C" fn timeline_get_time_bounds(
 			if min.is_null() || max.is_null() {
 				return status::ERR_VALUE;
 			}
-			// 渲染上下文 → 活动 viewer → (0,0)（headless 默认）。
+			// Render context → active viewer → (0,0) (headless default).
 			let r = render_ctx()
 				.map(|c| (c.range.min, c.range.max))
 				.or_else(|| active_viewer().map(|v| (v.range_min, v.range_max)))
@@ -252,7 +252,7 @@ mod tests {
 		let mut min = 0.0;
 		let mut max = 0.0;
 
-		// 无上下文：0 / (0,0)。
+		// No context: 0 / (0,0).
 		unsafe {
 			assert_eq!((s.get_time)(handle, &mut t), status::OK);
 			assert_eq!(t, 0.0);
@@ -260,7 +260,7 @@ mod tests {
 			assert_eq!((min, max), (0.0, 0.0));
 		}
 
-		// 有上下文：转发。
+		// With context: forward.
 		set_render_ctx(Some(RenderCtx {
 			time: 42.5,
 			scale: RenderScale { x: 1.0, y: 1.0 },
@@ -278,7 +278,7 @@ mod tests {
 		}
 		set_render_ctx(None);
 
-		// 空 handle / 空 out。
+		// Null handle / null out.
 		unsafe {
 			assert_eq!(
 				(s.get_time)(std::ptr::null_mut(), &mut t),

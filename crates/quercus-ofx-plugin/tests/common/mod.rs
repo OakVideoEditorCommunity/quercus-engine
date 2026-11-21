@@ -23,8 +23,8 @@
 //! After the single-library change the pixel path is driven by the quercusrender value model (`quercus_core::texture::Texture`);
 //! render goldens await that migration.
 
-// 每个集成测试二进制都会独立编译本模块，只用到自己需要的那部分辅助件，
-// 因此某个二进制里未用到的条目仍属于共享夹具 API。
+// Each integration-test binary compiles this module independently and uses only the helpers it needs,
+// so items unused by one binary still belong to the shared fixture API.
 #![allow(dead_code)]
 
 use std::env;
@@ -67,8 +67,8 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 			};
 			let bin_dir = bundle.join("Contents").join(platform);
 			fs::create_dir_all(&bin_dir).ok()?;
-			// Windows 上必须有 .dll 扩展名：LoadLibrary 会对无扩展名的
-			// 模块名自动追加 ".dll"，名为 "plugin" 的文件将加载失败。
+			// Windows requires the .dll extension: LoadLibrary automatically appends
+			// ".dll" to an extension-less module name, so a file named "plugin" fails to load.
 			let target = bin_dir.join(if cfg!(target_os = "windows") {
 				"plugin.dll"
 			} else {
@@ -86,7 +86,7 @@ pub fn test_plugin_dir() -> Option<PathBuf> {
 pub fn test_plugin_scan_dir() -> Option<PathBuf> {
 	let bundle = test_plugin_dir()?;
 	let parent = bundle.parent()?;
-	// scan_path 会 canonicalize；bundle 在临时目录下，直接给父目录。
+	// scan_path canonicalizes; the bundle lives in the temp dir, so hand over the parent directly.
 	Some(parent.to_path_buf())
 }
 

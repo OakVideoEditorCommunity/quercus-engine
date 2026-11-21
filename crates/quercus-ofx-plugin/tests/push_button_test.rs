@@ -41,16 +41,16 @@ const PLUGIN_ID: &str = "org.quercus.test-plugin";
 fn push_button_press_routes_instance_changed() {
 	common::with_host(|| {
 		let Some(dir) = common::test_plugin_scan_dir() else {
-			common::skip("最小测试插件未构建");
+			common::skip("minimal test plugin not built");
 			return;
 		};
 		if Host::global().cache.scan_path(&dir).is_err() {
-			common::skip("测试插件扫描失败");
+			common::skip("test plugin scan failed");
 			return;
 		}
 		let inst = Host::global()
 			.create_instance(PLUGIN_ID, None)
-			.expect("实例");
+			.expect("instance");
 		let id = node_factory::register_instance(inst.clone());
 
 		// The C plugin appends one line per instanceChanged("button") to the
@@ -60,7 +60,7 @@ fn push_button_press_routes_instance_changed() {
 		env::set_var("QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER", &marker);
 
 		// The button param exists and is a push button.
-		let p = inst.value.params.find("button").expect("button 参数");
+		let p = inst.value.params.find("button").expect("button parameter");
 		assert_eq!(p.def.ofx_type, param::TYPE_PUSHBUTTON);
 
 		// First press: set + routed to the plugin.
@@ -73,7 +73,7 @@ fn push_button_press_routes_instance_changed() {
 		assert!(node_factory::push_button_clicked(id, "button"));
 
 		// Exactly the two real presses reached the plugin's instanceChanged.
-		let log = fs::read_to_string(&marker).expect("marker 文件应存在");
+		let log = fs::read_to_string(&marker).expect("marker file should exist");
 		assert_eq!(log.lines().count(), 2, "marker log:\n{log}");
 		assert!(log.contains("instanceChanged"), "marker log:\n{log}");
 

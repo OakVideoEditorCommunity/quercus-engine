@@ -131,7 +131,7 @@ impl ProgressReporter {
 	pub unsafe fn new(callback: ProgressFn, userdata: *mut std::ffi::c_void) -> Self {
 		Self {
 			callback: Some(callback),
-			// usize 存（裸指针破坏 Send 推导；值语义不变）。
+			// Stored as usize (raw pointer breaks Send inference; value semantics unchanged).
 			userdata: userdata as usize,
 			ui: Mutex::new(None),
 			cancelled: AtomicBool::new(false),
@@ -166,7 +166,7 @@ impl ProgressReporter {
 	pub fn update(&self, progress: f64) -> bool {
 		match self.callback {
 			Some(cb) => {
-				// 头文件契约：非 0 = 中止。
+				// Header contract: non-zero = abort.
 				let abort = unsafe { cb(progress, self.userdata as *mut std::ffi::c_void) } != 0;
 				if abort {
 					self.cancelled.store(true, Ordering::Relaxed);

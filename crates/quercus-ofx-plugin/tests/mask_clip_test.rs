@@ -37,7 +37,7 @@ const PLAIN_PLUGIN_ID: &str = "org.quercus.test-plugin";
 
 fn create_instance(id: &str) -> Option<Arc<RefBox<Instance>>> {
 	let Some(dir) = common::test_plugin_scan_dir() else {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return None;
 	};
 	let host = Host::global();
@@ -55,7 +55,7 @@ fn synthetic_texture(w: i32, h: i32) -> Texture {
 		format: PIXEL_FORMAT_F32,
 		..Default::default()
 	});
-	assert!(frame.allocate(), "合成帧应可分配");
+	assert!(frame.allocate(), "synthetic frame should be allocatable");
 	Texture::wrap_frame(frame)
 }
 
@@ -75,7 +75,7 @@ fn mask_clip_descriptor_flags() {
 			return;
 		};
 		let mask = inst.value.clips.iter().find(|c| c.name == "Mask");
-		let mask = mask.expect("fixture 应暴露 Mask clip");
+		let mask = mask.expect("fixture should expose a Mask clip");
 		assert_eq!(int_prop(mask, "OfxImageClipPropOptional"), Some(1));
 		assert_eq!(int_prop(mask, "OfxImageClipPropIsMask"), Some(1));
 		for name in ["Source", "Output"] {
@@ -100,22 +100,22 @@ fn mask_clip_connection_lifecycle() {
 			.clips
 			.iter()
 			.find(|c| c.name == "Mask")
-			.expect("fixture 应暴露 Mask clip");
+			.expect("fixture should expose a Mask clip");
 		let connected = || int_prop(mask, "OfxImageClipPropConnected");
 
-		assert_eq!(connected(), Some(0), "初始应未连接");
+		assert_eq!(connected(), Some(0), "should start disconnected");
 		assert!(mask.input_texture_value().is_none());
 
 		mask.set_input_texture(Some(synthetic_texture(4, 4)), 0.0);
-		assert_eq!(connected(), Some(1), "挂接纹理后应已连接");
+		assert_eq!(connected(), Some(1), "attaching a texture should connect");
 		assert!(mask.input_texture_value().is_some());
 
 		mask.set_input_texture(None, 0.0);
-		assert_eq!(connected(), Some(0), "清除后应回到未连接");
+		assert_eq!(connected(), Some(0), "clearing should disconnect again");
 		assert!(mask.input_texture_value().is_none());
 
 		mask.set_input_texture(Some(synthetic_texture(8, 2)), 0.0);
-		assert_eq!(connected(), Some(1), "重新挂接后应再次连接");
+		assert_eq!(connected(), Some(1), "reattaching should connect again");
 		Host::global().shutdown();
 	});
 }

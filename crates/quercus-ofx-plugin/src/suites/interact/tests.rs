@@ -9,13 +9,13 @@ use std::sync::Mutex;
 fn interact_props_initialized() {
 	let props = PropertySet::new();
 	init_interact_props(&props);
-	// Value 无 PartialEq（指针/CString 成员），用 matches! 断言。
+	// Value has no PartialEq (pointer/CString members), so assert with matches!.
 	assert!(
 		matches!(
 			props.get(crate::host::PROP_INTERACT_PIXEL_SCALE, 0),
 			Some(Value::Double(1.0))
 		),
-		"PixelScale[0] 应为 1.0"
+		"PixelScale[0] should be 1.0"
 	);
 	assert_eq!(props.dimension(crate::host::PROP_INTERACT_PIXEL_SCALE), 2);
 	assert!(
@@ -23,7 +23,7 @@ fn interact_props_initialized() {
 			props.get(crate::host::PROP_INTERACT_SUGGESTED_COLOUR, 2),
 			Some(Value::Double(1.0))
 		),
-		"SuggestedColour[2] 应为 1.0"
+		"SuggestedColour[2] should be 1.0"
 	);
 	assert_eq!(
 		props.dimension(crate::host::PROP_INTERACT_SLAVE_TO_PARAM),
@@ -34,14 +34,14 @@ fn interact_props_initialized() {
 			props.get(crate::host::PROP_INTERACT_BIT_DEPTH, 0),
 			Some(Value::Int(32))
 		),
-		"BitDepth 应为 32"
+		"BitDepth should be 32"
 	);
 	assert!(
 		matches!(
 			props.get(crate::host::PROP_INTERACT_HAS_ALPHA, 0),
 			Some(Value::Int(1))
 		),
-		"HasAlpha 应为 1"
+		"HasAlpha should be 1"
 	);
 }
 
@@ -72,7 +72,7 @@ fn interact_suite_handle_validation() {
 			interact_get_property_set(std::ptr::null_mut(), &mut out),
 			status::ERR_BAD_HANDLE
 		);
-		// 错标签：裸 PropertySet（标签 0）当 interact 用。
+		// Wrong tag: a bare PropertySet (tag 0) used as an interact.
 		let props = PropertySet::new();
 		let raw = &props as *const PropertySet as *mut c_void;
 		assert_eq!(interact_swap_buffers(raw), status::ERR_BAD_HANDLE);
@@ -84,7 +84,7 @@ fn interact_suite_handle_validation() {
 /// set handle.
 #[test]
 fn interact_suite_requests_are_recorded() {
-	// 用假插件构造 Interact（不进插件入口——只测 suite 服务端）。
+	// Build an Interact with a fake plugin (does not enter the plugin entry — suite server only).
 	let plugin = crate::host::Plugin {
 		identifier: "fake".into(),
 		version: (1, 0),
@@ -119,7 +119,7 @@ fn interact_suite_requests_are_recorded() {
 		&interact.props as *const PropertySet as usize
 	);
 
-	// property suite 可直读 interact 属性集（句柄约定打通）。
+	// The property suite reads the interact property set directly (handle convention wired through).
 	let addr = tag::strip(props_handle);
 	let set: &PropertySet = unsafe { &*addr };
 	assert!(
@@ -127,10 +127,10 @@ fn interact_suite_requests_are_recorded() {
 			set.get(crate::host::PROP_INTERACT_BIT_DEPTH, 0),
 			Some(Value::Int(32))
 		),
-		"经 interact 句柄的 property suite 应读到 BitDepth=32"
+		"property suite through interact handle should read BitDepth=32"
 	);
 
-	// 摘除引用计数：Arc 释放（interact 已无引用）。
+	// Drop refcount: the Arc is released (interact has no references left).
 	drop(interact);
 }
 
@@ -161,7 +161,7 @@ fn interact_call_dispatches_to_entry() {
 				.to_string_lossy()
 				.into_owned(),
 		);
-		// handle 必须是 tagged INTERACT。
+		// handle must be a tagged INTERACT.
 		assert_eq!(tag::kind(handle as *mut c_void), tag::INTERACT);
 		status::OK
 	}
@@ -200,7 +200,10 @@ fn interact_call_dispatches_to_entry() {
 		crate::host::ACTION_INTERACT_IDLE,
 		crate::host::ACTION_DESTROY_INSTANCE,
 	];
-	assert_eq!(calls, want, "interact action 序列应按序透传到入口");
+	assert_eq!(
+		calls, want,
+		"interact action sequence should pass through to entry in order"
+	);
 }
 
 /// Real pen event parameters: the inArgs canonical position / viewport
@@ -208,7 +211,7 @@ fn interact_call_dispatches_to_entry() {
 /// the fake plugin).
 #[test]
 fn pen_in_args_canonical_conversion() {
-	// 记录 pen_motion 的 inArgs 关键属性。
+	// Record pen_motion's key inArgs properties.
 	static CAPTURED: Mutex<Option<(f64, f64, f64)>> = Mutex::new(None);
 	unsafe extern "C" fn capture_entry(
 		_action: *const c_char,
@@ -220,7 +223,7 @@ fn pen_in_args_canonical_conversion() {
 			return status::OK;
 		}
 		let set = unsafe { &*(in_args as *const PropertySet) };
-		// 视口位置（Int×2）与 canonical 位置（Double×2）与压力。
+		// Viewport position (Int×2) and canonical position (Double×2) and pressure.
 		let vx = match set.get(crate::host::PROP_INTERACT_PEN_VIEWPORT_POSITION, 0) {
 			Some(Value::Int(i)) => i,
 			_ => 0,
@@ -248,7 +251,7 @@ fn pen_in_args_canonical_conversion() {
 		unloaded: std::sync::atomic::AtomicBool::new(false),
 	};
 	let interact = Interact::new(Arc::new(plugin), capture_entry, std::ptr::null_mut());
-	// 设 pixelScale=2 → canonical = viewport/2。
+	// Set pixelScale=2 → canonical = viewport/2.
 	interact.props.define(
 		crate::host::PROP_INTERACT_PIXEL_SCALE,
 		vec![Value::Double(2.0), Value::Double(2.0)],
@@ -260,7 +263,7 @@ fn pen_in_args_canonical_conversion() {
 	assert_eq!(px, 5.0);
 	assert_eq!(pressure, 1.0);
 
-	// pen_up 压力 0。
+	// pen_up pressure 0.
 	assert_eq!(interact.pen_up((10.0, 20.0), 0.0), status::OK);
 	let (_, _, pressure) = CAPTURED.lock().unwrap().take().unwrap();
 	assert_eq!(pressure, 0.0);

@@ -347,7 +347,11 @@ mod tests {
 	fn handle_tag_roundtrip() {
 		let set = crate::property::PropertySet::new();
 		let props = &set as *const crate::property::PropertySet;
-		assert_eq!(props as usize & tag::MASK, 0, "PropertySet 必须 ≥8 对齐");
+		assert_eq!(
+			props as usize & tag::MASK,
+			0,
+			"PropertySet must be >=8 aligned"
+		);
 		for t in [
 			tag::PROPERTY_SET,
 			tag::DESCRIPTOR,
@@ -390,7 +394,7 @@ mod tests {
 	#[test]
 	fn gl_ctx_tls() {
 		assert!(gl_ctx().is_none());
-		// 最小 GpuContextLike 假实现（无 GPU 适配器需求）。
+		// Minimal GpuContextLike fake (no GPU adapter required).
 		struct FakeGpu;
 		impl quercus_core::backend::GpuContextLike for FakeGpu {
 			fn kind(&self) -> quercus_core::backend::BackendKind {

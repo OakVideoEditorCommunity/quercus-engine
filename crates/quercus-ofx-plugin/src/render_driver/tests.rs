@@ -37,7 +37,7 @@ fn u8_texture(w: i32, h: i32) -> Texture {
 		..Default::default()
 	};
 	let pixels = vec![0u8; w as usize * h as usize * 4];
-	render::texture_create(&params, &pixels, 0).expect("U8 纹理应可建")
+	render::texture_create(&params, &pixels, 0).expect("U8 texture should be creatable")
 }
 
 fn f32_image(w: i32, h: i32, fill: f32) -> Image {
@@ -96,7 +96,7 @@ unsafe extern "C" fn test_entry(
 			}
 		}
 	} else if action_name == crate::host::ACTION_RENDER {
-		// GL 失败注入：仅 GL 模式的 render（in args 带 OpenGLEnabled=1）。
+		// GL failure injection: only for GL-mode render (in args carry OpenGLEnabled=1).
 		let gl_enabled = matches!(
 			in_args.get(crate::host::PROP_GL_ENABLED, 0),
 			Some(Value::Int(1))
@@ -111,7 +111,7 @@ unsafe extern "C" fn test_entry(
 	crate::suites::status::OK
 }
 
-#[allow(clippy::vec_box)] // ParamSetInstance 的字段类型即 Vec<Box<ParamInstance>>。
+#[allow(clippy::vec_box)] // ParamSetInstance's field type is exactly Vec<Box<ParamInstance>>.
 fn make_instance(
 	desc_props: Vec<(&'static str, Value)>,
 	inst_props: Vec<(&'static str, Value)>,
@@ -150,7 +150,7 @@ fn make_instance(
 			})
 			.collect(),
 		node_identity: std::sync::atomic::AtomicUsize::new(0),
-		// 置位销毁门：测试实例 drop 时不再向假插件发 destroyInstance。
+		// Set the destroy gate: test instances do not send destroyInstance to the fake plugin on drop.
 		destroyed: std::sync::atomic::AtomicBool::new(true),
 		sequence_range: std::sync::Mutex::new(None),
 		progress_cb: std::sync::Mutex::new(None),
@@ -247,7 +247,7 @@ fn pixel_aspect_zero_den_falls_back() {
 #[test]
 fn plugin_supports_opengl_matrix() {
 	let inst = make_instance(vec![], vec![], &[], vec![]);
-	assert!(!plugin_supports_opengl(&inst), "缺失属性 → false");
+	assert!(!plugin_supports_opengl(&inst), "missing property -> false");
 
 	inst.plugin.descriptor.props.set_one(
 		crate::host::PROP_GL_RENDER_SUPPORTED,
@@ -268,7 +268,7 @@ fn plugin_supports_opengl_matrix() {
 		.descriptor
 		.props
 		.set_one(crate::host::PROP_GL_RENDER_SUPPORTED, Value::Int(1));
-	assert!(!plugin_supports_opengl(&inst), "非字符串 → false");
+	assert!(!plugin_supports_opengl(&inst), "non-string value -> false");
 }
 
 /// pick_input: effect_input_id hit uses src; hit but src missing continues;
@@ -281,26 +281,26 @@ fn pick_input_selection_rules() {
 	let mut j = job(f32_texture(1, 1, 0.0), Some(src.clone()));
 	assert!(pick_input("Source", &j).is_some());
 
-	// effect_input_id 命中但 src 缺失、inputs 表有同名 → 用表。
+	// effect_input_id hit but src missing, inputs table has a same-named entry → use the table.
 	j.src = None;
 	j.inputs = vec![("Source".into(), matte.clone())];
 	assert!(pick_input("Source", &j).is_some());
 
-	// inputs 表命中非 Source clip。
+	// inputs table hits a non-Source clip.
 	j.inputs.push(("Matte".into(), matte.clone()));
 	assert!(pick_input("Matte", &j).is_some());
 
-	// effect_input_id 命中但 src 缺失、无 inputs、非 Source → None。
+	// effect_input_id hit but src missing, no inputs, not Source → None.
 	let j2 = job(f32_texture(1, 1, 0.0), None);
 	let mut j2 = j2;
 	j2.effect_input_id = Some("Matte".into());
 	assert!(pick_input("Matte", &j2).is_none());
 
-	// Source 回退（effect_input_id 不是 Source、无 inputs、src 有）。
+	// Source fallback (effect_input_id is not Source, no inputs, src present).
 	j2.src = Some(src);
 	assert!(pick_input("Source", &j2).is_some());
 
-	// 未知 clip → None。
+	// Unknown clip → None.
 	assert!(pick_input("Nope", &j2).is_none());
 }
 
@@ -321,9 +321,9 @@ fn begin_end_sequence_cpu_and_gl() {
 	if began.is_ok() {
 		assert!(end_sequence(&inst, range, Some(renderer)).is_ok());
 	} else {
-		// 真实 GL 环境中 begin 也可能因实例/插件状态失败；此分支
-		// 只验证 CPU 路径与 GL 可用性，不作为错误断言。
-		println!("SKIP: GL 序列括号 begin 失败（GL 或实例状态不可用）");
+		// In a real GL environment begin may also fail due to instance/plugin state; this branch
+		// only verifies the CPU path and GL availability, it is not an error assertion.
+		println!("SKIP: GL sequence bracket begin failed (GL or instance state unavailable)");
 	}
 }
 
@@ -334,15 +334,15 @@ fn begin_end_sequence_cpu_and_gl() {
 fn render_frame_cpu_happy_path() {
 	let inst = make_instance(vec![], vec![], &["Source", "Output"], vec![]);
 	let j = job(f32_texture(2, 2, 0.25), Some(f32_texture(2, 2, 0.75)));
-	let (out, rois) = render_frame(&inst, &j).expect("CPU render_frame 应成功");
-	assert_eq!(rois.len(), 1, "Output clip 不参与 RoI 列表");
+	let (out, rois) = render_frame(&inst, &j).expect("CPU render_frame should succeed");
+	assert_eq!(rois.len(), 1, "Output clip is not part of the RoI list");
 	assert_eq!(rois[0].0, "Source");
-	// 输入 clip 已连接（property suite 可读）。
+	// Input clip is connected (readable through the property suite).
 	assert!(matches!(
 		inst.clips[0].props.get(crate::host::PROP_CLIP_CONNECTED, 0),
 		Some(Value::Int(1))
 	));
-	// 假插件 render 未写像素 → 输出为零填充（Image::allocate 零初始化）。
+	// Fake plugin render writes no pixels → output is zero-filled (Image::allocate zero-initializes).
 	assert_eq!(first_pixel(&out), [0.0, 0.0, 0.0, 0.0]);
 }
 
@@ -396,17 +396,17 @@ fn render_frame_component_negotiation() {
 			vec![],
 		);
 		let j = job(f32_texture(2, 2, 0.0), Some(f32_texture(2, 2, 0.5)));
-		render_frame(&inst, &j).expect("已知分量应可渲染");
+		render_frame(&inst, &j).expect("known components should render");
 		let got = inst.clips[1]
 			.props
 			.get(crate::image::K_IMAGE_EFFECT_PROP_COMPONENTS, 0);
 		assert!(
 			matches!(&got, Some(Value::String(s)) if s.to_string_lossy() == comps),
-			"{comps} 应写回 Output clip"
+			"{comps} should be written back to the Output clip"
 		);
 	}
 
-	// 未知分量 → 协商失败。
+	// Unknown components → negotiation failure.
 	let inst = make_instance(
 		vec![],
 		vec![(
@@ -438,16 +438,16 @@ fn render_frame_depth_negotiation() {
 			vec![],
 		);
 		let j = job(f32_texture(2, 2, 0.0), Some(f32_texture(2, 2, 0.5)));
-		render_frame(&inst, &j).unwrap_or_else(|e| panic!("{depth} 应可渲染：{e}"));
-		// 协商结果写回 Output clip（Format 号经 set_video_params 再现）。
+		render_frame(&inst, &j).unwrap_or_else(|e| panic!("{depth} should render: {e}"));
+		// Negotiation result written back to the Output clip (Format number reproduced via set_video_params).
 		let got = inst.clips[1]
 			.props
 			.get(crate::image::K_IMAGE_EFFECT_PROP_PIXEL_DEPTH, 0);
 		assert!(
 			matches!(&got, Some(Value::String(s)) if s.to_string_lossy() == depth),
-			"{depth} 应写回 Output clip"
+			"{depth} should be written back to the Output clip"
 		);
-		// 返回纹理恒为 F32（管线工作格式）。
+		// Returned texture is always F32 (pipeline working format).
 		assert_eq!(
 			render::texture_get_params(&j.dst).format,
 			render::PIXEL_FORMAT_F32
@@ -496,10 +496,10 @@ fn render_frame_identity_passthrough() {
 	let src_tex = f32_texture(2, 2, 0.5);
 	inst.clips[0].set_input_texture(Some(src_tex.clone()), 0.0);
 	let j = job(f32_texture(2, 2, 0.25), Some(src_tex));
-	let (out, _) = render_frame(&inst, &j).expect("透传应成功");
+	let (out, _) = render_frame(&inst, &j).expect("passthrough should succeed");
 	assert_eq!(first_pixel(&out), [0.5, 0.5, 0.5, 0.5]);
 
-	// 引用未知 clip → passthrough 失败。
+	// Reference to an unknown clip → passthrough fails.
 	let inst = make_instance(
 		vec![],
 		vec![("test.identity_clip", Value::String(cs("Nope")))],
@@ -527,17 +527,17 @@ fn render_frame_gl_decision_and_path() {
 	let mut j = job(f32_texture(2, 2, 0.0), Some(f32_texture(2, 2, 0.5)));
 	j.renderer = Some(std::sync::Arc::new(crate::render::GlKindMarker));
 	if crate::gl_bridge::gl_available() {
-		// 真实 GL 路径：回读内容未清屏（未定义像素值）——只断言
-		// 装配成功与输出格式/尺寸。
-		let (out, _) = render_frame(&inst, &j).expect("GL 路径应成功");
+		// Real GL path: read-back contents are uncleared (undefined pixel values) — only assert
+		// assembly success and the output format/size.
+		let (out, _) = render_frame(&inst, &j).expect("GL path should succeed");
 		let params = render::texture_get_params(&out);
 		assert_eq!(
 			(params.width, params.height, params.format),
 			(2, 2, render::PIXEL_FORMAT_F32)
 		);
 	} else {
-		println!("SKIP: GL 不可用（Linux/Windows stub）——仅覆盖 use_opengl 回退决策");
-		let (out, _) = render_frame(&inst, &j).expect("GL 不可用应回退 CPU");
+		println!("SKIP: GL unavailable (Linux/Windows stub) - only covers the use_opengl fallback decision");
+		let (out, _) = render_frame(&inst, &j).expect("GL unavailable should fall back to CPU");
 		assert_eq!(first_pixel(&out), [0.0, 0.0, 0.0, 0.0]);
 	}
 }
@@ -546,7 +546,7 @@ fn render_frame_gl_decision_and_path() {
 #[test]
 fn render_frame_gl_failure_falls_back_to_cpu() {
 	if !crate::gl_bridge::gl_available() {
-		println!("SKIP: GL 不可用——GL 失败回退 CPU 分支不可达");
+		println!("SKIP: GL unavailable - GL failure CPU fallback branch unreachable");
 		return;
 	}
 	let inst = make_instance(
@@ -560,7 +560,8 @@ fn render_frame_gl_failure_falls_back_to_cpu() {
 	);
 	let mut j = job(f32_texture(2, 2, 0.0), Some(f32_texture(2, 2, 0.5)));
 	j.renderer = Some(std::sync::Arc::new(crate::render::GlKindMarker));
-	let (out, _) = render_frame(&inst, &j).expect("GL 失败应回退 CPU 成功");
+	let (out, _) =
+		render_frame(&inst, &j).expect("GL failure should fall back to CPU successfully");
 	assert_eq!(first_pixel(&out), [0.0, 0.0, 0.0, 0.0]);
 }
 
@@ -570,7 +571,7 @@ fn render_frame_gl_failure_falls_back_to_cpu() {
 #[test]
 fn render_gl_frame_reports_unavailable_context() {
 	if crate::gl_bridge::gl_available() {
-		println!("SKIP: 本机 GL 可用——该用例只验证无 GL 时的明确失败");
+		println!("SKIP: local GL available — this case only verifies explicit failure without GL");
 		return;
 	}
 	let inst = make_instance(vec![], vec![], &["Source", "Output"], vec![]);
@@ -585,7 +586,10 @@ fn render_gl_frame_reports_unavailable_context() {
 		2.0,
 		&params,
 	);
-	assert!(res.is_err(), "无 GL 环境 render_gl_frame 应失败");
+	assert!(
+		res.is_err(),
+		"render_gl_frame should fail without a GL environment"
+	);
 }
 
 /// apply_param_overrides: unknown parameter names and type mismatches are
@@ -605,7 +609,7 @@ fn apply_param_overrides_scrubs_and_clamps() {
 	);
 	let gain = || inst.params.find("gain").unwrap().get();
 
-	// 未知 key + 类型不符的 key → 都跳过，值不变。
+	// Unknown key + mismatched-type key → both skipped, value unchanged.
 	apply_param_overrides(
 		&inst,
 		&[
@@ -615,29 +619,29 @@ fn apply_param_overrides_scrubs_and_clamps() {
 	);
 	assert_eq!(gain(), ParamValue::Double([0.0, 0.0, 0.0], 1));
 
-	// 超上限 → 钳到 max。
+	// Above max → clamp to max.
 	apply_param_overrides(&inst, &[("gain".into(), crate::node::Value::float(5.0))]);
 	assert_eq!(gain(), ParamValue::Double([1.0, 0.0, 0.0], 1));
 
-	// 超下限 → 钳到 min。
+	// Below min → clamp to min.
 	apply_param_overrides(&inst, &[("gain".into(), crate::node::Value::float(-5.0))]);
 	assert_eq!(gain(), ParamValue::Double([-1.0, 0.0, 0.0], 1));
 
-	// NaN → 回退默认（0.25），再走钳制。
+	// NaN → falls back to default (0.25), then goes through clamping.
 	apply_param_overrides(
 		&inst,
 		&[("gain".into(), crate::node::Value::float(f64::NAN))],
 	);
 	assert_eq!(gain(), ParamValue::Double([0.25, 0.0, 0.0], 1));
 
-	// +Inf → 同样回退默认。
+	// +Inf → likewise falls back to default.
 	apply_param_overrides(
 		&inst,
 		&[("gain".into(), crate::node::Value::float(f64::INFINITY))],
 	);
 	assert_eq!(gain(), ParamValue::Double([0.25, 0.0, 0.0], 1));
 
-	// 多维 Double 不经标量清洗路径：Double2D 直接写入。
+	// Multi-dimensional Double bypasses the scalar cleaning path: Double2D is written directly.
 	let def2 = ParamDef::new("pos", crate::param::TYPE_DOUBLE2D);
 	let inst = make_instance(
 		vec![],
@@ -692,7 +696,7 @@ fn write_output_frame_validation_and_writeback() {
 	let frame = render::texture_get_frame(&cpudst).unwrap();
 	assert_eq!(frame.data.as_slice(), image.pixels());
 
-	// GPU：download 帧命中尺寸校验后经 upload 回写。
+	// GPU: the downloaded frame passes the size check, then is written back via upload.
 	let ctx = std::sync::Arc::new(FakeUpload {
 		uploads: std::sync::Mutex::new(Vec::new()),
 		fail: false,
@@ -706,7 +710,7 @@ fn write_output_frame_validation_and_writeback() {
 		assert_eq!(uploads[0].1.data.as_slice(), image.pixels());
 	}
 
-	// 上传失败 → Failed。
+	// Upload failure → Failed.
 	let ctx = std::sync::Arc::new(FakeUpload {
 		uploads: std::sync::Mutex::new(Vec::new()),
 		fail: true,
@@ -717,9 +721,9 @@ fn write_output_frame_validation_and_writeback() {
 		Err(Error::Failed(_))
 	));
 
-	// Planar：texture_get_frame 在到达 Planar match 分支前即失败
-	// （to_frame 对未解析平面纹理返回 State）——该防御分支当前
-	// 不可达，这里锁定"平面目标被拒绝"的行为。
+	// Planar: texture_get_frame already fails before reaching the Planar match arm
+	// (to_frame returns State for unresolvable planar textures) — that defensive arm is currently
+	// unreachable, this test pins the "planar target rejected" behavior.
 	let planar = Texture::wrap_planar(quercus_core::texture::PlanarTexture::new(
 		std::sync::Arc::new(FakeUpload {
 			uploads: std::sync::Mutex::new(Vec::new()),
@@ -749,11 +753,11 @@ fn zip_rois_pairs_inputs_only() {
 		y2: 4.0,
 	};
 	let zipped = zip_rois(&inst, &[rect]);
-	assert_eq!(zipped.len(), 2, "Output 不计入");
+	assert_eq!(zipped.len(), 2, "Output is not counted");
 	assert_eq!(zipped[0].0, "Source");
 	assert_eq!(zipped[0].1.x2, 3.0);
 	assert_eq!(zipped[1].0, "Matte");
-	assert_eq!(zipped[1].1.x1, 0.0, "RoI 不足时默认矩形");
+	assert_eq!(zipped[1].1.x1, 0.0, "default rect when RoI is insufficient");
 
 	let empty = zip_rois(&inst, &[]);
 	assert_eq!(empty.len(), 2);
@@ -770,12 +774,12 @@ fn trace_branches_in_render_frame() {
 	let prev = std::env::var_os("QUERCUS_OFX_TRACE");
 	std::env::set_var("QUERCUS_OFX_TRACE", "1");
 	let body = std::panic::catch_unwind(|| {
-		// 插件未声明 GL → use_opengl 决策为 false，但 trace 分支
-		// 在 renderer 是 GL 时执行（打印 raw GL prop）。
+		// Plugin does not declare GL → use_opengl decision is false, but the trace branch
+		// runs when the renderer is GL (prints the raw GL prop).
 		let inst = make_instance(vec![], vec![], &["Source", "Output"], vec![]);
 		let mut j = job(f32_texture(2, 2, 0.0), Some(f32_texture(2, 2, 0.5)));
 		j.renderer = Some(std::sync::Arc::new(crate::render::GlKindMarker));
-		render_frame(&inst, &j).expect("CPU 回退应成功");
+		render_frame(&inst, &j).expect("CPU fallback should succeed");
 	});
 	match prev {
 		Some(v) => std::env::set_var("QUERCUS_OFX_TRACE", v),

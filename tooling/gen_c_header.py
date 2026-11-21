@@ -186,7 +186,10 @@ class TypeMapper:
         rest = inner[end + 1 :].strip()
         ret = "void"
         if rest.startswith("->"):
-            ret_rust = rest[2:].strip()
+            # A trailing comma can end up inside the generic argument
+            # (`Option<fn(...) -> i32,>`), because rustfmt puts the field
+            # separator after the return type. It is not part of the type.
+            ret_rust = rest[2:].strip().rstrip(",").strip()
             if ret_rust and ret_rust != "()":
                 ret = self.map(ret_rust)
         name = f" {parameter}" if parameter else ""

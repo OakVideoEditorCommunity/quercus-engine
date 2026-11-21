@@ -302,24 +302,24 @@ impl Image {
 			K_IMAGE_PROP_UNIQUE_ID,
 			vec![Value::String(unique_identifier())],
 		);
-		// OfxPropType="OfxTypeImage"：图像实例的类型标识（支持库
-		// validateImageBaseProperties 的必备项，带可校验默认值）。
+		// OfxPropType="OfxTypeImage": the image instance's type identifier (required by the support
+		// library's validateImageBaseProperties, with a checkable default value).
 		img.props.define(
 			"OfxPropType",
 			vec![Value::String(
 				std::ffi::CString::new("OfxTypeImage").unwrap(),
 			)],
 		);
-		// OFX 必备图像属性（支持库 ImageBase/Image 构造的无默认值强读；
-		// 缺失即抛 PropertyUnknownToHost → MissingHostFeature 紫帧）：
-		// 方形像素 1.0；预乘声明（本管线按预乘 alpha 处理）；无场。
+		// OFX required image properties (strong reads without defaults in the support library's
+		// ImageBase/Image constructors; missing → PropertyUnknownToHost → MissingHostFeature purple frame):
+		// square pixels 1.0; premultiplied declaration (this pipeline treats alpha as premultiplied); no field.
 		img.props
 			.define("OfxImagePropPixelAspectRatio", vec![Value::Double(1.0)]);
 		img.props.define(
 			"OfxImageEffectPropPreMultiplication",
-			// kOfxImagePreMultiplied 的真实字符串值是
-			// "OfxImageAlphaPremultiplied"（ofxImageEffect.h），
-			// ofxs mapStrToPreMultiplicationEnum 只认这三个精确值。
+			// the real string value of kOfxImagePreMultiplied is
+			// "OfxImageAlphaPremultiplied" (ofxImageEffect.h);
+			// ofxs mapStrToPreMultiplicationEnum accepts only these three exact values.
 			vec![Value::String(
 				std::ffi::CString::new("OfxImageAlphaPremultiplied").unwrap(),
 			)],
@@ -330,8 +330,8 @@ impl Image {
 				std::ffi::CString::new("OfxFieldNone").unwrap(),
 			)],
 		);
-		// OfxImageEffectPropRenderScale：openfx-misc 的
-		// checkBadRenderScaleOrField 用它比对渲染参数（1:1）。
+		// OfxImageEffectPropRenderScale: openfx-misc's
+		// checkBadRenderScaleOrField compares the render params against it (1:1).
 		img.props.define(
 			"OfxImageEffectPropRenderScale",
 			vec![Value::Double(1.0), Value::Double(1.0)],
@@ -502,7 +502,7 @@ mod tests {
 			assert!((a - b).abs() < 0.001, "f16 roundtrip: {a} vs {b}");
 		}
 
-		// 同深度 = 重新分配 + 拷贝（props 的数据指针必须指向新缓冲）。
+		// Same depth = reallocate + copy (the props' data pointer must point into a new buffer).
 		let same = src.convert_depth(BitDepth::Float);
 		assert_eq!(same.pixels(), src.pixels());
 		assert!(!std::ptr::eq(same.pixels().as_ptr(), src.pixels().as_ptr()));
@@ -516,7 +516,7 @@ mod tests {
 		assert!(f16_to_f32(f32_to_f16(1.0)) == 1.0);
 		assert!(f16_to_f32(f32_to_f16(f32::INFINITY)).is_infinite());
 		assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
-		// 超 half 范围 → Inf。
+		// Beyond half range → Inf.
 		assert!(f16_to_f32(f32_to_f16(1e10)).is_infinite());
 	}
 }

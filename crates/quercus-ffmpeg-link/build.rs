@@ -32,6 +32,7 @@
 //! paths (observed: a Homebrew upgrade of dav1d left ffmpeg's own .pc
 //! pointing at a deleted Cellar dir, breaking the link).
 
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -139,6 +140,13 @@ fn main() {
 	#[cfg(target_os = "macos")]
 	println!("cargo:rustc-link-search=native=/usr/lib");
 
+	// rustc rejects the same `+whole-archive` library appearing more than
+	// once on the command line ("overriding linking modifiers from command
+	// line is not supported"). pkg-config's static closure can mention a
+	// shared dependency (ass, freetype, ...) from more than one
+	// Requires.private chain, so emit each whole-archived archive once.
+	let mut whole_archived: HashSet<String> = HashSet::new();
+
 	for token in String::from_utf8_lossy(&output.stdout).split_whitespace() {
 		if let Some(path) = token.strip_prefix("-L") {
 			println!("cargo:rustc-link-search=native={path}");
@@ -198,6 +206,9 @@ fn main() {
 					// `+whole-archive` reaches ld64 as `-force_load` and,
 					// unlike `cargo:rustc-link-arg`, it propagates from this
 					// helper crate to the crate that finally links the cdylib.
+					if !whole_archived.insert(lib.to_string()) {
+						continue;
+					}
 					println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
 				} else {
 					println!("cargo:rustc-link-lib=static={lib}");

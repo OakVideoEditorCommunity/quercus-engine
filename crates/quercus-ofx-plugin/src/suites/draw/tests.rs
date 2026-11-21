@@ -15,11 +15,11 @@ fn get_colour_palette() {
 		assert_eq!(get_colour(ctx, std_colour::ACTIVE, &mut out), status::OK);
 	}
 	assert_eq!((out.r, out.g, out.b, out.a), (1.0, 0.84, 0.0, 1.0));
-	// 越界枚举 → ErrValue。
+	// Out-of-range enum → ErrValue.
 	unsafe {
 		assert_eq!(get_colour(ctx, 99, &mut out), status::ERR_VALUE);
 		assert_eq!(get_colour(ctx, -1, &mut out), status::ERR_VALUE);
-		// 空输出指针 → ErrValue。
+		// Null output pointer → ErrValue.
 		assert_eq!(
 			get_colour(ctx, std_colour::BACKGROUND, std::ptr::null_mut()),
 			status::ERR_VALUE
@@ -83,12 +83,12 @@ fn draw_suite_outside_draw_fails() {
 		assert_eq!(get_colour(ctx, std_colour::TEXT, &mut out), status::FAILED);
 		assert_eq!(set_line_width(ctx, 1.0), status::FAILED);
 		assert_eq!(set_line_stipple(ctx, stipple::SOLID), status::FAILED);
-		// 合法参数（避开空指针检查）→ 摘除后 resolve 失败 → Failed。
+		// Valid arguments (avoiding the null-pointer checks) → resolve fails after removal → Failed.
 		assert_eq!(
 			draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 2),
 			status::FAILED
 		);
-		// drawText 同样 Failed（先 resolve 失败）。
+		// drawText likewise Failed (resolve fails first).
 		assert_eq!(draw_text(ctx, s.as_ptr(), &pos, 0), status::FAILED);
 	}
 }
@@ -100,35 +100,36 @@ fn draw_primitive_argument_validation() {
 	let ctx = make_context((10.0, 10.0), (1.0, 1.0));
 	let pts = [OfxPointD { x: 0.0, y: 0.0 }, OfxPointD { x: 10.0, y: 10.0 }];
 	unsafe {
-		// 非法原语枚举。
+		// Invalid primitive enum.
 		assert_eq!(draw(ctx, 99, pts.as_ptr(), 2), status::ERR_VALUE);
 		assert_eq!(draw(ctx, -1, pts.as_ptr(), 2), status::ERR_VALUE);
-		// 点数不合法：LINES 奇数点。
+		// Invalid point count: odd count for LINES.
 		assert_eq!(
 			draw(ctx, primitive::LINES, pts.as_ptr(), 3),
 			status::ERR_VALUE
 		);
-		// RECTANGLE 需恰好 2 点。
+		// RECTANGLE needs exactly 2 points.
 		assert_eq!(
 			draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 3),
 			status::ERR_VALUE
 		);
-		// POLYGON 需 ≥3 点。
+		// POLYGON needs >= 3 points.
 		assert_eq!(
 			draw(ctx, primitive::POLYGON, pts.as_ptr(), 2),
 			status::ERR_VALUE
 		);
-		// 空指针 + 正点数。
+		// Null pointer with a positive point count.
 		assert_eq!(
 			draw(ctx, primitive::LINES, std::ptr::null(), 2),
 			status::ERR_VALUE
 		);
-		// 合法参数：环境相关的 GL 路径（无 current 上下文时宿主可能
-		// 失败）——参数校验已过即可，具体状态不在此断言。
+		// Valid arguments: the GL path is environment-dependent (the host may
+		// fail without a current context) — passing argument validation is
+		// enough, the exact status is not asserted here.
 		let st = draw(ctx, primitive::RECTANGLE, pts.as_ptr(), 2);
 		assert!(
 			st == status::OK || st == status::FAILED,
-			"合法参数应 OK（有 GL）或 Failed（无 GL 上下文），got {st}"
+			"valid arguments should be OK (with GL) or Failed (no GL context), got {st}"
 		);
 	}
 	drop_context(ctx);

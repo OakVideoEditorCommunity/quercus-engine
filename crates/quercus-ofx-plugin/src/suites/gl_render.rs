@@ -81,8 +81,9 @@ use crate::image::Image;
 use crate::property::{PropertySet, Value};
 use crate::suites::{status, tag};
 
-// ---- GL 常量（ofxGPURender.h；GLFormat 字符串为 ofxOpenGLRender.h
-// OpenFX 1.4 的规范名，vendored 头文件是 stub 未收录，按规范定义）----
+// ---- GL constants (ofxGPURender.h; the GLFormat strings are the canonical
+// OpenFX 1.4 names from ofxOpenGLRender.h — the vendored header is a stub that
+// omits them, so they are defined per the spec) ----
 
 /// kOfxImageEffectPropOpenGLTextureIndex (ofxGPURender.h:135).
 pub(crate) const GL_TEXTURE_INDEX: &str = "OfxImageEffectPropOpenGLTextureIndex";
@@ -139,7 +140,7 @@ pub(crate) fn pick_gl_pixel_depth(
 	None
 }
 
-// ---- 存活纹理表 -----------------------------------------------------------
+// ---- Live texture table --------------------------------------------------
 
 /// Live GL texture table: clipLoadTexture output (props address → property
 /// set + texture value + whether it is the output clip + real GL texture
@@ -352,8 +353,9 @@ fn format_components(format: Option<&str>) -> Option<crate::image::Components> {
 		Some(GL_FORMAT_RGBA) | None => Some(crate::image::Components::Rgba),
 		Some(GL_FORMAT_RGB) => Some(crate::image::Components::Rgb),
 		Some(GL_FORMAT_ALPHA) => Some(crate::image::Components::Alpha),
-		// Luminance 族：Phase 2 不建模（无对应 Components），宿主
-		// 按 RGBA 上传并如实上报——格式核对走 None 分支。
+		// Luminance family: phase 2 does not model it (no matching Components);
+		// the host uploads as RGBA and reports it faithfully — the format check
+		// takes the None branch.
 		Some(GL_FORMAT_LUMINANCE) | Some(GL_FORMAT_LUMINANCE_ALPHA) => None,
 		Some(_) => None,
 	}
@@ -418,8 +420,8 @@ unsafe extern "C" fn clip_load_texture(
 		}
 		unsafe { *out = std::ptr::null_mut() };
 		let c = resolve_clip(clip)?;
-		// GL 上下文（TLS）：仅 GL 渲染期存在（ofxGPURender.h 的
-		// "OpenGL Current Context" 规则）。
+		// GL context (TLS): only present during GL rendering (the
+		// "OpenGL Current Context" rule in ofxGPURender.h).
 		let gl = crate::suites::gl_ctx().ok_or(status::ERR_MISSING_HOST_FEATURE)?;
 
 		let scale = crate::suites::render_ctx()
@@ -427,15 +429,17 @@ unsafe extern "C" fn clip_load_texture(
 			.unwrap_or(crate::instance::RenderScale { x: 1.0, y: 1.0 });
 
 		if c.name == "Output" {
-			// Output：返回已附着的输出纹理（format 忽略；渲染目标
-			// 绑定由调用方契约保证——等价 C++ attach_output_texture）。
+			// Output: returns the already-attached output texture (format is
+			// ignored; render-target binding is guaranteed by the caller's
+			// contract — equivalent to C++ attach_output_texture).
 			let tex = gl.output_texture.clone();
 			let (w, h) = texture_size(&tex);
 			if w <= 0.0 || h <= 0.0 {
 				return Err(status::ERR_BAD_HANDLE);
 			}
-			// OpenGLTextureIndex = 宿主为输出帧建的真实 GL 纹理名
-			// （render 驱动 GL 分支经 GlCtx 注入；0 = CPU 回退）。
+			// OpenGLTextureIndex = the real GL texture name the host created for
+			// the output frame (injected by the render driver's GL branch via GlCtx;
+			// 0 = CPU fallback).
 			let index = gl.output_gl_texture.unwrap_or(0);
 			let props = make_texture_props(
 				w,
@@ -453,9 +457,10 @@ unsafe extern "C" fn clip_load_texture(
 			return Ok(());
 		}
 
-		// Linux GPU 零拷贝：该 clip 的输入已由渲染驱动从同一块 Vulkan
-		// 显存导入为 GL 纹理；直接返回真实名，跳过 fetch_image 下载
-		// 与 create_input_texture 上传。
+		// Linux GPU zero-copy: the render driver has already imported this
+		// clip's input from the same Vulkan GPU memory as a GL texture; return
+		// the real name directly, skipping the fetch_image download and the
+		// create_input_texture upload.
 		#[cfg(any(target_os = "linux", target_os = "windows"))]
 		if let Some((gl_name, gl_w, gl_h)) = c.input_gl_texture_info() {
 			let tex = c
@@ -474,14 +479,15 @@ unsafe extern "C" fn clip_load_texture(
 				row_bytes,
 				gl_name,
 			);
-			// gl_texture=None：句柄释放时不删除 GL 纹理；渲染驱动统一
-			// 清理导入的零拷贝纹理（避免 glDeleteTextures 重复）。
+			// gl_texture=None: releasing the handle does not delete the GL
+			// texture; the render driver cleans up imported zero-copy textures
+			// uniformly (avoids a duplicate glDeleteTextures).
 			let addr = register(Box::new(props), tex, false, None);
 			unsafe { *out = tag::make(addr as *const PropertySet, tag::PROPERTY_SET) };
 			return Ok(());
 		}
 
-		// 输入 clip：Phase 2 仅支持整帧（fetch_image 的 phase-1 约束）。
+		// Input clip: phase 2 only supports full frames (phase-1 constraint of fetch_image).
 		if !region.is_null() {
 			return Err(status::FAILED);
 		}
@@ -495,8 +501,9 @@ unsafe extern "C" fn clip_load_texture(
 			.fetch_image(time, scale, None)
 			.map_err(|_| status::FAILED)?;
 		let components = image.components();
-		// 明确请求了不同分量 → Phase 2 不转换 → Failed（规范要求
-		// 满足请求格式；静默给错格式比显式失败更糟）。
+		// A different component count was explicitly requested → phase 2 does
+		// not convert → Failed (the spec requires satisfying the request; a
+		// silent wrong format is worse than an explicit failure).
 		if let Some(expected) = format_components(format) {
 			if expected != components {
 				return Err(status::FAILED);
@@ -508,11 +515,12 @@ unsafe extern "C" fn clip_load_texture(
 		if w <= 0.0 || h <= 0.0 {
 			return Err(status::FAILED);
 		}
-		// GL 模式：把输入图像上传成真实 GL 纹理（RGBA32F；上下文
-		// current——render 驱动已 acquire），OpenGLTextureIndex 返回
-		// 真实名；GL 上传失败 → 显式 Failed（插件按规范继续）。非 GL
-		// 上下文（本函数仅在 GL 渲染期可达，此分支是 CPU 纹理兜底）：
-		// 仍建 CPU 纹理、索引 0。
+		// GL mode: upload the input image as a real GL texture (RGBA32F; the
+		// context is current — the render driver already acquired it) and report
+		// the real name via OpenGLTextureIndex; a GL upload failure → explicit
+		// Failed (the plugin continues per the spec). Without a GL context (this
+		// function is only reachable during GL rendering; this branch is the CPU
+		// texture fallback): still create a CPU texture, index 0.
 		let gl_tex =
 			crate::gl_bridge::create_input_texture(w as i32, h as i32, image.pixels()).ok();
 		let params = crate::render::VideoParams {
@@ -615,7 +623,7 @@ unsafe extern "C" fn clip_free_texture(texture_handle: *mut c_void) -> c_int {
 		};
 		match entry {
 			Some((_props, _texture, _is_output, gl_tex)) => {
-				// 输入 clip 的真实 GL 纹理随释放删除（上下文 current）。
+				// The input clip's real GL texture is deleted on release (context current).
 				if let Some(gl) = gl_tex {
 					delete_gl_texture_if_gl(gl);
 				}

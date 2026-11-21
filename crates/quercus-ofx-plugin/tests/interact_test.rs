@@ -59,11 +59,11 @@ const MARKER_ENV: &str = "QUERCUS_TEST_PLUGIN_INTERACT_MARKER";
 /// false = skip).
 fn scan_and_register() -> bool {
 	let Some(dir) = common::test_plugin_scan_dir() else {
-		common::skip("最小测试插件未构建");
+		common::skip("minimal test plugin not built");
 		return false;
 	};
 	if host::Host::global().cache.scan_path(&dir).is_err() {
-		common::skip("测试插件扫描失败");
+		common::skip("test plugin scan failed");
 		return false;
 	}
 	node_factory::register_plugin_nodes();
@@ -95,10 +95,10 @@ fn base_plugin_has_no_interact() {
 		}
 		let inst = host::Host::global()
 			.create_instance(BASE_PLUGIN_ID, None)
-			.expect("base 插件实例应可建");
+			.expect("base plugin instance should be creatable");
 		assert!(
 			inst.value.new_interact().is_none(),
-			"无 interact 的插件 new_interact 应为 None"
+			"new_interact on a plugin without interact should be None"
 		);
 		host::Host::global().shutdown();
 	});
@@ -119,17 +119,17 @@ fn interact_lifecycle_and_events() {
 
 		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
-			.expect("interact 变体实例应可建");
+			.expect("interact variant instance should be creatable");
 
 		let interact_arc = inst
 			.value
 			.new_interact()
-			.expect("interact 变体应创建 interact");
+			.expect("interact variant should create an interact");
 		let interact: &Interact = &interact_arc;
 		assert_eq!(interact.describe(), status::OK);
 		assert_eq!(interact.create_instance(), status::OK);
 
-		// 事件：坐标为视口像素；pixelScale 默认 1 → canonical == 视口。
+		// Events: coordinates are viewport pixels; pixelScale defaults to 1 → canonical == viewport.
 		assert_eq!(interact.pen_motion((10.0, 20.0), true, 5.0), status::OK);
 		assert_eq!(interact.pen_down((30.0, 40.0), 5.0), status::OK);
 		assert_eq!(interact.pen_up((30.0, 40.0), 5.0), status::OK);
@@ -142,7 +142,7 @@ fn interact_lifecycle_and_events() {
 		let lines = read_marker(&marker);
 		let _ = fs::remove_file(&marker);
 
-		// 生命周期序列（按序）。
+		// Lifecycle sequence (in order).
 		let seq = ["new_interact", "describe", "create", "destroy"];
 		let pos: Vec<Option<usize>> = seq
 			.iter()
@@ -150,44 +150,47 @@ fn interact_lifecycle_and_events() {
 			.collect();
 		assert!(
 			pos.iter().all(|p| p.is_some()),
-			"标记文件缺生命周期动作：{lines:?}"
+			"marker file is missing lifecycle actions: {lines:?}"
 		);
 		let pos: Vec<usize> = pos.into_iter().map(|p| p.unwrap()).collect();
 		assert!(
 			pos.windows(2).all(|w| w[0] < w[1]),
-			"生命周期顺序应为 new_interact→describe→create→destroy：{lines:?}"
+			"lifecycle order should be new_interact->describe->create->destroy: {lines:?}"
 		);
 
-		// pen 事件：真实参数（视口位置/canonical/压力；C %g 无尾零）。
+		// pen events: real parameters (viewport position/canonical/pressure; C %g has no trailing zeros).
 		assert!(
 			lines
 				.iter()
 				.any(|l| l == "pen_motion vp=10,20 canon=10,20 pressure=1"),
-			"pen_motion 参数不符：{lines:?}"
+			"pen_motion arguments mismatch: {lines:?}"
 		);
 		assert!(
 			lines
 				.iter()
 				.any(|l| l == "pen_down vp=30,40 canon=30,40 pressure=1"),
-			"pen_down 参数不符：{lines:?}"
+			"pen_down arguments mismatch: {lines:?}"
 		);
 		assert!(
 			lines
 				.iter()
 				.any(|l| l == "pen_up vp=30,40 canon=30,40 pressure=0"),
-			"pen_up 参数不符：{lines:?}"
+			"pen_up arguments mismatch: {lines:?}"
 		);
 
-		// key 事件：真实 keySym/keyString。
+		// key events: real keySym/keyString.
 		assert!(
 			lines.iter().any(|l| l == "key_down sym=97 str=a"),
-			"key_down 参数不符：{lines:?}"
+			"key_down arguments mismatch: {lines:?}"
 		);
 		assert!(
 			lines.iter().any(|l| l == "key_up sym=97 str=a"),
-			"key_up 参数不符：{lines:?}"
+			"key_up arguments mismatch: {lines:?}"
 		);
-		assert!(lines.iter().any(|l| l == "idle"), "idle 未记录：{lines:?}");
+		assert!(
+			lines.iter().any(|l| l == "idle"),
+			"idle was not recorded: {lines:?}"
+		);
 
 		host::Host::global().shutdown();
 	});
@@ -208,15 +211,18 @@ fn interact_passthrough_plugin_status() {
 
 		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
-			.expect("interact 变体实例应可建");
-		let interact = inst.value.new_interact().expect("interact 应可建");
+			.expect("interact variant instance should be creatable");
+		let interact = inst
+			.value
+			.new_interact()
+			.expect("interact should be creatable");
 
-		// Escape 的 key_down：插件返回 ReplyDefault → 宿主透传。
+		// Escape key_down: plugin returns ReplyDefault → host passes it through.
 		let st = interact.key_down(host::KEY_ESCAPE, "", 0.0);
 		assert_eq!(
 			st,
 			status::REPLY_DEFAULT,
-			"插件 Escape → ReplyDefault 应透传"
+			"plugin Escape -> ReplyDefault should pass through"
 		);
 
 		unsafe { env::remove_var(MARKER_ENV) };
@@ -224,7 +230,7 @@ fn interact_passthrough_plugin_status() {
 		let _ = fs::remove_file(&marker);
 		assert!(
 			lines.iter().any(|l| l == "key_down sym=65307 str="),
-			"Escape key_down 应真实到达插件：{lines:?}"
+			"Escape key_down should reach the plugin: {lines:?}"
 		);
 
 		host::Host::global().shutdown();
@@ -246,10 +252,13 @@ fn instance_destroy_cleans_up_interact() {
 
 		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
-			.expect("interact 变体实例应可建");
-		let _interact = inst.value.new_interact().expect("interact 应可建");
+			.expect("interact variant instance should be creatable");
+		let _interact = inst
+			.value
+			.new_interact()
+			.expect("interact should be creatable");
 
-		// drop 实例（Arc 归零 → Drop → notify_destroy → interact destroy）。
+		// drop the instance (Arc refcount to zero → Drop → notify_destroy → interact destroy).
 		drop(inst);
 
 		unsafe { env::remove_var(MARKER_ENV) };
@@ -257,7 +266,7 @@ fn instance_destroy_cleans_up_interact() {
 		let _ = fs::remove_file(&marker);
 		assert!(
 			lines.iter().any(|l| l == "destroy"),
-			"实例销毁应连带 interact destroy：{lines:?}"
+			"instance destruction should also destroy the interact: {lines:?}"
 		);
 
 		host::Host::global().shutdown();
@@ -275,15 +284,15 @@ fn instance_destroy_cleans_up_interact() {
 fn interact_draw_renders_plugin_colours() {
 	common::with_host(|| {
 		if !cfg!(target_os = "macos") {
-			common::skip("GL 桥仅 macOS 实现");
+			common::skip("GL bridge is only implemented on macOS");
 			return;
 		}
 		if !common::gpu_available() {
-			common::skip("GL 测试需 QUERCUS_GPU_TESTS");
+			common::skip("GL tests require QUERCUS_GPU_TESTS");
 			return;
 		}
 		if !gl_bridge::gl_available() {
-			common::skip("本机无可用 GL 上下文");
+			common::skip("no usable GL context on this machine");
 			return;
 		}
 		if !scan_and_register() {
@@ -295,8 +304,11 @@ fn interact_draw_renders_plugin_colours() {
 
 		let inst = host::Host::global()
 			.create_instance(INTERACT_PLUGIN_ID, None)
-			.expect("interact 变体实例应可建");
-		let interact = inst.value.new_interact().expect("interact 应可建");
+			.expect("interact variant instance should be creatable");
+		let interact = inst
+			.value
+			.new_interact()
+			.expect("interact should be creatable");
 
 		let (w, h) = (64i32, 64i32);
 		let params = render::VideoParams {
@@ -305,17 +317,18 @@ fn interact_draw_renders_plugin_colours() {
 			format: render::PIXEL_FORMAT_F32,
 			..Default::default()
 		};
-		// 一次 acquire 覆盖 FBO 装配 → draw（内部嵌套 acquire）→ 回读。
-		let _guard = gl_bridge::acquire().expect("acquire 应成功");
-		let tex = gl_bridge::create_output_texture(w, h, &params).expect("输出纹理应可建");
-		let fbo = gl_bridge::create_fbo(tex, w, h).expect("FBO 应完整");
+		// One acquire covers FBO setup → draw (nested acquire inside) → read-back.
+		let _guard = gl_bridge::acquire().expect("acquire should succeed");
+		let tex = gl_bridge::create_output_texture(w, h, &params)
+			.expect("output texture should be creatable");
+		let fbo = gl_bridge::create_fbo(tex, w, h).expect("FBO should be complete");
 		gl_bridge::bind_fbo(fbo);
 		gl_bridge::set_viewport(w, h);
 
 		let st = interact.draw((64.0, 64.0), (1.0, 1.0), 5.0, None);
-		assert_eq!(st, status::OK, "draw 应返回插件 OK");
+		assert_eq!(st, status::OK, "draw should return OK from the plugin");
 
-		let img = gl_bridge::read_pixels_to_image(w, h, &params).expect("回读应成功");
+		let img = gl_bridge::read_pixels_to_image(w, h, &params).expect("read-back should succeed");
 		gl_bridge::delete_fbo(fbo);
 		gl_bridge::delete_gl_texture(tex);
 		drop(_guard);
@@ -324,7 +337,7 @@ fn interact_draw_renders_plugin_colours() {
 		let lines = read_marker(&marker);
 		let _ = fs::remove_file(&marker);
 
-		// Draw suite 状态真实往返（插件侧记录）。
+		// Draw suite state really round-trips (recorded on the plugin side).
 		assert!(
 			lines.iter().any(|l| {
 				l.starts_with("draw vp=64x64")
@@ -334,11 +347,11 @@ fn interact_draw_renders_plugin_colours() {
 					&& l.contains("getcol=0,0,0,1")
 					&& l.contains("draw_st=0")
 			}),
-			"draw 记录不符（setcol/getcol/draw 应 OK）：{lines:?}"
+			"draw record mismatch (setcol/getcol/draw should all be OK): {lines:?}"
 		);
 
-		// 像素断言：矩形区域 (10..30)² 的 GL 像素 → 翻转后 frame y 33..53。
-		// F32 RGBA 每像素 16 字节（紧凑行）。
+		// Pixel assertion: the GL pixels of rect region (10..30)² → frame y 33..53 after flip.
+		// F32 RGBA is 16 bytes per pixel (tight rows).
 		let stride = (w as usize) * 16;
 		let px = |x: usize, y: usize| -> [f32; 4] {
 			let p = &img.pixels()[y * stride + x * 16..y * stride + x * 16 + 16];
@@ -349,25 +362,25 @@ fn interact_draw_renders_plugin_colours() {
 				f32::from_ne_bytes(p[12..16].try_into().unwrap()),
 			]
 		};
-		// 角上（rect 外）应为插件清屏暗背景。
+		// The corner (outside the rect) should be the plugin's dark clear background.
 		let corner = px(0, 0);
 		for (i, v) in [0.05f32, 0.05, 0.05, 1.0].iter().enumerate() {
 			assert!(
 				(corner[i] - v).abs() < 1e-4,
-				"角像素[{i}] = {}，期望暗背景 {v}",
+				"corner pixel[{i}] = {}, expected dark background {v}",
 				corner[i]
 			);
 		}
-		// rect 内部（frame (20,40) = GL (20,23)）应为 setColour 颜色。
+		// Inside the rect (frame (20,40) = GL (20,23)) should be the setColour colour.
 		let inside = px(20, 40);
 		for (i, v) in [0.9f32, 0.1, 0.2, 1.0].iter().enumerate() {
 			assert!(
 				(inside[i] - v).abs() < 1e-4,
-				"矩形内像素[{i}] = {}，期望 {v}",
+				"pixel inside rectangle[{i}] = {}, expected {v}",
 				inside[i]
 			);
 		}
-		// 整帧只应有两种颜色（背景 + 矩形），矩形覆盖 ~400 像素。
+		// The whole frame should contain only two colours (background + rect); the rect covers ~400 pixels.
 		let (mut rect_n, mut clear_n) = (0usize, 0usize);
 		for y in 0..h as usize {
 			for x in 0..w as usize {
@@ -379,15 +392,19 @@ fn interact_draw_renders_plugin_colours() {
 				} else if is_clear {
 					clear_n += 1;
 				} else {
-					panic!("意外颜色像素 ({x},{y}): {c:?}");
+					panic!("unexpected colour pixel ({x},{y}): {c:?}");
 				}
 			}
 		}
 		assert!(
 			(rect_n as i32 - 400).abs() <= 16,
-			"矩形应覆盖 ~400 像素，got {rect_n}"
+			"rectangle should cover ~400 pixels, got {rect_n}"
 		);
-		assert_eq!(rect_n + clear_n, (w * h) as usize, "整帧应为背景+矩形两色");
+		assert_eq!(
+			rect_n + clear_n,
+			(w * h) as usize,
+			"the whole frame should contain only the background and rectangle colours"
+		);
 
 		host::Host::global().shutdown();
 	});

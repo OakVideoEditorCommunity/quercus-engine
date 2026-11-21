@@ -33,7 +33,7 @@ fn cs(s: &str) -> CString {
 	CString::new(s).unwrap()
 }
 
-// ---- clip 描述符属性（ofxImageEffect.h / ofxCore.h）----
+// ---- clip descriptor properties (ofxImageEffect.h / ofxCore.h) ----
 
 /// kOfxImageClipPropOptional.
 pub(crate) const CLIP_OPTIONAL: &str = "OfxImageClipPropOptional";
@@ -82,18 +82,20 @@ impl ClipDescriptor {
 		props.set_one(CLIP_OPTIONAL, Value::Int(0));
 		props.set_one(CLIP_IS_MASK, Value::Int(0));
 		props.set_one(CLIP_FIELD_EXTRACTION, Value::String(cs(CLIP_FIELD_DOUBLED)));
-		// kOfxImageClipPropFieldOrder（ofxhClip.cpp 的 clip 描述符必备
-		// 属性；ofxs `Clip::getFieldOrder()` 无默认值强读——Mirror 这类
-		// 场感知插件缺它直接 MissingHostFeature）。取值是
-		// kOfxImageField* 族（ofxImageEffect.h:1288），默认无场。
+		// kOfxImageClipPropFieldOrder (a required clip descriptor
+		// attribute in ofxhClip.cpp; ofxs `Clip::getFieldOrder()` reads it
+		// hard with no default — field-aware plugins like Mirror go straight
+		// to MissingHostFeature without it). Values come from the
+		// kOfxImageField* family (ofxImageEffect.h:1288); defaults to no field.
 		props.set_one(
 			"OfxImageClipPropFieldOrder",
 			Value::String(cs("OfxFieldNone")),
 		);
 		props.set_one(CLIP_SUPPORTS_TILES, Value::Int(1));
-		// ofxColour（M11 §4）：clip 色彩空间属性族。Colourspace 由宿主
-		// 在实例化时写入（输入 clip = 工作空间 ACEScg）；Preferred 由
-		// 插件在 GetClipPreferences 写（宿主侧预置空数组）。
+		// ofxColour (M11 §4): the clip colourspace property family. Colourspace
+		// is written by the host at instancing time (input clip = working
+		// space ACEScg); Preferred is written by the plugin in
+		// GetClipPreferences (the host pre-sets an empty array).
 		props.set_one(host::PROP_CLIP_COLOURSPACE, Value::String(cs("")));
 		props.define(host::PROP_CLIP_PREFERRED_COLOURSPACES, vec![]);
 		Self {

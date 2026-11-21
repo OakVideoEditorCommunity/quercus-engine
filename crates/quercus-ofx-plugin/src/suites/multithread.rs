@@ -108,15 +108,15 @@ unsafe extern "C" fn multi_thread(
 				func as usize
 			);
 		}
-		// 裸指针不可 Send：以 usize 搬运，线程内还原（C 侧本即
-		// 整数传递语义）。
+		// Raw pointers are not Send: carry as usize and restore inside the thread (C side already has
+		// integer-passing semantics).
 		let arg = thread_arg as usize;
 		thread::scope(|scope| {
 			for i in 0..n_threads {
 				scope.spawn(move || {
 					THREAD_INDEX.with(|t| t.set(Some(i)));
-					// func 是插件代码：按 OFX 契约不 panic；Rust 侧
-					// 只做 TLS 登记，无 panic 源。
+					// func is plugin code: per OFX contract it does not panic; the Rust side
+					// only does TLS registration and has no panic source.
 					unsafe { (func)(i, n_threads, arg as *mut c_void) };
 					THREAD_INDEX.with(|t| t.set(None));
 				});
@@ -141,7 +141,7 @@ unsafe extern "C" fn multi_thread_num_cpus(out: *mut c_int) -> c_int {
 		if out.is_null() {
 			return status::ERR_VALUE;
 		}
-		// 物理核数（HS 同：系统 CPU 数）。
+		// Physical core count (same as HS: system CPU count).
 		let n = thread::available_parallelism()
 			.map(|n| n.get() as c_int)
 			.unwrap_or(1);
@@ -165,7 +165,7 @@ unsafe extern "C" fn multi_thread_index(out: *mut c_int) -> c_int {
 		if out.is_null() {
 			return status::ERR_VALUE;
 		}
-		// 宿主线程 → -1（HS 约定）。
+		// Host thread → -1 (HS convention).
 		unsafe { *out = THREAD_INDEX.with(|t| t.get()).map_or(-1, |i| i as c_int) };
 		status::OK
 	})
@@ -190,13 +190,13 @@ unsafe extern "C" fn multi_thread_is_spawned(out: *mut c_int) -> c_int {
 	})
 }
 
-// ---- 互斥锁（OfxMultiThreadSuiteV1 的 mutex* 函数组）-----------------------
+// ---- mutexes (the mutex* function group of OfxMultiThreadSuiteV1) ----------
 //
-// 句柄表：全局注册表按 usize 键发号；`count > 1` 是信号量语义（ofxMultiThread.h
-// "a mutex with a count greater than 1 is a counting semaphore"）。
-// 插件在多线程渲染期用它们保护共享状态——ofxs 支持库的
-// ofxsThreadSuiteCheck 在 load 时逐一检查这些函数非空，缺一个整批插件
-// 直接拒载。
+// Handle table: a global registry issues ids keyed by usize; `count > 1` means semaphore
+// semantics (ofxMultiThread.h "a mutex with a count greater than 1 is a counting semaphore").
+// Plugins use them to protect shared state during multithreaded rendering — the ofxs
+// support library's ofxsThreadSuiteCheck checks at load that these functions are all
+// non-null, and rejects the whole plugin batch if one is missing.
 
 /// Counting semaphore (a plain mutex when count==1).
 struct OfxMutex {
@@ -345,7 +345,7 @@ unsafe extern "C" fn mutex_try_lock(handle: *mut c_void) -> c_int {
 		};
 		let mut permits = m.permits.lock().unwrap_or_else(|e| e.into_inner());
 		if *permits <= 0 {
-			// 规范：占不到锁返回 kOfxStatFailed（不是错误）。
+			// Spec: failing to acquire the lock returns kOfxStatFailed (not an error).
 			return status::FAILED;
 		}
 		*permits -= 1;
@@ -391,11 +391,11 @@ mod tests {
 				status::OK
 			);
 		}
-		// 索引 0..7 各一次 → 28；count 各 8 → 64。
+		// Indices 0..7 once each → 28; count 8 each → 64.
 		assert_eq!(state.0.load(Ordering::Relaxed), 28);
 		assert_eq!(state.1.load(Ordering::Relaxed), 64);
 
-		// 0 线程：no-op OK。
+		// 0 threads: no-op OK.
 		unsafe {
 			assert_eq!(
 				(s.multi_thread)(worker, 0, &state as *const _ as *mut c_void),
@@ -427,13 +427,13 @@ mod tests {
 		let mut i = 0;
 		let mut spawned = 1;
 		unsafe {
-			// 宿主线程：index = -1，isSpawned = 0。
+			// Host thread: index = -1, isSpawned = 0.
 			assert_eq!((s.index)(&mut i), status::OK);
 			assert_eq!(i, -1);
 			assert_eq!((s.is_spawned)(&mut spawned), status::OK);
 			assert_eq!(spawned, 0);
 
-			// 插件线程内：index 正确、isSpawned = 1。
+			// Inside a plugin thread: index is correct, isSpawned = 1.
 			assert_eq!(
 				(s.multi_thread)(query_worker, 1, std::ptr::null_mut()),
 				status::OK

@@ -231,16 +231,16 @@ fn local_host(plugins: Vec<Arc<Plugin>>) -> Host {
 #[cfg(not(target_os = "windows"))]
 #[test]
 fn dl_open_and_dl_sym_error_paths_return_none() {
-	// 不存在的库 → None。
+	// Nonexistent library → None.
 	assert!(dl_open(Path::new("/definitely/not/a/library-quercus.so")).is_none());
-	// 可加载的库 + 不存在的符号 → None。
-	let lib = fixture_lib().expect("build.rs 产出测试插件库");
-	let handle = dl_open(&lib).expect("测试插件库可加载");
+	// Loadable library + nonexistent symbol → None.
+	let lib = fixture_lib().expect("test plugin library built by build.rs");
+	let handle = dl_open(&lib).expect("test plugin library loads");
 	assert!(dl_sym(handle, "quercus_definitely_missing_symbol").is_none());
 	unsafe { dlclose(handle) };
 }
 
-// ---- fetchSuite 入口 -------------------------------------------------
+// ---- fetchSuite entry -------------------------------------------------
 
 #[test]
 fn host_fetch_suite_null_args_and_trace_paths() {
@@ -253,16 +253,16 @@ fn host_fetch_suite_null_args_and_trace_paths() {
 	let name = CString::new("OfxPropertySuite").unwrap();
 	let bogus = CString::new("OfxBogusSuite").unwrap();
 
-	// NULL host / NULL name → None（不触达 suite 分发表）。
+	// NULL host / NULL name → None (the suite dispatch table is never reached).
 	assert!(unsafe { host_fetch_suite(std::ptr::null_mut(), name.as_ptr(), 1) }.is_null());
 	assert!(unsafe { host_fetch_suite(host, std::ptr::null(), 1) }.is_null());
 
-	// QUERCUS_OFX_TRACE 打开：hit 与 miss 诊断分支。
+	// QUERCUS_OFX_TRACE on: the hit and miss diagnostic branches.
 	let prev = std::env::var_os("QUERCUS_OFX_TRACE");
 	std::env::set_var("QUERCUS_OFX_TRACE", "1");
 	assert!(!unsafe { host_fetch_suite(host, name.as_ptr(), 1) }.is_null());
 	assert!(unsafe { host_fetch_suite(host, bogus.as_ptr(), 1) }.is_null());
-	// 版本不符也走 miss。
+	// A version mismatch also takes the miss path.
 	assert!(unsafe { host_fetch_suite(host, name.as_ptr(), 2) }.is_null());
 	match prev {
 		Some(v) => std::env::set_var("QUERCUS_OFX_TRACE", v),
@@ -270,7 +270,7 @@ fn host_fetch_suite_null_args_and_trace_paths() {
 	}
 }
 
-// ---- overlay interact 入口声明 ---------------------------------------
+// ---- overlay interact entry declaration -------------------------------
 
 #[test]
 fn overlay_interact_entry_null_pointer_and_v1_fallback() {
@@ -283,24 +283,24 @@ fn overlay_interact_entry_null_pointer_and_v1_fallback() {
 		status::OK
 	}
 	let props = PropertySet::new();
-	// 属性缺失 → None。
+	// Property absent → None.
 	assert!(overlay_interact_entry(&props).is_none());
-	// 空指针 → 跳过（V2 空、V1 也缺）。
+	// Null pointer → skipped (V2 null, V1 also absent).
 	props.set_one(
 		PROP_OVERLAY_INTERACT_V2,
 		Value::Pointer(std::ptr::null_mut()),
 	);
 	assert!(overlay_interact_entry(&props).is_none());
-	// 类型不是 Pointer → 跳过。
+	// Not a Pointer type → skipped.
 	props.set_one(PROP_OVERLAY_INTERACT_V2, Value::Int(1));
 	assert!(overlay_interact_entry(&props).is_none());
-	// V1 回退命中。
+	// V1 fallback hits.
 	props.set_one(
 		PROP_OVERLAY_INTERACT_V1,
 		Value::Pointer(overlay as *const () as *mut std::ffi::c_void),
 	);
 	assert!(overlay_interact_entry(&props).is_some());
-	// V2 优先。
+	// V2 takes precedence.
 	props.set_one(
 		PROP_OVERLAY_INTERACT_V2,
 		Value::Pointer(overlay as *const () as *mut std::ffi::c_void),
@@ -308,7 +308,7 @@ fn overlay_interact_entry_null_pointer_and_v1_fallback() {
 	assert!(overlay_interact_entry(&props).is_some());
 }
 
-// ---- 卸载后的入口保护 -------------------------------------------------
+// ---- Entry protection after unload ------------------------------------
 
 #[test]
 fn unloaded_plugin_actions_fail_without_touching_entry() {
@@ -324,14 +324,14 @@ fn unloaded_plugin_actions_fail_without_touching_entry() {
 	assert_eq!(st, status::ERR_FATAL);
 }
 
-// ---- bundle/二进制探测 -----------------------------------------------
+// ---- bundle/binary probing --------------------------------------------
 
 #[test]
 fn is_bundle_dir_matches_suffixes_only() {
 	assert!(is_bundle_dir(Path::new("/tmp/Foo.bundle")));
 	assert!(is_bundle_dir(Path::new("Bar.plugin")));
 	assert!(!is_bundle_dir(Path::new("/tmp/NotIt")));
-	// 无 file_name（根路径）→ false。
+	// No file_name (root path) → false.
 	assert!(!is_bundle_dir(Path::new("/")));
 }
 
@@ -339,17 +339,17 @@ fn is_bundle_dir_matches_suffixes_only() {
 fn find_binary_in_bundle_prefers_platform_dir_and_falls_back_to_root() {
 	let dir = temp_dir("find-bin");
 
-	// 空 bundle → None。
+	// Empty bundle → None.
 	assert!(find_binary_in_bundle(&dir).is_none());
 
-	// 根目录 .so 回退。
+	// Root-dir .so fallback.
 	std::fs::write(dir.join("libquercus.so"), b"not a real lib").unwrap();
 	assert_eq!(
 		find_binary_in_bundle(&dir).unwrap(),
 		dir.join("libquercus.so")
 	);
 
-	// 平台目录优先，且跳过 .plist。
+	// Platform directory preferred, and .plist skipped.
 	let platform = dir.join("Contents").join("Linux-x86-64");
 	std::fs::create_dir_all(&platform).unwrap();
 	std::fs::write(platform.join("Info.plist"), b"meta").unwrap();
@@ -359,7 +359,7 @@ fn find_binary_in_bundle_prefers_platform_dir_and_falls_back_to_root() {
 		platform.join("plugin")
 	);
 
-	// 平台目录里只有 .plist → 回退根目录。
+	// Platform directory holds only .plist → fall back to the root dir.
 	std::fs::remove_file(platform.join("plugin")).unwrap();
 	assert_eq!(
 		find_binary_in_bundle(&dir).unwrap(),
@@ -386,15 +386,15 @@ fn walk_dirs_respects_depth_and_read_errors() {
 	assert_eq!(
 		out,
 		vec![bundle.clone()],
-		"深度 1 内只发现 One.bundle（文件与更深目录跳过）"
+		"only One.bundle found within depth 1 (files and deeper dirs skipped)"
 	);
 
-	// 深度上限内全收。
+	// Everything within the depth cap is collected.
 	let mut deep = Vec::new();
 	walk_dirs(&root, 0, 4, &mut deep);
 	assert_eq!(deep.len(), 2);
 
-	// read_dir 失败（路径是文件）→ 空返回。
+	// read_dir fails (the path is a file) → empty return.
 	let mut errs = Vec::new();
 	walk_dirs(&root.join("file.txt"), 0, 4, &mut errs);
 	assert!(errs.is_empty());
@@ -408,12 +408,12 @@ fn walk_dirs_respects_depth_and_read_errors() {
 fn load_bundle_reports_missing_and_invalid_binaries() {
 	let cache = test_cache();
 
-	// 空目录（无二进制）→ 记录并返回。
+	// Empty directory (no binary) → logged and returns.
 	let empty = temp_dir("load-empty");
 	cache.load_bundle(&empty);
 	assert_eq!(cache.count(), 0);
 
-	// 根目录垃圾 .so → dlopen 失败，记录并返回。
+	// Garbage .so in the root dir → dlopen fails, logged and returns.
 	let bad = temp_dir("load-bad");
 	std::fs::write(bad.join("garbage.so"), b"definitely not an ELF").unwrap();
 	cache.load_bundle(&bad);
@@ -431,12 +431,12 @@ fn load_bundle_reports_missing_and_invalid_binaries() {
 #[test]
 fn load_bundle_loads_fixture_plugins_and_dedupes() {
 	let Some((root, bundle)) = make_fixture_bundle("load-ok") else {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle);
-	assert_eq!(cache.count(), 6, "测试插件导出 6 个效果");
+	assert_eq!(cache.count(), 6, "test plugin exports 6 effects");
 	assert!(cache.find("org.quercus.test-plugin").is_some());
 	assert_eq!(
 		cache
@@ -447,7 +447,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 		1
 	);
 
-	// 同一 bundle 二次加载 → 路径去重（直接 dlclose 返回）。
+	// Loading the same bundle twice → deduped by path (dlclose then return).
 	cache.load_bundle(&bundle);
 	assert_eq!(cache.count(), 6);
 	assert_eq!(
@@ -459,7 +459,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 		1
 	);
 
-	// at()/find() 边界。
+	// at()/find() boundaries.
 	assert!(cache.at(0).is_some());
 	assert!(cache.at(usize::MAX).is_none());
 	assert!(cache.find("org.quercus.test-plugin.nope").is_none());
@@ -470,17 +470,18 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 #[test]
 fn load_bundle_ignores_duplicate_plugin_identifiers() {
 	let Some((root1, bundle1)) = make_fixture_bundle("dup-a") else {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	};
 	let Some((root2, bundle2)) = make_fixture_bundle("dup-b") else {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle1);
 	assert_eq!(cache.count(), 6);
-	// 第二个 bundle 的 identifier 全部重复 → 忽略，但二进制登记两份。
+	// Every identifier in the second bundle is a duplicate → ignored, but the
+	// binary is registered twice.
 	cache.load_bundle(&bundle2);
 	assert_eq!(cache.count(), 6);
 	assert_eq!(
@@ -511,11 +512,11 @@ fn collect_plugins_without_ofx_symbols_is_empty() {
 	.iter()
 	.map(PathBuf::from)
 	.find(|p| p.is_file()) else {
-		eprintln!("SKIP: 未找到 libc");
+		eprintln!("SKIP: libc not found");
 		return;
 	};
 	let Some(handle) = dl_open(&libc) else {
-		eprintln!("SKIP: libc 不可 dlopen");
+		eprintln!("SKIP: libc cannot be dlopened");
 		return;
 	};
 	let cache = test_cache();
@@ -539,7 +540,7 @@ fn load_bundle_without_ofx_plugins_reports_and_unloads() {
 	.iter()
 	.map(PathBuf::from)
 	.find(|p| p.is_file()) else {
-		eprintln!("SKIP: 未找到 libc");
+		eprintln!("SKIP: libc not found");
 		return;
 	};
 	let dir = temp_dir("load-no-plugin");
@@ -559,7 +560,7 @@ fn load_bundle_without_ofx_plugins_reports_and_unloads() {
 	let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---- build_plugin 拒绝与上下文过滤 -----------------------------------
+// ---- build_plugin rejection and context filtering ---------------------
 
 unsafe extern "C" fn noop_set_host(_: *mut OfxHost) {}
 
@@ -655,23 +656,23 @@ fn build_plugin_rejects_invalid_headers_and_filters_contexts() {
 	let wrong_api = CString::new("OfxSomethingElsePluginAPI").unwrap();
 	let identifier = CString::new("test.build").unwrap();
 
-	// NULL plugin_api → None。
+	// NULL plugin_api → None.
 	let mut ofx = raw_ofx_plugin(None, 1, Some(&identifier), None, Some(entry_ok));
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// API 名不符 → None。
+	// API name mismatch → None.
 	let mut ofx = raw_ofx_plugin(Some(&wrong_api), 1, Some(&identifier), None, Some(entry_ok));
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// API 版本不符 → None。
+	// API version mismatch → None.
 	let mut ofx = raw_ofx_plugin(Some(&api), 2, Some(&identifier), None, Some(entry_ok));
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// main_entry 缺 → None。
+	// main_entry missing → None.
 	let mut ofx = raw_ofx_plugin(Some(&api), 1, Some(&identifier), None, None);
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// load action 失败 → None（setHost 存在分支也被走到）。
+	// load action fails → None (the setHost-present branch is also exercised).
 	let mut ofx = raw_ofx_plugin(
 		Some(&api),
 		1,
@@ -681,7 +682,7 @@ fn build_plugin_rejects_invalid_headers_and_filters_contexts() {
 	);
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// describe action 失败 → None。
+	// describe action fails → None.
 	let mut ofx = raw_ofx_plugin(
 		Some(&api),
 		1,
@@ -691,7 +692,7 @@ fn build_plugin_rejects_invalid_headers_and_filters_contexts() {
 	);
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// describe 后无非标准上下文 → None。
+	// Only non-standard contexts after describe → None.
 	let mut ofx = raw_ofx_plugin(
 		Some(&api),
 		1,
@@ -701,7 +702,7 @@ fn build_plugin_rejects_invalid_headers_and_filters_contexts() {
 	);
 	assert!(unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }.is_none());
 
-	// 四个标准上下文全收；非标准值被过滤。
+	// All four standard contexts are accepted; non-standard values are filtered out.
 	let mut ofx = raw_ofx_plugin(
 		Some(&api),
 		1,
@@ -710,21 +711,21 @@ fn build_plugin_rejects_invalid_headers_and_filters_contexts() {
 		Some(entry_multi_contexts),
 	);
 	let plugin = unsafe { cache.build_plugin(&mut ofx, std::ptr::null_mut(), bundle) }
-		.expect("标准上下文应接受");
+		.expect("standard contexts accepted");
 	assert_eq!(plugin.identifier, "test.build");
 	assert_eq!(plugin.contexts.len(), 4);
 	assert!(!plugin.contexts.iter().any(|c| c == "OfxBogusContext"));
 	assert_eq!(plugin.version, (1, 0));
 }
 
-// ---- scan 环境变量 ----------------------------------------------------
+// ---- scan environment variables ---------------------------------------
 
 #[test]
 fn scan_reads_plugin_path_env_vars() {
 	static ENV_LOCK: Mutex<()> = Mutex::new(());
 	let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let Some((root, _bundle)) = make_fixture_bundle("scan-env") else {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	};
 
@@ -739,7 +740,7 @@ fn scan_reads_plugin_path_env_vars() {
 	result.expect("scan");
 	assert!(
 		cache.find("org.quercus.test-plugin").is_some(),
-		"环境变量目录里的 bundle 应被发现"
+		"bundle in env var dir should be discovered"
 	);
 	let _ = std::fs::remove_dir_all(&root);
 }
@@ -755,12 +756,12 @@ fn create_instance_preferred_uses_custom_context_fallback() {
 	)]);
 	let (context, inst) = host
 		.create_instance_preferred("test.pref.custom")
-		.expect("自定义上下文可实例化");
+		.expect("custom context instantiable");
 	assert_eq!(context, "OfxImageEffectContextCustom");
 	assert_eq!(inst.value.context, "OfxImageEffectContextCustom");
-	// 实例属性表（init_instance_props）已建好。
+	// The instance property table (init_instance_props) has been built.
 	assert!(inst.value.props.get("OfxPropType", 0).is_some());
-	// 未登记标识 → NotFound。
+	// Unregistered identifier → NotFound.
 	assert!(host.create_instance_preferred("nope").is_err());
 }
 
@@ -777,7 +778,7 @@ fn create_instance_preferred_returns_last_error() {
 	let err = host
 		.create_instance_preferred("test.pref.fail")
 		.err()
-		.expect("全部上下文失败应返回错误");
+		.expect("all contexts failing should return an error");
 	assert!(matches!(
 		err,
 		crate::error::Error::Failed(ref m) if m.contains("describeInContext")
@@ -791,23 +792,23 @@ fn create_instance_rejects_unsupported_context_and_missing_contexts() {
 		vec!["OfxImageEffectContextFilter".into()],
 		entry_ok,
 	)]);
-	// 插件不支持请求的上下文。
+	// The plugin does not support the requested context.
 	assert!(host
 		.create_instance("test.ctx.one", Some("OfxImageEffectContextGenerator"))
 		.is_err());
-	// None → 取首个支持上下文并成功。
+	// None → takes the first supported context and succeeds.
 	let inst = host
 		.create_instance("test.ctx.one", None)
-		.expect("首个上下文");
+		.expect("first context");
 	assert_eq!(inst.value.context, "OfxImageEffectContextFilter");
 
-	// 无支持上下文 → 失败。
+	// No supported contexts → fails.
 	let none = local_host(vec![fake_plugin("test.ctx.none", vec![], entry_ok)]);
 	assert!(none.create_instance("test.ctx.none", None).is_err());
-	// 未登记标识 → 失败。
+	// Unregistered identifier → fails.
 	assert!(none.create_instance("missing", None).is_err());
 
-	// ReplyDefault 的 describeInContext/createInstance 也被接受。
+	// ReplyDefault from describeInContext/createInstance is accepted too.
 	let default = local_host(vec![fake_plugin(
 		"test.ctx.default",
 		vec!["OfxImageEffectContextFilter".into()],
@@ -826,7 +827,7 @@ fn create_instance_action_failure_is_not_registered_alive() {
 	let err = host
 		.create_instance("test.create.fail", None)
 		.err()
-		.expect("createInstance 失败");
+		.expect("createInstance fails");
 	assert!(matches!(
 		err,
 		crate::error::Error::Failed(ref m) if m.contains("createInstance")
@@ -886,10 +887,10 @@ fn register_plugin_nodes_skips_uninstantiable_and_registers_ok_plugins() {
 
 	assert!(
 		registered.iter().any(|id| id == ok_id),
-		"可实例化的插件应登记为动态节点"
+		"instantiable plugins should register as dynamic nodes"
 	);
 	assert!(
 		!registered.iter().any(|id| id == failing_id),
-		"无法实例化的插件应跳过"
+		"uninstantiable plugins should be skipped"
 	);
 }
