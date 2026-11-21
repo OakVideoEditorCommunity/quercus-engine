@@ -22,11 +22,12 @@
  * for the host to scan).
  *
  * filter context:
- *  - parameters: gain (Double, default 0)
+ *  - parameters: gain (Double, default 0), animatedGain (Double, default 0,
+ *    animates=1, display -2..2; render reads it at the action time)
  *  - clips: Source (input, RGBA), Output
  *  - describe/describeInContext create parameters and clips;
  *  - getClipPreferences: whole chain F32+RGBA, frame rate 24;
- *  - render: fill the output image with constant 0.5 (RGBA float), alpha=1;
+ *  - render: fill the output image with 0.5 + animatedGain (RGBA float), alpha=1;
  *  - getRoD: project size; getRoI: return region unchanged;
  *  - isIdentity: unset → not identity;
  *  - begin/endSequenceRender: log only (status OK).
@@ -248,6 +249,15 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
         g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMax, 0, max);
     }
 
+    st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypeDouble, "animatedGain", &paramProps);
+    if (st != kOfxStatOK)
+        return st;
+    propSetString(paramProps, kOfxPropLabel, 0, "Animated Gain");
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDefault, 0, 0.0);
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMin, 0, -2.0);
+    g_propSuite->propSetDouble(paramProps, kOfxParamPropDisplayMax, 0, 2.0);
+    g_propSuite->propSetInt(paramProps, kOfxParamPropAnimates, 0, 1);
+
     st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypeChoice, "mode", &paramProps);
     if (st != kOfxStatOK)
         return st;
@@ -341,6 +351,17 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     if (st != kOfxStatOK)
         return st;
 
+    /* animatedGain: read through the parameter suite at the action time. */
+    OfxParamHandle p = NULL;
+    st = g_paramSuite->paramGetHandle((OfxParamSetHandle)inst, "animatedGain", &p, NULL);
+    if (st != kOfxStatOK)
+        return st;
+    double v = 0.0;
+    st = g_paramSuite->paramGetValueAtTime(p, time, &v);
+    if (st != kOfxStatOK)
+        return st;
+    const float level = (float)(0.5 + v);
+
     OfxPropertySetHandle image = NULL;
     st = g_imageEffectSuite->clipGetImage(clip, time, NULL, &image);
     if (st != kOfxStatOK)
@@ -366,13 +387,13 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     int w = bounds[2] - bounds[0];
     int h = bounds[3] - bounds[1];
     if (data && w > 0 && h > 0) {
-        /* Constant 0.5 (RGBA float); alpha=1. */
+        /* Constant 0.5 + animatedGain (RGBA float); alpha=1. */
         for (int y = 0; y < h; y++) {
             float *row = (float *)((char *)data + (size_t)y * (size_t)rowBytes);
             for (int x = 0; x < w; x++) {
-                row[x * 4 + 0] = 0.5f;
-                row[x * 4 + 1] = 0.5f;
-                row[x * 4 + 2] = 0.5f;
+                row[x * 4 + 0] = level;
+                row[x * 4 + 1] = level;
+                row[x * 4 + 2] = level;
                 row[x * 4 + 3] = 1.0f;
             }
         }

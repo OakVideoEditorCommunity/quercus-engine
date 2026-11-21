@@ -172,6 +172,30 @@ fn plugin_nodes_register_with_translated_inputs() {
 			.iter()
 			.all(|(k, _)| k != "min" && k != "max"));
 
+		// animatedGain: Double → Float, default 0.0, display name "Animated
+		// Gain"; instance parameter props: animates=1, default=0, display
+		// -2..2.
+		let animated = core.get_input("animatedGain").expect("animatedGain input");
+		assert_eq!(animated.value_type, ValueType::Float);
+		assert_eq!(animated.default, NodeValue::Float(0.0));
+		assert_eq!(animated.display_name, "Animated Gain");
+		let inst = Host::global()
+			.create_instance(PLUGIN_ID, None)
+			.expect("instance");
+		let props = &inst.value.params.find("animatedGain").unwrap().props;
+		let int = |n: &str| match props.get(n, 0) {
+			Some(quercus_ofx_plugin::property::Value::Int(v)) => v,
+			other => panic!("{n} should be Int, got {other:?}"),
+		};
+		let dbl = |n: &str| match props.get(n, 0) {
+			Some(quercus_ofx_plugin::property::Value::Double(v)) => v,
+			other => panic!("{n} should be Double, got {other:?}"),
+		};
+		assert_eq!(int("OfxParamPropAnimates"), 1);
+		assert_eq!(dbl("OfxParamPropDefault"), 0.0);
+		assert_eq!(dbl("OfxParamPropDisplayMin"), -2.0);
+		assert_eq!(dbl("OfxParamPropDisplayMax"), 2.0);
+
 		// mode: Choice → Combo, two options Fast/High.
 		let mode = core.get_input("mode").expect("mode input");
 		assert_eq!(mode.value_type, ValueType::Combo);
@@ -251,6 +275,76 @@ fn plugin_renders_constant_frame_end_to_end() {
 		// The test plugin's render ignores its inputs and fills the constant 0.5 (alpha=1).
 		assert_eq!(first_pixel(&texture), [0.5, 0.5, 0.5, 1.0]);
 
+		Host::global().shutdown();
+	});
+}
+
+/// Renders a 2x2 frame on `inst` at `time` with the given `animatedGain`
+/// override (None = no override) and returns the first pixel.
+fn render_animated_gain(
+	inst: &quercus_ofx_plugin::instance::Instance,
+	time: f64,
+	gain: Option<f64>,
+) -> [f32; 4] {
+	let values = gain
+		.map(|g| {
+			vec![(
+				"animatedGain".to_string(),
+				quercus_ofx_plugin::node::Value::float(g),
+			)]
+		})
+		.unwrap_or_default();
+	let dst = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+	let src = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+	let job = render_driver::RenderJob {
+		time,
+		dst: Texture::wrap_frame(dst),
+		src: Some(Texture::wrap_frame(src)),
+		effect_input_id: Some("Source".into()),
+		inputs: Vec::new(),
+		values,
+		renderer: None,
+		clear_destination: false,
+		interactive: false,
+	};
+	let (out, _) = render_driver::render_frame(inst, &job).expect("render_frame should succeed");
+	first_pixel(&out)
+}
+
+/// animatedGain is read through the param suite at the action time:
+/// 0.5 + animatedGain; the host has no keyframes yet, so the value is the
+/// static one for every time.
+#[test]
+fn animated_gain_offsets_constant_output() {
+	common::with_host(|| {
+		if !scan_and_register() {
+			return;
+		}
+		let inst = Host::global()
+			.create_instance(PLUGIN_ID, None)
+			.expect("instance");
+		let id = node_factory::register_instance(inst.clone());
+		assert_eq!(
+			render_animated_gain(&inst.value, 0.0, Some(0.25)),
+			[0.75, 0.75, 0.75, 1.0]
+		);
+		// No keyframes: any time yields the same static value.
+		assert_eq!(
+			render_animated_gain(&inst.value, 12.0, Some(0.25)),
+			[0.75, 0.75, 0.75, 1.0]
+		);
+		node_factory::unregister_instance(id);
+
+		// Fresh instance, no override → unchanged 0.5.
+		let fresh = Host::global()
+			.create_instance(PLUGIN_ID, None)
+			.expect("instance");
+		let id = node_factory::register_instance(fresh.clone());
+		assert_eq!(
+			render_animated_gain(&fresh.value, 0.0, None),
+			[0.5, 0.5, 0.5, 1.0]
+		);
+		node_factory::unregister_instance(id);
 		Host::global().shutdown();
 	});
 }
