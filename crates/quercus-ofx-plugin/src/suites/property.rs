@@ -219,11 +219,12 @@ fn get_value_inner<'a>(
 		.iter()
 		.find(|p| p.name == name)
 		.ok_or(status::ERR_UNKNOWN)?;
-	// 首元素代理整条属性的类型（宿主只定义同构数组；HS 是定义期
-	// 固定类型，等价）。空数组没有类型探针，跳过类型检查，越界
-	// 由下面的索引访问报 BadIndex（HS getValueRaw 语义）。
+	// The first element proxies the type of the whole property (the host only defines
+	// homogeneous arrays; HS fixes the type at define time, equivalent). An empty array has no
+	// type probe, so skip the type check and report BadIndex from the index access below
+	// (HS getValueRaw semantics).
 	if let Some(probe) = p.values.first() {
-		// Int <-> Double 数值协随（与 get_n 同款宽容宿主语义）。
+		// Int <-> Double numeric coercion (same lenient host semantics as get_n).
 		let numeric = matches!(Kind::of(probe), Kind::Int | Kind::Double)
 			&& matches!(kind, Kind::Int | Kind::Double);
 		if Kind::of(probe) != kind && !numeric {
@@ -236,7 +237,7 @@ fn get_value_inner<'a>(
 	p.values.get(idx(index)?).ok_or(status::ERR_BAD_INDEX)
 }
 
-// ---- propSet（单元素）-----------------------------------------------------
+// ---- propSet (single element) ---------------------------------------------
 
 /// Shared implementation of the propSet (single-element) family: write `value`
 /// into slot `index` of the property named `name` in `set`.
@@ -261,8 +262,9 @@ fn set_value(set: &PropertySet, name: &str, index: c_int, value: Value) -> Resul
 	set.with_locked(|props| {
 		let idx = idx(index)?;
 		let Some(p) = props.iter_mut().find(|p| p.name == name) else {
-			// 隐式创建：维度 index+1，前导槽位以同值填充（HS 的新属性
-			// 默认值语义——新建属性先有一个默认元素再逐位写）。
+			// Implicit creation: dimension index+1, leading slots filled with the same value
+			// (HS new-property default semantics — a new property first has one default element,
+			// then is written slot by slot).
 			let mut values = vec![value.clone(); idx];
 			values.push(value);
 			props.push(crate::property::Property {
@@ -271,8 +273,8 @@ fn set_value(set: &PropertySet, name: &str, index: c_int, value: Value) -> Resul
 			});
 			return Ok(());
 		};
-		// 空属性（宿主预定义的空数组，如 OfxImageEffectPropSupportedContexts）
-		// 没有类型探针：按 HS 的 index == size 追加语义直接 push。
+		// Empty property (a host-predefined empty array, e.g. OfxImageEffectPropSupportedContexts)
+		// has no type probe: push directly per HS's index == size append semantics.
 		if p.values.is_empty() {
 			if idx != 0 {
 				if env::var_os("QUERCUS_OFX_TRACE").is_some() {
@@ -287,8 +289,8 @@ fn set_value(set: &PropertySet, name: &str, index: c_int, value: Value) -> Resul
 		if Kind::of(probe) != Kind::of(&value) {
 			return Err(status::ERR_UNKNOWN);
 		}
-		// HS `setValue` 允许 index == size 时追加（ofxhPropertySuite.cpp:284）
-		// ——addSupportedContext 等协商属性正是这样逐位增长的。
+		// HS `setValue` allows appending when index == size (ofxhPropertySuite.cpp:284)
+		// — negotiation properties such as addSupportedContext grow slot by slot exactly this way.
 		if idx == p.values.len() {
 			p.values.push(value);
 			return Ok(());
@@ -360,8 +362,8 @@ unsafe extern "C" fn prop_set_string(
 			if value.is_null() {
 				return Err(status::ERR_VALUE);
 			}
-			// C 语义：截断到首个 NUL；CString::new 不会失败
-			//（from_ptr 已保证 NUL 结尾）。
+			// C semantics: truncate at the first NUL; CString::new cannot fail
+			// (from_ptr already guarantees NUL termination).
 			let s = CString::new(CStr::from_ptr(value).to_bytes()).unwrap();
 			set_value(set, name, index, Value::String(s))
 		})
@@ -423,7 +425,7 @@ unsafe extern "C" fn prop_set_int(
 	}
 }
 
-// ---- propSetN（批量）------------------------------------------------------
+// ---- propSetN (batch) -----------------------------------------------------
 
 /// Reads `count` elements from a C array and writes them wholesale; when count
 /// != the current dimension it replaces the whole property (HS `setValueN`'s
@@ -436,14 +438,14 @@ fn set_values(
 ) -> Result<(), c_int> {
 	set.with_locked(|props| {
 		let Some(p) = props.iter_mut().find(|p| p.name == name) else {
-			// 与单元素 set_value 一致：未定义属性按 OFX 语义隐式创建。
+			// Same as single-element set_value: undefined properties are implicitly created per OFX semantics.
 			props.push(crate::property::Property {
 				name: name.to_string(),
 				values,
 			});
 			return Ok(());
 		};
-		// count == 0 时无类型可探（HS 仍会做 fetchTypedProperty）。
+		// With count == 0 there is no type to probe (HS still does fetchTypedProperty).
 		if let Some(first) = p.values.first() {
 			if let Some(v) = values.first() {
 				if Kind::of(first) != Kind::of(v) {
@@ -453,7 +455,7 @@ fn set_values(
 		}
 		let count = idx(count)?;
 		if count != p.values.len() {
-			// 维度变化：整体替换（HS 是 resize + 逐位写，等价）。
+			// Dimension change: replace wholesale (HS does resize + slot-by-slot write, equivalent).
 			p.values = values;
 		} else {
 			for (i, v) in values.into_iter().enumerate() {
@@ -616,7 +618,7 @@ unsafe extern "C" fn prop_set_int_n(
 	}
 }
 
-// ---- propGet（单元素）-----------------------------------------------------
+// ---- propGet (single element) ---------------------------------------------
 
 /// Single-element lookup for non-string scalars: hands the caller a clone of the
 /// `Value`.
@@ -766,7 +768,7 @@ unsafe extern "C" fn prop_get_double(
 					*out = d;
 					Ok(())
 				}
-				// Int <-> Double 数值协随（宽容宿主语义，同 get_n）。
+				// Int <-> Double numeric coercion (lenient host semantics, same as get_n).
 				Value::Int(i) => {
 					*out = i as f64;
 					Ok(())
@@ -810,7 +812,7 @@ unsafe extern "C" fn prop_get_int(
 					*out = i;
 					Ok(())
 				}
-				// Int <-> Double 数值协随（宽容宿主语义，同 get_n）。
+				// Int <-> Double numeric coercion (lenient host semantics, same as get_n).
 				Value::Double(d) => {
 					*out = d as i32;
 					Ok(())
@@ -826,7 +828,7 @@ unsafe extern "C" fn prop_get_int(
 	}
 }
 
-// ---- propGetN（批量）------------------------------------------------------
+// ---- propGetN (batch) -----------------------------------------------------
 
 /// Shared implementation of `propGet*N`: look up the property by name and call
 /// `write(value, i)` for each of the first min(`count`, dimension) elements.
@@ -1058,9 +1060,9 @@ unsafe extern "C" fn prop_reset(handle: *mut c_void, name: *const c_char) -> c_i
 	unsafe {
 		caught(handle, |set| {
 			let name = c_name(name)?;
-			// HS `reset()` 恢复到 define 时的默认值
-			// （ofxhPropertySuite.cpp:330）；本 crate 不保存默认值快照，
-			// 第 1 期明确不支持（见模块文档）。
+			// HS `reset()` restores the defaults from define time
+			// (ofxhPropertySuite.cpp:330); this crate does not keep a default-value snapshot,
+			// so phase 1 explicitly does not support it (see the module docs).
 			let _ = (set, name);
 			Err(status::ERR_UNSUPPORTED)
 		})
@@ -1090,8 +1092,8 @@ unsafe extern "C" fn prop_get_dimension(
 			if out.is_null() {
 				return Err(status::ERR_VALUE);
 			}
-			// HS: fetchProperty 失败（未定义）→ Unknown（ofxhPropertySuite.cpp:992）；
-			// 已定义的空数组（如协商属性的初始状态）是合法维度 0，不是错误。
+			// HS: fetchProperty failure (undefined) → Unknown (ofxhPropertySuite.cpp:992);
+			// a defined empty array (e.g. a negotiation property's initial state) is valid dimension 0, not an error.
 			let exists = set.with_locked(|props| props.iter().any(|p| p.name == name));
 			if !exists {
 				if env::var_os("QUERCUS_OFX_TRACE").is_some() {

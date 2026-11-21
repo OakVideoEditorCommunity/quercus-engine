@@ -17,19 +17,20 @@
  */
 
 /*
- * 最小测试插件（M11 §2.4 的交付物；build.rs 编译为共享库，
- * 运行时装配成 quercus-test-plugin.ofx.bundle 供 host 扫描）。
+ * Minimal test plugin (M11 §2.4 deliverable; build.rs compiles it to a
+ * shared library, assembled at run time into quercus-test-plugin.ofx.bundle
+ * for the host to scan).
  *
- * filter 上下文：
- *  - 参数：gain（Double，默认 0）、animatedGain（Double，默认 0，
- *    animates=1，display -2..2；render 在 action time 读取）
- *  - clip：Source（输入，RGBA）、Output
- *  - describe/describeInContext 建参数与 clip；
- *  - getClipPreferences：全链路 F32+RGBA、帧率 24；
- *  - render：把输出图像填成 0.5 + animatedGain（RGBA float），alpha=1；
- *  - getRoD：project size；getRoI：原样返回 region；
- *  - isIdentity：不设 → 非透传；
- *  - begin/endSequenceRender：记日志（状态码 OK）。
+ * filter context:
+ *  - parameters: gain (Double, default 0), animatedGain (Double, default 0,
+ *    animates=1, display -2..2; render reads it at the action time)
+ *  - clips: Source (input, RGBA), Output
+ *  - describe/describeInContext create parameters and clips;
+ *  - getClipPreferences: whole chain F32+RGBA, frame rate 24;
+ *  - render: fill the output image with 0.5 + animatedGain (RGBA float), alpha=1;
+ *  - getRoD: project size; getRoI: return region unchanged;
+ *  - isIdentity: unset → not identity;
+ *  - begin/endSequenceRender: log only (status OK).
  */
 
 #include <stdio.h>
@@ -42,10 +43,11 @@
 #include <unistd.h>
 #endif
 
-/* Windows 上插件 DLL 带自己的 CRT 环境块：宿主 Rust 侧的
- * std::env::set_var 走 SetEnvironmentVariableW，只更新 Win32 进程
- * 环境，插件里 getenv 读的 CRT `_environ` 看不到它。marker 路径
- * 统一经 Win32 进程环境读取（POSIX 下就是 getenv）。 */
+/* On Windows the plugin DLL carries its own CRT environment block: the
+ * host's Rust-side std::env::set_var goes through SetEnvironmentVariableW and
+ * only updates the Win32 process environment, which the CRT `_environ` that
+ * getenv reads inside the plugin cannot see. Marker paths are read uniformly
+ * from the Win32 process environment (plain getenv on POSIX). */
 static const char *marker_env(const char *name)
 {
 #ifdef _WIN32
@@ -71,8 +73,9 @@ static const char *marker_env(const char *name)
 #include "ofxProgress.h"
 #include "ofxProperty.h"
 
-/* GL 端到端测试的真实绘制需要 GL 命令（仅 macOS 有真实 CGL 桥；
- * Linux/Windows 的 GL 桥是 stub，绘制代码随 __APPLE__ 排除）。 */
+/* Real drawing for the GL end-to-end test needs GL commands (only macOS has
+ * a real CGL bridge; the Linux/Windows GL bridges are stubs, so the drawing
+ * code is excluded behind __APPLE__). */
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
 #elif defined(_WIN32)
@@ -81,9 +84,10 @@ static const char *marker_env(const char *name)
 #include <GL/gl.h>
 #endif
 
-/* kOfxImageEffectGLFormatRGBA 在 vendored ofxOpenGLRender.h 是 stub
- * 未收录（OpenFX 1.4 规范名），按规范定义。kOfxImageEffectPropIsIdentity
- * 同理（vendored ofxImageEffect.h 只文档化了该属性，未给宏）。 */
+/* kOfxImageEffectGLFormatRGBA is a stub in the vendored ofxOpenGLRender.h
+ * and not included (OpenFX 1.4 canonical name), so define it per spec.
+ * kOfxImageEffectPropIsIdentity likewise (the vendored ofxImageEffect.h only
+ * documents that property, without providing the macro). */
 #define GL_FORMAT_RGBA "OfxImageEffectGLFormatRGBA"
 #define kOfxImageEffectPropIsIdentity "OfxImageEffectPropIsIdentity"
 
@@ -97,10 +101,10 @@ static const OfxImageEffectOpenGLRenderSuiteV1 *g_glSuite = NULL;
 static const OfxDrawSuiteV1 *g_drawSuite = NULL;
 static const OfxInteractSuiteV1 *g_interactSuite = NULL;
 
-/* 宿主扩展（任务契约；vendored ofxInteract.h 未收录的 action 名与属性
- * 名）。kOfxInteractPropViewportSize 取 OFX 1.3 的规范名
- * "OfxInteractPropViewport"（vendored 1.5 头已删）；BackgroundImage 与
- * NewInteract/Idle 是本宿主扩展。 */
+/* Host extensions (task contract; action and property names absent from the
+ * vendored ofxInteract.h). kOfxInteractPropViewportSize uses the OFX 1.3
+ * canonical name "OfxInteractPropViewport" (removed from the vendored 1.5
+ * headers); BackgroundImage and NewInteract/Idle are this host's extensions. */
 #ifndef kOfxActionNewInteract
 #define kOfxActionNewInteract "OfxActionNewInteract"
 #endif
@@ -114,15 +118,15 @@ static const OfxInteractSuiteV1 *g_interactSuite = NULL;
 #define kOfxInteractPropBackgroundImage "OfxInteractPropBackgroundImage"
 #endif
 
-/* push button 的 instanceChanged 调用计数（宿主按下按钮后应路由
- * kOfxActionInstanceChanged/UserEdited 到这里）。 */
+/* Push button instanceChanged call count (after pressing the button the host
+ * should route kOfxActionInstanceChanged/UserEdited here). */
 static int g_button_instance_changed = 0;
 
-/* ---------- suite 便捷封装 ---------- */
+/* ---------- suite convenience wrappers ---------- */
 
-/* 记录一次 push button 的 instanceChanged：计数自增，并在
- * QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER 指向的文件追加一行（宿主
- * 测试断言用；未设环境变量时静默）。 */
+/* Record one push button instanceChanged: bump the count and append a line to
+ * the file named by QUERCUS_TEST_PLUGIN_INSTANCECHANGED_MARKER (for host test
+ * assertions; silent when the env var is unset). */
 static void record_button_instance_changed(void)
 {
     g_button_instance_changed++;
@@ -176,7 +180,7 @@ static OfxStatus propGetPointer(OfxPropertySetHandle h, const char *name, int in
     return g_propSuite->propGetPointer(h, name, index, v);
 }
 
-/* 协商期 per-clip 属性名：前缀_clip */
+/* Negotiation-time per-clip property names: prefix_clip */
 static void setClipPref(OfxPropertySetHandle out, const char *prefix, const char *clip, const char *value)
 {
     char name[256];
@@ -184,7 +188,7 @@ static void setClipPref(OfxPropertySetHandle out, const char *prefix, const char
     propSetString(out, name, 0, value);
 }
 
-/* ---------- setHost（mandatory 第一个调用） ---------- */
+/* ---------- setHost (mandatory first call) ---------- */
 
 static void setHost(OfxHost *host)
 {
@@ -203,7 +207,7 @@ static void setHost(OfxHost *host)
     g_interactSuite = (const OfxInteractSuiteV1 *)host->fetchSuite(host->host, kOfxInteractSuite, 1);
 }
 
-/* ---------- action 实现 ---------- */
+/* ---------- action implementations ---------- */
 
 static OfxStatus actionDescribe(const void *handle, int is_gl)
 {
@@ -213,7 +217,8 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
     propSetStringN(handle, kOfxImageEffectPropSupportedContexts, 1,
                    &(const char *){ kOfxImageEffectContextFilter });
 
-    /* ofxColour（M11 §4）：声明 OCIO 色彩管理能力与可用配置。 */
+    /* ofxColour (M11 §4): declare OCIO colour management capability and the
+     * available configs. */
     propSetString(handle, kOfxImageEffectPropColourManagementStyle, 0,
                   kOfxImageEffectColourManagementOCIO);
     {
@@ -221,8 +226,8 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
         propSetStringN(handle, kOfxImageEffectPropColourManagementAvailableConfigs, 1, configs);
     }
 
-    /* GL 能力（M11 §4）：GL 变体声明 "true" + 支持位深（F32）。
-     * CPU 变体保持默认 "false"。 */
+    /* GL capability (M11 §4): the GL variant declares "true" + supported
+     * bit depths (F32). The CPU variant keeps the default "false". */
     if (is_gl) {
         propSetString(handle, kOfxImageEffectPropOpenGLRenderSupported, 0, "true");
         {
@@ -231,8 +236,8 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
         }
     }
 
-    /* 参数族：gain（Double，带 display min/max）、mode（Choice，
-     * 两选项）、debug（Double，secret）、label（String）。 */
+    /* Parameter family: gain (Double, with display min/max), mode (Choice,
+     * two options), debug (Double, secret), label (String). */
     OfxPropertySetHandle paramProps = NULL;
     OfxStatus st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypeDouble, "gain", &paramProps);
     if (st != kOfxStatOK)
@@ -272,14 +277,14 @@ static OfxStatus actionDescribe(const void *handle, int is_gl)
         return st;
     propSetString(paramProps, kOfxPropLabel, 0, "Label");
 
-    /* push button：无值，按下经 instanceChanged (UserEdited) 通知
-     * 插件（ofxCore.h kOfxActionInstanceChanged）。 */
+    /* push button: no value; a press notifies the plugin via instanceChanged
+     * (UserEdited) (ofxCore.h kOfxActionInstanceChanged). */
     st = g_paramSuite->paramDefine((OfxParamSetHandle)handle, kOfxParamTypePushButton, "button", &paramProps);
     if (st != kOfxStatOK)
         return st;
     propSetString(paramProps, kOfxPropLabel, 0, "Button");
 
-    /* clip：Source + Output。 */
+    /* clips: Source + Output. */
     OfxPropertySetHandle clipProps = NULL;
     st = g_imageEffectSuite->clipDefine((OfxImageEffectHandle)handle, "Source", &clipProps);
     if (st != kOfxStatOK)
@@ -315,7 +320,8 @@ static OfxStatus actionGetRoD(OfxPropertySetHandle outArgs)
 static OfxStatus actionGetRoI(OfxImageEffectHandle inst, OfxPropertySetHandle inArgs,
                               OfxPropertySetHandle outArgs)
 {
-    /* 对每个输入 clip 回填 region（此处原样返回 Output 的 window 即可）。 */
+    /* Write the region back for each input clip (here just returning the
+     * Output window unchanged is enough). */
     OfxImageClipHandle clip = NULL;
     OfxPropertySetHandle clipProps = NULL;
     OfxStatus st = g_imageEffectSuite->clipGetHandle(inst, "Source", &clip, &clipProps);
@@ -345,7 +351,7 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     if (st != kOfxStatOK)
         return st;
 
-    /* animatedGain：在 action time 经参数套件读取。 */
+    /* animatedGain: read through the parameter suite at the action time. */
     OfxParamHandle p = NULL;
     st = g_paramSuite->paramGetHandle((OfxParamSetHandle)inst, "animatedGain", &p, NULL);
     if (st != kOfxStatOK)
@@ -368,7 +374,7 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     propGetInt(image, kOfxImagePropRowBytes, 0, &rowBytes);
     propGetIntN(image, kOfxImagePropBounds, 4, bounds);
 
-    /* 进度：Start → Update(0.5)（取消则中止）→ End。 */
+    /* Progress: Start → Update(0.5) (abort if cancelled) → End. */
     if (g_progressSuite) {
         g_progressSuite->progressStart((OfxImageEffectHandle)inst, "render");
         OfxStatus ps = g_progressSuite->progressUpdate((OfxImageEffectHandle)inst, 0.5);
@@ -381,7 +387,7 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     int w = bounds[2] - bounds[0];
     int h = bounds[3] - bounds[1];
     if (data && w > 0 && h > 0) {
-        /* 常量 0.5 + animatedGain（RGBA float）；alpha=1。 */
+        /* Constant 0.5 + animatedGain (RGBA float); alpha=1. */
         for (int y = 0; y < h; y++) {
             float *row = (float *)((char *)data + (size_t)y * (size_t)rowBytes);
             for (int x = 0; x < w; x++) {
@@ -400,10 +406,10 @@ static OfxStatus actionRender(OfxImageEffectHandle inst, OfxPropertySetHandle in
     return kOfxStatOK;
 }
 
-/* ---------- 慢速变体（M3）：取消 e2e 测试 ---------- */
+/* ---------- slow variant (M3): cancellation e2e test ---------- */
 
-/* progressUpdate 之间的睡眠（宿主取消在渲染中置位，下一次
- * progressUpdate 返回非 OK，插件立即中止）。 */
+/* Sleep between progressUpdate calls (the host sets cancellation during the
+ * render; the next progressUpdate returns non-OK and the plugin aborts). */
 static void slow_sleep_ms(int ms)
 {
 #ifdef _WIN32
@@ -413,8 +419,8 @@ static void slow_sleep_ms(int ms)
 #endif
 }
 
-/* 100 次 progressUpdate x 20ms（约 2 秒）：把输出填成常量 0.25。
- * 任一次 progressUpdate 返回非 OK（宿主取消）→ kOfxStatFailed。 */
+/* 100 progressUpdate calls x 20ms (~2s): fill the output with constant 0.25.
+ * Any progressUpdate returning non-OK (host cancellation) → kOfxStatFailed. */
 static OfxStatus actionRenderSlow(OfxImageEffectHandle inst, OfxPropertySetHandle inArgs)
 {
     double time = 0.0;
@@ -472,7 +478,8 @@ static OfxStatus actionRenderSlow(OfxImageEffectHandle inst, OfxPropertySetHandl
     return kOfxStatOK;
 }
 
-/* 慢速变体的效果入口：render 走慢速路径，其余 action 委托基础实现。 */
+/* Effect entry for the slow variant: render takes the slow path, other
+ * actions delegate to the base implementation. */
 static OfxStatus mainEntry(const char *action, const void *handle,
                            OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs);
 
@@ -484,13 +491,14 @@ static OfxStatus mainEntrySlow(const char *action, const void *handle,
     }
     return mainEntry(action, handle, inArgs, outArgs);
 }
-/* ---------- ofxColour（M11 §4）：GetOutputColourspace ---------- */
+/* ---------- ofxColour (M11 §4): GetOutputColourspace ---------- */
 
 static OfxStatus actionGetOutputColourspace(OfxPropertySetHandle inArgs,
                                             OfxPropertySetHandle outArgs)
 {
-    /* 优先采纳宿主偏好的第一个色彩空间；否则交叉引用 Source clip
-     * （ofxColour.h：cross-reference 是合法回写，宿主须解析）。 */
+    /* Prefer the host's first preferred colourspace; otherwise cross-reference
+     * the Source clip (ofxColour.h: a cross-reference is a valid write-back
+     * the host must resolve). */
     int n = 0;
     g_propSuite->propGetDimension(inArgs, kOfxImageClipPropPreferredColourspaces, &n);
     if (n > 0) {
@@ -506,17 +514,17 @@ static OfxStatus actionGetOutputColourspace(OfxPropertySetHandle inArgs,
     return kOfxStatOK;
 }
 
-/* ---------- isIdentity 变体：透传 Source ---------- */
+/* ---------- isIdentity variant: pass through Source ---------- */
 
 static OfxStatus actionIsIdentity(OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
 {
-    /* 恒透传 Source（时间不变）——宿主应短路 render 直接拷贝 Source
-     * 的帧。 */
+    /* Always pass through Source (time-invariant) — the host should
+     * short-circuit render and copy the Source frame directly. */
     propSetString(outArgs, kOfxImageEffectPropIsIdentity, 0, "Source");
     return kOfxStatOK;
 }
 
-/* ---------- GL 变体（M11 §4）：attach/detach 与 GL render ---------- */
+/* ---------- GL variant (M11 §4): attach/detach and GL render ---------- */
 
 static OfxStatus actionGLAttached(OfxImageEffectHandle handle)
 {
@@ -534,12 +542,14 @@ static OfxStatus actionGLDetached(OfxImageEffectHandle handle)
     return kOfxStatOK;
 }
 
-/* GL render：经 OpenGL suite 取 Source 与 Output 纹理并上报索引
- * （宿主侧测试经 message 捕获断言）。GL 未使能时回退 CPU render。 */
+/* GL render: fetch Source and Output textures via the OpenGL suite and report
+ * their indices (host-side tests assert on captured messages). Falls back to
+ * CPU render when GL is not enabled. */
 static void draw_gl_test_pattern(void)
 {
-    /* 把当前绑定帧缓冲（宿主为输出帧挂的 FBO）清成已知颜色。
-     * Linux 的 EGL/GL 桥现在也是真实实现，因此不再限于 Apple。 */
+    /* Clear the currently bound framebuffer (the FBO the host attached for the
+     * output frame) to a known colour. The Linux EGL/GL bridge is now a real
+     * implementation too, so this is no longer Apple-only. */
     glClearColor(0.1f, 0.2f, 0.3f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -558,7 +568,7 @@ static OfxStatus actionRenderGL(OfxImageEffectHandle inst, OfxPropertySetHandle 
     double time = 0.0;
     propGetDouble(inArgs, kOfxPropTime, 0, &time);
 
-    /* 输入 clip：clipLoadTexture（请求 RGBA）。 */
+    /* Input clip: clipLoadTexture (request RGBA). */
     OfxImageClipHandle clip = NULL;
     OfxPropertySetHandle clipProps = NULL;
     OfxStatus st = g_imageEffectSuite->clipGetHandle(inst, "Source", &clip, &clipProps);
@@ -577,7 +587,7 @@ static OfxStatus actionRenderGL(OfxImageEffectHandle inst, OfxPropertySetHandle 
     if (st != kOfxStatOK)
         return st;
 
-    /* 输出 clip：clipLoadTexture(Output)（format 忽略）。 */
+    /* Output clip: clipLoadTexture(Output) (format ignored). */
     st = g_imageEffectSuite->clipGetHandle(inst, "Output", &clip, &clipProps);
     if (st != kOfxStatOK)
         return st;
@@ -594,9 +604,10 @@ static OfxStatus actionRenderGL(OfxImageEffectHandle inst, OfxPropertySetHandle 
     if (st != kOfxStatOK)
         return st;
 
-    /* 真实绘制：把宿主已绑定的输出 FBO 清成已知颜色
-     * (0.1, 0.2, 0.3, 1.0)——宿主 glReadPixels 回读后应得到该颜色，
-     * 这是"插件真实走 GL 路径且输出正确"的端到端证据。 */
+    /* Real drawing: clear the host-bound output FBO to a known colour
+     * (0.1, 0.2, 0.3, 1.0) — the host's glReadPixels readback should return
+     * that colour, end-to-end proof that the plugin really takes the GL path
+     * and produces correct output. */
     draw_gl_test_pattern();
 
     return kOfxStatOK;
@@ -610,7 +621,8 @@ static OfxStatus mainEntry(const char *action, const void *handle, OfxPropertySe
         return actionDescribe(handle, 0);
     }
     if (strcmp(action, kOfxActionCreateInstance) == 0) {
-        /* 经 message suite 发一条（facade 处理器断言用）。 */
+        /* Send one message via the message suite (for facade handler
+         * assertions). */
         if (g_messageSuite) {
             g_messageSuite->message(handle, kOfxMessageMessage, "test-plugin",
                                     "created id=%d", 7);
@@ -641,9 +653,9 @@ static OfxStatus mainEntry(const char *action, const void *handle, OfxPropertySe
         return actionRender((OfxImageEffectHandle)handle, inArgs);
     }
     if (strcmp(action, kOfxActionInstanceChanged) == 0) {
-        /* 宿主按下 push button：kOfxPropName == "button"、
-         * kOfxPropChangeReason == kOfxChangeUserEdited。只对 button
-         * 计数（其余参数变更静默）。 */
+        /* Host pressed the push button: kOfxPropName == "button",
+         * kOfxPropChangeReason == kOfxChangeUserEdited. Count the button only
+         * (other parameter changes stay silent). */
         char *name = NULL;
         g_propSuite->propGetString(inArgs, kOfxPropName, 0, &name);
         if (name && strcmp(name, "button") == 0) {
@@ -654,8 +666,8 @@ static OfxStatus mainEntry(const char *action, const void *handle, OfxPropertySe
     return kOfxStatReplyDefault;
 }
 
-/* GL 变体入口：describe 带 GL 声明；render 走 GL suite；attach/
- * detach 上报。 */
+/* GL variant entry: describe includes GL declarations; render goes through the
+ * GL suite; attach/detach are reported. */
 static OfxStatus mainEntryGL(const char *action, const void *handle,
                              OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
 {
@@ -698,7 +710,8 @@ static OfxStatus mainEntryGL(const char *action, const void *handle,
     return kOfxStatReplyDefault;
 }
 
-/* 恒透传变体入口：isIdentity 返回 Source；其余同 CPU 插件。 */
+/* Always-identity variant entry: isIdentity returns Source; the rest matches
+ * the CPU plugin. */
 static OfxStatus mainEntryID(const char *action, const void *handle,
                              OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
 {
@@ -715,10 +728,11 @@ static OfxStatus mainEntryID(const char *action, const void *handle,
     return mainEntry(action, handle, inArgs, outArgs);
 }
 
-/* ---------- interact 变体（M11 §5）：自定义 UI 宿主验证 ---------- */
+/* ---------- interact variant (M11 §5): custom UI host validation ---------- */
 
-/* interact 调用记录：追加到 QUERCUS_TEST_PLUGIN_INTERACT_MARKER 指向的文件
- * （宿主测试断言用；未设环境变量时静默）。 */
+/* interact call log: append to the file named by
+ * QUERCUS_TEST_PLUGIN_INTERACT_MARKER (for host test assertions; silent when
+ * the env var is unset). */
 static void interact_record(const char *fmt, ...)
 {
     const char *marker = marker_env("QUERCUS_TEST_PLUGIN_INTERACT_MARKER");
@@ -734,7 +748,8 @@ static void interact_record(const char *fmt, ...)
     fclose(f);
 }
 
-/* 记录 pen 事件的真实参数（inArgs 的 canonical/视口/压力属性）。 */
+/* Record the real pen event arguments (inArgs canonical/viewport/pressure
+ * properties). */
 static void record_pen(const char *action, OfxPropertySetHandle inArgs)
 {
     int vp[2] = { 0, 0 };
@@ -747,7 +762,7 @@ static void record_pen(const char *action, OfxPropertySetHandle inArgs)
                     canon[1], pressure);
 }
 
-/* 记录 key 事件的真实参数（keySym/keyString）。 */
+/* Record the real key event arguments (keySym/keyString). */
 static void record_key(const char *action, OfxPropertySetHandle inArgs)
 {
     int sym = 0;
@@ -757,10 +772,10 @@ static void record_key(const char *action, OfxPropertySetHandle inArgs)
     interact_record("%s sym=%d str=%s\n", action, sym, s ? s : "");
 }
 
-/* kOfxInteractActionDraw：读 inArgs（viewport/pixelScale/time/
- * backgroundImage/drawContext），经 Draw suite setColour + 原生 GL 画
- * 已知色块（矩形 10..30 canonical）。macOS 上真实绘制；非 macOS 跳过
- * GL。返回 OK。 */
+/* kOfxInteractActionDraw: read inArgs (viewport/pixelScale/time/
+ * backgroundImage/drawContext), setColour via the Draw suite + draw a known
+ * colour swatch with native GL (rectangle 10..30 canonical). Real drawing on
+ * macOS; non-macOS skips GL. Returns OK. */
 static OfxStatus actionInteractDraw(OfxPropertySetHandle inArgs)
 {
     double vp[2] = { 0.0, 0.0 };
@@ -774,7 +789,8 @@ static OfxStatus actionInteractDraw(OfxPropertySetHandle inArgs)
     g_propSuite->propGetPointer(inArgs, kOfxInteractPropBackgroundImage, 0, &bg);
     g_propSuite->propGetPointer(inArgs, kOfxInteractPropDrawContext, 0, &drawCtx);
 
-    /* Draw suite 状态真实读写：setColour 写、getColour 读（宿主色板）。 */
+    /* Real read/write of Draw suite state: setColour writes, getColour reads
+     * (host colour palette). */
     double setcol[4] = { 0.0, 0.0, 0.0, 0.0 };
     double getcol[4] = { 0.0, 0.0, 0.0, 0.0 };
     int setcol_st = kOfxStatFailed, getcol_st = kOfxStatFailed;
@@ -795,8 +811,9 @@ static OfxStatus actionInteractDraw(OfxPropertySetHandle inArgs)
 
     int draw_st = kOfxStatFailed;
 #ifdef __APPLE__
-    /* 清成暗背景 + Draw suite 画实心矩形（canonical 坐标；宿主经正交
-     * 投影映射到视口）。 */
+    /* Clear to a dark background + Draw suite draws a filled rectangle
+     * (canonical coordinates; the host maps them to the viewport via an
+     * orthographic projection). */
     glClearColor(0.05f, 0.05f, 0.05f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     if (g_drawSuite && drawCtx) {
@@ -815,9 +832,9 @@ static OfxStatus actionInteractDraw(OfxPropertySetHandle inArgs)
     return kOfxStatOK;
 }
 
-/* interact 入口（经 kOfxImageEffectPluginPropOverlayInteractV2 声明）：
- * 只处理 interact 的 action；效果侧 action 一律 ReplyDefault（不会被
- * 宿主以效果 handle 调到这里）。 */
+/* interact entry (declared via kOfxImageEffectPluginPropOverlayInteractV2):
+ * handles interact actions only; effect-side actions always ReplyDefault
+ * (the host never calls here with an effect handle). */
 static OfxStatus mainEntryInteract(const char *action, const void *handle,
                                    OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
 {
@@ -858,8 +875,9 @@ static OfxStatus mainEntryInteract(const char *action, const void *handle,
         int sym = 0;
         g_propSuite->propGetInt(inArgs, kOfxPropKeySym, 0, &sym);
         record_key("key_down", inArgs);
-        /* Escape → ReplyDefault（宿主应透传该状态：插件未处理，事件
-         * 可交视图中的其他对象）。 */
+        /* Escape → ReplyDefault (the host should pass that status through:
+         * unhandled by the plugin, the event can go to other objects in the
+         * view). */
         if (sym == kOfxKey_Escape)
             return kOfxStatReplyDefault;
         return kOfxStatOK;
@@ -872,13 +890,14 @@ static OfxStatus mainEntryInteract(const char *action, const void *handle,
         interact_record("idle\n");
         return kOfxStatOK;
     }
-    /* GainFocus/LoseFocus 等：默认（ReplyDefault = 未处理，宿主可继续）。 */
+    /* GainFocus/LoseFocus etc.: default (ReplyDefault = unhandled, the host may
+     * continue). */
     return kOfxStatReplyDefault;
 }
 
-/* interact 变体的效果侧 main entry：describe 建参数/clip 并声明 overlay
- * interact V2 入口（指向 mainEntryInteract）；其余效果 action 委托 base
- * mainEntry。 */
+/* Effect-side main entry of the interact variant: describe creates the
+ * parameters/clips and declares the overlay interact V2 entry (pointing at
+ * mainEntryInteract); other effect actions delegate to base mainEntry. */
 static OfxStatus mainEntryInteractEffect(const char *action, const void *handle,
                                          OfxPropertySetHandle inArgs, OfxPropertySetHandle outArgs)
 {
@@ -893,7 +912,7 @@ static OfxStatus mainEntryInteractEffect(const char *action, const void *handle,
     return mainEntry(action, handle, inArgs, outArgs);
 }
 
-/* ---------- 导出 ---------- */
+/* ---------- exports ---------- */
 
 static const OfxPlugin test_plugin = {
     /* pluginApi */ kOfxImageEffectPluginApi,
@@ -935,7 +954,8 @@ static const OfxPlugin test_plugin_interact = {
     /* mainEntry */ mainEntryInteractEffect,
 };
 
-/* M3 取消 e2e：慢速 filter（progressUpdate x20ms 循环，取消即中止）。 */
+/* M3 cancellation e2e: slow filter (progressUpdate x20ms loop, aborts on
+ * cancellation). */
 static const OfxPlugin test_plugin_slow = {
     /* pluginApi */ kOfxImageEffectPluginApi,
     /* apiVersion */ kOfxImageEffectPluginApiVersion,

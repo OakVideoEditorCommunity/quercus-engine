@@ -112,19 +112,19 @@ fn describe_define_and_get() {
 	assert!(!ph.is_null());
 	assert_eq!(tag::kind(ph), tag::PARAM_DEF);
 
-	// describe 期 paramGetValue：默认值 0.0。
+	// paramGetValue during describe: default value 0.0.
 	let mut v = 99.0;
 	unsafe {
 		assert_eq!((s.param_get_value)(ph, &mut v), 0);
 	}
 	assert_eq!(v, 0.0);
 
-	// describe 期 set → BadHandle（HS: verifyMagic 对 descriptor 失败）。
+	// set during describe → BadHandle (HS: verifyMagic fails for a descriptor).
 	unsafe {
 		assert_eq!((s.param_set_value)(ph, 42.0), status::ERR_BAD_HANDLE);
 	}
 
-	// paramGetHandle 按名取（props handle 同值）。
+	// paramGetHandle by name (props handle has the same value).
 	let mut ph2: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!(
@@ -134,7 +134,7 @@ fn describe_define_and_get() {
 		assert_eq!(ph, ph2);
 	}
 
-	// 未找到 → ErrUnknown（HS:1758）。
+	// Not found → ErrUnknown (HS:1758).
 	let nope = cs("nope");
 	unsafe {
 		assert_eq!(
@@ -143,8 +143,8 @@ fn describe_define_and_get() {
 		);
 	}
 
-	// 未定义类型 → ErrUnsupported（HS:1704）；parametric → 放行
-	// （曲线读写走 OfxParametricParameterSuite）。
+	// Undefined type → ErrUnsupported (HS:1704); parametric → allowed
+	// (curve read/write goes through OfxParametricParameterSuite).
 	let bad = cs("OfxParamTypeBogus");
 	let par = cs("OfxParamTypeParametric");
 	unsafe {
@@ -159,7 +159,7 @@ fn describe_define_and_get() {
 	}
 	assert_eq!(tag::kind(ph2), tag::PARAM_DEF);
 
-	// 实例期 paramDefine → BadHandle。
+	// paramDefine during instance phase → BadHandle.
 	let (_inst, ih) = make_instance();
 	unsafe {
 		assert_eq!(
@@ -174,7 +174,7 @@ fn instance_get_set_variadic_roundtrip() {
 	let (_inst, ih) = make_instance();
 	let s = suite_v1();
 
-	// 取各参数 handle。
+	// Grab each parameter's handle.
 	let mut gain: *mut c_void = std::ptr::null_mut();
 	let mut opacity: *mut c_void = std::ptr::null_mut();
 	let mut pos: *mut c_void = std::ptr::null_mut();
@@ -197,7 +197,7 @@ fn instance_get_set_variadic_roundtrip() {
 		}
 	}
 
-	// Integer set/get。
+	// Integer set/get.
 	unsafe {
 		assert_eq!((s.param_set_value)(gain, 7), 0);
 	}
@@ -207,7 +207,7 @@ fn instance_get_set_variadic_roundtrip() {
 	}
 	assert_eq!(v, 7);
 
-	// Double2D。
+	// Double2D.
 	unsafe {
 		assert_eq!((s.param_set_value)(pos, 1.5, -2.5), 0);
 	}
@@ -217,7 +217,7 @@ fn instance_get_set_variadic_roundtrip() {
 	}
 	assert_eq!((x, y), (1.5, -2.5));
 
-	// RGB。
+	// RGB.
 	unsafe {
 		assert_eq!((s.param_set_value)(color, 0.1, 0.2, 0.3), 0);
 	}
@@ -227,7 +227,7 @@ fn instance_get_set_variadic_roundtrip() {
 	}
 	assert_eq!((r, g, b), (0.1, 0.2, 0.3));
 
-	// Boolean（int 0/1）。
+	// Boolean (int 0/1).
 	unsafe {
 		assert_eq!((s.param_set_value)(enabled, 1), 0);
 	}
@@ -237,7 +237,7 @@ fn instance_get_set_variadic_roundtrip() {
 	}
 	assert_eq!(e, 1);
 
-	// String：set 后 get 返回内驻指针。
+	// String: after set, get returns the interior pointer.
 	let hello = cs("hello");
 	unsafe {
 		assert_eq!((s.param_set_value)(label, hello.as_ptr()), 0);
@@ -248,7 +248,7 @@ fn instance_get_set_variadic_roundtrip() {
 		assert_eq!(CStr::from_ptr(p).to_bytes(), b"hello");
 	}
 
-	// AtTime == 当前值（无动画）。
+	// AtTime == current value (no animation).
 	let mut v2 = 0.0;
 	unsafe {
 		assert_eq!((s.param_get_value_at_time)(opacity, 12.0, &mut v2), 0);
@@ -261,7 +261,7 @@ fn instance_get_set_variadic_roundtrip() {
 	}
 	assert_eq!(v3, 0.75);
 
-	// keys：恒 0 / BadIndex。
+	// keys: always 0 / BadIndex.
 	let mut nkeys = -1;
 	unsafe {
 		assert_eq!((s.param_get_num_keys)(opacity, &mut nkeys), 0);
@@ -273,7 +273,7 @@ fn instance_get_set_variadic_roundtrip() {
 		);
 	}
 
-	// derivative/integral → MissingHostFeature。
+	// derivative/integral → MissingHostFeature.
 	let mut dv = 0.0;
 	unsafe {
 		assert_eq!(
@@ -282,7 +282,7 @@ fn instance_get_set_variadic_roundtrip() {
 		);
 	}
 
-	// editBegin/End、deleteKey(s)、copy：no-op OK。
+	// editBegin/End, deleteKey(s), copy: no-op OK.
 	unsafe {
 		assert_eq!((s.param_edit_begin)(opacity), 0);
 		assert_eq!((s.param_edit_end)(opacity), 0);
@@ -311,8 +311,8 @@ fn set_value_writes_back_to_bound_node() {
 		);
 	}
 
-	// 宿主侧登记：param → 实例（生产由 createInstance 路径做），
-	// 实例 → quercusnode 节点（facade 装配期做）。
+	// Host-side registration: param → instance (production does this in the createInstance path),
+	// instance → quercusnode node (done at facade assembly time).
 	let project = quercus_node::project::Project::new();
 	let node_id = {
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
@@ -351,7 +351,7 @@ fn set_value_writes_back_to_bound_node() {
 	assert_eq!(
 		stored,
 		quercus_node::value::NodeValue::Int(5),
-		"插件改值必须经 instanceChanged 写回节点输入"
+		"plugin value change must write back to node input via instanceChanged"
 	);
 	unregister_params_of(&inst.props as *const PropertySet as usize);
 	crate::node::unregister_node(identity);

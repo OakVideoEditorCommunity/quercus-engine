@@ -143,7 +143,7 @@ fn describe_defaults_are_identity() {
 		);
 	}
 	assert_eq!((k, v), (1.0, 1.0));
-	// 恒等求值（越界钳制端点值）。
+	// Identity evaluation (out-of-range clamps to endpoint values).
 	let mut out = 0.0;
 	unsafe {
 		assert_eq!((s.parametric_param_get_value)(ph, 0, 0.0, 0.5, &mut out), 0);
@@ -166,7 +166,7 @@ fn describe_defaults_are_identity() {
 fn descriptor_edits_become_instance_defaults() {
 	let (desc, ph) = define_parametric();
 	let s = ps();
-	// describe 期改默认：加两个点，改第 1 个点的值。
+	// Change defaults during describe: add two points, change the value of point 1.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_add_control_point)(ph, 0, 0.0, 0.25, 0.5, 0),
@@ -181,7 +181,7 @@ fn descriptor_edits_become_instance_defaults() {
 			0
 		);
 	}
-	// 默认值本身生效。
+	// The default value itself takes effect.
 	let mut out = 0.0;
 	unsafe {
 		assert_eq!(
@@ -190,7 +190,7 @@ fn descriptor_edits_become_instance_defaults() {
 		);
 	}
 	assert_eq!(out, 0.6);
-	// 实例化：默认曲线随 from_def 复制。
+	// Instantiation: the default curve is copied by from_def.
 	let (_inst, _ih, iph) = instantiate(desc);
 	unsafe {
 		assert_eq!(
@@ -216,7 +216,7 @@ fn instance_add_set_delete_eval_chain() {
 	let (_inst, _ih, ph) = make_instance();
 	let s = ps();
 
-	// Add 中点 (0.3, 0.7)：插值性质 + 有序。
+	// Add midpoint (0.3, 0.7): interpolation property + ordering.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_add_control_point)(ph, 0, 0.0, 0.3, 0.7, 0),
@@ -237,7 +237,7 @@ fn instance_add_set_delete_eval_chain() {
 	}
 	assert_eq!(n, 3);
 
-	// SetNth 改 (0.3,0.7) → (0.4,0.6)。
+	// SetNth changes (0.3,0.7) → (0.4,0.6).
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_set_nth_control_point)(ph, 0, 0.0, 1, 0.4, 0.6, 0),
@@ -257,7 +257,7 @@ fn instance_add_set_delete_eval_chain() {
 	}
 	assert_eq!(out, 0.6);
 
-	// Delete 第 1 点 → 回到双点。
+	// Delete the 1st point → back to two points.
 	unsafe {
 		assert_eq!((s.parametric_param_delete_control_point)(ph, 0, 1), 0);
 	}
@@ -269,7 +269,7 @@ fn instance_add_set_delete_eval_chain() {
 	}
 	assert_eq!(n, 2);
 
-	// DeleteAll → 0 点，求值退化为恒等。
+	// DeleteAll → 0 points, evaluation degrades to identity.
 	unsafe {
 		assert_eq!((s.parametric_param_delete_all_control_points)(ph, 0), 0);
 		assert_eq!(
@@ -293,7 +293,7 @@ fn set_nth_reorders_on_key_change() {
 			(s.parametric_param_add_control_point)(ph, 0, 0.0, 0.5, 0.5, 0),
 			0
 		);
-		// 把第 0 点 (0,0) 挪到 0.75 → 序列变 (0.5) (0.75) (1)。
+		// Move point 0 (0,0) to 0.75 → sequence becomes (0.5) (0.75) (1).
 		assert_eq!(
 			(s.parametric_param_set_nth_control_point)(ph, 0, 0.0, 0, 0.75, 0.75, 0),
 			0
@@ -350,14 +350,14 @@ fn add_overwrites_same_key() {
 fn error_codes() {
 	let s = ps();
 	let mut out = 0.0;
-	// 空句柄 → BadHandle。
+	// Null handle → BadHandle.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_get_value)(std::ptr::null_mut(), 0, 0.0, 0.5, &mut out),
 			status::ERR_BAD_HANDLE
 		);
 	}
-	// 空 out → ErrValue。
+	// Null out → ErrValue.
 	let (_inst, _ih, ph) = make_instance();
 	unsafe {
 		assert_eq!(
@@ -365,14 +365,14 @@ fn error_codes() {
 			status::ERR_VALUE
 		);
 	}
-	// curveIndex 越界（维度 1）→ BadIndex。
+	// curveIndex out of range (dimension 1) → BadIndex.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_get_value)(ph, 1, 0.0, 0.5, &mut out),
 			status::ERR_BAD_INDEX
 		);
 	}
-	// nth 越界（2 点曲线）→ BadIndex。
+	// nth out of range (2-point curve) → BadIndex.
 	let mut k = 0.0;
 	unsafe {
 		assert_eq!(
@@ -380,7 +380,7 @@ fn error_codes() {
 			status::ERR_BAD_INDEX
 		);
 	}
-	// 非 parametric 参数 → BadHandle（Integer 参数的句柄）。
+	// Non-parametric parameter → BadHandle (handle of an Integer parameter).
 	let desc = EffectDescriptor::new();
 	let psuite = crate::suites::param::suite_v1();
 	let dhandle = descriptor_handle(&desc);
@@ -392,7 +392,7 @@ fn error_codes() {
 			(psuite.param_define)(dhandle, t.as_ptr(), n.as_ptr(), &mut gph),
 			0
 		);
-		// parametric 也定义一个，便于实例化后拿两个 handle。
+		// Define a parametric one too, so both handles are available after instantiation.
 		let pt = cs(crate::param::TYPE_PARAMETRIC);
 		let pn = cs("curve");
 		let mut pph: *mut c_void = std::ptr::null_mut();
@@ -447,14 +447,14 @@ fn error_codes() {
 #[test]
 fn dimension_prop_drives_curves() {
 	let (desc, ph) = define_parametric();
-	// 插件经属性 suite 把维度改成 2。
+	// The plugin changes the dimension to 2 through the property suite.
 	let psuite = crate::suites::property::suite_v1();
 	let dim = cs(crate::param::P_PARAMETRIC_DIMENSION);
 	unsafe {
 		assert_eq!((psuite.set_int)(ph, dim.as_ptr(), 0, 2), 0);
 	}
 	let s = ps();
-	// 第二维：Add 后求值可用。
+	// Second dimension: usable for evaluation after Add.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_add_control_point)(ph, 1, 0.0, 0.25, 0.5, 0),
@@ -469,7 +469,7 @@ fn dimension_prop_drives_curves() {
 		);
 	}
 	assert_eq!(out, 0.5);
-	// 第一维未配置 → 恒等默认。
+	// First dimension unconfigured → identity default.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_get_value)(ph, 0, 0.0, 0.25, &mut out),
@@ -485,7 +485,7 @@ fn dimension_prop_drives_curves() {
 		);
 	}
 	assert_eq!(n, 2);
-	// 第三维 → BadIndex。
+	// Third dimension → BadIndex.
 	unsafe {
 		assert_eq!(
 			(s.parametric_param_get_value)(ph, 2, 0.0, 0.5, &mut out),
@@ -496,7 +496,7 @@ fn dimension_prop_drives_curves() {
 			status::ERR_BAD_INDEX
 		);
 	}
-	// 维度属性随 from_def 复制到实例（实例句柄上同样生效）。
+	// The dimension property is copied to the instance by from_def (also on the instance handle).
 	let (_inst, _ih, iph) = instantiate(desc);
 	let mut n = -1;
 	unsafe {
@@ -518,12 +518,12 @@ fn range_prop_shapes_implicit_identity() {
 	let range = cs(crate::param::P_PARAMETRIC_RANGE);
 	unsafe {
 		assert_eq!((psuite.set_int)(ph, dim.as_ptr(), 0, 2), 0);
-		// range = (0, 255)。
+		// range = (0, 255).
 		assert_eq!((psuite.set_double)(ph, range.as_ptr(), 0, 0.0), 0);
 		assert_eq!((psuite.set_double)(ph, range.as_ptr(), 1, 255.0), 0);
 	}
 	let s = ps();
-	// 未配置的第二维：恒等默认端点 = range。
+	// Unconfigured second dimension: identity default endpoints = range.
 	let (mut k, mut v) = (-1.0, -1.0);
 	unsafe {
 		assert_eq!(
@@ -541,7 +541,7 @@ fn range_prop_shapes_implicit_identity() {
 fn ui_props_set_get_and_copy() {
 	let (desc, ph) = define_parametric();
 	let psuite = crate::suites::property::suite_v1();
-	// UIColour：3 个 double（维度 1 → 1 个 RGB 三元组）。
+	// UIColour: 3 doubles (dimension 1 → one RGB triple).
 	let colour = cs(crate::param::P_PARAMETRIC_UI_COLOUR);
 	let rgb: [f64; 3] = [1.0, 0.0, 0.5];
 	unsafe {
@@ -550,13 +550,13 @@ fn ui_props_set_get_and_copy() {
 			0
 		);
 	}
-	// InteractBackground：任意指针。
+	// InteractBackground: arbitrary pointer.
 	let bg = cs(crate::param::P_PARAMETRIC_INTERACT_BG);
 	let sentinel = 0x1234usize as *mut c_void;
 	unsafe {
 		assert_eq!((psuite.set_pointer)(ph, bg.as_ptr(), 0, sentinel), 0);
 	}
-	// 读回。
+	// Read back.
 	let mut got = [0.0; 3];
 	unsafe {
 		assert_eq!(
@@ -570,7 +570,7 @@ fn ui_props_set_get_and_copy() {
 		assert_eq!((psuite.get_pointer)(ph, bg.as_ptr(), 0, &mut gotp), 0);
 	}
 	assert_eq!(gotp, sentinel);
-	// 实例 props 深拷贝。
+	// Instance props are deep-copied.
 	let (_inst, _ih, iph) = instantiate(desc);
 	let mut got2 = [0.0; 3];
 	unsafe {

@@ -60,33 +60,33 @@ use crate::suites::status;
 
 /// `OfxStandardColour` (ofxDrawSuite.h:37-46) enum values.
 pub mod std_colour {
-	/// kOfxStandardColourOverlayBackground。
+	/// kOfxStandardColourOverlayBackground.
 	pub const BACKGROUND: i32 = 0;
-	/// kOfxStandardColourOverlayActive。
+	/// kOfxStandardColourOverlayActive.
 	pub const ACTIVE: i32 = 1;
-	/// kOfxStandardColourOverlaySelected。
+	/// kOfxStandardColourOverlaySelected.
 	pub const SELECTED: i32 = 2;
-	/// kOfxStandardColourOverlayDeselected。
+	/// kOfxStandardColourOverlayDeselected.
 	pub const DESELECTED: i32 = 3;
-	/// kOfxStandardColourOverlayMarqueeFG。
+	/// kOfxStandardColourOverlayMarqueeFG.
 	pub const MARQUEE_FG: i32 = 4;
-	/// kOfxStandardColourOverlayMarqueeBG。
+	/// kOfxStandardColourOverlayMarqueeBG.
 	pub const MARQUEE_BG: i32 = 5;
-	/// kOfxStandardColourOverlayText。
+	/// kOfxStandardColourOverlayText.
 	pub const TEXT: i32 = 6;
 }
 
 /// `OfxDrawLineStipplePattern` (ofxDrawSuite.h:49-56) enum values.
 pub mod stipple {
-	/// kOfxDrawLineStipplePatternSolid。
+	/// kOfxDrawLineStipplePatternSolid.
 	pub const SOLID: i32 = 0;
-	/// kOfxDrawLineStipplePatternDot。
+	/// kOfxDrawLineStipplePatternDot.
 	pub const DOT: i32 = 1;
-	/// kOfxDrawLineStipplePatternDash。
+	/// kOfxDrawLineStipplePatternDash.
 	pub const DASH: i32 = 2;
-	/// kOfxDrawLineStipplePatternAltDash。
+	/// kOfxDrawLineStipplePatternAltDash.
 	pub const ALT_DASH: i32 = 3;
-	/// kOfxDrawLineStipplePatternDotDash。
+	/// kOfxDrawLineStipplePatternDotDash.
 	pub const DOT_DASH: i32 = 4;
 }
 
@@ -94,9 +94,9 @@ pub mod stipple {
 pub mod primitive {
 	/// kOfxDrawPrimitiveLines (n points draw n/2 independent line segments).
 	pub const LINES: i32 = 0;
-	/// kOfxDrawPrimitiveLineStrip。
+	/// kOfxDrawPrimitiveLineStrip.
 	pub const LINE_STRIP: i32 = 1;
-	/// kOfxDrawPrimitiveLineLoop。
+	/// kOfxDrawPrimitiveLineLoop.
 	pub const LINE_LOOP: i32 = 2;
 	/// kOfxDrawPrimitiveRectangle (axis-aligned filled rectangle, 2 diagonal
 	/// points).
@@ -118,7 +118,7 @@ pub struct OfxRGBAColourF {
 	pub g: f32,
 	/// Blue.
 	pub b: f32,
-	/// alpha。
+	/// alpha.
 	pub a: f32,
 }
 
@@ -126,9 +126,9 @@ pub struct OfxRGBAColourF {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OfxPointD {
-	/// x。
+	/// x.
 	pub x: f64,
-	/// y。
+	/// y.
 	pub y: f64,
 }
 
@@ -250,24 +250,24 @@ fn resolve_mut(handle: *mut c_void) -> Result<(), c_int> {
 	resolve(handle).map(|_| ())
 }
 
-// ---- 宿主标准颜色板（getColour）----
+// ---- Host standard colour palette (getColour) ----
 
 /// Host standard colour palette: in `OfxStandardColour` enum order
 /// (ofxDrawSuite.h:37-46).
 const PALETTE: [[f32; 4]; 7] = [
-	// BACKGROUND：宿主视口背景（本宿主 Phase 1 无合成背景，黑）。
+	// BACKGROUND: host viewport background (no compositing background in Phase 1; black).
 	[0.0, 0.0, 0.0, 1.0],
-	// ACTIVE：进行中/激活的 overlay 元素。
+	// ACTIVE: in-progress/active overlay element.
 	[1.0, 0.84, 0.0, 1.0],
-	// SELECTED：选中元素。
+	// SELECTED: selected element.
 	[0.0, 1.0, 0.0, 1.0],
-	// DESELECTED：未选中元素。
+	// DESELECTED: deselected element.
 	[1.0, 1.0, 1.0, 0.5],
-	// MARQUEE_FG：框选前景。
+	// MARQUEE_FG: marquee foreground.
 	[1.0, 1.0, 1.0, 1.0],
-	// MARQUEE_BG：框选背景。
+	// MARQUEE_BG: marquee background.
 	[0.0, 0.0, 0.0, 0.5],
-	// TEXT：overlay 文本。
+	// TEXT: overlay text.
 	[1.0, 1.0, 1.0, 1.0],
 ];
 
@@ -344,7 +344,7 @@ unsafe extern "C" fn set_colour(ctx: *mut c_void, colour: *const OfxRGBAColourF)
 		let v = unsafe { &*colour };
 		let addr = ctx as usize;
 		let mut live = lock();
-		let slot = live.get_mut(&addr).expect("resolve 已保证存活");
+		let slot = live.get_mut(&addr).expect("resolve guarantees it is alive");
 		slot.colour = [v.r, v.g, v.b, v.a];
 		Ok(())
 	})
@@ -373,7 +373,7 @@ unsafe extern "C" fn set_line_width(ctx: *mut c_void, width: c_float) -> c_int {
 		resolve_mut(ctx)?;
 		let addr = ctx as usize;
 		let mut live = lock();
-		let slot = live.get_mut(&addr).expect("resolve 已保证存活");
+		let slot = live.get_mut(&addr).expect("resolve guarantees it is alive");
 		slot.line_width = width;
 		Ok(())
 	})
@@ -403,7 +403,7 @@ unsafe extern "C" fn set_line_stipple(ctx: *mut c_void, pattern: c_int) -> c_int
 		resolve_mut(ctx)?;
 		let addr = ctx as usize;
 		let mut live = lock();
-		let slot = live.get_mut(&addr).expect("resolve 已保证存活");
+		let slot = live.get_mut(&addr).expect("resolve guarantees it is alive");
 		slot.stipple = pattern;
 		Ok(())
 	})
@@ -445,7 +445,7 @@ unsafe extern "C" fn draw(
 		if count < 0 || (count > 0 && points.is_null()) {
 			return Err(status::ERR_VALUE);
 		}
-		// 每原语的合法点数（ofxDrawSuite.h draw 文档）。
+		// Valid point count per primitive (ofxDrawSuite.h draw docs).
 		let valid = match prim {
 			primitive::LINES => count >= 2 && count % 2 == 0,
 			primitive::LINE_STRIP | primitive::LINE_LOOP => count >= 2,
@@ -460,7 +460,7 @@ unsafe extern "C" fn draw(
 		let pts: Vec<OfxPointD> = (0..count as usize)
 			.map(|i| unsafe { *points.add(i) })
 			.collect();
-		// 真实 GL 渲染（macOS 3.2 core；非 macOS stub → Failed）。
+		// Real GL rendering (macOS 3.2 core; non-macOS stub → Failed).
 		gl_imp::render(c, prim, &pts)
 	})
 }
@@ -495,7 +495,7 @@ unsafe extern "C" fn draw_text(
 			return Err(status::ERR_VALUE);
 		}
 		let _ = resolve(ctx)?;
-		// 确认文本有效（UTF-8）；随后如实拒绝（无字体光栅化器）。
+		// Validate the text (UTF-8), then faithfully reject (no font rasterizer).
 		let _ = unsafe { CStr::from_ptr(text) }
 			.to_str()
 			.map_err(|_| status::ERR_VALUE)?;
@@ -538,7 +538,7 @@ pub fn suite_v1() -> &'static DrawSuiteV1 {
 #[cfg(test)]
 mod tests;
 
-// ---- GL 绘制实现（平台分派）--------------------------------------------
+// ---- GL drawing implementation (platform dispatch) ----------------------
 
 #[cfg(target_os = "macos")]
 mod gl_imp {
@@ -551,7 +551,7 @@ mod gl_imp {
 	use std::ptr;
 	use std::sync;
 
-	// ---- GL 常量（GL 规范值）----
+	// ---- GL constants (GL spec values) ----
 	const GL_FALSE: i32 = 0;
 	const GL_FLOAT: u32 = 0x1406;
 	const GL_ARRAY_BUFFER: u32 = 0x8892;
@@ -569,8 +569,9 @@ mod gl_imp {
 	const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
 	const GL_NO_ERROR: u32 = 0;
 
-	// # Safety: 全部是 OpenGL.framework 导出函数；参数语义见各函数
-	// 注释。调用前提：GL 上下文 current（宿主 draw action 已 acquire）。
+	// # Safety: all are OpenGL.framework exported functions; for parameter
+	// semantics see each function's comment. Precondition: GL context current
+	// (the host draw action has acquired it).
 	#[link(name = "OpenGL", kind = "framework")]
 	unsafe extern "C" {
 		fn glGenVertexArrays(n: i32, arrays: *mut u32);
@@ -639,8 +640,8 @@ mod gl_imp {
 	/// The GL context must be current when called; this function caches no
 	/// result.
 	fn compile_shader(kind: u32, src: &[u8]) -> Result<u32, i32> {
-		// SAFETY: glCreateShader/glShaderSource/glCompileShader 均为当前
-		// 上下文的合法调用；src 是 NUL 结尾串（b"...\0"）。
+		// SAFETY: glCreateShader/glShaderSource/glCompileShader are all valid
+		// calls on the current context; src is a NUL-terminated string (b"...\0").
 		let sh = unsafe { glCreateShader(kind) };
 		if sh == 0 {
 			return Err(status::FAILED);
@@ -651,10 +652,10 @@ mod gl_imp {
 			glCompileShader(sh);
 		}
 		let mut ok: i32 = 0;
-		// SAFETY: glGetShaderiv 写 ok。
+		// SAFETY: glGetShaderiv writes ok.
 		unsafe { glGetShaderiv(sh, GL_COMPILE_STATUS, &mut ok) };
 		if ok == GL_FALSE {
-			// SAFETY: sh 是本函数 glCreateShader 的产物。
+			// SAFETY: sh is the product of this function's glCreateShader.
 			unsafe { glDeleteShader(sh) };
 			return Err(status::FAILED);
 		}
@@ -687,14 +688,14 @@ mod gl_imp {
 			let fs = match compile_shader(GL_FRAGMENT_SHADER, FRAG_SRC) {
 				Ok(s) => s,
 				Err(e) => {
-					// SAFETY: vs 是本闭包编译成功的着色器。
+					// SAFETY: vs is a shader this closure compiled successfully.
 					unsafe { glDeleteShader(vs) };
 					return Err(e);
 				}
 			};
 			let prog = unsafe { glCreateProgram() };
 			if prog == 0 {
-				// SAFETY: vs/fs 均有效。
+				// SAFETY: vs/fs are both valid.
 				unsafe {
 					glDeleteShader(vs);
 					glDeleteShader(fs);
@@ -707,9 +708,9 @@ mod gl_imp {
 				glLinkProgram(prog);
 			}
 			let mut ok: i32 = 0;
-			// SAFETY: glGetProgramiv 写 ok。
+			// SAFETY: glGetProgramiv writes ok.
 			unsafe { glGetProgramiv(prog, GL_LINK_STATUS, &mut ok) };
-			// 链接后可删着色器对象（程序保留可执行版本）。
+			// Shader objects can be deleted after linking (the program keeps the executable).
 			unsafe {
 				glDeleteShader(vs);
 				glDeleteShader(fs);
@@ -717,7 +718,7 @@ mod gl_imp {
 			if ok == GL_FALSE {
 				return Err(status::FAILED);
 			}
-			// SAFETY: 生成并绑定固定 VAO/VBO（3.2 core）。
+			// SAFETY: generates and binds the fixed VAO/VBO (3.2 core).
 			let mut vao: u32 = 0;
 			let mut vbo: u32 = 0;
 			unsafe {
@@ -801,14 +802,14 @@ mod gl_imp {
 			primitive::RECTANGLE => {
 				let (x1, y1) = (pts[0].x as f32, pts[0].y as f32);
 				let (x2, y2) = (pts[1].x as f32, pts[1].y as f32);
-				// 两个三角形组成实心矩形（对角点定义）。
+				// Two triangles form the filled rectangle (defined by the diagonal points).
 				(
 					GL_TRIANGLES,
 					vec![x1, y1, x2, y1, x1, y2, x1, y2, x2, y1, x2, y2],
 				)
 			}
 			primitive::POLYGON => {
-				// 三角扇：0,i,i+1（凸多边形约定）。
+				// Triangle fan: 0,i,i+1 (convex-polygon convention).
 				let mut v = Vec::new();
 				for i in 1..pts.len() - 1 {
 					v.extend_from_slice(&[
@@ -823,7 +824,7 @@ mod gl_imp {
 				(GL_TRIANGLES, v)
 			}
 			primitive::ELLIPSE => {
-				// 椭圆**线框**（文档），包围盒内 64 段线环。
+				// Ellipse **wireframe** (per docs): 64-segment line loop inside the bounding box.
 				let (cx, cy) = ((pts[0].x + pts[1].x) / 2.0, (pts[0].y + pts[1].y) / 2.0);
 				let (rx, ry) = (
 					(pts[1].x - pts[0].x).abs() / 2.0,
@@ -875,16 +876,17 @@ mod gl_imp {
 		if verts.is_empty() {
 			return Err(status::ERR_VALUE);
 		}
-		// 合成：非不透明色 "over"（ofxDrawSuite.h setColour 文档）。
+		// Compositing: non-opaque colours use "over" (ofxDrawSuite.h setColour docs).
 		if ctx.colour[3] < 1.0 {
-			// SAFETY: 开启混合并设因子（上下文 current）。
+			// SAFETY: enables blending and sets the factors (context current).
 			unsafe {
 				glEnable(GL_BLEND);
 				glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 			}
 		}
-		// SAFETY: 以下 GL 调用均要求上下文 current（宿主已保证）；对象
-		// 名来自 resources()（本进程唯一 GL 使用方）。
+		// SAFETY: every GL call below requires the context current (the host
+		// guarantees it); object names come from resources() (this process is the
+		// only GL user).
 		unsafe {
 			glUseProgram(prog);
 			glBindVertexArray(vao);
@@ -922,7 +924,7 @@ mod gl_imp {
 			}
 			glDrawArrays(mode, 0, (verts.len() / 2) as i32);
 
-			// 解除绑定（对象保留复用）。
+			// Unbind (objects are kept for reuse).
 			glBindVertexArray(0);
 			glBindBuffer(GL_ARRAY_BUFFER, 0);
 			glUseProgram(0);

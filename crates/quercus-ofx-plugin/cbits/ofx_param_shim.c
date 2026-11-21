@@ -17,24 +17,25 @@
  */
 
 /*
- * OfxParameterSuite 的 variadic 入口。stable Rust 不能定义
- * C-variadic 函数（c_variadic 仍不稳定）：paramGetValue /
- * paramSetValue / *AtTime / derivative / integral 的 '...' 在这里
- * 按参数类型解析（类型经 Rust 导出的 ofx_param_kind_of 查询），
- * 再转发给 Rust 的类型化实现。
+ * Variadic entry points for OfxParameterSuite. Stable Rust cannot define
+ * C-variadic functions (c_variadic is still unstable): the '...' of
+ * paramGetValue / paramSetValue / *AtTime / derivative / integral is
+ * decoded here by parameter type (type queried via the Rust-exported
+ * ofx_param_kind_of), then forwarded to the typed Rust implementation.
  *
- * 变长参数形状（HS: ofxhParam.cpp 各类型的 getV/setV）：
- *   get：Integer/Boolean/Choice → int*；Double→double*；
- *        2D/3D/颜色 → 按维度的 int* / double* 指针序列；String →
- *        char**（写内驻指针）
- *   set：同形状但按值传（int/double 值序列；String → char*）
+ * Variadic argument shapes (HS: getV/setV of each type in ofxhParam.cpp):
+ *   get: Integer/Boolean/Choice → int*; Double → double*;
+ *        2D/3D/colour → sequence of int* / double* pointers, one per dim;
+ *        String → char** (writes the resident pointer)
+ *   set: same shapes but by value (sequence of int/double values;
+ *        String → char*)
  *
- * KIND_* 与 Rust 侧 param::ParamKind 枚举逐字对应。
+ * KIND_* matches the Rust-side param::ParamKind enum one-to-one.
  */
 
 #include <stdarg.h>
 
-/* Rust 导出 */
+/* Rust exports */
 extern int ofx_param_kind_of(void *param);
 extern int ofx_param_get_impl(void *param, int kind, void *out);
 extern int ofx_param_set_impl(void *param, int kind, const void *in);
@@ -57,7 +58,8 @@ enum {
     KIND_STRCHOICE = 12
 };
 
-/* get：把插件传的指针序列收进局部缓冲，调 Rust，再散回。 */
+/* get: gather the pointer sequence from the plugin into a local buffer, call
+ * Rust, then scatter back. */
 static int get_dispatch(void *param, int kind, va_list ap)
 {
     switch (kind) {
@@ -141,11 +143,11 @@ static int get_dispatch(void *param, int kind, va_list ap)
         return ofx_param_get_string_impl(param, p);
     }
     default:
-        return 1; /* kOfxStatFailed：未知类型 */
+        return 1; /* kOfxStatFailed: unknown kind */
     }
 }
 
-/* set：按值收进局部缓冲，调 Rust。 */
+/* set: gather by value into a local buffer, call Rust. */
 static int set_dispatch(void *param, int kind, va_list ap)
 {
     switch (kind) {
@@ -222,7 +224,7 @@ int ofx_param_get_value_shim(void *param, ...)
 
 int ofx_param_get_value_at_time_shim(void *param, double time, ...)
 {
-    (void)time; /* 第 1 期无动画：AtTime 即当前值（Rust 侧实现） */
+    (void)time; /* no animation in phase 1: AtTime is the current value (implemented Rust-side) */
     va_list ap;
     va_start(ap, time);
     int kind = ofx_param_kind_of(param);
@@ -243,7 +245,7 @@ int ofx_param_set_value_shim(void *param, ...)
 
 int ofx_param_set_value_at_time_shim(void *param, double time, ...)
 {
-    (void)time; /* 第 1 期无动画 */
+    (void)time; /* no animation in phase 1 */
     va_list ap;
     va_start(ap, time);
     int kind = ofx_param_kind_of(param);
@@ -252,8 +254,8 @@ int ofx_param_set_value_at_time_shim(void *param, double time, ...)
     return r;
 }
 
-/* derivative/integral：第 1 期无动画支持；不消费 va_args，
- * 统一返回 kOfxStatErrMissingHostFeature。 */
+/* derivative/integral: no animation support in phase 1; consumes no va_args and
+ * always returns kOfxStatErrMissingHostFeature. */
 int ofx_param_get_derivative_shim(void *param, double time, ...)
 {
     (void)time;

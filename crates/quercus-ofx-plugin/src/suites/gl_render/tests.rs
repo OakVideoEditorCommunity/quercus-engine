@@ -79,30 +79,30 @@ fn gl_ctx(output: crate::render::Texture, index: Option<i32>) -> crate::suites::
 
 /// Reads the property set from a handle written by clipLoadTexture.
 fn handle_props(handle: *mut c_void) -> PropertySet {
-	assert_eq!(tag::kind(handle), tag::PROPERTY_SET, "纹理句柄标签 0");
+	assert_eq!(tag::kind(handle), tag::PROPERTY_SET, "texture handle tag 0");
 	unsafe { (*(tag::strip(handle))).clone() }
 }
 
-// `Value` 未实现 PartialEq（Pointer 无法比较）——按种类解包断言。
+// `Value` does not implement PartialEq (Pointer is not comparable) — assert by unwrapping per kind.
 
 fn prop_int(props: &PropertySet, name: &str, index: usize) -> i32 {
 	match props.get(name, index) {
 		Some(Value::Int(i)) => i,
-		other => panic!("{name}[{index}] 应为 Int，got {other:?}"),
+		other => panic!("{name}[{index}] should be Int, got {other:?}"),
 	}
 }
 
 fn prop_double(props: &PropertySet, name: &str, index: usize) -> f64 {
 	match props.get(name, index) {
 		Some(Value::Double(d)) => d,
-		other => panic!("{name}[{index}] 应为 Double，got {other:?}"),
+		other => panic!("{name}[{index}] should be Double, got {other:?}"),
 	}
 }
 
 fn prop_string(props: &PropertySet, name: &str, index: usize) -> String {
 	match props.get(name, index) {
 		Some(Value::String(s)) => s.to_string_lossy().into_owned(),
-		other => panic!("{name}[{index}] 应为 String，got {other:?}"),
+		other => panic!("{name}[{index}] should be String, got {other:?}"),
 	}
 }
 
@@ -142,7 +142,7 @@ fn pick_gl_pixel_depth_matrix() {
 	);
 	assert_eq!(pick_gl_pixel_depth(&props4), Some("OfxBitDepthFloat"));
 
-	// 列表存在但元素非字符串 → 跳过，不含 Float → None。
+	// List present but its elements are not strings → skipped; no Float → None.
 	let props5 = PropertySet::new();
 	props5.define(crate::host::PROP_GL_PIXEL_DEPTH, vec![Value::Int(4)]);
 	assert_eq!(pick_gl_pixel_depth(&props5), None);
@@ -264,7 +264,7 @@ fn clip_string_and_par_fallbacks() {
 	assert_eq!(clip_par(&c), 2.0);
 	c.props
 		.set_one("OfxImagePropPixelAspectRatio", Value::Int(2));
-	assert_eq!(clip_par(&c), 1.0, "非 Double 回退 1.0");
+	assert_eq!(clip_par(&c), 1.0, "non-Double falls back to 1.0");
 }
 
 /// texture_size / image_width / image_height.
@@ -314,7 +314,7 @@ fn clip_load_texture_entry_guards() {
 	let mut sentinel = 0u8;
 	let mut out: *mut c_void = &mut sentinel as *mut u8 as *mut c_void;
 	unsafe {
-		// 空 out → BadHandle（且不触碰返回值）。
+		// Null out → BadHandle (and it is not dereferenced).
 		assert_eq!(
 			(s.clip_load_texture)(
 				clip_handle(&c),
@@ -325,7 +325,7 @@ fn clip_load_texture_entry_guards() {
 			),
 			status::ERR_BAD_HANDLE
 		);
-		// 空 clip 句柄 → BadHandle。
+		// Null clip handle → BadHandle.
 		assert_eq!(
 			(s.clip_load_texture)(
 				std::ptr::null_mut(),
@@ -336,14 +336,14 @@ fn clip_load_texture_entry_guards() {
 			),
 			status::ERR_BAD_HANDLE
 		);
-		assert!(out.is_null(), "入口先把 out 置空");
-		// 非 clip 标签 → BadHandle。
+		assert!(out.is_null(), "entry clears out first");
+		// Non-clip tag → BadHandle.
 		let wrong = tag::make(&c.props as *const PropertySet, tag::PROPERTY_SET);
 		assert_eq!(
 			(s.clip_load_texture)(wrong, 0.0, name.as_ptr(), std::ptr::null(), &mut out),
 			status::ERR_BAD_HANDLE
 		);
-		// 无 GL 上下文 → MissingHostFeature（GL suite 只在 GL 渲染期可达）。
+		// No GL context → MissingHostFeature (the GL suite is only reachable during GL rendering).
 		assert_eq!(
 			(s.clip_load_texture)(
 				clip_handle(&c),
@@ -367,7 +367,7 @@ fn clip_load_texture_output_clip() {
 	let out_clip = clip("Output");
 	let tex = f32_texture(4, 2, 0.25);
 	crate::suites::set_gl_ctx(Some(gl_ctx(tex, Some(9))));
-	let rgb = cs(GL_FORMAT_RGB); // Output 忽略请求格式。
+	let rgb = cs(GL_FORMAT_RGB); // Output ignores the requested format.
 	let mut handle: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!(
@@ -389,7 +389,7 @@ fn clip_load_texture_output_clip() {
 		"OfxImageComponentRGBA"
 	);
 	assert_eq!(prop_int(&props, crate::image::K_IMAGE_PROP_BOUNDS, 2), 4);
-	// 行字节 = w × RGBA × F32；OpenGLTextureIndex=0 变体（CPU 回退）。
+	// Row bytes = w × RGBA × F32; OpenGLTextureIndex=0 variant (CPU fallback).
 	assert_eq!(
 		prop_int(&props, crate::image::K_IMAGE_PROP_ROW_BYTES, 0),
 		4 * 4 * 4
@@ -399,10 +399,10 @@ fn clip_load_texture_output_clip() {
 		.unwrap()
 		.contains_key(&(tag::strip(handle) as usize)));
 
-	// free：输出 clip 只释放句柄、不删纹理（宿主还要回读）。
+	// free: the output clip releases the handle only, not the texture (the host reads it back).
 	unsafe {
 		assert_eq!((s.clip_free_texture)(handle), status::OK);
-		// 二次释放 / 空句柄 → BadHandle。
+		// Double release / null handle → BadHandle.
 		assert_eq!((s.clip_free_texture)(handle), status::ERR_BAD_HANDLE);
 		assert_eq!(
 			(s.clip_free_texture)(std::ptr::null_mut()),
@@ -414,7 +414,7 @@ fn clip_load_texture_output_clip() {
 		.unwrap()
 		.contains_key(&(tag::strip(handle) as usize)));
 
-	// output_gl_texture = None → 索引 0（CPU 回退语义）。
+	// output_gl_texture = None → index 0 (CPU fallback semantics).
 	crate::suites::set_gl_ctx(Some(gl_ctx(f32_texture(2, 2, 0.0), None)));
 	let mut h0: *mut c_void = std::ptr::null_mut();
 	unsafe {
@@ -465,15 +465,15 @@ fn clip_load_texture_output_rejects_empty_texture() {
 #[test]
 fn clip_load_texture_input_clip() {
 	let _lock = suite_lock();
-	// Linux/macOS 真实 GL 桥：clipLoadTexture 的 GL 上传要求上下文
-	// current（生产路径由 render_driver 的 GlGuard 保证）。
+	// Real GL bridge on Linux/macOS: clipLoadTexture's GL upload requires the
+	// context current (the production path guarantees it via render_driver's GlGuard).
 	let _gl = crate::gl_bridge::acquire().ok();
 	let s = suite_v1();
 	let c = clip("Source");
 	c.set_input_texture(Some(f32_texture(2, 2, 0.5)), 0.0);
 	crate::suites::set_gl_ctx(Some(gl_ctx(crate::render::Texture::dummy(), None)));
 
-	// 子区域请求（region 非空）→ Failed（Phase 2 仅整帧）。
+	// Sub-region request (non-null region) → Failed (phase 2 is full-frame only).
 	let region = crate::instance::OfxRectD::default();
 	unsafe {
 		let mut h: *mut c_void = std::ptr::null_mut();
@@ -489,7 +489,7 @@ fn clip_load_texture_input_clip() {
 		);
 	}
 
-	// 未挂输入纹理 → Failed（fetch_image NotFound 映射）。
+	// No input texture attached → Failed (fetch_image NotFound mapped).
 	let empty = clip("Source");
 	unsafe {
 		let mut h: *mut c_void = std::ptr::null_mut();
@@ -505,7 +505,7 @@ fn clip_load_texture_input_clip() {
 		);
 	}
 
-	// 分量不符：请求 RGB 但图像 RGBA（协商默认）→ Failed。
+	// Component mismatch: request RGB but the image is RGBA (negotiated default) → Failed.
 	let rgb = cs(GL_FORMAT_RGB);
 	unsafe {
 		let mut h: *mut c_void = std::ptr::null_mut();
@@ -515,7 +515,7 @@ fn clip_load_texture_input_clip() {
 		);
 	}
 
-	// 成功（format=NULL）：纹理句柄属性齐全。
+	// Success (format=NULL): the texture-handle properties are complete.
 	let mut handle: *mut c_void = std::ptr::null_mut();
 	unsafe {
 		assert_eq!(
@@ -543,18 +543,21 @@ fn clip_load_texture_input_clip() {
 		2 * 4 * 4
 	);
 	assert_eq!(prop_int(&props, GL_TEXTURE_TARGET, 0), GL_TEXTURE_2D);
-	// 非 GL（Linux/Windows stub）→ 索引 0；macOS 有 GL 时 > 0。
+	// Not GL (Linux/Windows stub) → index 0; on macOS with GL it is > 0.
 	let index = match props.get(GL_TEXTURE_INDEX, 0) {
 		Some(Value::Int(i)) => i,
-		other => panic!("OpenGLTextureIndex 应为 Int，got {other:?}"),
+		other => panic!("OpenGLTextureIndex should be Int, got {other:?}"),
 	};
 	if crate::gl_bridge::gl_available() {
-		assert!(index > 0, "GL 可用时输入纹理应有真实 GL 名");
+		assert!(
+			index > 0,
+			"input texture should have a real GL name when GL is available"
+		);
 	} else {
-		assert_eq!(index, 0, "无 GL 时索引为 0");
+		assert_eq!(index, 0, "index is 0 without GL");
 	}
 
-	// 请求 RGBA（显式）与请求 Luminance 族（None = 宿主自选）都成功。
+	// Requesting RGBA (explicit) and the Luminance family (None = host's choice) both succeed.
 	let rgba = cs(GL_FORMAT_RGBA);
 	let lum = cs(GL_FORMAT_LUMINANCE);
 	let lum_a = cs(GL_FORMAT_LUMINANCE_ALPHA);
@@ -592,7 +595,7 @@ fn clip_load_texture_input_clip() {
 			),
 			status::OK
 		);
-		// 非 UTF-8 format 串按 None 处理（宿主自选）→ OK。
+		// A non-UTF-8 format string is treated as None (host's choice) → OK.
 		let bad = CString::new(vec![0xFFu8]).unwrap();
 		let mut h5: *mut c_void = std::ptr::null_mut();
 		assert_eq!(
@@ -605,7 +608,7 @@ fn clip_load_texture_input_clip() {
 			),
 			status::OK
 		);
-		// free 输入纹理：摘表（GL 模式同时删真实 GL 纹理）。
+		// free input texture: drops the table entry (GL mode also deletes the real GL texture).
 		assert_eq!((s.clip_free_texture)(h2), status::OK);
 		assert_eq!((s.clip_free_texture)(h3), status::OK);
 		assert_eq!((s.clip_free_texture)(h4), status::OK);
@@ -622,7 +625,7 @@ fn clip_load_texture_uses_render_scale_and_rejects_zero_image() {
 	let _lock = suite_lock();
 	let s = suite_v1();
 
-	// 有 render ctx：scale 写入纹理句柄的 RenderScale 属性。
+	// With a render ctx: scale is written into the handle's RenderScale property.
 	let c = clip("Source");
 	c.set_input_texture(Some(f32_texture(2, 2, 0.0)), 0.0);
 	crate::suites::set_render_ctx(Some(crate::suites::RenderCtx {
@@ -651,7 +654,7 @@ fn clip_load_texture_uses_render_scale_and_rejects_zero_image() {
 	}
 	crate::suites::set_render_ctx(None);
 
-	// 0×0 帧（非 dummy：data 非空）→ image_width == 0 → Failed。
+	// 0×0 frame (not dummy: data is non-empty) → image_width == 0 → Failed.
 	let zero = clip("Source");
 	let params = crate::render::VideoParams {
 		format: crate::render::PIXEL_FORMAT_F32,
@@ -724,11 +727,11 @@ fn purge_leftovers_keeps_outputs() {
 	let live = LIVE_TEXTURES.lock().unwrap();
 	assert!(
 		!live.contains_key(&(tag::strip(input_handle) as usize)),
-		"输入句柄应被兜底释放"
+		"input handle should be released by cleanup"
 	);
 	assert!(
 		live.contains_key(&(tag::strip(out_handle) as usize)),
-		"输出句柄应保留"
+		"output handle should be kept"
 	);
 	drop(live);
 	unsafe {

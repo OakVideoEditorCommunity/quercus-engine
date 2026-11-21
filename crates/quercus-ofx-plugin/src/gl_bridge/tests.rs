@@ -13,13 +13,13 @@ use crate::render::VideoParams;
 fn maybe_gl() -> Option<GlGuard> {
 	#[cfg(target_os = "macos")]
 	if std::env::var_os("QUERCUS_GPU_TESTS").is_none() {
-		println!("SKIP: 真实 GL 桥用例需 QUERCUS_GPU_TESTS（本机 GPU 验收；CI 一律跳过）");
+		println!("SKIP: real GL bridge cases require QUERCUS_GPU_TESTS (local GPU acceptance; always skipped in CI)");
 		return None;
 	}
 	match acquire() {
 		Ok(g) => Some(g),
 		Err(e) => {
-			println!("SKIP: GL 上下文不可用：{e}");
+			println!("SKIP: GL context unavailable: {e}");
 			None
 		}
 	}
@@ -49,12 +49,18 @@ fn gl_context_is_real() {
 		return;
 	};
 	let v = gl_version_string();
-	assert!(v.is_some(), "真实 CGL 上下文应返回 GL_VERSION");
+	assert!(v.is_some(), "real CGL context should return GL_VERSION");
 	let v = v.unwrap();
-	// macOS 上 Apple 的 OpenGL 实现构建于 Metal 之上，GL_VERSION
-	// 形如 "4.1 Metal - 90.5"（无头/有头皆然）——只断言非空。
-	assert!(!v.trim().is_empty(), "GL_VERSION 应非空，got {v:?}");
-	assert!(gl_available(), "上下文可用后 gl_available 应为 true");
+	// On macOS, Apple's OpenGL implementation is built on top of Metal;
+	// GL_VERSION looks like "4.1 Metal - 90.5" (headless or not) — only assert non-empty.
+	assert!(
+		!v.trim().is_empty(),
+		"GL_VERSION should be non-empty, got {v:?}"
+	);
+	assert!(
+		gl_available(),
+		"gl_available should be true once the context is available"
+	);
 }
 
 /// Context singleton and cross-thread current serialization: two threads
@@ -85,14 +91,17 @@ fn fbo_clear_readback_f32() {
 	};
 	let (w, h) = (4i32, 2i32);
 	let params = f32_params(w, h);
-	let tex = create_output_texture(w, h, &params).expect("输出纹理应可建");
-	assert!(tex > 0, "GL 纹理名必须为真实非零 GL 名，got {tex}");
-	let fbo = create_fbo(tex, w, h).expect("FBO 应完整");
+	let tex = create_output_texture(w, h, &params).expect("output texture creation should succeed");
+	assert!(
+		tex > 0,
+		"GL texture name must be a real non-zero GL name, got {tex}"
+	);
+	let fbo = create_fbo(tex, w, h).expect("FBO should be complete");
 	bind_fbo(fbo);
 	set_viewport(w, h);
 	gl_clear_color(0.1, 0.2, 0.3, 1.0);
 	gl_clear();
-	let img = read_pixels_to_image(w, h, &params).expect("回读应成功");
+	let img = read_pixels_to_image(w, h, &params).expect("readback should succeed");
 	delete_fbo(fbo);
 	delete_gl_texture(tex);
 	assert_eq!(img.components(), Components::Rgba);
@@ -108,14 +117,14 @@ fn fbo_clear_readback_f32() {
 	assert!((px_f[1] - 0.2).abs() < 1e-6, "G={}", px_f[1]);
 	assert!((px_f[2] - 0.3).abs() < 1e-6, "B={}", px_f[2]);
 	assert!((px_f[3] - 1.0).abs() < 1e-6, "A={}", px_f[3]);
-	// 整帧同色（clear 覆盖全 FBO）。
+	// The whole frame has the same color (clear covers the entire FBO).
 	let all: Vec<f32> = img.pixels()[..]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
 	assert!(
 		all.chunks(4).all(|px| (px[0] - 0.1).abs() < 1e-6),
-		"整帧应为清屏色"
+		"whole frame should be the clear color"
 	);
 }
 
@@ -128,20 +137,21 @@ fn fbo_clear_readback_u8() {
 	};
 	let (w, h) = (3i32, 3i32);
 	let params = u8_params(w, h);
-	let tex = create_output_texture(w, h, &params).expect("U8 输出纹理应可建");
-	let fbo = create_fbo(tex, w, h).expect("FBO 应完整");
+	let tex =
+		create_output_texture(w, h, &params).expect("U8 output texture creation should succeed");
+	let fbo = create_fbo(tex, w, h).expect("FBO should be complete");
 	bind_fbo(fbo);
 	set_viewport(w, h);
 	gl_clear_color(0.5, 0.25, 0.0, 1.0);
 	gl_clear();
-	let img = read_pixels_to_image(w, h, &params).expect("U8 回读应成功");
+	let img = read_pixels_to_image(w, h, &params).expect("U8 readback should succeed");
 	delete_fbo(fbo);
 	delete_gl_texture(tex);
 	let px_f: Vec<f32> = img.pixels()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
-	// 0.5*255=127.5→128（round），128/255≈0.50196；0.25→64→0.25098。
+	// 0.5*255=127.5→128 (rounded), 128/255≈0.50196; 0.25→64→0.25098.
 	assert!((px_f[0] - 0.502).abs() < 0.01, "R={}", px_f[0]);
 	assert!((px_f[1] - 0.251).abs() < 0.01, "G={}", px_f[1]);
 	assert!(px_f[2].abs() < 0.01, "B={}", px_f[2]);
@@ -163,11 +173,11 @@ fn input_texture_upload_roundtrip() {
 			px.extend_from_slice(&((i * 4 + c) as f32 * 0.1).to_ne_bytes());
 		}
 	}
-	let tex = create_input_texture(w, h, &px).expect("输入纹理应可建");
+	let tex = create_input_texture(w, h, &px).expect("input texture creation should succeed");
 	let params = f32_params(w, h);
-	let fbo = create_fbo(tex, w, h).expect("FBO 应完整");
+	let fbo = create_fbo(tex, w, h).expect("FBO should be complete");
 	bind_fbo(fbo);
-	let img = read_pixels_to_image(w, h, &params).expect("回读应成功");
+	let img = read_pixels_to_image(w, h, &params).expect("readback should succeed");
 	delete_fbo(fbo);
 	delete_gl_texture(tex);
 	let got: Vec<f32> = img.pixels()[0..w as usize * h as usize * 16]
@@ -178,8 +188,8 @@ fn input_texture_upload_roundtrip() {
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
-	// 源是逐像素相异序列：read_pixels_to_image 垂直翻转（GL 左下 →
-	// 帧左上）后，最终图像第 r 行 = 源第 (h-1-r) 行。
+	// Source is a per-pixel distinct sequence: after read_pixels_to_image flips
+	// vertically (GL bottom-left → frame top-left), image row r = source row (h-1-r).
 	let stride = w as usize * 4;
 	for (i, g) in got.iter().enumerate() {
 		let row = i / stride;
@@ -202,20 +212,20 @@ fn input_texture_upload_roundtrip() {
 #[test]
 fn import_opaque_fd_texture_roundtrip() {
 	if std::env::var_os("QUERCUS_GPU_TESTS").is_none() {
-		println!("SKIP: 零拷贝 GL 用例需 QUERCUS_GPU_TESTS");
+		println!("SKIP: zero-copy GL cases require QUERCUS_GPU_TESTS");
 		return;
 	}
 	let Some(ctx) = quercus_core::backend::gpu_or_skip("GL opaque-fd import") else {
 		return;
 	};
 	if !ctx.supports_gl_zerocopy() {
-		println!("SKIP: context 不支持 Vulkan OPAQUE_FD 导出");
+		println!("SKIP: context does not support Vulkan OPAQUE_FD export");
 		return;
 	}
 	let _g = match acquire() {
 		Ok(g) => g,
 		Err(e) => {
-			println!("SKIP: GL 上下文不可用: {e}");
+			println!("SKIP: GL context unavailable: {e}");
 			return;
 		}
 	};
@@ -264,20 +274,20 @@ fn import_opaque_fd_texture_roundtrip() {
 #[test]
 fn import_opaque_fd_reads_wgpu_content() {
 	if std::env::var_os("QUERCUS_GPU_TESTS").is_none() {
-		println!("SKIP: 零拷贝 GL 用例需 QUERCUS_GPU_TESTS");
+		println!("SKIP: zero-copy GL cases require QUERCUS_GPU_TESTS");
 		return;
 	}
 	let Some(ctx) = quercus_core::backend::gpu_or_skip("GL opaque-fd read") else {
 		return;
 	};
 	if !ctx.supports_gl_zerocopy() {
-		println!("SKIP: context 不支持 Vulkan OPAQUE_FD 导出");
+		println!("SKIP: context does not support Vulkan OPAQUE_FD export");
 		return;
 	}
 	let _g = match acquire() {
 		Ok(g) => g,
 		Err(e) => {
-			println!("SKIP: GL 上下文不可用: {e}");
+			println!("SKIP: GL context unavailable: {e}");
 			return;
 		}
 	};
@@ -325,17 +335,23 @@ fn acquire_is_reentrant_on_same_thread() {
 	let Some(_outer) = maybe_gl() else {
 		return;
 	};
-	// 嵌套 acquire（interact::draw 内部路径）。
-	let inner = acquire().expect("嵌套 acquire 应成功（同线程重入）");
+	// Nested acquire (the interact::draw internal path).
+	let inner = acquire().expect("nested acquire should succeed (same-thread re-entry)");
 	let v1 = gl_version_string();
-	assert!(v1.is_some(), "嵌套 guard 期间 GL 应仍 current");
+	assert!(
+		v1.is_some(),
+		"GL should stay current while a nested guard is held"
+	);
 	drop(inner);
-	// 外层仍持有：GL 仍 current。
+	// Outer guard still held: GL is still current.
 	let v2 = gl_version_string();
-	assert!(v2.is_some(), "嵌套 guard drop 后外层仍应 current");
-	// 再套一层（深度 2）验证深度计数不串。
+	assert!(
+		v2.is_some(),
+		"GL should stay current after the nested guard drops"
+	);
+	// Nest one more level (depth 2) to check the depth counter is not confused.
 	{
-		let inner2 = acquire().expect("二次嵌套应成功");
+		let inner2 = acquire().expect("second nested acquire should succeed");
 		assert!(gl_version_string().is_some());
 		drop(inner2);
 	}

@@ -186,7 +186,8 @@ impl Instance {
 		if e.depth == 0 {
 			if let Some(mut multi) = e.multi.take() {
 				multi.redo_now();
-				// drop(multi)：释放 multi 与子命令（命令值语义）。
+				// drop(multi): releases the multi and its sub-commands
+				// (commands are value-semantic).
 				drop(multi);
 			}
 			e.param_count = 0;
@@ -223,7 +224,7 @@ impl Instance {
 			cmd.redo_now();
 			e.multi
 				.as_mut()
-				.expect("multi 已在上面初始化")
+				.expect("multi initialized above")
 				.multi_add_child(cmd);
 		} else {
 			cmd.redo_now();
@@ -255,7 +256,7 @@ impl Instance {
 		};
 		use crate::property::Value;
 
-		// 1. clipPrefsStuffs（HS:1697-1706 的默认值）。
+		// 1. clipPrefsStuffs (the defaults from HS:1697-1706).
 		let out = PropertySet::new();
 		out.set_one(PROP_FRAME_RATE, Value::Double(1.0));
 		out.set_one(PROP_PREMULT, Value::String(CString::new("").unwrap()));
@@ -263,7 +264,7 @@ impl Instance {
 		out.set_one(PROP_CONTINUOUS_SAMPLES, Value::Int(0));
 		out.set_one(PROP_FRAME_VARYING, Value::Int(0));
 
-		// 2. per-clip 预置（HS:1717-1727；phase 1 全链路 F32+RGBA）。
+		// 2. per-clip presets (HS:1717-1727; phase 1 is F32+RGBA end to end).
 		for clip in &self.clips {
 			out.set_one(
 				&crate::host::clip_pref_prop(CLIP_PREF_COMPONENTS, &clip.name),
@@ -279,7 +280,7 @@ impl Instance {
 			);
 		}
 
-		// 3. action。
+		// 3. action.
 		let inst_handle = crate::suites::tag::make(
 			&self.props as *const PropertySet,
 			crate::suites::tag::INSTANCE,
@@ -298,11 +299,12 @@ impl Instance {
 		};
 		if stat != crate::suites::status::OK && stat != crate::suites::status::REPLY_DEFAULT {
 			return Err(crate::error::Error::Failed(format!(
-				"getClipPreferences 失败：{stat}"
+				"getClipPreferences failed: {stat}"
 			)));
 		}
 
-		// 4. 回灌（HS:1721-1740：每 clip 的协商结果写回实例属性）。
+		// 4. Feed back (HS:1721-1740: each clip's negotiation result is written
+		// back to the instance properties).
 		let mut output_components = "OfxImageComponentRGBA".to_string();
 		let mut output_bit_depth = "OfxBitDepthFloat".to_string();
 		let mut output_par = 1.0;
@@ -372,8 +374,8 @@ impl Instance {
 		})
 	}
 
-	/// getRegionOfDefinition action（HS: ofxhImageEffect.cpp:1087-1130：
-	/// in args = time + renderScale；out args = RegionOfDefinition）。
+	/// getRegionOfDefinition action (HS: ofxhImageEffect.cpp:1087-1130:
+	/// in args = time + renderScale; out args = RegionOfDefinition).
 	pub fn get_region_of_definition(
 		&self,
 		time: f64,
@@ -392,8 +394,9 @@ impl Instance {
 		if std::env::var_os("QUERCUS_OFX_TRACE").is_some() {
 			eprintln!("[probe-args] getRod in_args {:p}", &in_args);
 		}
-		// out args 预定义（HS 行为：宿主先建属性表，插件只管写——
-		// 缺失属性上插件的 propSet 会失败被忽略）。
+		// Out args predefinition (HS behaviour: the host builds the property
+		// table first; the plugin only writes — its propSet on a missing
+		// property fails and is ignored).
 		let out = PropertySet::new();
 		out.define(
 			PROP_ROD,
@@ -414,9 +417,13 @@ impl Instance {
 				.call_action(ACTION_GET_ROD, inst_handle, &in_args, &out)
 		};
 		if stat != crate::suites::status::OK && stat != crate::suites::status::REPLY_DEFAULT {
-			return Err(crate::error::Error::Failed(format!("getRoD 失败：{stat}")));
+			return Err(crate::error::Error::Failed(format!(
+				"getRoD failed: {stat}"
+			)));
 		}
-		read_rect(&out, PROP_ROD).ok_or(crate::error::Error::Failed("getRoD 无输出".into()))
+		read_rect(&out, PROP_ROD).ok_or(crate::error::Error::Failed(
+			"getRoD produced no output".into(),
+		))
 	}
 
 	/// `getRegionsOfInterest` action: asks the plugin for the region of
@@ -463,7 +470,7 @@ impl Instance {
 				Value::Double(region.y2),
 			],
 		);
-		// out args 预定义 per-clip ROI 属性（HS 约定名前缀）。
+		// Out args predefine the per-clip ROI properties (HS's conventional name prefix).
 		let out = PropertySet::new();
 		for clip in &self.clips {
 			let name = format!("OfxImageEffectPropRegionOfInterest_{}", clip.name);
@@ -487,13 +494,16 @@ impl Instance {
 				.call_action(ACTION_GET_ROI, inst_handle, &in_args, &out)
 		};
 		if stat != crate::suites::status::OK && stat != crate::suites::status::REPLY_DEFAULT {
-			return Err(crate::error::Error::Failed(format!("getRoI 失败：{stat}")));
+			return Err(crate::error::Error::Failed(format!(
+				"getRoI failed: {stat}"
+			)));
 		}
 		let mut rois = Vec::with_capacity(self.clips.len());
 		for clip in &self.clips {
 			let name = format!("OfxImageEffectPropRegionOfInterest_{}", clip.name);
 			let rect = read_rect(&out, &name)
-				// 未设置 → 默认整个 region（OFX 语义：插件可不写）。
+				// Not set → default to the whole region (OFX semantics: the
+				// plugin may skip writing).
 				.unwrap_or(region);
 			rois.push(rect);
 		}
@@ -507,11 +517,13 @@ impl Instance {
 	/// in-args carries it.
 	fn add_action_arg_compat_props(in_args: &PropertySet) {
 		use crate::property::Value;
-		// NatronOfxPropNativeOverlays：Natron 支持库强读（0 = 宿主不
-		// 支持原生 overlay，插件走自己的回退）。OfxImageEffectPropRenderPlanes
-		// 不放 in-args：Natron 框架按**字符串**读它，存在但类型是 Int
-		// 反而会抛 PropertyUnknownToHost（缺失它才容忍）——它只属于
-		// 图像/clip 属性（OFX 1.4 语义在 clipGetImagePlane 一侧）。
+		// NatronOfxPropNativeOverlays: strongly read by the Natron support
+		// library (0 = the host does not support native overlays; the plugin
+		// takes its own fallback). OfxImageEffectPropRenderPlanes is not put
+		// in in-args: the Natron framework reads it as a **string**, so an
+		// existing Int-typed value actually throws PropertyUnknownToHost (only
+		// its absence is tolerated) — it belongs to image/clip properties only
+		// (the OFX 1.4 semantics live on the clipGetImagePlane side).
 		in_args.set_one("NatronOfxPropNativeOverlays", Value::Int(0));
 	}
 
@@ -544,7 +556,7 @@ impl Instance {
 			Value::String(CString::new("OfxFieldNone").unwrap()),
 		);
 		in_args.set_one("NatronOfxPropNativeOverlays", Value::Int(0));
-		// out args 预定义：IsIdentity（String）+ Time（Double）。
+		// Out args predefined: IsIdentity (String) + Time (Double).
 		let out = PropertySet::new();
 		out.set_one(PROP_IS_IDENTITY, Value::String(CString::new("").unwrap()));
 		out.set_one(PROP_TIME, Value::Double(time));
@@ -624,9 +636,9 @@ impl Instance {
 			PROP_RENDER_SCALE,
 			vec![Value::Double(scale.x), Value::Double(scale.y)],
 		);
-		// RenderWindow 必须是 Int x4（支持库 ofxsPropertyValidation 对
-		// render in-args 的强制类型；像素坐标本就是整型——Double 会校验
-		// 失败成 kOfxStatFailed）。
+		// RenderWindow must be Int x4 (the type the support library's
+		// ofxsPropertyValidation enforces on render in-args; pixel coordinates
+		// are integral anyway — a Double fails validation as kOfxStatFailed).
 		in_args.define(
 			PROP_RENDER_WINDOW,
 			vec![
@@ -644,8 +656,9 @@ impl Instance {
 		in_args.set_one(PROP_INTERACTIVE_RENDER, Value::Int(0));
 		in_args.set_one(PROP_RENDER_QUALITY_DRAFT, Value::Int(0));
 		in_args.set_one(PROP_NO_SPATIAL_AWARENESS, Value::Int(0));
-		// Natron 支持库对 NatronOfxPropNativeOverlays 的强读（0 = 宿主
-		// 不支持原生 overlay——插件据此走自己的回退路径）。
+		// Natron support library strongly reads NatronOfxPropNativeOverlays
+		// (0 = the host does not support native overlays — the plugin takes its
+		// own fallback path accordingly).
 		in_args.set_one("NatronOfxPropNativeOverlays", Value::Int(0));
 		if gl_enabled {
 			in_args.set_one(crate::host::PROP_GL_ENABLED, Value::Int(1));
@@ -674,12 +687,13 @@ impl Instance {
 
 		let in_args = Self::render_in_args(time, scale, window, false);
 
-		// facade 取消标记：render 入口即短路（多帧循环的帧间取消）。
+		// facade cancel flag: the render entry short-circuits immediately
+		// (inter-frame cancellation in the multi-frame loop).
 		if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-			return Err(crate::error::Error::Failed("已取消".into()));
+			return Err(crate::error::Error::Failed("cancelled".into()));
 		}
 
-		// 渲染上下文（TLS）：timeline/progress/clipGetImage 读取。
+		// Render context (TLS): read by timeline/progress/clipGetImage.
 		let range = self
 			.sequence_range
 			.lock()
@@ -688,8 +702,9 @@ impl Instance {
 		crate::suites::set_render_ctx(Some(crate::suites::RenderCtx { time, scale, range }));
 		crate::suites::set_current_output(Some(output.clone()));
 
-		// 进度报告器（facade 回调优先；无回调而 app 注册了 UI 工厂
-		// 时装静默报告器，progressStart 再经工厂现造 UI 报告器）。
+		// Progress reporter (facade callback first; with no callback but a UI
+		// factory registered by the app, install a silent reporter —
+		// progressStart then builds a UI reporter via the factory on demand).
 		if let Some((cb, userdata)) = *self.progress_cb.lock().unwrap_or_else(|e| e.into_inner()) {
 			crate::suites::progress::set_current(Some(unsafe {
 				crate::progress::ProgressReporter::new(cb, userdata as *mut std::ffi::c_void)
@@ -708,13 +723,15 @@ impl Instance {
 				.call_action(ACTION_RENDER, inst_handle, &in_args, &out)
 		};
 
-		// 清理 TLS（action 返回后渲染上下文必须消失）。
+		// Clean up TLS (the render context must disappear once the action returns).
 		crate::suites::set_current_output(None);
 		crate::suites::set_render_ctx(None);
 		crate::suites::progress::set_current(None);
 
 		if stat != crate::suites::status::OK {
-			return Err(crate::error::Error::Failed(format!("render 失败：{stat}")));
+			return Err(crate::error::Error::Failed(format!(
+				"render failed: {stat}"
+			)));
 		}
 		Ok(())
 	}
@@ -759,7 +776,7 @@ impl Instance {
 		let in_args = Self::render_in_args(time, scale, window, true);
 
 		if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-			return Err(crate::error::Error::Failed("已取消".into()));
+			return Err(crate::error::Error::Failed("cancelled".into()));
 		}
 
 		let range = self
@@ -768,8 +785,9 @@ impl Instance {
 			.unwrap_or_else(|e| e.into_inner())
 			.unwrap_or(OfxRangeD { min: 0.0, max: 0.0 });
 		crate::suites::set_render_ctx(Some(crate::suites::RenderCtx { time, scale, range }));
-		// GL 纹理位深协商（插件 kOfxOpenGLPropPixelDepth → 管线 F32；
-		// 调用方已按协商门（render 驱动）决定走 GL）。
+		// GL texture bit-depth negotiation (plugin kOfxOpenGLPropPixelDepth →
+		// pipeline F32; the caller already decided on GL via the negotiation
+		// gate in the render driver).
 		let gl_pixel_depth =
 			crate::suites::gl_render::pick_gl_pixel_depth(&self.plugin.descriptor.props)
 				.unwrap_or("OfxBitDepthFloat");
@@ -779,7 +797,7 @@ impl Instance {
 			gl_pixel_depth,
 			output_gl_texture,
 		}));
-		// GL 模式无 CPU 输出图像（current_output 保持 None）。
+		// GL mode has no CPU output image (current_output stays None).
 
 		if let Some((cb, userdata)) = *self.progress_cb.lock().unwrap_or_else(|e| e.into_inner()) {
 			crate::suites::progress::set_current(Some(unsafe {
@@ -794,7 +812,8 @@ impl Instance {
 			crate::suites::tag::INSTANCE,
 		);
 		let empty = PropertySet::new();
-		// attach（失败仍继续——插件可忽略；规范允许 ReplyDefault）。
+		// attach (continue even on failure — the plugin may ignore it; the spec
+		// allows ReplyDefault).
 		let stat = unsafe {
 			self.plugin.call_action(
 				crate::host::ACTION_GL_CONTEXT_ATTACHED,
@@ -808,7 +827,7 @@ impl Instance {
 			crate::suites::set_render_ctx(None);
 			crate::suites::progress::set_current(None);
 			return Err(crate::error::Error::Failed(format!(
-				"OpenGLContextAttached 失败：{stat}"
+				"OpenGLContextAttached failed: {stat}"
 			)));
 		}
 
@@ -818,7 +837,7 @@ impl Instance {
 				.call_action(ACTION_RENDER, inst_handle, &in_args, &out)
 		};
 
-		// detach（必须与 attach 配对；ofxGPURender.h:345-346）。
+		// detach (must be paired with attach; ofxGPURender.h:345-346).
 		unsafe {
 			self.plugin.call_action(
 				crate::host::ACTION_GL_CONTEXT_DETACHED,
@@ -828,7 +847,8 @@ impl Instance {
 			)
 		};
 
-		// 兜底：插件遗漏 clipFreeTexture 的输入纹理在此释放。
+		// Safety net: input textures the plugin forgot to clipFreeTexture are
+		// released here.
 		crate::suites::gl_render::purge_leftovers();
 		crate::suites::set_gl_ctx(None);
 		crate::suites::set_render_ctx(None);
@@ -836,7 +856,7 @@ impl Instance {
 
 		if stat != crate::suites::status::OK {
 			return Err(crate::error::Error::Failed(format!(
-				"GL render 失败：{stat}"
+				"GL render failed: {stat}"
 			)));
 		}
 		Ok(())
@@ -889,12 +909,13 @@ impl Instance {
 				.unwrap_or_default();
 			if value.is_empty() {
 				return Err(crate::error::Error::Failed(
-					"GetOutputColourspace 未回写色彩空间".into(),
+					"GetOutputColourspace did not write back a colour space".into(),
 				));
 			}
 			Ok(self.resolve_colourspace(value))
 		} else if stat == crate::suites::status::REPLY_DEFAULT {
-			// 插件未实现 → 用第一个输入 clip 的色彩空间（规范默认）。
+			// The plugin does not implement it → use the first input clip's
+			// colour space (spec default).
 			let first_input = self
 				.clips
 				.iter()
@@ -912,7 +933,7 @@ impl Instance {
 			Ok(first_input)
 		} else {
 			Err(crate::error::Error::Failed(format!(
-				"GetOutputColourspace 失败：{stat}"
+				"GetOutputColourspace failed: {stat}"
 			)))
 		}
 	}
@@ -1019,7 +1040,7 @@ impl Instance {
 		};
 		if stat != crate::suites::status::OK {
 			return Err(crate::error::Error::Failed(format!(
-				"beginSequenceRender 失败：{stat}"
+				"beginSequenceRender failed: {stat}"
 			)));
 		}
 		Ok(())
@@ -1114,7 +1135,7 @@ impl Instance {
 			.take();
 		if stat != crate::suites::status::OK {
 			return Err(crate::error::Error::Failed(format!(
-				"endSequenceRender 失败：{stat}"
+				"endSequenceRender failed: {stat}"
 			)));
 		}
 		Ok(())
@@ -1184,7 +1205,7 @@ impl Instance {
 		};
 		if stat != crate::suites::status::OK && stat != crate::suites::status::REPLY_DEFAULT {
 			return Err(crate::error::Error::Failed(format!(
-				"instanceChanged 失败：{stat}"
+				"instanceChanged failed: {stat}"
 			)));
 		}
 		Ok(())
@@ -1233,8 +1254,8 @@ impl Instance {
 		let st = interact.call(crate::host::ACTION_NEW_INTERACT, &empty, &empty);
 		let accepted = match st {
 			crate::suites::status::OK => true,
-			// 插件未实现 NewInteract 但声明了 overlay interact → 仍创建
-			//（走 describe/create 的官方序列）。
+			// The plugin does not implement NewInteract but declares an overlay
+			// interact → create anyway (via the official describe/create sequence).
 			crate::suites::status::REPLY_DEFAULT if has_overlay => true,
 			_ => false,
 		};
@@ -1280,9 +1301,10 @@ impl Instance {
 			crate::suites::tag::INSTANCE,
 		);
 		let empty = PropertySet::new();
-		// interact 与实例同生命周期：实例销毁前先销毁 interact
-		//（ofxInteract.h kOfxActionDestroyInstanceInteract 的 \pre 要求
-		// 实例成员尚未销毁）。
+		// The interact shares the instance lifecycle: destroy the interact before
+		// the instance (ofxInteract.h requires as \pre for
+		// kOfxActionDestroyInstanceInteract that the instance members are not
+		// yet destroyed).
 		if let Some(i) = self
 			.interact
 			.lock()
@@ -1291,13 +1313,13 @@ impl Instance {
 		{
 			i.destroy();
 		}
-		// 通知失败只记日志（销毁路径不可回滚）。
+		// A failed notification is only logged (the destroy path cannot roll back).
 		let stat = unsafe {
 			self.plugin
 				.call_action(ACTION_DESTROY_INSTANCE, inst_handle, &empty, &empty)
 		};
 		if stat != crate::suites::status::OK && stat != crate::suites::status::REPLY_DEFAULT {
-			eprintln!("destroyInstance 通知失败：{stat}");
+			eprintln!("destroyInstance notification failed: {stat}");
 		}
 	}
 }

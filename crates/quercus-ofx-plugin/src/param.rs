@@ -33,7 +33,7 @@ use std::ffi::CString;
 
 use crate::property::{PropertySet, Value};
 
-// ---- OFX 参数类型字符串（ofxParam.h）----
+// ---- OFX parameter type strings (ofxParam.h) ----
 
 /// kOfxParamTypeInteger.
 pub const TYPE_INTEGER: &str = "OfxParamTypeInteger";
@@ -74,7 +74,7 @@ pub const TYPE_PAGE: &str = "OfxParamTypePage";
 /// [`crate::suites::parametric`] and [`crate::param_curve`]).
 pub const TYPE_PARAMETRIC: &str = "OfxParamTypeParametric";
 
-// ---- 属性名（ofxParam.h / ofxCore.h）----
+// ---- Property names (ofxParam.h / ofxCore.h) ----
 
 /// kOfxParamPropSecret.
 pub(crate) const P_SECRET: &str = "OfxParamPropSecret";
@@ -190,7 +190,7 @@ pub(crate) const PROP_ICON: &str = "OfxPropIcon";
 pub(crate) const TYPE_PARAMETER: &str = "OfxTypeParameter";
 
 fn cs(s: &str) -> CString {
-	// 静态 ASCII 常量，无内嵌 NUL。
+	// Static ASCII constants, no embedded NUL.
 	CString::new(s).unwrap()
 }
 
@@ -282,11 +282,11 @@ fn type_default(ofx_type: &str) -> ParamValue {
 			TYPE_BYTES | TYPE_CUSTOM => ParamValue::Bytes(Vec::new()),
 			TYPE_PUSHBUTTON => ParamValue::PushButton,
 			TYPE_GROUP | TYPE_PAGE => ParamValue::Container,
-			// parametric 默认 = 1 条恒等曲线（range 默认 (0,1)）。
+			// parametric default = 1 identity curve (range defaults to (0,1)).
 			TYPE_PARAMETRIC => {
 				ParamValue::Parametric(vec![crate::param_curve::Curve::identity(0.0, 1.0)])
 			}
-			_ => ParamValue::Container, // 未知类型占位（paramDefine 已拒绝）
+			_ => ParamValue::Container, // Unknown-type placeholder (paramDefine already rejects it)
 		},
 	}
 }
@@ -295,7 +295,7 @@ fn type_default(ofx_type: &str) -> ParamValue {
 /// `is_max` picks ±f64::MAX / ±i32::MAX; colour parameters are always 0/1.
 fn numeric_value(ofx_type: &str, kind: ParamKind, dim: usize, is_max: bool) -> Vec<Value> {
 	if ofx_type == TYPE_RGB || ofx_type == TYPE_RGBA {
-		// colour：display 范围 0..1，min/max 同。
+		// colour: display range 0..1, min/max likewise.
 		let v = Value::Double(if is_max { 1.0 } else { 0.0 });
 		return vec![v; dim];
 	}
@@ -391,7 +391,7 @@ impl ParamDef {
 		let uname = name.to_string();
 		let utype = ofx_type.to_string();
 
-		// universalProps（HS ofxhParam.cpp:229-246）。
+		// universalProps (HS ofxhParam.cpp:229-246).
 		props.set_one(PROP_TYPE, Value::String(cs(TYPE_PARAMETER)));
 		props.set_one(P_SECRET, Value::Int(0));
 		props.set_one(P_HINT, Value::String(cs("")));
@@ -409,7 +409,7 @@ impl ParamDef {
 			vec![Value::String(cs("")), Value::String(cs(""))],
 		);
 
-		// 值类参数（HS addValueParamProps，ofxhParam.cpp:352-380）。
+		// Value parameters (HS addValueParamProps, ofxhParam.cpp:352-380).
 		if let Some((kind, dim)) = kind_of_type(ofx_type) {
 			props.set_one(P_IS_ANIMATING, Value::Int(0));
 			props.set_one(P_IS_AUTO_KEYING, Value::Int(0));
@@ -420,8 +420,8 @@ impl ParamDef {
 				P_CACHE_INVALIDATION,
 				Value::String(cs(V_INVALIDATE_VALUE_CHANGE)),
 			);
-			// 可动画性（HS ofxhParam.cpp:367-372：custom/string/
-			// boolean/choice 默认不可动画）。
+			// Animability (HS ofxhParam.cpp:367-372: custom/string/boolean/choice
+			// are non-animatable by default).
 			let animates = ofx_type != TYPE_CUSTOM
 				&& ofx_type != TYPE_STRING
 				&& ofx_type != TYPE_BOOLEAN
@@ -429,7 +429,7 @@ impl ParamDef {
 			props.set_one(P_ANIMATES, Value::Int(animates as i32));
 			props.define(P_DEFAULT, default_values(kind, dim));
 
-			// 数值类（HS addNumericParamProps，ofxhParam.cpp:391-455）。
+			// Numeric family (HS addNumericParamProps, ofxhParam.cpp:391-455).
 			if is_numeric_type(ofx_type) {
 				props.define(P_DISPLAY_MIN, numeric_value(ofx_type, kind, dim, false));
 				props.define(P_DISPLAY_MAX, numeric_value(ofx_type, kind, dim, true));
@@ -460,17 +460,18 @@ impl ParamDef {
 			}
 		}
 
-		// 分类型附加（HS addStandardParamProps，ofxhParam.cpp:248-301）。
+		// Type-specific additions (HS addStandardParamProps, ofxhParam.cpp:248-301).
 		match ofx_type {
 			TYPE_STRING => {
 				props.set_one(P_STRING_MODE, Value::String(cs(V_STRING_SINGLE_LINE)));
 				props.set_one(P_STRING_FILE_EXISTS, Value::Int(1));
 			}
 			TYPE_CHOICE => {
-				// 维度 0：选项数由插件 SetN 决定。ChoiceEnum（枚举值映射）
-				// 与 ChoiceLabelOption（OFX 1.5 按值标签）同样预定义空
-				// 数组——新支持库读它们时不是"未知属性"（其强读会抛成
-				// PropertyUnknownToHost → MissingHostFeature）。
+				// Dimension 0: the option count is decided by the plugin's SetN.
+				// ChoiceEnum (enum value mapping) and ChoiceLabelOption (OFX 1.5
+				// per-value labels) also predefine empty arrays—so newer support
+				// libraries do not treat them as "unknown properties" (their
+				// strong read throws PropertyUnknownToHost → MissingHostFeature).
 				props.define(P_CHOICE_OPTION, vec![]);
 				props.define("OfxParamPropChoiceEnum", vec![]);
 				props.define("OfxParamPropChoiceLabelOption", vec![]);
@@ -485,14 +486,16 @@ impl ParamDef {
 				props.set_one(P_GROUP_OPEN, Value::Int(1));
 			}
 			TYPE_PARAMETRIC => {
-				// parametric（HS addValueParamProps(eDouble, 0) 的
-				// invariantProps + allParametric，ofxhParam.cpp:285-330）：
-				// 值类 invariant 属性照旧；Animates=1（HS 的 animates 计算
-				// 对 parametric 为真）；另加 4 个 parametric 专属属性。
-				// 数值属性表（Min/Max/Display）HS 也加（变量维 double），
-				// 但插件侧从不读 parametric 的数值属性（ofxsPropertyValidation
-				// 只校验本块 4 个 + 通用属性），本 crate 遵循
-				// is_numeric_type 的门控，不为 parametric 预置。
+				// parametric (the invariantProps + allParametric of HS
+				// addValueParamProps(eDouble, 0), ofxhParam.cpp:285-330):
+				// value-class invariant properties as usual; Animates=1 (HS's
+				// animates computation is true for parametric); plus 4
+				// parametric-specific properties. HS also adds the numeric
+				// property tables (Min/Max/Display; variable-dimension double),
+				// but the plugin side never reads parametric numeric properties
+				// (ofxsPropertyValidation only validates the 4 here + common
+				// properties), so this crate follows the is_numeric_type gate and
+				// does not predefine them for parametric.
 				props.set_one(P_IS_ANIMATING, Value::Int(0));
 				props.set_one(P_IS_AUTO_KEYING, Value::Int(0));
 				props.set_one(P_PERSISTANT, Value::Int(1));
@@ -504,10 +507,11 @@ impl ParamDef {
 				);
 				props.set_one(P_ANIMATES, Value::Int(1));
 				props.set_one(P_PARAMETRIC_DIMENSION, Value::Int(1));
-				// UIColour 默认未设：不预定义（插件首写时按 OFX 语义
-				// 隐式创建并允许逐位追加；预定义空数组会让 index >= 1
-				// 的写入炸 BadIndex——ColorLookup/HueCorrect 的
-				// describeInContext 失败根因）。
+				// UIColour default unset: not predefined (on the plugin's first
+				// write OFX semantics create it implicitly and allow appending
+				// element by element; predefining an empty array makes writes at
+				// index >= 1 fail with BadIndex—the root cause of
+				// ColorLookup/HueCorrect describeInContext failures).
 				props.set_one(
 					P_PARAMETRIC_INTERACT_BG,
 					Value::Pointer(std::ptr::null_mut()),
@@ -520,8 +524,8 @@ impl ParamDef {
 			_ => {}
 		}
 
-		// 交互属性（HS addInteractParamProps，ofxhParam.cpp:305-317；
-		// group/page 除外）。
+		// Interaction properties (HS addInteractParamProps, ofxhParam.cpp:305-317;
+		// except group/page).
 		if ofx_type != TYPE_GROUP && ofx_type != TYPE_PAGE {
 			props.set_one(P_INTERACT_V1, Value::Pointer(std::ptr::null_mut()));
 			props.define(
@@ -682,7 +686,7 @@ pub(crate) fn param_value_from_node(v: &crate::node::Value, ofx_type: &str) -> O
 		TYPE_RGBA => {
 			(v.r#type == T::COLOR).then(|| ParamValue::Color([v.f[0], v.f[1], v.f[2], v.f[3]], 4))
 		}
-		_ => None, // 字符串/无值类：POD 无数据，不改值
+		_ => None, // String/value-less: POD carries no data, value unchanged
 	}
 }
 
@@ -809,12 +813,12 @@ pub(crate) fn notify_instance_changed(
 	if !matches!(reason, ChangeReason::PluginEdited) {
 		return;
 	}
-	// 未绑定节点 → no-op（C++：!node_.ctx 时 set 只写本地值）。
+	// Unbound node → no-op (C++: with !node_.ctx, set only writes the local value).
 	let node_id = instance.node_identity.load(Ordering::Relaxed);
 	if node_id == 0 {
 		return;
 	}
-	// 身份查无（未登记 / project 已释放）→ no-op。
+	// Identity not found (unregistered / project released) → no-op.
 	let Some(node_ref) = node::node_from_identity(node_id) else {
 		return;
 	};
@@ -838,15 +842,16 @@ pub(crate) fn notify_instance_changed(
 					instance.submit_undo_command(cmd, &label);
 				}
 			}
-			// parametric：曲线序列化为 JSON 文本写回输入（节点输入是
-			// Parametric 声明类型的 Text 值；经字符串 setter 存储）。
+			// parametric: serialize the curves as JSON text and write back to the
+			// input (the node input is a Text value of declared type Parametric;
+			// stored via the string setter).
 			ParamValue::Parametric(curves) => {
 				let json = crate::param_curve::curves_to_json(curves);
 				if let Ok(cmd) = node::set_input_string_undoable(&node_ref, param_name, &json) {
 					instance.submit_undo_command(cmd, &label);
 				}
 			}
-			_ => {} // 无值类 / Bytes：无节点对应
+			_ => {} // Value-less / Bytes: no node counterpart
 		},
 	}
 }
@@ -882,19 +887,19 @@ mod tests {
 			den: 0,
 			f: [0.0; 4],
 		};
-		// Double 族。
+		// Double family.
 		let v = to_node_value(&ParamValue::Double([1.5, 0.0, 0.0], 1)).unwrap();
 		assert_eq!(v, Value::float(1.5));
 		let v = to_node_value(&ParamValue::Double([1.0, 2.0, 0.0], 2)).unwrap();
 		assert_eq!(v, Value::vec(&[1.0, 2.0]));
 		let v = to_node_value(&ParamValue::Double([1.0, 2.0, 3.0], 3)).unwrap();
 		assert_eq!(v, Value::vec(&[1.0, 2.0, 3.0]));
-		// Int 族（2D/3D 升格为 VEC2/VEC3 浮点载荷）。
+		// Int family (2D/3D promoted to VEC2/VEC3 float payloads).
 		let v = to_node_value(&ParamValue::Int([7, 0, 0], 1)).unwrap();
 		assert_eq!(v, Value::int(7));
 		let v = to_node_value(&ParamValue::Int([1, 2, 0], 2)).unwrap();
 		assert_eq!(v, Value::vec(&[1.0, 2.0]));
-		// Bool / Choice。
+		// Bool / Choice.
 		assert_eq!(
 			to_node_value(&ParamValue::Bool(true)).unwrap(),
 			Value::bool_(true)
@@ -903,18 +908,18 @@ mod tests {
 			to_node_value(&ParamValue::Choice(3)).unwrap(),
 			Value::combo(3)
 		);
-		// Color：RGB 补 alpha=1（C++ oracle），RGBA 全透传。
+		// Color: RGB gets alpha=1 (C++ oracle), RGBA passed through fully.
 		let v = to_node_value(&ParamValue::Color([0.1, 0.2, 0.3, 0.0], 3)).unwrap();
 		assert_eq!(v, Value::color(0.1, 0.2, 0.3, 1.0));
 		let v = to_node_value(&ParamValue::Color([0.1, 0.2, 0.3, 0.9], 4)).unwrap();
 		assert_eq!(v, Value::color(0.1, 0.2, 0.3, 0.9));
-		// 无值类 / Bytes → None（无节点对应）。
+		// Value-less / Bytes → None (no node counterpart).
 		assert_eq!(to_node_value(&ParamValue::PushButton), None);
 		assert_eq!(to_node_value(&ParamValue::Container), None);
 		assert_eq!(to_node_value(&ParamValue::Bytes(vec![1])), None);
-		// 字符串族走专用桥（POD 路径 None）。
+		// String family goes through the dedicated bridge (POD path → None).
 		assert_eq!(to_node_value(&ParamValue::String(cs(""))), None);
-		let _ = c(T::NONE); // 哨兵：类型常量可达
+		let _ = c(T::NONE); // Sentinel: type constant reachable
 	}
 
 	/// type_default's value-less/bytes-family baseline (the fallback before paramDefine rejects).
@@ -928,12 +933,12 @@ mod tests {
 		));
 		assert!(matches!(type_default(TYPE_GROUP), ParamValue::Container));
 		assert!(matches!(type_default(TYPE_PAGE), ParamValue::Container));
-		// 未知类型占位（paramDefine 已拒绝，此处兜底）。
+		// Unknown-type placeholder (paramDefine already rejects it; fallback here).
 		assert!(matches!(
 			type_default("OfxParamTypeBogus"),
 			ParamValue::Container
 		));
-		// 数值族的默认 0。
+		// Numeric family defaults to 0.
 		assert!(matches!(
 			type_default(TYPE_INTEGER),
 			ParamValue::Int([0, 0, 0], 1)
@@ -970,14 +975,15 @@ mod tests {
 			d.props.get(P_PARAMETRIC_RANGE, 1),
 			Some(Value::Double(1.0))
 		));
-		// UIColour 默认未设：属性不存在（插件首写隐式创建），而不是
-		// 预定义的空数组（空数组会把 index >= 1 的写入挡成 BadIndex）。
+		// UIColour default unset: the property does not exist (the plugin's first
+		// write creates it implicitly), rather than a predefined empty array (an
+		// empty array turns writes at index >= 1 into BadIndex).
 		assert!(d.props.get(P_PARAMETRIC_UI_COLOUR, 0).is_none());
 		assert!(matches!(
 			d.props.get(P_PARAMETRIC_INTERACT_BG, 0),
 			Some(Value::Pointer(p)) if p.is_null()
 		));
-		// 默认曲线求值为恒等。
+		// The default curve evaluates to identity.
 		if let ParamValue::Parametric(curves) = &d.default {
 			assert_eq!(curves[0].evaluate(0.5), 0.5);
 		}
@@ -986,15 +992,15 @@ mod tests {
 	/// set_from_node's dimension truncation/zero-padding and the silent string path.
 	#[test]
 	fn set_from_node_dimension_rules() {
-		// Integer2D 缺第三维补零；浮点截断。
+		// Integer2D zero-pads the missing third dimension; floats truncated.
 		let p = param(TYPE_INTEGER2D);
 		p.set_from_node(&crate::node::Value::vec(&[1.9, 2.9]));
 		assert_eq!(p.get(), ParamValue::Int([1, 2, 0], 2));
-		// StrChoice 参数遇 STRING 类型：POD 无数据 → 不改值。
+		// StrChoice parameter receiving a STRING value: POD carries no data → value unchanged.
 		let p = param(TYPE_STRCHOICE);
 		p.set_from_node(&crate::node::Value::string());
 		assert!(matches!(p.get(), ParamValue::StrChoice(_)));
-		// Bytes/Custom 参数：任意节点值都不改（无映射）。
+		// Bytes/Custom parameter: any node value is ignored (no mapping).
 		let p = param(TYPE_CUSTOM);
 		p.set_from_node(&crate::node::Value::float(3.0));
 		assert!(matches!(p.get(), ParamValue::Bytes(_)));

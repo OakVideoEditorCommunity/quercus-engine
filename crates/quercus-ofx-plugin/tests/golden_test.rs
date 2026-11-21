@@ -47,9 +47,9 @@ mod common;
 /// each plugin → compare field by field against the JSON. There are no
 /// snapshots to compare yet, so running it now would always fail spuriously.
 #[test]
-#[ignore = "M11 0 期快照库（tests/ofx/snapshots/）尚未生成；落地后实现并摘除"]
+#[ignore = "M11 phase 0 snapshot library (tests/ofx/snapshots/) not generated yet; implement and remove once it lands"]
 fn descriptor_snapshots_match() {
-	todo!("0 期快照落地后实现：扫描快照清单 → describe → 逐字段 diff")
+	todo!("implement once the phase 0 snapshots land: scan the snapshot list -> describe -> field-by-field diff")
 }
 
 /// Clip negotiation snapshots: after getClipPreferences, the output
@@ -62,9 +62,9 @@ fn descriptor_snapshots_match() {
 /// (including the post-getClipPreferences results) live in
 /// `tests/ofx/snapshots/` and have not been generated.
 #[test]
-#[ignore = "M11 0 期协商快照尚未生成；落地后实现并摘除"]
+#[ignore = "M11 phase 0 negotiation snapshots not generated yet; implement and remove once they land"]
 fn negotiated_clip_preferences_match() {
-	todo!("0 期协商快照落地后实现")
+	todo!("implement once the phase 0 negotiation snapshots land")
 }
 
 /// CImg full-plugin smoke: describe + negotiate every plugin without
@@ -86,9 +86,9 @@ fn negotiated_clip_preferences_match() {
 /// annotation once the property suite adapts the plugin-side
 /// `Property::Set` handle.
 #[test]
-#[ignore = "本机 CImg.ofx.bundle 为 Natron 分支构建，属性套件句柄语义不兼容（describe 返回 MissingHostFeature）；Misc 系统冒烟已覆盖真实插件路径"]
+#[ignore = "local CImg.ofx.bundle is a Natron-branch build with incompatible property suite handle semantics (describe returns MissingHostFeature); the Misc system smoke already covers the real plugin path"]
 fn cimg_full_describe_smoke() {
-	todo!("属性套件适配 Natron 分支的 Property::Set 句柄后实现：全量 describe + 协商不崩、不泄漏")
+	todo!("implement once the property suite adapts the Natron-branch Property::Set handle: full describe + negotiation without crashes or leaks")
 }
 
 /// CPU render golden: the representative effect set matches frame-by-frame
@@ -103,9 +103,9 @@ fn cimg_full_describe_smoke() {
 /// golden reference material is missing. Implement and remove this annotation
 /// once the reference library lands.
 #[test]
-#[ignore = "M11 0 期渲染 golden 参照库（tests/ofx/frames/）尚未生成；落地后实现并摘除"]
+#[ignore = "M11 phase 0 render golden reference library (tests/ofx/frames/) not generated yet; implement and remove once it lands"]
 fn render_golden_cpu_bitexact() {
-	todo!("0 期渲染 golden 落地后实现")
+	todo!("implement once the phase 0 render goldens land")
 }
 
 /// GL render golden: 1e-4 tolerance (driver differences); skipped on
@@ -118,9 +118,9 @@ fn render_golden_cpu_bitexact() {
 /// generated). Implement and remove this annotation once the frame library
 /// lands.
 #[test]
-#[ignore = "golden 帧库（tests/ofx/frames/）未生成；落地后实现并摘除"]
+#[ignore = "golden frame library (tests/ofx/frames/) not generated yet; implement and remove once it lands"]
 fn render_golden_gl_tolerant() {
-	todo!("M11 第 2 期 GL 路径落地后实现")
+	todo!("implement once the M11 phase 2 GL path lands")
 }
 
 /// F32+ACEScg pipeline assertion: golden frames use the F32 pixel format and,
@@ -134,7 +134,7 @@ fn render_golden_gl_tolerant() {
 /// library is missing — the F32 pipeline and the OCIO/ofxColour path are both
 /// implemented (covered by colour_test.rs).
 #[test]
-#[ignore = "golden 帧库（tests/ofx/frames/）未生成；落地后实现并摘除"]
+#[ignore = "golden frame library (tests/ofx/frames/) not generated yet; implement and remove once it lands"]
 fn pipeline_is_f32_acescg() {
-	todo!("帧库与 OCIO 链路落地后实现")
+	todo!("implement once the frame library and OCIO path land")
 }

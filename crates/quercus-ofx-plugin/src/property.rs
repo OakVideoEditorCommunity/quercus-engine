@@ -42,11 +42,11 @@ pub enum Value {
 	Pointer(*mut ffi::c_void),
 }
 
-// 裸指针默认禁 Send/Sync；但属性集语义把指针当作**不透明令牌**：
-// 跨线程只搬运/比较值，解引用永远是 suite 层的 unsafe 责任（OFX
-// multithread suite 本就要求插件线程可读写宿主图像缓冲——指针的
-// 跨线程传递是规范语义，而非逃逸）。Mutex 包裹后属性集整体可共享。
-// 与 Rust 安全模型不冲突：安全代码只能拿到 `&Value`，无法解引用指针。
+// Raw pointers disable Send/Sync by default; property-set semantics treat pointers as **opaque tokens**:
+// across threads they are only moved/compared; deref is always the suite layer's unsafe duty (the OFX
+// multithread suite already requires plugin threads to read/write host image buffers — passing pointers
+// across threads is spec semantics, not an escape). Wrapped in a Mutex the property set is shareable.
+// No conflict with Rust's safety model: safe code only gets `&Value` and cannot dereference pointers.
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 

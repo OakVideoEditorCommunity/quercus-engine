@@ -63,11 +63,11 @@ fn input_type_table_covers_all_ofx_kinds() {
 		input_type_for(ofx::TYPE_PUSHBUTTON),
 		Some(ValueType::PushButton)
 	);
-	// 容器与未知类型：跳过。
+	// Containers and unknown types: skipped.
 	assert_eq!(input_type_for(ofx::TYPE_GROUP), None);
 	assert_eq!(input_type_for(ofx::TYPE_PAGE), None);
 	assert_eq!(input_type_for("OfxParamTypeBogus"), None);
-	// parametric → Parametric（值 = 曲线 JSON 文本）。
+	// parametric → Parametric (value = curve JSON text).
 	assert_eq!(
 		input_type_for(ofx::TYPE_PARAMETRIC),
 		Some(ValueType::Parametric)
@@ -90,17 +90,17 @@ fn color_semantic_rules() {
 		def
 	}
 	let groups = HashMap::new();
-	// 非颜色类型恒 "color"。
+	// Non-color types are always "color".
 	assert_eq!(
 		deduce_color_semantic(&def_with("Anything", ofx::TYPE_DOUBLE), &groups),
 		"color"
 	);
-	// 规则 1：颜色关键词。
+	// Rule 1: color keyword.
 	assert_eq!(
 		deduce_color_semantic(&def_with("Tint Color", ofx::TYPE_RGB), &groups),
 		"color"
 	);
-	// 规则 2：标量关键词。
+	// Rule 2: scalar keyword.
 	assert_eq!(
 		deduce_color_semantic(&def_with("Gamma Adjust", ofx::TYPE_RGBA), &groups),
 		"scalar"
@@ -115,7 +115,8 @@ fn color_semantic_display_range_rule() {
 		ofx_type: ofx::TYPE_RGB.into(),
 		default: ParamValue::Container,
 	};
-	// 默认 (0,0,0) 全相等前先被规则 3 拦截：display max 越界。
+	// Default (0,0,0) all-equal would hit rule 4, but rule 3 intercepts first:
+	// display max out of range.
 	def.props
 		.set_one(ofx::P_DISPLAY_MAX, PropValue::Double(2.0));
 	let groups = HashMap::new();
@@ -134,7 +135,7 @@ fn clip_labels_special_case_names() {
 		PropValue::String(CString::new("Matte").unwrap()),
 	);
 	assert_eq!(clip_label_for_name("Overlay", Some(&props)), "Matte");
-	// 有 props 但 label 为空（或类型不符）→ 回退 clip 名。
+	// Has props but empty label (or wrong type) → fall back to clip name.
 	let no_label = PropertySet::new();
 	assert_eq!(clip_label_for_name("Overlay", Some(&no_label)), "Overlay");
 	no_label.set_one(ofx::PROP_LABEL, PropValue::Int(1));
@@ -143,15 +144,15 @@ fn clip_labels_special_case_names() {
 
 #[test]
 fn instance_registry_roundtrip() {
-	// 注册表对不存在的键返回 None；摘除未登记键 no-op。
+	// Registry returns None for a missing key; removing an unregistered key is a no-op.
 	assert!(instance_from_id(u64::MAX).is_none());
 	unregister_instance(u64::MAX);
 }
 
 #[test]
 fn shared_instance_unknown_identifier_yields_none() {
-	// 缓存里查无此标识 → None（montage 路径据此按"无求值器"
-	// 告警并直通）。
+	// Identifier absent from the cache → None (the montage path uses this to warn
+	// "no evaluator" and pass through).
 	assert!(shared_plugin_instance("com.example.definitely-missing").is_none());
 }
 
@@ -196,7 +197,7 @@ fn render_real_plugin_smoke(identifier: &str) {
 		});
 	}
 
-	// 8x8 不透明绿帧（典型 keyer 输入）。
+	// 8x8 opaque green frame (typical keyer input).
 	let mut frame = quercus_render::eval::generate_frame(
 		quercus_core::Rational::new(0, 1),
 		(8, 8),
@@ -300,11 +301,11 @@ fn push_button_clicked_routes_instance_changed() {
 	*PUSH_ENTRY_CALLS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
 	let id = instance_with_push_button();
 	assert!(push_button_clicked(id, "button"));
-	// 类型不匹配 / 查无参数 / 查无实例：不触发 entry。
+	// Type mismatch / parameter not found / instance not found: entry not triggered.
 	assert!(!push_button_clicked(id, "gain"));
 	assert!(!push_button_clicked(id, "nope"));
 	assert!(!push_button_clicked(u64::MAX, "button"));
-	// 只 "button" 那次按下进了插件 entry，且 reason 是 UserEdited。
+	// Only the "button" press reached the plugin entry, and the reason is UserEdited.
 	let calls = PUSH_ENTRY_CALLS
 		.lock()
 		.unwrap_or_else(|e| e.into_inner())
@@ -403,30 +404,32 @@ fn instance_with_parametric() -> u64 {
 #[test]
 fn build_core_produces_parametric_input() {
 	let id = instance_with_parametric();
-	let inst = instance_from_id(id).expect("已登记");
+	let inst = instance_from_id(id).expect("registered");
 	let core = build_core(&inst.value);
 
-	let input = core.get_input("curve").expect("parametric 输入应存在");
+	let input = core
+		.get_input("curve")
+		.expect("parametric input should exist");
 	assert_eq!(input.value_type, ValueType::Parametric);
 	assert_eq!(input.display_name, "Curve");
 	assert_ne!(input.flags & input_flags::NOT_KEYFRAMABLE, 0);
 
-	// 默认值 = def.default 曲线集的 JSON（type_default 产出 1 条
-	// 恒等曲线；dimension 属性只做索引门控，未配置曲线按恒等读，
-	// 不扩充默认值）。
+	// Default = JSON of the def.default curve set (type_default yields 1
+	// identity curve; the dimension property only gates indexing—unconfigured
+	// curves read as identity and do not extend the default).
 	let expected =
 		crate::param_curve::curves_to_json(&[crate::param_curve::Curve::identity(0.0, 1.0)]);
 	assert_eq!(
 		text_of(&input.default).as_deref(),
 		Some(expected.as_str()),
-		"默认值应为曲线 JSON"
+		"default value should be curve JSON"
 	);
-	// 非 Text 值走 None 臂（helper 自身两臂都有执行）。
+	// Non-Text values take the None arm (the helper exercises both arms).
 	assert_eq!(text_of(&NodeValue::Int(1)), None);
-	// 标准值 = 默认（工程序列化从这里走）。
+	// Standard value = default (project serialization goes through this).
 	assert_eq!(core.standard_value("curve", -1), input.default);
 
-	// 专属属性。
+	// Dedicated properties.
 	let props = |name: &str| {
 		input
 			.properties
@@ -437,7 +440,7 @@ fn build_core_produces_parametric_input() {
 	};
 	assert_eq!(props("parametric_dimension"), vec![NodeValue::Int(2)]);
 	assert_eq!(props("parametric_range"), vec![NodeValue::Vec2([0.0, 1.0])]);
-	// 双维 → 两条颜色（重复键）。
+	// Two dimensions → two colors (repeated key).
 	assert_eq!(
 		props("parametric_ui_colour"),
 		vec![
@@ -454,24 +457,26 @@ fn build_core_produces_parametric_input() {
 #[test]
 fn parametric_input_writes_back_to_instance() {
 	let id = instance_with_parametric();
-	let inst = instance_from_id(id).expect("已登记");
+	let inst = instance_from_id(id).expect("registered");
 
-	// 有效 JSON（双维，第二维单点）→ 曲线写回，求值即实例曲线。
+	// Valid JSON (two dimensions, second dimension a single point) → curves
+	// written back, evaluation uses the instance curves.
 	let json = r#"{"curves":[[{"key":0,"value":0,"slope":1},{"key":0.5,"value":0.7,"slope":1}],[{"key":0,"value":0,"slope":1}]]}"#;
 	set_text_param(&inst.value, "curve", json);
-	let curves =
-		curves_of(inst.value.params.find("curve").unwrap().get()).expect("应写回 Parametric");
+	let curves = curves_of(inst.value.params.find("curve").unwrap().get())
+		.expect("should write back Parametric");
 	assert_eq!(curves[0].evaluate(0.5), 0.7);
 	assert_eq!(curves[1].len(), 1);
-	// 非 Parametric 值走 None 臂（helper 自身两臂都有执行）。
+	// Non-Parametric values take the None arm (the helper exercises both arms).
 	assert!(curves_of(ParamValue::PushButton).is_none());
 
-	// 坏 JSON → 不改值（与字符串族类型不匹配静默一致）。
+	// Bad JSON → value unchanged (consistent with the silent type mismatch in the
+	// string family).
 	let before = inst.value.params.find("curve").unwrap().get();
 	set_text_param(&inst.value, "curve", "{broken");
 	assert_eq!(inst.value.params.find("curve").unwrap().get(), before);
 
-	// 非 parametric 参数（String）遇任意文本 → 字符串值路径。
+	// Non-parametric parameter (String) with arbitrary text → string-value path.
 	set_text_param(&inst.value, "title", "hello");
 	assert!(matches!(
 		inst.value.params.find("title").unwrap().get(),
@@ -814,13 +819,13 @@ fn prop_values(input: &quercus_node::input::Input, key: &str) -> Vec<NodeValue> 
 #[test]
 fn color_semantic_rules_4_and_5_and_display_min() {
 	let empty = HashMap::new();
-	// 规则 4：默认值全相等 → scalar。
+	// Rule 4: all defaults equal → scalar.
 	let def = def_of(ofx::TYPE_RGB);
 	def.props
 		.define(ofx::P_DEFAULT, vec![PropValue::Double(0.5); 3]);
 	assert_eq!(deduce_color_semantic(&def, &empty), "scalar");
 
-	// 规则 4 不等 + 无 parent → 兜底 color。
+	// Rule 4 not satisfied + no parent → fall back to color.
 	let def = def_of(ofx::TYPE_RGB);
 	def.props.define(
 		ofx::P_DEFAULT,
@@ -832,13 +837,13 @@ fn color_semantic_rules_4_and_5_and_display_min() {
 	);
 	assert_eq!(deduce_color_semantic(&def, &empty), "color");
 
-	// 规则 3 的 dmin 半边。
+	// The dmin half of rule 3.
 	let def = def_of(ofx::TYPE_RGB);
 	def.props
 		.set_one(ofx::P_DISPLAY_MIN, PropValue::Double(-0.5));
 	assert_eq!(deduce_color_semantic(&def, &empty), "scalar");
 
-	// 规则 5：parent 名带标量关键词。
+	// Rule 5: parent name carries a scalar keyword.
 	let def = def_of(ofx::TYPE_RGB);
 	def.props.define(
 		ofx::P_DEFAULT,
@@ -851,7 +856,7 @@ fn color_semantic_rules_4_and_5_and_display_min() {
 	def.props.set_one(ofx::P_PARENT, text("gamma_group"));
 	assert_eq!(deduce_color_semantic(&def, &empty), "scalar");
 
-	// 规则 5：parent 经 group 表解析出的 label 带关键词。
+	// Rule 5: the label resolved for the parent via the group table carries the keyword.
 	let mut groups = HashMap::new();
 	groups.insert("grp".to_string(), "Gamma".to_string());
 	let def = def_of(ofx::TYPE_RGB);
@@ -912,7 +917,7 @@ fn build_core_translates_groups_pages_and_skips_unknowns() {
 	);
 	let core = build_core(&inst);
 
-	let double = core.get_input("p_double").expect("p_double 输入");
+	let double = core.get_input("p_double").expect("p_double input");
 	assert_eq!(
 		prop_values(double, "ui_group"),
 		vec![NodeValue::Text("Grouped".into())]
@@ -922,8 +927,8 @@ fn build_core_translates_groups_pages_and_skips_unknowns() {
 		vec![NodeValue::Text("Page A".into())]
 	);
 
-	let orphan = core.get_input("p_orphan").expect("p_orphan 输入");
-	// 未登记的 group → 回退 parent 名本身。
+	let orphan = core.get_input("p_orphan").expect("p_orphan input");
+	// Unregistered group → fall back to the parent name itself.
 	assert_eq!(
 		prop_values(orphan, "ui_group"),
 		vec![NodeValue::Text("missing_group".into())]
@@ -933,7 +938,7 @@ fn build_core_translates_groups_pages_and_skips_unknowns() {
 		vec![NodeValue::Text("Page A".into())]
 	);
 
-	// group/page/未知/空名都不产出输入。
+	// group/page/unknown/empty name produce no input.
 	assert!(core.get_input("grp_labeled").is_none());
 	assert!(core.get_input("page_a").is_none());
 	assert!(core.get_input("bogus").is_none());
@@ -943,7 +948,7 @@ fn build_core_translates_groups_pages_and_skips_unknowns() {
 /// build_core's clip→texture input and effect_input fallback chain.
 #[test]
 fn build_core_selects_effect_input_from_clips() {
-	// Source 存在 → effect_input = Source；Output 不入输入表。
+	// Source present → effect_input = Source; Output does not enter the input table.
 	let inst = fake_instance(
 		"test.clips.source",
 		ok_entry,
@@ -953,11 +958,11 @@ fn build_core_selects_effect_input_from_clips() {
 	let core = build_core(&inst);
 	assert_eq!(core.effect_input, SOURCE_CLIP);
 	assert!(core.get_input("Output").is_none());
-	let source = core.get_input("Source").expect("Source 输入");
+	let source = core.get_input("Source").expect("Source input");
 	assert_eq!(source.value_type, ValueType::Texture);
 	assert_eq!(source.display_name, "Source");
 
-	// 无 Source 但有 Texture → effect_input = Texture（不新建）。
+	// No Source but a Texture → effect_input = Texture (no new input created).
 	let inst = fake_instance(
 		"test.clips.texture",
 		ok_entry,
@@ -968,7 +973,7 @@ fn build_core_selects_effect_input_from_clips() {
 	assert_eq!(core.effect_input, TEXTURE_INPUT);
 	assert_eq!(core.get_input("Texture").unwrap().display_name, "Texture");
 
-	// 只有非标准 clip → 合成 Texture 输入。
+	// Only non-standard clips → synthesize a Texture input.
 	let inst = fake_instance(
 		"test.clips.mask",
 		ok_entry,
@@ -977,7 +982,9 @@ fn build_core_selects_effect_input_from_clips() {
 	);
 	let core = build_core(&inst);
 	assert_eq!(core.effect_input, TEXTURE_INPUT);
-	let tex = core.get_input(TEXTURE_INPUT).expect("合成 Texture 输入");
+	let tex = core
+		.get_input(TEXTURE_INPUT)
+		.expect("synthesized Texture input");
 	assert_eq!(tex.value_type, ValueType::Texture);
 	assert_eq!(tex.display_name, "Texture");
 	assert!(core.get_input("Mask").is_some());
@@ -1014,7 +1021,8 @@ fn build_core_color_and_combo_property_tables() {
 	sc.props
 		.define(ofx::P_CHOICE_ENUM, vec![text("v1"), text("v2")]);
 
-	// 无 label + 默认值不等的 RGBA → 兜底 color，显示名回退参数 id。
+	// RGBA with no label + unequal defaults → fall back to color; display name
+	// falls back to the parameter id.
 	let plain = ParamDef::new("plain_rgb", ofx::TYPE_RGBA);
 	plain.props.set_one(ofx::PROP_LABEL, text(""));
 	plain.props.define(
@@ -1058,7 +1066,7 @@ fn build_core_color_and_combo_property_tables() {
 	);
 	assert!(prop_values(mode, "combo_value").is_empty());
 
-	// labels 有、enum 空 → values 回退 labels。
+	// labels present, enum empty → values fall back to labels.
 	let labels_only = core.get_input("labels_only").unwrap();
 	assert_eq!(
 		prop_values(labels_only, "combo_option"),
@@ -1069,7 +1077,7 @@ fn build_core_color_and_combo_property_tables() {
 	);
 	assert!(prop_values(labels_only, "combo_value").is_empty());
 
-	// StrCombo：enum 回退 labels + combo_value 表。
+	// StrCombo: enum falls back to labels + the combo_value table.
 	let sc = core.get_input("sc").unwrap();
 	assert_eq!(
 		prop_values(sc, "combo_option"),
@@ -1098,7 +1106,7 @@ fn build_core_parametric_partial_ui_colour() {
 		ofx::P_PARAMETRIC_RANGE,
 		vec![PropValue::Double(0.0), PropValue::Double(1.0)],
 	);
-	// 只够第 1 维（3 个 double）→ 第 2 维 break。
+	// Only enough for dimension 1 (3 doubles) → break at dimension 2.
 	def.props.define(
 		ofx::P_PARAMETRIC_UI_COLOUR,
 		vec![
@@ -1144,7 +1152,7 @@ fn display_name_description_and_sub_category() {
 		.props
 		.set_one(PROP_PLUGIN_DESCRIPTION, text("Desc"));
 	assert_eq!(plugin_description(&inst), "Desc");
-	// 未配置 → 空串。
+	// Not configured → empty string.
 	let bare = fake_instance("test.display.bare", ok_entry, param_set(vec![]), vec![]);
 	assert_eq!(plugin_description(&bare), "");
 
@@ -1175,10 +1183,10 @@ fn set_text_param_type_dispatch_and_nul_rejection() {
 		vec![],
 	);
 
-	// 查无参数 → no-op。
+	// Parameter not found → no-op.
 	set_text_param(&inst, "missing", "x");
 
-	// String：NUL → 拒绝（值保持），有效 → 写回。
+	// String: NUL → rejected (value kept), valid → write-back.
 	let before = inst.params.find("s").unwrap().get();
 	set_text_param(&inst, "s", "with\0nul");
 	assert_eq!(inst.params.find("s").unwrap().get(), before);
@@ -1188,7 +1196,7 @@ fn set_text_param_type_dispatch_and_nul_rejection() {
 		ParamValue::String(_)
 	));
 
-	// StrChoice：NUL → 拒绝，有效 → 写回。
+	// StrChoice: NUL → rejected, valid → write-back.
 	let before = inst.params.find("sc").unwrap().get();
 	set_text_param(&inst, "sc", "with\0nul");
 	assert_eq!(inst.params.find("sc").unwrap().get(), before);
@@ -1198,7 +1206,7 @@ fn set_text_param_type_dispatch_and_nul_rejection() {
 		ParamValue::StrChoice(_)
 	));
 
-	// 非文本类型 → 静默忽略。
+	// Non-text type → silently ignored.
 	let before = inst.params.find("d").unwrap().get();
 	set_text_param(&inst, "d", "5");
 	assert_eq!(inst.params.find("d").unwrap().get(), before);
@@ -1209,7 +1217,7 @@ fn set_text_param_type_dispatch_and_nul_rejection() {
 #[test]
 fn push_button_recording_entry_edge_branches() {
 	let _g = PUSH_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-	// 空 action → 不记录。
+	// Empty action → nothing recorded.
 	let rc = unsafe {
 		recording_entry(
 			std::ptr::null(),
@@ -1219,7 +1227,7 @@ fn push_button_recording_entry_edge_branches() {
 		)
 	};
 	assert_eq!(rc, 0);
-	// 其它 action → 不记录。
+	// Other action → nothing recorded.
 	let other = CString::new("OfxActionSomethingElse").unwrap();
 	let rc = unsafe {
 		recording_entry(
@@ -1231,7 +1239,7 @@ fn push_button_recording_entry_edge_branches() {
 	};
 	assert_eq!(rc, 0);
 
-	// instanceChanged 但 inArgs 缺 reason → 记录空串。
+	// instanceChanged but inArgs lacks reason → record an empty string.
 	*PUSH_ENTRY_CALLS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
 	let changed = CString::new(crate::host::ACTION_INSTANCE_CHANGED).unwrap();
 	let props = PropertySet::new();
@@ -1248,7 +1256,7 @@ fn push_button_recording_entry_edge_branches() {
 		vec!["OfxActionInstanceChanged".to_string(), String::new()]
 	);
 
-	// reason 类型不符 → 空串。
+	// reason has the wrong type → empty string.
 	*PUSH_ENTRY_CALLS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
 	props.set_one(crate::host::PROP_CHANGE_REASON, PropValue::Int(3));
 	unsafe {
@@ -1314,7 +1322,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 		}
 	}
 
-	// 非 Plugin spec → Invalid。
+	// Non-Plugin spec → Invalid.
 	let spec = quercus_render::eval::JobSpec::Generate;
 	let req = quercus_render::eval::PluginJobRequest {
 		spec: &spec,
@@ -1322,7 +1330,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 	};
 	assert!(execute_plugin_job(&req).is_err());
 
-	// 未登记实例 → Failed。
+	// Unregistered instance → Failed.
 	let spec = plugin_spec(u64::MAX, Vec::new());
 	let req = quercus_render::eval::PluginJobRequest {
 		spec: &spec,
@@ -1330,7 +1338,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 	};
 	assert!(execute_plugin_job(&req).is_err());
 
-	// 登记实例 + dummy 源 → Failed。
+	// Registered instance + dummy source → Failed.
 	let spec = plugin_spec(id, Vec::new());
 	let req = quercus_render::eval::PluginJobRequest {
 		spec: &spec,
@@ -1338,7 +1346,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 	};
 	assert!(execute_plugin_job(&req).is_err());
 
-	// 登记实例 + 零尺寸（非 dummy）源 → generate_frame 失败。
+	// Registered instance + zero-size (non-dummy) source → generate_frame fails.
 	let pod = quercus_core::frame::VideoParamsPod {
 		width: 1,
 		height: 0,
@@ -1353,9 +1361,9 @@ fn execute_plugin_job_spec_and_source_branches() {
 	};
 	assert!(execute_plugin_job(&req).is_err());
 
-	// 参数值分发：PushButton/None 跳过、数值走 POD、文本走 set_ofx；
-	// 后续 render_frame 的结果不做断言（假插件没有真实渲染行为），
-	// 这里只要求各分发分支被走到。
+	// Parameter value dispatch: PushButton/None skipped, numerics via POD, text
+	// via set_ofx; the subsequent render_frame result is not asserted (the fake
+	// plugin has no real render behavior)—only that every dispatch branch is hit.
 	let frame = quercus_render::eval::generate_frame(
 		quercus_core::Rational::new(0, 1),
 		(2, 2),
@@ -1380,7 +1388,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 	unregister_instance(id);
 }
 
-// ---- 真实测试插件（build.rs 产物）的宿主面覆盖 ----------------------
+// ---- Host-surface coverage with the real test plugin (build.rs artifact) ----
 
 /// Serialises host global state (real plugin scanning/instantiation).
 static HOST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1452,7 +1460,7 @@ fn with_trace<R>(f: impl FnOnce() -> R) -> R {
 fn duplicate_instance_recreates_and_unknown_handle_is_none() {
 	let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	if !ensure_fixture_loaded() {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	}
 	let inst = Host::global()
@@ -1460,11 +1468,11 @@ fn duplicate_instance_recreates_and_unknown_handle_is_none() {
 			"org.quercus.test-plugin",
 			Some("OfxImageEffectContextFilter"),
 		)
-		.expect("测试插件实例");
+		.expect("test plugin instance");
 	let handle = PluginInstanceHandle(register_instance(inst));
-	let dup = duplicate_instance(handle).expect("duplicate 应成功");
+	let dup = duplicate_instance(handle).expect("duplicate should succeed");
 	assert_ne!(dup.0, handle.0);
-	let dup_inst = instance_from_id(dup.0).expect("duplicate 已登记");
+	let dup_inst = instance_from_id(dup.0).expect("duplicate registered");
 	assert_eq!(dup_inst.value.plugin.identifier, "org.quercus.test-plugin");
 	assert_eq!(dup_inst.value.context, "OfxImageEffectContextFilter");
 	unregister_instance(dup.0);
@@ -1477,11 +1485,13 @@ fn duplicate_instance_recreates_and_unknown_handle_is_none() {
 fn shared_plugin_instance_caches_and_misses() {
 	let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	if !ensure_fixture_loaded() {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	}
-	let first = shared_plugin_instance("org.quercus.test-plugin").expect("首访建实例");
-	let second = shared_plugin_instance("org.quercus.test-plugin").expect("再访命中缓存");
+	let first =
+		shared_plugin_instance("org.quercus.test-plugin").expect("first access creates instance");
+	let second =
+		shared_plugin_instance("org.quercus.test-plugin").expect("second access hits cache");
 	assert_eq!(first, second);
 	assert!(shared_plugin_instance("com.example.no-such-plugin").is_none());
 }
@@ -1493,7 +1503,7 @@ fn shared_plugin_instance_caches_and_misses() {
 fn fixture_plugin_renders_through_the_executor() {
 	let _g = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	if !ensure_fixture_loaded() {
-		eprintln!("SKIP: 测试插件未构建");
+		eprintln!("SKIP: test plugin not built");
 		return;
 	}
 	with_trace(|| render_real_plugin_smoke("org.quercus.test-plugin"));

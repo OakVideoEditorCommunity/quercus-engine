@@ -279,7 +279,7 @@ impl Value {
 	}
 }
 
-// ---- 身份注册表 -----------------------------------------------------------
+// ---- Identity registry -----------------------------------------------------
 
 /// Registry entry: a weak project reference (once the project is released the
 /// upgrade fails and the entry goes dead) + the node id.
@@ -355,7 +355,7 @@ pub fn node_from_identity(identity: usize) -> Option<NodeRef> {
 	Some(NodeRef { project, id })
 }
 
-// ---- 桥调用面（undoable 回写）---------------------------------------------
+// ---- Bridge call surface (undoable write-back) -----------------------------
 
 /// quercusnode bridge error (why a set_input* failed; the caller skips submission on failure).
 #[derive(Debug, thiserror::Error)]
@@ -412,8 +412,9 @@ pub fn set_input_undoable(
 	let nv = value
 		.to_node_value()
 		.ok_or(NodeBridgeError::InvalidValue(value.r#type))?;
-	// 校验节点与输入存在性 + 旧值快照（创建期状态，redo/undo 据此
-	// 回放；不校验声明类型——按 POD kind 存原样，与 ops.rs 一致）。
+	// Validate the node and input exist + snapshot the old value (creation-time
+	// state; redo/undo replay from it; the declared type is not validated—stored
+	// as-is by POD kind, consistent with ops.rs).
 	let old = {
 		let mut guard = lock_any(&node.project);
 		let entry = guard
@@ -533,7 +534,7 @@ mod tests {
 			quercus_node::node::NodeCore::empty(),
 			Box::new(quercus_node::nodes::EmptyBehavior),
 		);
-		// NodeCore::empty 无输入；手动声明三种输入。
+		// NodeCore::empty has no inputs; declare the three inputs manually.
 		use quercus_node::input::Input;
 		let core = guard.graph.get_mut(id).unwrap();
 		core.core.add_input(Input::new(
@@ -561,12 +562,13 @@ mod tests {
 		let _guard = identity_lock().lock().unwrap_or_else(|e| e.into_inner());
 		let (project, id) = test_project();
 		let identity = register_node(project.clone(), id);
-		let node = node_from_identity(identity as usize).expect("已登记身份应可解析");
+		let node =
+			node_from_identity(identity as usize).expect("registered identity should resolve");
 		assert_eq!(node.id, id);
 		let found = node.project.lock().unwrap().graph.get(id).is_some();
 		assert!(found);
 
-		// 未登记身份 → None。
+		// Unregistered identity → None.
 		assert!(node_from_identity(0xfeed_face).is_none());
 		unregister_node(identity);
 		assert!(node_from_identity(identity as usize).is_none());
@@ -582,10 +584,11 @@ mod tests {
 		let identity = register_node(project.clone(), id);
 		drop(project);
 		assert!(node_from_identity(identity as usize).is_none());
-		// 新 project 同槽位身份重登记（覆盖死条目）。
+		// Re-register the same-slot identity under a new project (overwrites the dead entry).
 		let (project2, id2) = test_project();
 		register_node(project2.clone(), id2);
-		let node = node_from_identity(identity as usize).expect("重登记后应可解析");
+		let node =
+			node_from_identity(identity as usize).expect("should resolve after re-registration");
 		assert_eq!(node.id, id2);
 		let alive = node.project.lock().unwrap().graph.get(id2).is_some();
 		assert!(alive);
@@ -621,13 +624,13 @@ mod tests {
 			),
 		];
 		for (pod, nv) in cases {
-			let to = pod.to_node_value().expect("POD 应可转换");
+			let to = pod.to_node_value().expect("POD should convert");
 			assert_eq!(to, nv, "POD → NodeValue");
 			assert_eq!(Value::from_node_value(&nv), Some(pod), "NodeValue → POD");
 		}
-		// STRING POD 无数据。
+		// STRING POD carries no data.
 		assert!(Value::string().to_node_value().is_none());
-		// 无 POD 表达的类型。
+		// A type with no POD representation.
 		assert_eq!(Value::from_node_value(&NV::Text("x".into())), None);
 		assert_eq!(Value::from_node_value(&NV::Matrix([0.0; 16])), None);
 	}
@@ -641,7 +644,7 @@ mod tests {
 			id,
 		};
 		let mut cmd = set_input_undoable(&node, "opacity", &Value::float(0.25)).unwrap();
-		// 命令未执行时值未变。
+		// Value unchanged before the command executes.
 		assert_eq!(
 			project
 				.lock()
@@ -678,7 +681,7 @@ mod tests {
 			quercus_node::value::NodeValue::Float(1.0)
 		);
 
-		// 未知输入 / STRING POD / 失效节点。
+		// Unknown input / STRING POD / stale node.
 		assert!(matches!(
 			set_input_undoable(&node, "nope", &Value::float(1.0)),
 			Err(NodeBridgeError::UnknownInput(_))
@@ -745,7 +748,7 @@ mod tests {
 			quercus_node::value::NodeValue::StrCombo("low".to_string())
 		);
 
-		// 数值输入走字符串 setter → NotStringInput。
+		// Numeric input through the string setter → NotStringInput.
 		assert!(matches!(
 			set_input_string_undoable(&node, "opacity", "1.0"),
 			Err(NodeBridgeError::NotStringInput(_))

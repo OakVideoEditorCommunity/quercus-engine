@@ -68,7 +68,7 @@ use crate::instance::Instance;
 use crate::property::{PropertySet, Value};
 use crate::suites::status;
 
-// ---- dlopen FFI（零依赖；RTLD 常量按平台）----
+// ---- dlopen FFI (zero dependencies; RTLD constants per platform) ----
 
 #[cfg(target_os = "macos")]
 const RTLD_NOW: c_int = 0x2;
@@ -237,18 +237,18 @@ mod win32 {
 #[cfg(target_os = "windows")]
 use win32::{dl_open, dl_sym, dlclose, dlsym_fn};
 
-// ---- OFX 宿主侧结构（ofxCore.h，字段序与 SDK 逐字一致）----
+// ---- OFX host-side structs (ofxCore.h; field order verbatim per the SDK) ----
 
-/// `OfxHost`（ofxCore.h:44）。
+/// `OfxHost` (ofxCore.h:44).
 #[repr(C)]
 struct OfxHost {
 	/// Host property-set handle (the raw pointer to `Host::props`, tag 0).
 	host: *mut c_void,
-	/// fetchSuite。
+	/// fetchSuite.
 	fetch_suite: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> *const c_void,
 }
 
-/// `OfxPlugin`（ofxCore.h:96）。
+/// `OfxPlugin` (ofxCore.h:96).
 #[repr(C)]
 struct OfxPlugin {
 	plugin_api: *const c_char,
@@ -301,9 +301,9 @@ unsafe extern "C" fn host_fetch_suite(
 			p
 		}
 		Ok(None) => {
-			// 诊断：插件请求的 suite 宿主没有。厂商套件（Nuke/Vegas/
-			// Foundry）的探测是插件的正常行为，不打正式日志——需要
-			// 排查时用 QUERCUS_OFX_TRACE 打开。
+			// Diagnostics: the plugin asked for a suite the host lacks. Vendor
+			// suite (Nuke/Vegas/Foundry) probing is normal plugin behaviour, so
+			// nothing is logged formally — enable QUERCUS_OFX_TRACE to debug.
 			if env::var_os("QUERCUS_OFX_TRACE").is_some() && !name.is_null() {
 				if let Ok(n) = unsafe { CStr::from_ptr(name) }.to_str() {
 					eprintln!("[ofx] fetchSuite miss: {n} v{version}");
@@ -330,44 +330,44 @@ fn global_ofx_host() -> *mut OfxHost {
 	}) as *mut OfxHost
 }
 
-// ---- 动作与属性常量（ofxCore.h / ofxImageEffect.h）----
+// ---- Action and property constants (ofxCore.h / ofxImageEffect.h) ----
 
-/// kOfxActionLoad。
+/// kOfxActionLoad.
 pub(crate) const ACTION_LOAD: &str = "OfxActionLoad";
-/// kOfxActionDescribe。
+/// kOfxActionDescribe.
 pub(crate) const ACTION_DESCRIBE: &str = "OfxActionDescribe";
-/// kOfxActionCreateInstance。
+/// kOfxActionCreateInstance.
 pub(crate) const ACTION_CREATE_INSTANCE: &str = "OfxActionCreateInstance";
-/// kOfxActionDestroyInstance。
+/// kOfxActionDestroyInstance.
 pub(crate) const ACTION_DESTROY_INSTANCE: &str = "OfxActionDestroyInstance";
-/// kOfxImageEffectActionDescribeInContext。
+/// kOfxImageEffectActionDescribeInContext.
 pub(crate) const ACTION_DESCRIBE_IN_CONTEXT: &str = "OfxImageEffectActionDescribeInContext";
-/// kOfxImageEffectActionGetClipPreferences。
+/// kOfxImageEffectActionGetClipPreferences.
 pub(crate) const ACTION_GET_CLIP_PREFERENCES: &str = "OfxImageEffectActionGetClipPreferences";
-/// kOfxImageEffectActionGetRegionOfDefinition。
+/// kOfxImageEffectActionGetRegionOfDefinition.
 pub(crate) const ACTION_GET_ROD: &str = "OfxImageEffectActionGetRegionOfDefinition";
-/// kOfxImageEffectActionGetRegionsOfInterest。
+/// kOfxImageEffectActionGetRegionsOfInterest.
 pub(crate) const ACTION_GET_ROI: &str = "OfxImageEffectActionGetRegionsOfInterest";
-/// kOfxImageEffectActionIsIdentity。
+/// kOfxImageEffectActionIsIdentity.
 pub(crate) const ACTION_IS_IDENTITY: &str = "OfxImageEffectActionIsIdentity";
-/// kOfxImageEffectActionRender。
+/// kOfxImageEffectActionRender.
 pub(crate) const ACTION_RENDER: &str = "OfxImageEffectActionRender";
-/// kOfxImageEffectActionBeginSequenceRender。
+/// kOfxImageEffectActionBeginSequenceRender.
 pub(crate) const ACTION_BEGIN_SEQUENCE: &str = "OfxImageEffectActionBeginSequenceRender";
-/// kOfxImageEffectActionEndSequenceRender。
+/// kOfxImageEffectActionEndSequenceRender.
 pub(crate) const ACTION_END_SEQUENCE: &str = "OfxImageEffectActionEndSequenceRender";
-/// kOfxActionOpenGLContextAttached（ofxGPURender.h:345）。
+/// kOfxActionOpenGLContextAttached (ofxGPURender.h:345).
 pub(crate) const ACTION_GL_CONTEXT_ATTACHED: &str = "OfxActionOpenGLContextAttached";
 /// kOfxActionOpenGLContextDetached (ofxGPURender.h:371; the macro value already
 /// carries the "kOfx" prefix in the spec as written).
 pub(crate) const ACTION_GL_CONTEXT_DETACHED: &str = "kOfxActionOpenGLContextDetached";
-/// kOfxImageEffectActionGetOutputColourspace（ofxColour.h:283）。
+/// kOfxImageEffectActionGetOutputColourspace (ofxColour.h:283).
 pub(crate) const ACTION_GET_OUTPUT_COLOURSPACE: &str = "OfxImageEffectActionGetOutputColourspace";
 /// kOfxActionInstanceChanged (ofxCore.h:449): host-side parameter/time change
 /// notification. After a push button is pressed, the host must call it with the
 /// kOfxChangeUserEdited reason (the inArgs contract in ofxCore.h:405-435).
 pub(crate) const ACTION_INSTANCE_CHANGED: &str = "OfxActionInstanceChanged";
-// ---- Interact（OFX 自定义交互；ofxInteract.h / ofxDrawSuite.h / ofxKeySyms.h）----
+// ---- Interact (OFX custom interaction; ofxInteract.h / ofxDrawSuite.h / ofxKeySyms.h) ----
 
 /// kOfxActionNewInteract: the first action the host sends to an interact entry when
 /// it creates an interact. The vendored ofxInteract.h does not define this macro
@@ -383,21 +383,21 @@ pub(crate) const ACTION_NEW_INTERACT: &str = "OfxActionNewInteract";
 /// host extension, with the value "OfxInteractActionIdle"). Plugins implement it
 /// voluntarily; if unhandled they return kOfxStatReplyDefault.
 pub(crate) const ACTION_INTERACT_IDLE: &str = "OfxInteractActionIdle";
-/// kOfxInteractActionDraw（ofxInteract.h:265）。
+/// kOfxInteractActionDraw (ofxInteract.h:265).
 pub(crate) const ACTION_INTERACT_DRAW: &str = "OfxInteractActionDraw";
-/// kOfxInteractActionPenMotion（ofxInteract.h:302）。
+/// kOfxInteractActionPenMotion (ofxInteract.h:302).
 pub(crate) const ACTION_INTERACT_PEN_MOTION: &str = "OfxInteractActionPenMotion";
-/// kOfxInteractActionPenDown（ofxInteract.h:340）。
+/// kOfxInteractActionPenDown (ofxInteract.h:340).
 pub(crate) const ACTION_INTERACT_PEN_DOWN: &str = "OfxInteractActionPenDown";
-/// kOfxInteractActionPenUp（ofxInteract.h:376）。
+/// kOfxInteractActionPenUp (ofxInteract.h:376).
 pub(crate) const ACTION_INTERACT_PEN_UP: &str = "OfxInteractActionPenUp";
-/// kOfxInteractActionKeyDown（ofxInteract.h:410）。
+/// kOfxInteractActionKeyDown (ofxInteract.h:410).
 pub(crate) const ACTION_INTERACT_KEY_DOWN: &str = "OfxInteractActionKeyDown";
-/// kOfxInteractActionKeyUp（ofxInteract.h:443）。
+/// kOfxInteractActionKeyUp (ofxInteract.h:443).
 pub(crate) const ACTION_INTERACT_KEY_UP: &str = "OfxInteractActionKeyUp";
-/// kOfxInteractActionGainFocus（ofxInteract.h:501）。
+/// kOfxInteractActionGainFocus (ofxInteract.h:501).
 pub(crate) const ACTION_INTERACT_GAIN_FOCUS: &str = "OfxInteractActionGainFocus";
-/// kOfxInteractActionLoseFocus（ofxInteract.h:526）。
+/// kOfxInteractActionLoseFocus (ofxInteract.h:526).
 pub(crate) const ACTION_INTERACT_LOSE_FOCUS: &str = "OfxInteractActionLoseFocus";
 
 /// kOfxInteractPropPixelScale (ofxInteract.h:58): canonical→screen-pixel conversion
@@ -451,139 +451,140 @@ pub(crate) const PROP_KEY_STRING: &str = "kOfxPropKeyString";
 /// interact entry declared by the plugin (Pointer→OfxPluginEntryPoint; V2 requires
 /// drawing through the Draw suite).
 pub(crate) const PROP_OVERLAY_INTERACT_V2: &str = "OfxImageEffectPluginPropOverlayInteractV2";
-/// kOfxImageEffectPluginPropOverlayInteractV1（ofxImageEffect.h:812）。
+/// kOfxImageEffectPluginPropOverlayInteractV1 (ofxImageEffect.h:812).
 pub(crate) const PROP_OVERLAY_INTERACT_V1: &str = "OfxImageEffectPluginPropOverlayInteractV1";
 /// kOfxImageEffectPropSupportsOverlays (ofxImageEffect.h:801): whether the host
 /// allows plugins to draw overlays on the output image (capability declaration).
 pub(crate) const PROP_SUPPORTS_OVERLAYS: &str = "OfxImageEffectPropSupportsOverlays";
 
-// ---- OFX 关键码（ofxKeySyms.h；X11 keysym 值，测试/宿主常用子集）----
+// ---- OFX key codes (ofxKeySyms.h; X11 keysym values, the subset commonly
+// used by tests/host) ----
 //
-// 公共：app 侧（WG3b）经 [`crate::suites::interact::Interact::key_down`]/
-// `key_up` 传关键码。
+// Shared: the app side (WG3b) passes keycodes via
+// [`crate::suites::interact::Interact::key_down`]/`key_up`.
 
-/// kOfxKey_Unknown（ofxKeySyms.h:121）。
+/// kOfxKey_Unknown (ofxKeySyms.h:121).
 pub const KEY_UNKNOWN: i32 = 0x0;
-/// kOfxKey_BackSpace（ofxKeySyms.h:128）。
+/// kOfxKey_BackSpace (ofxKeySyms.h:128).
 pub const KEY_BACKSPACE: i32 = 0xFF08;
-/// kOfxKey_Tab（ofxKeySyms.h:129）。
+/// kOfxKey_Tab (ofxKeySyms.h:129).
 pub const KEY_TAB: i32 = 0xFF09;
-/// kOfxKey_Return（ofxKeySyms.h:132）。
+/// kOfxKey_Return (ofxKeySyms.h:132).
 pub const KEY_RETURN: i32 = 0xFF0D;
-/// kOfxKey_Escape（ofxKeySyms.h:136）。
+/// kOfxKey_Escape (ofxKeySyms.h:136).
 pub const KEY_ESCAPE: i32 = 0xFF1B;
-/// kOfxKey_Delete（ofxKeySyms.h:137）。
+/// kOfxKey_Delete (ofxKeySyms.h:137).
 pub const KEY_DELETE: i32 = 0xFFFF;
-/// kOfxKey_Home（ofxKeySyms.h:172）。
+/// kOfxKey_Home (ofxKeySyms.h:172).
 pub const KEY_HOME: i32 = 0xFF50;
-/// kOfxKey_Left（ofxKeySyms.h:173）。
+/// kOfxKey_Left (ofxKeySyms.h:173).
 pub const KEY_LEFT: i32 = 0xFF51;
-/// kOfxKey_Up（ofxKeySyms.h:174）。
+/// kOfxKey_Up (ofxKeySyms.h:174).
 pub const KEY_UP: i32 = 0xFF52;
-/// kOfxKey_Right（ofxKeySyms.h:175）。
+/// kOfxKey_Right (ofxKeySyms.h:175).
 pub const KEY_RIGHT: i32 = 0xFF53;
-/// kOfxKey_Down（ofxKeySyms.h:176）。
+/// kOfxKey_Down (ofxKeySyms.h:176).
 pub const KEY_DOWN: i32 = 0xFF54;
-/// kOfxKey_Page_Up（ofxKeySyms.h:178）。
+/// kOfxKey_Page_Up (ofxKeySyms.h:178).
 pub const KEY_PAGE_UP: i32 = 0xFF55;
-/// kOfxKey_Page_Down（ofxKeySyms.h:180）。
+/// kOfxKey_Page_Down (ofxKeySyms.h:180).
 pub const KEY_PAGE_DOWN: i32 = 0xFF56;
-/// kOfxKey_End（ofxKeySyms.h:181）。
+/// kOfxKey_End (ofxKeySyms.h:181).
 pub const KEY_END: i32 = 0xFF57;
-/// kOfxKey_F1（ofxKeySyms.h:252）。
+/// kOfxKey_F1 (ofxKeySyms.h:252).
 pub const KEY_F1: i32 = 0xFFBE;
-/// kOfxKey_Shift_L（ofxKeySyms.h:315）。
+/// kOfxKey_Shift_L (ofxKeySyms.h:315).
 pub const KEY_SHIFT_L: i32 = 0xFFE1;
-/// kOfxKey_Control_L（ofxKeySyms.h:317）。
+/// kOfxKey_Control_L (ofxKeySyms.h:317).
 pub const KEY_CONTROL_L: i32 = 0xFFE3;
-/// kOfxKey_Alt_L（ofxKeySyms.h:323）。
+/// kOfxKey_Alt_L (ofxKeySyms.h:323).
 pub const KEY_ALT_L: i32 = 0xFFE9;
-/// kOfxKey_space（ofxKeySyms.h:331）。
+/// kOfxKey_space (ofxKeySyms.h:331).
 pub const KEY_SPACE: i32 = 0x020;
-/// kOfxKey_a（ofxKeySyms.h:398）。
+/// kOfxKey_a (ofxKeySyms.h:398).
 pub const KEY_A: i32 = 0x061;
-/// kOfxKey_z（ofxKeySyms.h:423）。
+/// kOfxKey_z (ofxKeySyms.h:423).
 pub const KEY_Z: i32 = 0x07a;
 
 /// kOfxPropChangeReason (ofxCore.h:763): states the change source in the
 /// instanceChanged inArgs (UserEdited / PluginEdited / Time).
 pub(crate) const PROP_CHANGE_REASON: &str = "OfxPropChangeReason";
-/// kOfxChangeUserEdited（ofxCore.h:792）。
+/// kOfxChangeUserEdited (ofxCore.h:792).
 pub(crate) const CHANGE_USER_EDITED: &str = "OfxChangeUserEdited";
-/// kOfxChangePluginEdited（ofxCore.h:795）。
+/// kOfxChangePluginEdited (ofxCore.h:795).
 pub(crate) const CHANGE_PLUGIN_EDITED: &str = "OfxChangePluginEdited";
-/// kOfxChangeTime（ofxCore.h:798）。
+/// kOfxChangeTime (ofxCore.h:798).
 pub(crate) const CHANGE_TIME: &str = "OfxChangeTime";
 
-/// kOfxPropTime（ofxCore.h:613）。
+/// kOfxPropTime (ofxCore.h:613).
 pub(crate) const PROP_TIME: &str = "OfxPropTime";
 /// kOfxPropEffectInstance (ofxCore.h:776): the pointer property in the
 /// interact/render inArgs that points to the effect instance handle.
 pub(crate) const PROP_EFFECT_INSTANCE: &str = "OfxPropEffectInstance";
-/// kOfxImageEffectPropRenderScale。
+/// kOfxImageEffectPropRenderScale.
 pub(crate) const PROP_RENDER_SCALE: &str = "OfxImageEffectPropRenderScale";
-/// kOfxImageEffectPropRenderWindow。
+/// kOfxImageEffectPropRenderWindow.
 pub(crate) const PROP_RENDER_WINDOW: &str = "OfxImageEffectPropRenderWindow";
-/// kOfxImageEffectPropRegionOfInterest。
+/// kOfxImageEffectPropRegionOfInterest.
 pub(crate) const PROP_ROI: &str = "OfxImageEffectPropRegionOfInterest";
-/// kOfxImageEffectPropRegionOfDefinition。
+/// kOfxImageEffectPropRegionOfDefinition.
 pub(crate) const PROP_ROD: &str = "OfxImageEffectPropRegionOfDefinition";
-/// kOfxImageEffectPropIsIdentity。
+/// kOfxImageEffectPropIsIdentity.
 pub(crate) const PROP_IS_IDENTITY: &str = "OfxImageEffectPropIsIdentity";
-/// kOfxImageEffectPropFieldToRender。
+/// kOfxImageEffectPropFieldToRender.
 pub(crate) const PROP_FIELD_TO_RENDER: &str = "OfxImageEffectPropFieldToRender";
-/// kOfxImageEffectPropSequentialRenderStatus。
+/// kOfxImageEffectPropSequentialRenderStatus.
 pub(crate) const PROP_SEQUENTIAL_RENDER: &str = "OfxImageEffectPropSequentialRenderStatus";
-/// kOfxImageEffectPropInteractiveRenderStatus。
+/// kOfxImageEffectPropInteractiveRenderStatus.
 pub(crate) const PROP_INTERACTIVE_RENDER: &str = "OfxImageEffectPropInteractiveRenderStatus";
-/// kOfxImageEffectPropRenderQualityDraft。
+/// kOfxImageEffectPropRenderQualityDraft.
 pub(crate) const PROP_RENDER_QUALITY_DRAFT: &str = "OfxImageEffectPropRenderQualityDraft";
-/// kOfxImageEffectPropNoSpatialAwareness。
+/// kOfxImageEffectPropNoSpatialAwareness.
 pub(crate) const PROP_NO_SPATIAL_AWARENESS: &str = "OfxImageEffectPropNoSpatialAwareness";
-/// kOfxImageEffectPropFrameRange。
+/// kOfxImageEffectPropFrameRange.
 pub(crate) const PROP_FRAME_RANGE: &str = "OfxImageEffectPropFrameRange";
-/// kOfxImageEffectPropFrameStep。
+/// kOfxImageEffectPropFrameStep.
 pub(crate) const PROP_FRAME_STEP: &str = "OfxImageEffectPropFrameStep";
-/// kOfxImageEffectPropFrameRate。
+/// kOfxImageEffectPropFrameRate.
 pub(crate) const PROP_FRAME_RATE: &str = "OfxImageEffectPropFrameRate";
-/// kOfxImageEffectPropPreMultiplication。
+/// kOfxImageEffectPropPreMultiplication.
 pub(crate) const PROP_PREMULT: &str = "OfxImageEffectPropPreMultiplication";
-/// kOfxImageClipPropFieldOrder。
+/// kOfxImageClipPropFieldOrder.
 pub(crate) const PROP_FIELD_ORDER: &str = "OfxImageClipPropFieldOrder";
-/// kOfxImageClipPropContinuousSamples。
+/// kOfxImageClipPropContinuousSamples.
 pub(crate) const PROP_CONTINUOUS_SAMPLES: &str = "OfxImageClipPropContinuousSamples";
-/// kOfxImageEffectFrameVarying。
+/// kOfxImageEffectFrameVarying.
 pub(crate) const PROP_FRAME_VARYING: &str = "OfxImageEffectFrameVarying";
-/// kOfxImageClipPropConnected。
+/// kOfxImageClipPropConnected.
 pub(crate) const PROP_CLIP_CONNECTED: &str = "OfxImageClipPropConnected";
-/// kOfxImageEffectPropContext。
+/// kOfxImageEffectPropContext.
 pub(crate) const PROP_CONTEXT: &str = "OfxImageEffectPropContext";
-/// kOfxImageEffectPropSupportedContexts。
+/// kOfxImageEffectPropSupportedContexts.
 pub(crate) const PROP_SUPPORTED_CONTEXTS: &str = "OfxImageEffectPropSupportedContexts";
-/// kOfxImageEffectPropProjectSize。
+/// kOfxImageEffectPropProjectSize.
 pub(crate) const PROP_PROJECT_SIZE: &str = "OfxImageEffectPropProjectSize";
-/// kOfxImageEffectPropProjectOffset。
+/// kOfxImageEffectPropProjectOffset.
 pub(crate) const PROP_PROJECT_OFFSET: &str = "OfxImageEffectPropProjectOffset";
-/// kOfxImageEffectPropProjectExtent。
+/// kOfxImageEffectPropProjectExtent.
 pub(crate) const PROP_PROJECT_EXTENT: &str = "OfxImageEffectPropProjectExtent";
 /// kOfxImageEffectPropProjectPixelAspectRatio (the macro value is PixelAspectRatio).
 pub(crate) const PROP_PROJECT_PAR: &str = "OfxImageEffectPropPixelAspectRatio";
-/// kOfxImageEffectInstancePropEffectDuration。
+/// kOfxImageEffectInstancePropEffectDuration.
 pub(crate) const PROP_EFFECT_DURATION: &str = "OfxImageEffectInstancePropEffectDuration";
-/// kOfxImageEffectInstancePropSequentialRender。
+/// kOfxImageEffectInstancePropSequentialRender.
 pub(crate) const PROP_SEQUENTIAL: &str = "OfxImageEffectInstancePropSequentialRender";
-/// kOfxImageEffectPropPluginHandle。
+/// kOfxImageEffectPropPluginHandle.
 pub(crate) const PROP_PLUGIN_HANDLE: &str = "OfxImageEffectPropPluginHandle";
-/// kOfxPluginPropFilePath。
+/// kOfxPluginPropFilePath.
 pub(crate) const PROP_PLUGIN_FILE_PATH: &str = "OfxPluginPropFilePath";
-/// kOfxImageEffectPropSupportsTiles。
+/// kOfxImageEffectPropSupportsTiles.
 pub(crate) const PROP_SUPPORTS_TILES: &str = "OfxImageEffectPropSupportsTiles";
-/// kOfxPropType。
+/// kOfxPropType.
 pub(crate) const PROP_TYPE: &str = "OfxPropType";
-/// kOfxPropLabel。
+/// kOfxPropLabel.
 pub(crate) const PROP_LABEL: &str = "OfxPropLabel";
 
-// ---- GL 能力与协商属性（ofxGPURender.h，M11 第 2 期）----
+// ---- GL capability and negotiation properties (ofxGPURender.h, M11 phase 2) ----
 
 /// kOfxImageEffectPropOpenGLRenderSupported (ofxGPURender.h:62): the host descriptor
 /// ("true") and the plugin descriptor ("false"/"true"/"needed").
@@ -595,14 +596,14 @@ pub(crate) const PROP_GL_ENABLED: &str = "OfxImageEffectPropOpenGLEnabled";
 /// in the plugin descriptor (optional; a host-side input to format negotiation).
 pub(crate) const PROP_GL_PIXEL_DEPTH: &str = "OfxOpenGLPropPixelDepth";
 
-// ---- ofxColour 属性（ofxColour.h，M11 第 2 期）----
+// ---- ofxColour properties (ofxColour.h, M11 phase 2) ----
 
-/// kOfxImageEffectPropColourManagementStyle（ofxColour.h:60）。
+/// kOfxImageEffectPropColourManagementStyle (ofxColour.h:60).
 pub(crate) const PROP_COLOUR_STYLE: &str = "OfxImageEffectPropColourManagementStyle";
 /// kOfxImageEffectColourManagementOCIO (ofxColour.h:73): the colour management mode
 /// declared by the host (task requirement).
 pub(crate) const COLOUR_STYLE_OCIO: &str = "OfxImageEffectColourManagementOCIO";
-/// kOfxImageEffectPropColourManagementAvailableConfigs（ofxColour.h:85）。
+/// kOfxImageEffectPropColourManagementAvailableConfigs (ofxColour.h:85).
 pub(crate) const PROP_COLOUR_AVAILABLE_CONFIGS: &str =
 	"OfxImageEffectPropColourManagementAvailableConfigs";
 /// kOfxImageEffectPropColourManagementConfig (ofxColour.h:98): the native config
@@ -677,9 +678,10 @@ pub struct Plugin {
 	pub unloaded: std::sync::atomic::AtomicBool,
 }
 
-// dlopen 句柄与 OfxPlugin 指针是**不透明令牌**（只经 dlsym/插件
-// 结构字段访问，不直接解引用）；跨线程搬运句柄是宿主分发语义。
-// 与 property.rs 的 Value::Pointer 同理。
+// The dlopen handle and the OfxPlugin pointer are **opaque tokens** (accessed
+// only through dlsym/plugin struct fields, never dereferenced directly);
+// moving handles across threads is part of the host dispatch semantics.
+// Same rationale as Value::Pointer in property.rs.
 unsafe impl Send for Plugin {}
 unsafe impl Sync for Plugin {}
 
@@ -699,8 +701,9 @@ pub(crate) fn overlay_interact_entry(props: &PropertySet) -> Option<EntryPoint> 
 	for name in [PROP_OVERLAY_INTERACT_V2, PROP_OVERLAY_INTERACT_V1] {
 		if let Some(Value::Pointer(p)) = props.get(name, 0) {
 			if !p.is_null() {
-				// 属性值是函数指针（void* 存放）；转换与 dlsym_fn 同款
-				// （调用方保证类型正确）。
+				// The property value is a function pointer (stored as void*);
+				// converted the same way as dlsym_fn (the caller guarantees
+				// the type is correct).
 				return Some(unsafe { mem::transmute_copy(&p) });
 			}
 		}
@@ -728,7 +731,8 @@ impl Plugin {
 		if self.unloaded.load(std::sync::atomic::Ordering::Acquire) {
 			return status::ERR_FATAL;
 		}
-		// 属性集经裸指针（标签 0）传给插件（property suite 接受）。
+		// Property sets are passed to the plugin via raw pointers (tag 0),
+		// which the property suite accepts.
 		let in_ptr = in_args as *const PropertySet as *mut c_void;
 		let out_ptr = out_args as *const PropertySet as *mut c_void;
 		let action = cs(action);
@@ -775,7 +779,7 @@ impl Drop for LoadedBinary {
 	}
 }
 
-// 同 Plugin：dlopen 句柄为不透明令牌。
+// Same as Plugin: the dlopen handle is an opaque token.
 unsafe impl Send for LoadedBinary {}
 unsafe impl Sync for LoadedBinary {}
 
@@ -818,7 +822,7 @@ fn find_binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
 		contents.join("MacOS"),
 		contents.join("Linux-x86-64"),
 		contents.join("Linux-aarch64"),
-		// OFX 规范的 64 位 Windows 平台目录。
+		// The 64-bit Windows platform directory from the OFX spec.
 		contents.join("Win64"),
 	] {
 		if let Ok(entries) = fs::read_dir(&platform_dir) {
@@ -830,7 +834,7 @@ fn find_binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
 			}
 		}
 	}
-	// 退而求其次：bundle 根下的 .so/.dylib/.ofx。
+	// Fallback: .so/.dylib/.ofx at the bundle root.
 	if let Ok(entries) = fs::read_dir(bundle) {
 		for e in entries.flatten() {
 			let p = e.path();
@@ -866,14 +870,15 @@ fn default_plugin_paths(home: Option<&Path>) -> Vec<PathBuf> {
 		paths.push(home.join(".OFX/Plugins"));
 		paths.push(home.join(".local/share/OFX/Plugins"));
 		paths.push(home.join(".local/share/olive/ofx/Plugins"));
-		// OFX 规范：macOS 用户级位置。
+		// OFX spec: macOS user-level location.
 		#[cfg(target_os = "macos")]
 		paths.push(home.join("Library/OFX/Plugins"));
 	}
-	// OFX 规范：macOS 系统级位置。
+	// OFX spec: macOS system-level location.
 	#[cfg(target_os = "macos")]
 	paths.push(PathBuf::from("/Library/OFX/Plugins"));
-	// OFX 规范：Windows 系统级位置（优先真实安装根 `%ProgramFiles%`）。
+	// OFX spec: Windows system-level location (prefers the real install root
+	// `%ProgramFiles%`).
 	#[cfg(target_os = "windows")]
 	{
 		match env::var("ProgramFiles")
@@ -884,13 +889,13 @@ fn default_plugin_paths(home: Option<&Path>) -> Vec<PathBuf> {
 			Err(_) => paths.push(PathBuf::from(r"C:\Program Files\Common Files\OFX\Plugins")),
 		}
 	}
-	// OFX 规范：Linux 系统级位置。
+	// OFX spec: Linux system-level locations.
 	#[cfg(target_os = "linux")]
 	{
 		paths.push(PathBuf::from("/usr/OFX/Plugins"));
 		paths.push(PathBuf::from("/usr/local/OFX/Plugins"));
 	}
-	// Olive app-relative 位置（olivehost.cpp:104-107）。
+	// Olive app-relative locations (olivehost.cpp:104-107).
 	paths.push(PathBuf::from("../OFX/Plugins"));
 	paths.push(PathBuf::from("../share/olive/ofx/Plugins"));
 	paths.push(PathBuf::from("../lib/olive/ofx/Plugins"));
@@ -925,8 +930,8 @@ impl PluginCache {
 			"OFX_PLUGIN_PATH",
 		] {
 			if let Ok(raw) = env::var(var) {
-				// 平台路径分隔符（Unix ':' / Windows ';'），与 C++ 的
-				// `QDir::listSeparator` 一致。
+				// Platform path separator (Unix ':' / Windows ';'), matching C++'s
+				// `QDir::listSeparator`.
 				paths.extend(env::split_paths(&raw));
 			}
 		}
@@ -949,7 +954,7 @@ impl PluginCache {
 	/// always returns `Ok(())`; the `Result` is kept for a future scan implementation
 	/// that can genuinely fail.
 	pub fn scan_path(&self, path: &std::path::Path) -> error::Result<()> {
-		// 规范化去重（HS: addFileToPath 的 weakly_canonical）。
+		// Canonicalize and dedupe (HS: addFileToPath's weakly_canonical).
 		let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 		{
 			let mut seen = self.scanned_paths.lock().unwrap_or_else(|e| e.into_inner());
@@ -979,7 +984,7 @@ impl PluginCache {
 	/// early-return branch logs a diagnostic—silent failures leave the effect library
 	/// missing plugins with no clue.
 	fn load_bundle(&self, bundle: &Path) {
-		// 串行化插件二进制的首次查询（见 [`LOAD_LOCK`]）。
+		// Serialize the first query of a plugin binary (see [`LOAD_LOCK`]).
 		let _load = LOAD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 		let Some(binary) = find_binary_in_bundle(bundle) else {
 			eprintln!("[ofx] {}: no plugin binary in bundle", bundle.display());
@@ -1008,7 +1013,7 @@ impl PluginCache {
 		let mut plugs = self.plugins.lock().unwrap_or_else(|e| e.into_inner());
 		let mut bins = self.binaries.lock().unwrap_or_else(|e| e.into_inner());
 		for p in plugins {
-			// identifier 去重（后加载者忽略，HS 语义）。
+			// Dedupe by identifier (later loads are ignored; HS semantics).
 			if !plugs.iter().any(|e| e.identifier == p.identifier) {
 				plugs.push(p);
 			}
@@ -1083,9 +1088,9 @@ impl PluginCache {
 		bundle: &Path,
 	) -> Option<Arc<Plugin>> {
 		let ofx_ref = unsafe { &*ofx };
-		// API 匹配（kOfxImageEffectPluginApi "OfxImageEffectPluginAPI" v1，
-		// ofxImageEffect.h:28-32）。每个拒绝分支都打诊断日志（静默拒绝
-		// 会让效果库毫无线索地缺插件）。
+		// API match (kOfxImageEffectPluginApi "OfxImageEffectPluginAPI" v1,
+		// ofxImageEffect.h:28-32). Every rejection branch logs a diagnostic
+		// (silent rejection leaves the effect library missing plugins with no clue).
 		let api = if ofx_ref.plugin_api.is_null() {
 			eprintln!("[ofx] {}: null plugin_api", bundle.display());
 			return None;
@@ -1108,8 +1113,9 @@ impl PluginCache {
 			.to_string();
 		let entry = ofx_ref.main_entry?;
 
-		// setHost 是 mandatory 的第一个调用（ofxCore.h:124-132）。宿主
-		// 结构体是进程级静态（ofxs 只存指针，见 global_ofx_host）。
+		// setHost is the mandatory first call (ofxCore.h:124-132). The host
+		// struct is a process-level static (ofxs only stores the pointer; see
+		// global_ofx_host).
 		if let Some(f) = ofx_ref.set_host {
 			unsafe { f(global_ofx_host()) };
 		}
@@ -1126,19 +1132,19 @@ impl PluginCache {
 			unloaded: std::sync::atomic::AtomicBool::new(false),
 		};
 
-		// 根描述符属性（HS: effectDescriptorStuff，ofxhImageEffect.cpp:133-155）。
+		// Root descriptor properties (HS: effectDescriptorStuff, ofxhImageEffect.cpp:133-155).
 		init_descriptor_props(&plugin.descriptor.props, bundle);
 
 		let empty = PropertySet::new();
 
-		// load（HS: ofxhImageEffectAPI.cpp:158-165；OK/ReplyDefault 接受）。
+		// load (HS: ofxhImageEffectAPI.cpp:158-165; OK/ReplyDefault accepted).
 		let stat = unsafe { plugin.call_action(ACTION_LOAD, ptr::null_mut(), &empty, &empty) };
 		if stat != status::OK && stat != status::REPLY_DEFAULT {
 			eprintln!("[ofx] {}: load action returned {stat}", plugin.identifier);
 			return None;
 		}
 
-		// describe（handle = 打标描述符；HS: ofxhImageEffectAPI.cpp:173-180）。
+		// describe (handle = the tagged descriptor; HS: ofxhImageEffectAPI.cpp:173-180).
 		let desc_handle = crate::suites::tag::make(
 			&plugin.descriptor.props as *const PropertySet,
 			crate::suites::tag::DESCRIPTOR,
@@ -1152,11 +1158,11 @@ impl PluginCache {
 			return None;
 		}
 
-		// 支持上下文（describe 产物；HS 从 props 读）。
+		// Supported contexts (a describe product; HS reads them from props).
 		let contexts = read_contexts(&plugin.descriptor.props);
-		// 只收标准上下文（Filter/Generator/Transition 之外还有
-		// General——kOfxImageEffectContextGeneral 同样是规范上下文，
-		// Roto/AppendClip/STMap 等插件只声明它）。
+		// Accept only standard contexts (besides Filter/Generator/Transition
+		// there is General — kOfxImageEffectContextGeneral is equally canonical;
+		// Roto/AppendClip/STMap and friends declare only that).
 		let contexts: Vec<String> = contexts
 			.into_iter()
 			.filter(|c| {
@@ -1298,10 +1304,11 @@ fn init_descriptor_props(props: &PropertySet, bundle: &Path) {
 		"OfxImageEffectPluginPropOverlayInteractV1",
 		Value::Pointer(ptr::null_mut()),
 	);
-	// overlay interact V2（ofxImageEffect.h:825）：插件 describe 期声明
-	// 自定义交互入口（Pointer→OfxPluginEntryPoint；V2 要求 Draw suite
-	// 绘制）；宿主预定义空指针默认（propSet 不创建属性，宿主预定义
-	// 属性宇宙，与 V1 同款）。
+	// overlay interact V2 (ofxImageEffect.h:825): the plugin declares a
+	// custom interact entry during describe (Pointer→OfxPluginEntryPoint; V2
+	// requires the Draw suite for drawing); the host predefines a null-pointer
+	// default (propSet does not create properties; the host predefines the
+	// property universe, same as V1).
 	props.set_one(PROP_OVERLAY_INTERACT_V2, Value::Pointer(ptr::null_mut()));
 	props.set_one("OfxImageEffectPropSupportsMultiResolution", Value::Int(1));
 	props.set_one(PROP_SUPPORTS_TILES, Value::Int(1));
@@ -1322,14 +1329,16 @@ fn init_descriptor_props(props: &PropertySet, bundle: &Path) {
 		PROP_PLUGIN_FILE_PATH,
 		Value::String(cs(bundle.to_str().unwrap_or(""))),
 	);
-	// GL 能力声明（M11 §4；ofxGPURender.h）：描述符预定义
-	// OpenGLRenderSupported（默认 "false"）与 kOfxOpenGLPropPixelDepth
-	// （空数组）——插件在 describe 期经属性 suite 写入（HostSupport
-	// 同款：propSet 不创建属性，宿主预定义属性宇宙）。
+	// GL capability declaration (M11 §4; ofxGPURender.h): the descriptor
+	// predefines OpenGLRenderSupported (default "false") and
+	// kOfxOpenGLPropPixelDepth (empty array) — the plugin writes them via the
+	// property suite during describe (same as HostSupport: propSet does not
+	// create properties; the host predefines the property universe).
 	props.set_one(PROP_GL_RENDER_SUPPORTED, Value::String(cs("false")));
 	props.define(PROP_GL_PIXEL_DEPTH, vec![]);
-	// ofxColour 描述符预定义（M11 §4；ofxColour.h）：style（默认
-	// None）与可用配置（空数组），插件 describe 期声明自身能力。
+	// ofxColour descriptor predefinition (M11 §4; ofxColour.h): style
+	// (default None) and available configs (empty array); the plugin declares
+	// its own capabilities during describe.
 	props.set_one(
 		PROP_COLOUR_STYLE,
 		Value::String(cs("OfxImageEffectColourManagementNone")),
@@ -1419,7 +1428,7 @@ impl Host {
 				order.push(c);
 			}
 		}
-		let mut last_err = error::Error::Failed("插件无支持上下文".into());
+		let mut last_err = error::Error::Failed("plugin has no supported context".into());
 		for ctx in order {
 			match self.create_instance(identifier, Some(ctx)) {
 				Ok(inst) => return Ok((ctx.to_string(), inst)),
@@ -1447,14 +1456,18 @@ impl Host {
 				.contexts
 				.first()
 				.cloned()
-				.ok_or(error::Error::Failed("插件无支持上下文".into()))?,
+				.ok_or(error::Error::Failed(
+					"plugin has no supported context".into(),
+				))?,
 		};
 		if !plugin.contexts.iter().any(|c| c == &context) {
-			return Err(error::Error::Failed(format!("插件不支持上下文 {context}")));
+			return Err(error::Error::Failed(format!(
+				"plugin does not support context {context}"
+			)));
 		}
 
-		// describeInContext：上下文描述符 = 根描述符属性拷贝 +
-		// 插件在 action 内重定义参数/clip。
+		// describeInContext: the context descriptor = a copy of the root
+		// descriptor properties + the plugin redefining params/clips in the action.
 		let mut ctx_desc = EffectDescriptor::new();
 		ctx_desc.props = plugin.descriptor.props.clone();
 		let in_args = PropertySet::new();
@@ -1468,12 +1481,12 @@ impl Host {
 		};
 		if stat != status::OK && stat != status::REPLY_DEFAULT {
 			return Err(error::Error::Failed(format!(
-				"describeInContext 失败：{stat}"
+				"describeInContext failed: {stat}"
 			)));
 		}
 
-		// populate（HS: Instance::populate：clip 实例 + param 实例，
-		// ofxhImageEffect.cpp:389-460）。
+		// populate (HS: Instance::populate: clip instances + param instances,
+		// ofxhImageEffect.cpp:389-460).
 		let clips = ctx_desc
 			.clips
 			.iter()
@@ -1509,7 +1522,7 @@ impl Host {
 			value: instance,
 		});
 
-		// createInstance action（HS: ofxhImageEffect.cpp:675-688）。
+		// createInstance action (HS: ofxhImageEffect.cpp:675-688).
 		let inst_handle = crate::suites::tag::make(
 			&arc.value.props as *const PropertySet,
 			crate::suites::tag::INSTANCE,
@@ -1521,16 +1534,20 @@ impl Host {
 				.call_action(ACTION_CREATE_INSTANCE, inst_handle, &empty, &empty)
 		};
 		if stat != status::OK && stat != status::REPLY_DEFAULT {
-			// 插件拒绝了 createInstance——它从没认领这个实例；把
-			// destroyed 门置位，让随后的 drop 跳过 destroyInstance 通知
-			// （否则插件对一个它没创建的实例回 BadIndex 之类的错误）。
+			// The plugin rejected createInstance — it never claimed this
+			// instance; set the destroyed gate so the subsequent drop skips
+			// the destroyInstance notification (otherwise the plugin returns
+			// BadIndex etc. for an instance it never created).
 			arc.value
 				.destroyed
 				.store(true, std::sync::atomic::Ordering::Relaxed);
-			return Err(error::Error::Failed(format!("createInstance 失败：{stat}")));
+			return Err(error::Error::Failed(format!(
+				"createInstance failed: {stat}"
+			)));
 		}
 
-		// 登记活跃实例表（泄漏断言用）+ param→instance 回写表。
+		// Register in the live-instance table (for leak assertions) + the
+		// param→instance write-back table.
 		self.instances
 			.lock()
 			.unwrap_or_else(|e| e.into_inner())
@@ -1558,8 +1575,9 @@ impl Host {
 		let list = self.instances.lock().unwrap_or_else(|e| e.into_inner());
 		for w in list.iter() {
 			if let Some(arc) = w.upgrade() {
-				// 置 destroyed 标记后再通知：实例随后的 Drop 不得再
-				// 调已卸载的插件入口（二次 destroyInstance → 悬垂）。
+				// Set the destroyed flag before notifying: the instance's
+				// subsequent Drop must not call unloaded plugin entries again
+				// (a second destroyInstance → dangling).
 				arc.value
 					.destroyed
 					.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1597,10 +1615,11 @@ impl Host {
 /// `props` must be an empty property set and this must run before any plugin is
 /// loaded.
 fn init_host_props(props: &PropertySet) {
-	// ofxCore.h 宿主属性集的必备项：OfxType=OfxTypeHost 与
-	// OfxPropAPIVersion（int[2]，宿主实现的 API 版本）——ofxs 支持库的
-	// loadAction 以 throwOnFailure=true 读它们，缺失会被映射成
-	// kOfxStatErrMissingHostFeature 让插件加载直接失败。
+	// Required entries of the ofxCore.h host property set: OfxType=OfxTypeHost
+	// and OfxPropAPIVersion (int[2], the API version the host implements) — the
+	// ofxs support library's loadAction reads them with throwOnFailure=true;
+	// missing ones map to kOfxStatErrMissingHostFeature and fail plugin load
+	// outright.
 	props.set_one("OfxPropType", Value::String(cs("OfxTypeHost")));
 	props.define("OfxPropAPIVersion", vec![Value::Int(1), Value::Int(4)]);
 	props.set_one("OfxPropName", Value::String(cs("Quercus Video Editor")));
@@ -1613,12 +1632,13 @@ fn init_host_props(props: &PropertySet) {
 		"OfxPropVersion",
 		vec![Value::Int(0), Value::Int(0), Value::Int(0)],
 	);
-	// 能力宣告：协商的宿主侧输入（phase 1 全链路 F32+RGBA）。
+	// Capability declaration: host-side negotiation inputs (phase 1 is F32+RGBA
+	// end to end).
 	props.define(
 		"OfxImageEffectPropSupportedPixelDepths",
 		vec![Value::String(cs("OfxBitDepthFloat"))],
 	);
-	// 宿主支持的上下文集（ofxs 以 throwOnFailure=true 读）。
+	// The set of contexts the host supports (ofxs reads with throwOnFailure=true).
 	props.define(
 		"OfxImageEffectPropSupportedContexts",
 		vec![
@@ -1636,44 +1656,48 @@ fn init_host_props(props: &PropertySet) {
 			Value::String(cs("OfxImageComponentAlpha")),
 		],
 	);
-	// ofxs 支持库 fetchHostDescription 以 throwOnFailure=true 读取的
-	// 全部宿主能力位（IsBackground 缺一个都会让读取链中断——
-	// gHostDescriptionHasInit 已置位，后续插件拿到半初始化描述，
-	// temporalClipAccess 为 0 → 时序类插件集体拒载）。
+	// All host capability bits the ofxs support library's fetchHostDescription
+	// reads with throwOnFailure=true (IsBackground missing any one of them
+	// breaks the read chain — gHostDescriptionHasInit is already set, later
+	// plugins see a half-initialized description, temporalClipAccess is 0 →
+	// temporal plugins all refuse to load).
 	props.set_one("OfxImageEffectHostPropIsBackground", Value::Int(0));
 	props.set_one("OfxParamHostPropSupportsStringAnimation", Value::Int(0));
 	props.set_one("OfxParamHostPropSupportsChoiceAnimation", Value::Int(0));
 	props.set_one("OfxParamHostPropSupportsBooleanAnimation", Value::Int(0));
 	props.set_one("OfxParamHostPropSupportsCustomAnimation", Value::Int(0));
-	// 自定义 interact（检视器叠加层）宿主支持。
+	// Host support for custom interacts (viewer overlays).
 	props.set_one("OfxParamHostPropSupportsCustomInteract", Value::Int(1));
-	// 能力宣告（ofxImageEffect.h 宿主属性集；ofxs 支持库在 load 时读成
-	// ImageEffectHostDescription，temporalClipAccess 等为 0 时整类插件
-	// ——Retime/FrameHold/TimeOffset/SlitScan——直接在 load 里拒载）。
+	// Capability declaration (ofxImageEffect.h host property set; the ofxs
+	// support library reads it into ImageEffectHostDescription at load time;
+	// with temporalClipAccess etc. at 0 a whole class of plugins —
+	// Retime/FrameHold/TimeOffset/SlitScan — refuses to load right there).
 	props.set_one("OfxImageEffectPropTemporalClipAccess", Value::Int(1));
 	props.set_one("OfxImageEffectPropSupportsMultiResolution", Value::Int(1));
 	props.set_one("OfxImageEffectPropSupportsTiles", Value::Int(1));
 	props.set_one("OfxImageEffectPropSupportsMultipleClipPARs", Value::Int(1));
-	// 像素深度只支持 Float（phase 1 全链路 F32），不做多深度协商。
+	// Pixel depth supports Float only (phase 1 is F32 end to end); no
+	// multi-depth negotiation.
 	props.set_one(
 		"OfxImageEffectPropSupportsMultipleClipDepths",
 		Value::Int(0),
 	);
-	// 旧版 ofxs 的 fetchHostDescription 读的是不带 Supports 的同义名
-	// （ofxImageEffect.h 的 kOfxImageEffectPropMultipleClipDepths）。
+	// Older ofxs fetchHostDescription reads the synonym without "Supports"
+	// (kOfxImageEffectPropMultipleClipDepths in ofxImageEffect.h).
 	props.set_one("OfxImageEffectPropMultipleClipDepths", Value::Int(0));
 	props.set_one("OfxImageEffectPropSetableFrameRate", Value::Int(0));
 	props.set_one("OfxImageEffectPropSetableFielding", Value::Int(0));
-	// fetchHostDescription 的其余读取项（部分 ofxs 版本以
-	// throwOnFailure=true 读，缺一个首插件的 load 就炸）：
-	// 顺序渲染状态 0=宿主不强制；Draft 渲染质量支持（播放降档）；
-	// 参数数无上限；不支持参数化曲线动画；macOS 无 OS 窗口句柄；
-	// 原生坐标原点按 OFX 规范默认 BottomLeft。
+	// The remaining fetchHostDescription reads (some ofxs versions read them
+	// with throwOnFailure=true; the first plugin's load blows up if one is
+	// missing): sequential render status 0=not forced by the host; Draft
+	// render quality support (playback downshift); no parameter-count cap; no
+	// parametric curve animation; no OS window handle on macOS; native
+	// coordinate origin defaults to BottomLeft per the OFX spec.
 	props.set_one("OfxImageEffectInstancePropSequentialRender", Value::Int(0));
 	props.set_one("OfxImageEffectPropRenderQualityDraft", Value::Int(1));
 	props.set_one("OfxParamHostPropMaxParameters", Value::Int(-1));
-	// 参数页数无上限；页内行列 0,0 = 自动排布（这两个也是
-	// throwOnFailure=true 的读取项）。
+	// No cap on parameter pages; page row/column 0,0 = automatic layout
+	// (these two are also read with throwOnFailure=true).
 	props.set_one("OfxParamHostPropMaxPages", Value::Int(-1));
 	props.define(
 		"OfxParamHostPropPageRowColumnCount",
@@ -1685,21 +1709,22 @@ fn init_host_props(props: &PropertySet) {
 		"OfxImageEffectHostPropNativeOrigin",
 		Value::String(cs("OfxHostNativeOriginBottomLeft")),
 	);
-	// 序列渲染：插件可随意选（0 = 宿主不强制）。
+	// Sequential render: the plugin may choose freely (0 = not forced by the host).
 	props.set_one("OfxImageEffectPropSequentialRenderStatus", Value::Int(0));
-	// 逐帧线程化程度：全帧线程安全（kOfxImageEffectRenderUnsafe 之外的
-	// 最强档——渲染在独立 worker 进程内串行驱动，无共享状态）。
+	// Frame threading level: fully thread-safe (the strongest tier short of
+	// kOfxImageEffectRenderUnsafe — rendering is driven serially inside a
+	// separate worker process with no shared state).
 	props.set_one(
 		"OfxImageEffectPropRenderThreadSafety",
 		Value::String(cs("OfxImageEffectRenderFullySafe")),
 	);
-	// GL 能力宣告（M11 §4；ofxGPURender.h "OpenGL House Keeping"：
-	// 宿主在描述符置 "true"）。
+	// GL capability declaration (M11 §4; ofxGPURender.h "OpenGL House Keeping":
+	// the host sets "true" in the descriptor).
 	props.set_one(PROP_GL_RENDER_SUPPORTED, Value::String(cs("true")));
-	// overlay 能力宣告（ofxImageEffect.h:801）：宿主允许插件在输出
-	// 图像上绘制 overlay（interact draw 的前置）。
+	// overlay capability declaration (ofxImageEffect.h:801): the host allows
+	// plugins to draw overlays on the output image (prerequisite for interact draw).
 	props.set_one(PROP_SUPPORTS_OVERLAYS, Value::Int(1));
-	// ofxColour 能力宣告（M11 §4）：OCIO 模式 + native 配置列表。
+	// ofxColour capability declaration (M11 §4): OCIO mode + native config list.
 	props.set_one(PROP_COLOUR_STYLE, Value::String(cs(COLOUR_STYLE_OCIO)));
 	props.define(
 		PROP_COLOUR_AVAILABLE_CONFIGS,
@@ -1742,8 +1767,8 @@ fn init_instance_props(props: &PropertySet, instance: &Instance) {
 	props.set_one(PROP_FRAME_RATE, Value::Double(24.0));
 	props.set_one("OfxPropIsInteractive", Value::Int(0));
 	props.set_one(PROP_SUPPORTS_TILES, Value::Int(1));
-	// ofxColour 实例期协商结果（M11 §4；ofxColour.h：宿主必须在实例
-	// 上设置 style/config/OCIOConfig）。
+	// ofxColour instance-time negotiation result (M11 §4; ofxColour.h: the host
+	// must set style/config/OCIOConfig on the instance).
 	props.set_one(PROP_COLOUR_STYLE, Value::String(cs(COLOUR_STYLE_OCIO)));
 	props.set_one(PROP_COLOUR_CONFIG, Value::String(cs(NATIVE_CONFIG_ID)));
 	props.set_one(PROP_OCIO_CONFIG, Value::String(cs(OCIO_CONFIG_URI)));

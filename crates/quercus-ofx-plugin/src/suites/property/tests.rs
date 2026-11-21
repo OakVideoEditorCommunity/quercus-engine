@@ -16,8 +16,13 @@ fn val_eq(a: &Value, b: &Value) -> bool {
 
 fn assert_value(set: &PropertySet, name: &str, index: usize, want: &Value) {
 	assert!(
-		val_eq(set.get(name, index).as_ref().expect("属性应存在"), want),
-		"{name}[{index}] 值不符"
+		val_eq(
+			set.get(name, index)
+				.as_ref()
+				.expect("property should exist"),
+			want
+		),
+		"{name}[{index}] value mismatch"
 	);
 }
 
@@ -40,7 +45,7 @@ fn bad_handles_and_bad_names() {
 			(s.get_int)(std::ptr::null_mut(), name.as_ptr(), 0, &mut iv),
 			status::ERR_BAD_HANDLE
 		);
-		// 空属性名。
+		// Empty property name.
 		assert_eq!(
 			(s.set_int)(handle(&set), std::ptr::null(), 0, 1),
 			status::ERR_VALUE
@@ -74,7 +79,7 @@ fn bad_handles_and_bad_names() {
 			status::ERR_VALUE
 		);
 		assert_eq!((s.reset)(handle(&set), std::ptr::null()), status::ERR_VALUE);
-		// 非 UTF-8 属性名（0xFF 后接 NUL）。
+		// Non-UTF-8 property name (0xFF followed by NUL).
 		let bad: [c_char; 2] = [0xFFu8 as c_char, 0];
 		assert_eq!(
 			(s.set_int)(handle(&set), bad.as_ptr(), 0, 1),
@@ -103,7 +108,7 @@ fn get_missing_empty_and_bounds() {
 		assert_eq!(
 			(s.get_int)(handle(&set), n.as_ptr(), -1, &mut iv),
 			status::ERR_UNKNOWN,
-			"未定义属性先报 Unknown（HS 先查类型）"
+			"undefined property should report Unknown first (HS checks type first)"
 		);
 	}
 	set.define("a", vec![]);
@@ -141,14 +146,14 @@ fn set_creates_and_appends() {
 	assert_value(&set, "a", 0, &Value::Int(7));
 	assert_value(&set, "a", 2, &Value::Int(7));
 
-	// index == 维度 → 追加（协商属性逐位增长语义）。
+	// index == dimension → append (negotiation properties grow slot by slot).
 	unsafe {
 		assert_eq!((s.set_int)(handle(&set), n.as_ptr(), 3, 9), 0);
 	}
 	assert_eq!(set.dimension("a"), 4);
 	assert_value(&set, "a", 3, &Value::Int(9));
 
-	// 越界（跳过追加位）→ BadIndex。
+	// Out of range (skipping the append slot) → BadIndex.
 	unsafe {
 		assert_eq!(
 			(s.set_int)(handle(&set), n.as_ptr(), 9, 1),
@@ -218,7 +223,7 @@ fn get_numeric_coercion_and_mixed_arrays() {
 	}
 	assert_eq!(iv, 1);
 
-	// 混合数组（首元素定类型，后续元素类型不符）→ 单元素读 Failed。
+	// Mixed array (first element fixes type, later elements mismatch) → single-element read Failed.
 	let mix = PropertySet::new();
 	mix.define("m", vec![Value::Double(1.0), Value::String(cs("x"))]);
 	let nm = cs("m");
@@ -362,7 +367,7 @@ fn set_n_families() {
 	let s = suite_v1();
 	let set = PropertySet::new();
 
-	// set_int_n：隐式创建 2 维。
+	// set_int_n: implicit creation of 2 dimensions.
 	let ni = cs("ints");
 	let ivals = [1 as c_int, 2];
 	unsafe {
@@ -374,7 +379,7 @@ fn set_n_families() {
 	assert_eq!(set.dimension("ints"), 2);
 	assert_value(&set, "ints", 1, &Value::Int(2));
 
-	// count 与现有维度相同 → 逐位覆盖。
+	// count equals the existing dimension → overwrite slot by slot.
 	let ivals2 = [7 as c_int, 8];
 	unsafe {
 		assert_eq!(
@@ -384,7 +389,7 @@ fn set_n_families() {
 	}
 	assert_value(&set, "ints", 0, &Value::Int(7));
 
-	// 维度变化 → 整体替换。
+	// Dimension change → replace wholesale.
 	let ivals3 = [9 as c_int];
 	unsafe {
 		assert_eq!(
@@ -394,7 +399,7 @@ fn set_n_families() {
 	}
 	assert_eq!(set.dimension("ints"), 1);
 
-	// count 0 + NULL：合法（空维度替换）。
+	// count 0 + NULL: legal (empty-dimension replacement).
 	unsafe {
 		assert_eq!(
 			(s.set_int_n)(handle(&set), ni.as_ptr(), 0, std::ptr::null()),
@@ -403,7 +408,7 @@ fn set_n_families() {
 	}
 	assert_eq!(set.dimension("ints"), 0);
 
-	// count > 0 + NULL → ErrValue；负 count → BadIndex。
+	// count > 0 + NULL → ErrValue; negative count → BadIndex.
 	unsafe {
 		assert_eq!(
 			(s.set_int_n)(handle(&set), ni.as_ptr(), 1, std::ptr::null()),
@@ -415,7 +420,7 @@ fn set_n_families() {
 		);
 	}
 
-	// set_double_n：隐式创建 + NULL 分支。
+	// set_double_n: implicit creation + NULL branch.
 	let nd = cs("dbls");
 	let dvals = [1.5 as c_double, 2.5];
 	unsafe {
@@ -430,7 +435,7 @@ fn set_n_families() {
 	}
 	assert_value(&set, "dbls", 1, &Value::Double(2.5));
 
-	// set_pointer_n：单元素与 count 0 + NULL。
+	// set_pointer_n: single element and count 0 + NULL.
 	let np = cs("ptrs");
 	let pvals = [0x55usize as *mut c_void];
 	unsafe {
@@ -449,7 +454,7 @@ fn set_n_families() {
 	}
 	assert_eq!(set.dimension("ptrs"), 0);
 
-	// set_string_n：成功、NULL 数组、数组内 NULL 元素。
+	// set_string_n: success, NULL array, NULL element inside the array.
 	let nstr = cs("strs");
 	let sa = cs("a");
 	let sb = cs("b");
@@ -486,7 +491,7 @@ fn set_n_type_mismatch_and_empty_replace() {
 			(s.set_double_n)(handle(&set), ni.as_ptr(), 1, dvals.as_ptr()),
 			status::ERR_UNKNOWN
 		);
-		// values 为空（count 0）→ 无类型探针，整体替换为空。
+		// values empty (count 0) → no type probe, replace wholesale with empty.
 		assert_eq!(
 			(s.set_double_n)(handle(&set), ni.as_ptr(), 0, dvals.as_ptr()),
 			0
@@ -504,7 +509,7 @@ fn get_n_families() {
 	set.define("ints", vec![Value::Int(1), Value::Int(2)]);
 	set.define("dbls", vec![Value::Double(1.5), Value::Double(2.5)]);
 
-	// get_double_n 读 Int 属性 → 协随为 f64。
+	// get_double_n reads an Int property → coerced to f64.
 	let ni = cs("ints");
 	let mut dout = [0.0 as c_double; 2];
 	unsafe {
@@ -515,7 +520,7 @@ fn get_n_families() {
 	}
 	assert_eq!(dout, [1.0, 2.0]);
 
-	// get_int_n 读 Double 属性 → 截断为 i32。
+	// get_int_n reads a Double property → truncated to i32.
 	let nd = cs("dbls");
 	let mut iout = [0 as c_int; 2];
 	unsafe {
@@ -526,7 +531,7 @@ fn get_n_families() {
 	}
 	assert_eq!(iout, [1, 2]);
 
-	// count > 维度：只拷贝 min(count, dim)。
+	// count > dimension: copy only min(count, dim).
 	let mut one = [0 as c_int; 1];
 	unsafe {
 		assert_eq!(
@@ -536,7 +541,7 @@ fn get_n_families() {
 	}
 	assert_eq!(one, [1]);
 
-	// count 0：不写。
+	// count 0: write nothing.
 	let mut zero = [7 as c_int; 1];
 	unsafe {
 		assert_eq!(
@@ -546,7 +551,7 @@ fn get_n_families() {
 	}
 	assert_eq!(zero, [7]);
 
-	// get_pointer_n / get_string_n 成功路径。
+	// get_pointer_n / get_string_n success path.
 	let ptrs = PropertySet::new();
 	let raw = 0x99usize as *mut c_void;
 	ptrs.define("p", vec![Value::Pointer(raw)]);
@@ -591,7 +596,7 @@ fn get_n_error_paths() {
 	let mut pout = [std::ptr::null_mut(); 2];
 	let mut sout = [std::ptr::null_mut(); 2];
 	unsafe {
-		// 空 out（count > 0）。
+		// Null out (count > 0).
 		assert_eq!(
 			(s.get_int_n)(handle(&set), ni.as_ptr(), 1, std::ptr::null_mut()),
 			status::ERR_VALUE
@@ -608,7 +613,7 @@ fn get_n_error_paths() {
 			(s.get_string_n)(handle(&set), ni.as_ptr(), 1, std::ptr::null_mut()),
 			status::ERR_VALUE
 		);
-		// 未定义 → Unknown；空数组 → Unknown（无类型探针）。
+		// Undefined → Unknown; empty array → Unknown (no type probe).
 		assert_eq!(
 			(s.get_int_n)(handle(&set), nmissing.as_ptr(), 1, iout.as_mut_ptr()),
 			status::ERR_UNKNOWN
@@ -617,7 +622,7 @@ fn get_n_error_paths() {
 			(s.get_int_n)(handle(&set), ne.as_ptr(), 1, iout.as_mut_ptr()),
 			status::ERR_UNKNOWN
 		);
-		// 类型不符 → Unknown（数值族之间协随，其余严格）。
+		// Type mismatch → Unknown (numeric kinds coerce, everything else is strict).
 		assert_eq!(
 			(s.get_int_n)(handle(&set), ns.as_ptr(), 1, iout.as_mut_ptr()),
 			status::ERR_UNKNOWN
@@ -634,7 +639,7 @@ fn get_n_error_paths() {
 			(s.get_string_n)(handle(&set), ni.as_ptr(), 1, sout.as_mut_ptr()),
 			status::ERR_UNKNOWN
 		);
-		// 负 count → BadIndex（在 min 之前 idx 转换失败）。
+		// Negative count → BadIndex (idx conversion fails before min).
 		assert_eq!(
 			(s.get_int_n)(handle(&set), ni.as_ptr(), -1, iout.as_mut_ptr()),
 			status::ERR_BAD_INDEX
@@ -670,7 +675,7 @@ fn reset_and_dimension() {
 		assert_eq!((s.get_dimension)(handle(&set), na.as_ptr(), &mut dim), 0);
 		assert_eq!(dim, 1);
 		assert_eq!((s.get_dimension)(handle(&set), ne.as_ptr(), &mut dim), 0);
-		assert_eq!(dim, 0, "已定义空数组是合法维度 0");
+		assert_eq!(dim, 0, "defined empty array is a valid dimension 0");
 	}
 }
 
@@ -682,7 +687,7 @@ fn trace_diagnostic_branches() {
 	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let prev = std::env::var_os("QUERCUS_OFX_TRACE");
-	// set_var/remove_var 在本 crate 的 2021 edition 中是安全函数。
+	// set_var/remove_var are safe functions in this crate's 2021 edition.
 	std::env::set_var("QUERCUS_OFX_TRACE", "1");
 	let body = std::panic::catch_unwind(|| {
 		let s = suite_v1();
@@ -698,23 +703,23 @@ fn trace_diagnostic_branches() {
 		let mut pv: *mut c_void = std::ptr::null_mut();
 		let mut dim = 0;
 		unsafe {
-			// caught 的 trace：非 OK 状态码。
+			// caught trace: non-OK status code.
 			assert_eq!(
 				(s.get_int)(handle(&set), nmissing.as_ptr(), 0, &mut iv),
 				status::ERR_UNKNOWN
 			);
-			// get_value trace：成功 + 失败。
+			// get_value trace: success + failure.
 			assert_eq!((s.get_int)(handle(&set), ni.as_ptr(), 0, &mut iv), 0);
 			assert_eq!(
 				(s.get_int)(handle(&set), nmissing.as_ptr(), 0, &mut iv),
 				status::ERR_UNKNOWN
 			);
-			// 类型不符 trace。
+			// Type mismatch trace.
 			assert_eq!(
 				(s.get_string)(handle(&set), ni.as_ptr(), 0, &mut sv),
 				status::ERR_UNKNOWN
 			);
-			// set_value：空数组越界 trace；越界 trace。
+			// set_value: empty-array out-of-range trace; out-of-range trace.
 			let empty = PropertySet::new();
 			empty.define("e", vec![]);
 			let ne = cs("e");
@@ -726,23 +731,23 @@ fn trace_diagnostic_branches() {
 				(s.set_int)(handle(&set), ni.as_ptr(), 5, 2),
 				status::ERR_BAD_INDEX
 			);
-			// propGetPointer trace（成功）。
+			// propGetPointer trace (success).
 			let ptrs = PropertySet::new();
 			ptrs.define("p", vec![Value::Pointer(0x11usize as *mut c_void)]);
 			let np = cs("p");
 			assert_eq!((s.get_pointer)(handle(&ptrs), np.as_ptr(), 0, &mut pv), 0);
-			// propGetString trace：成功 + 失败。
+			// propGetString trace: success + failure.
 			assert_eq!((s.get_string)(handle(&set), nstr.as_ptr(), 0, &mut sv), 0);
 			assert_eq!(
 				(s.get_string)(handle(&set), nmissing.as_ptr(), 0, &mut sv),
 				status::ERR_UNKNOWN
 			);
-			// propGetInt inspect_err trace。
+			// propGetInt inspect_err trace.
 			assert_eq!(
 				(s.get_int)(handle(&set), nmissing.as_ptr(), 0, &mut iv),
 				status::ERR_UNKNOWN
 			);
-			// get_n trace：成功 dump + 未命中 inspect_err。
+			// get_n trace: success dump + miss inspect_err.
 			let mut iout = [0 as c_int; 2];
 			assert_eq!(
 				(s.get_int_n)(handle(&set), ni.as_ptr(), 2, iout.as_mut_ptr()),
@@ -752,7 +757,7 @@ fn trace_diagnostic_branches() {
 				(s.get_int_n)(handle(&set), nmissing.as_ptr(), 1, iout.as_mut_ptr()),
 				status::ERR_UNKNOWN
 			);
-			// dump 的 Double 与未知元素分支。
+			// dump's Double and unknown-element branches.
 			let mixed = PropertySet::new();
 			mixed.define("m", vec![Value::Double(1.5), Value::String(cs("x"))]);
 			let nm = cs("m");
@@ -761,9 +766,9 @@ fn trace_diagnostic_branches() {
 				(s.get_double_n)(handle(&mixed), nm.as_ptr(), 2, dout.as_mut_ptr()),
 				0
 			);
-			// 空 out 的 get_double trace 分支（Err 路径渲染）。
+			// Null-out get_double trace branch (Err-path rendering).
 			assert_eq!((s.get_double)(handle(&set), ni.as_ptr(), 0, &mut dv), 0);
-			// propGetDimension 未定义 trace。
+			// propGetDimension undefined trace.
 			assert_eq!(
 				(s.get_dimension)(handle(&set), nmissing.as_ptr(), &mut dim),
 				status::ERR_UNKNOWN
