@@ -466,9 +466,10 @@ cargo tarpaulin --out stdout --features test-stubs   # coverage gate
   pixel read/write, node write-back, undo packaging) are runnable end to end
   — **coverage is measured in this mode** (M11 phase 1 measured 82.93% line
   coverage; phase 2 gate ≥80%, see COVERAGE);
-- Minimal test plugin (cbits/quercus_test_plugin.c, four entries:
+- Minimal test plugin (cbits/quercus_test_plugin.c, six effects:
   org.quercus.test-plugin / org.quercus.test-plugin.gl /
-  org.quercus.test-plugin.identity / org.quercus.test-plugin.interact) is
+  org.quercus.test-plugin.identity / org.quercus.test-plugin.interact /
+  org.quercus.test-plugin.slow / org.quercus.test-plugin.mask) is
   compiled by build.rs into a shared library, and
   `common::test_plugin_dir` assembles it into a bundle at run time; related
   cases skip when unavailable;
