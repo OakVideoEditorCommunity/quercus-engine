@@ -436,7 +436,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle);
-	assert_eq!(cache.count(), 5, "test plugin exports 5 effects");
+	assert_eq!(cache.count(), 6, "test plugin exports 6 effects");
 	assert!(cache.find("org.quercus.test-plugin").is_some());
 	assert_eq!(
 		cache
@@ -449,7 +449,7 @@ fn load_bundle_loads_fixture_plugins_and_dedupes() {
 
 	// Loading the same bundle twice → deduped by path (dlclose then return).
 	cache.load_bundle(&bundle);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	assert_eq!(
 		cache
 			.binaries
@@ -479,11 +479,11 @@ fn load_bundle_ignores_duplicate_plugin_identifiers() {
 	};
 	let cache = test_cache();
 	cache.load_bundle(&bundle1);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	// Every identifier in the second bundle is a duplicate → ignored, but the
 	// binary is registered twice.
 	cache.load_bundle(&bundle2);
-	assert_eq!(cache.count(), 5);
+	assert_eq!(cache.count(), 6);
 	assert_eq!(
 		cache
 			.binaries
