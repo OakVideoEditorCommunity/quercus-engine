@@ -15,7 +15,7 @@ P0/P1 新增的“调用方可替换组件”统一按两层收拢：
   `quercus-codec`（`MediaIoProvider`/`MediaStream`）、`quercus-render`（字体/缓存 API）、
   `quercus-core::backend`（GPU adopt 安全 API）。
 - **C vtable / `userdata` / 回调生命周期全部集中在
-  `crates/quercus-engine/src/ext/`**：
+  `../../../../crates/quercus-engine/src/ext`**：
   `storage_transport.rs`、`config_source.rs`、`log_sink.rs`、`media_io.rs`、`gpu.rs`。
   这里也是对应的 `quercus_*` C 导出所在层；业务 crate 不再持有 C 回调类型或裸指针槽。
 - `quercus-engine-rs` 是**调用方侧**的镜像边界（extern 声明 + 安全闭包 trampoline），仍然需要 `unsafe`，这是 SDK 的职责。

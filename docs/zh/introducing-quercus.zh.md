@@ -127,7 +127,7 @@ fn main() -> Result<(), String> {
 }
 ```
 
-C 侧最小的是这样，编译命令在 `examples/c/README.md` 里：
+C 侧最小的是这样，编译命令在 `../../examples/c/README.md` 里：
 
 ```c
 #include <stdio.h>
@@ -179,8 +179,8 @@ int main(void) {
 - 仓库：<https://github.com/OakVideoEditorCommunity/quercus-engine>
 - SDK：<https://crates.io/crates/quercus-engine-rs>
 - 参考实现：<https://github.com/OakVideoEditorCommunity/oak>
-- C 头文件：`crates/quercus-engine/include/quercus_engine.h`
-- 构建说明：[`docs/build.md`](build.md)
+- C 头文件：`../../crates/quercus-engine/include/quercus_engine.h`
+- 构建说明：[`../build.md`](../build.md)
 - CLA：<https://github.com/OakVideoEditorCommunity/quercus-engine/blob/main/CLA.md>
 
 用它做了什么，或者哪里别扭，开 issue 或者直接告诉我都行。

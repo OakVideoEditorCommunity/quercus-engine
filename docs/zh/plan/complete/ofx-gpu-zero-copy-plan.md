@@ -51,12 +51,12 @@
 3. `crates/quercus-ofx-plugin/src/clip.rs::fetch_image`
    对 GPU 输入调用 `texture_get_frame`，即后端下载；随后
    `clip_load_texture` 再用 `create_input_texture` 上传回 GL。
-4. `crates/quercus-ofx-plugin/src/gl_bridge.rs`
+4. `../../../../crates/quercus-ofx-plugin/src/gl_bridge.rs`
    的 Linux 实现是 stub；只有 macOS 有 CGL 真实实现。
 5. `crates/quercus-core/src/backend.rs::GpuContext::create_texture`
    走普通 `wgpu::Device::create_texture`，创建的 VkImage 没有
    `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`，不能导出 DMA-BUF。
-6. `crates/quercus-core/src/backend/external.rs` 只有“导入”DMA-BUF，
+6. `../../../../crates/quercus-core/src/backend/external.rs` 只有“导入”DMA-BUF，
    没有“导出”路径。
 
 结论：只在 `gl_bridge` 里加 EGL 不够，必须同时改 **输出纹理来源**、
@@ -160,9 +160,9 @@ wgpu 采样拿到的是 GL 的颜色而不是被清空。
 
 文件：
 
-- `crates/quercus-core/src/backend.rs`
+- `../../../../crates/quercus-core/src/backend.rs`
 - 新文件 `crates/quercus-core/src/backend/export.rs`（Linux）
-- `crates/quercus-core/Cargo.toml`（如需要 `libc`/`ash`，已有 ash）
+- `../../../../crates/quercus-core/Cargo.toml`（如需要 `libc`/`ash`，已有 ash）
 
 改动：
 
@@ -218,8 +218,8 @@ wgpu 采样拿到的是 GL 的颜色而不是被清空。
 
 文件：
 
-- `crates/quercus-ofx-plugin/src/gl_bridge.rs`
-- `crates/quercus-ofx-plugin/Cargo.toml`（Linux 加 `libloading`、`libc`）
+- `../../../../crates/quercus-ofx-plugin/src/gl_bridge.rs`
+- `../../../../crates/quercus-ofx-plugin/Cargo.toml`（Linux 加 `libloading`、`libc`）
 
 改动：
 
@@ -265,9 +265,9 @@ wgpu 采样拿到的是 GL 的颜色而不是被清空。
 
 文件：
 
-- `crates/quercus-ofx-plugin/src/render_driver.rs`
-- `crates/quercus-ofx-plugin/src/clip.rs`
-- `crates/quercus-ofx-plugin/src/suites/gl_render.rs`
+- `../../../../crates/quercus-ofx-plugin/src/render_driver.rs`
+- `../../../../crates/quercus-ofx-plugin/src/clip.rs`
+- `../../../../crates/quercus-ofx-plugin/src/suites/gl_render.rs`
 
 改动：
 
@@ -317,7 +317,7 @@ wgpu 采样拿到的是 GL 的颜色而不是被清空。
 
 文件：
 
-- `crates/quercus-ofx-plugin/src/node_factory.rs`
+- `../../../../crates/quercus-ofx-plugin/src/node_factory.rs`
 
 改动：
 
@@ -351,12 +351,12 @@ let dst = match &req.src {
 
 新增/修改：
 
-- `crates/quercus-core/src/backend.rs`：暴露 `gpu_transfer_counters` 已有；
+- `../../../../crates/quercus-core/src/backend.rs`：暴露 `gpu_transfer_counters` 已有；
   增加 `gpu_zerocopy_frames` 计数（成功零拷贝帧数）和
   `gpu_zerocopy_fallbacks`（失败原因分类）。
-- `crates/quercus-ofx-plugin/tests/gl_render_test.rs`：新增 Linux 零拷贝
+- `../../../../crates/quercus-ofx-plugin/tests/gl_render_test.rs`：新增 Linux 零拷贝
   集成测试（`QUERCUS_GPU_TESTS=1` 才跑真实 GPU）。
-- `crates/quercus-render/tests/`：graph 级测试，OFX 输出接内置效果。
+- `../../../../crates/quercus-render/tests`：graph 级测试，OFX 输出接内置效果。
 
 验收命令：
 
@@ -463,18 +463,18 @@ Windows：
 
 | 文件 | 改动 |
 |---|---|
-| `crates/quercus-core/src/backend.rs` | 外部纹理字段、能力开关、`export_dmabuf`、`create_exportable_texture` |
+| `../../../../crates/quercus-core/src/backend.rs` | 外部纹理字段、能力开关、`export_dmabuf`、`create_exportable_texture` |
 | `crates/quercus-core/src/backend/export.rs`（新） | Linux Vulkan DMA-BUF 导出 |
-| `crates/quercus-core/src/backend/external.rs` | 复用导入/注册工具；补测试 |
-| `crates/quercus-core/Cargo.toml` | 必要时补 Linux 依赖 |
-| `crates/quercus-ofx-plugin/src/gl_bridge.rs` | Linux EGL 实现、DMA-BUF 导入、GL 清理 |
-| `crates/quercus-ofx-plugin/src/clip.rs` | 输入 GL 纹理槽、零拷贝 `clipLoadTexture` |
-| `crates/quercus-ofx-plugin/src/suites/gl_render.rs` | 真实 GL 名/所有权标记 |
-| `crates/quercus-ofx-plugin/src/render_driver.rs` | 零拷贝渲染分支、回退 |
-| `crates/quercus-ofx-plugin/src/node_factory.rs` | GPU 输出纹理 |
-| `crates/quercus-ofx-plugin/Cargo.toml` | Linux `libloading`/`libc` |
-| `docs/engine-capabilities.md` | 零拷贝能力/平台矩阵更新 |
-| `docs/quercus-capabilities.md` | API/能力更新 |
+| `../../../../crates/quercus-core/src/backend/external.rs` | 复用导入/注册工具；补测试 |
+| `../../../../crates/quercus-core/Cargo.toml` | 必要时补 Linux 依赖 |
+| `../../../../crates/quercus-ofx-plugin/src/gl_bridge.rs` | Linux EGL 实现、DMA-BUF 导入、GL 清理 |
+| `../../../../crates/quercus-ofx-plugin/src/clip.rs` | 输入 GL 纹理槽、零拷贝 `clipLoadTexture` |
+| `../../../../crates/quercus-ofx-plugin/src/suites/gl_render.rs` | 真实 GL 名/所有权标记 |
+| `../../../../crates/quercus-ofx-plugin/src/render_driver.rs` | 零拷贝渲染分支、回退 |
+| `../../../../crates/quercus-ofx-plugin/src/node_factory.rs` | GPU 输出纹理 |
+| `../../../../crates/quercus-ofx-plugin/Cargo.toml` | Linux `libloading`/`libc` |
+| `../../engine-capabilities.md` | 零拷贝能力/平台矩阵更新 |
+| `../../quercus-capabilities.md` | API/能力更新 |
 
 ## 6. 风险与回退
 

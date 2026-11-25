@@ -151,7 +151,7 @@ typedef struct QuercusStorageProjectInfo {
 
 ### 1.3 引擎侧适配器（关键实现）
 
-新增 `crates/quercus-engine/src/ext/storage_transport.rs`：把 vtable 包成内部 `StorageBackend`（P1 收尾时从 storage crate 迁入 ABI crate）。
+新增 `../../../../crates/quercus-engine/src/ext/storage_transport.rs`：把 vtable 包成内部 `StorageBackend`（P1 收尾时从 storage crate 迁入 ABI crate）。
 这样**不需要改 `resolve/open/save` 的主流程**，外来回后端就是注册表里的一个普通项。
 
 ```rust
@@ -210,7 +210,7 @@ impl StorageBackend for ForeignBackend {
 }
 ```
 
-注册入口（`crates/quercus-engine/src/storage.rs`）：
+注册入口（`../../../../crates/quercus-engine/src/storage.rs`）：
 
 ```rust
 #[unsafe(no_mangle)]
@@ -333,8 +333,8 @@ void* quercus_project_load_from_bytes(const uint8_t* bytes, size_t len,
 
 ### 2.4 落点
 
-- 引擎：`crates/quercus-engine/src/node.rs`（紧邻 2444/2488）。
-- SDK：`crates/quercus-engine-rs/src/node.rs` 增加 `Project::to_xml_bytes()` /
+- 引擎：`../../../../crates/quercus-engine/src/node.rs`（紧邻 2444/2488）。
+- SDK：`../../../../crates/quercus-engine-rs/src/node.rs` 增加 `Project::to_xml_bytes()` /
   `Project::from_xml_bytes(&[u8])`，并在 `extern "C"` 块声明新符号。
 - 头文件：`gen_c_header.py --write`。
 
@@ -614,4 +614,4 @@ uint32_t write_policy;
 
 > **环境说明（重要）**：本沙箱把 Cargo registry 挂成只读，`ocio-sys` bundled 构建的 ExternalProject `PATCH_COMMAND`（把 `Buildpystring.cmake` 复制成 pystring 源码目录里的 `CMakeLists.txt`）因此失败，`ocio-sys 0.3` 报 `pystring_install-patch Error 1`。把 `vendor/OpenColorIO` 复制到可写目录并设置 `OCIO_SOURCE_DIR` 后，**0.3 完整构建成功**，SDK 121 个测试全绿（含 color）。`ocio-sys 0.2.1` 另有独立问题：其 vendored yaml-cpp 缺 `#include <cstdint>`，GCC 16 下编译失败；临时补上该 include 后 0.2.1 也能构建。结论与测试细节见本轮回复。
 >
-> 另：11 小时间隔内仓库已有用户侧改动（`ocio-rs` 0.3、`quercus-engine`/`quercus-render` 依赖版本、`Cargo.lock` 索引状态、`.cache/ffmpeg` 构建产物）；本报告未回滚这些改动。
+> 另：11 小时间隔内仓库已有用户侧改动（`ocio-rs` 0.3、`quercus-engine`/`quercus-render` 依赖版本、`../../../../Cargo.lock` 索引状态、`.cache/ffmpeg` 构建产物）；本报告未回滚这些改动。

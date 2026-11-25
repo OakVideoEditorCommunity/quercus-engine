@@ -129,7 +129,7 @@ quercus_storage_open/save  ──►  Registry::global().resolve(uri)  ──►
 还有一个不显眼但真实的成本：`quercus-storage` **无条件**依赖
 `sea-orm` + `sqlx`（postgres & sqlite）+ `tokio`（`crates/quercus-storage/Cargo.toml:31-32`），
 没有 feature 开关。只想用 `.ove` 文件格式的消费者，也要为内置数据库后端付出依赖树
-（整个 workspace 的 `Cargo.lock` 共 469 个包）与二进制体积。库后端一旦可插拔，
+（整个 workspace 的 `../../../../Cargo.lock` 共 469 个包）与二进制体积。库后端一旦可插拔，
 这组依赖应当变成可选 feature。
 
 ### 3.3 为什么"直接依赖内部 crate"救不了

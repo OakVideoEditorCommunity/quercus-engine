@@ -168,9 +168,9 @@ iGPU 直通注意事项：
 
 文件：
 
-- `crates/quercus-core/src/backend.rs`
-- `crates/quercus-core/src/backend/external.rs`
-- `crates/quercus-core/Cargo.toml`
+- `../../../crates/quercus-core/src/backend.rs`
+- `../../../crates/quercus-core/src/backend/external.rs`
+- `../../../crates/quercus-core/Cargo.toml`
 
 改动：
 
@@ -213,8 +213,8 @@ Windows 依赖：
 
 文件：
 
-- `crates/quercus-ofx-plugin/src/gl_bridge.rs`
-- `crates/quercus-ofx-plugin/Cargo.toml`
+- `../../../crates/quercus-ofx-plugin/src/gl_bridge.rs`
+- `../../../crates/quercus-ofx-plugin/Cargo.toml`
 
 改动：
 
@@ -264,11 +264,11 @@ Windows 依赖：
 
 文件：
 
-- `crates/quercus-ofx-plugin/src/render_driver.rs`
-- `crates/quercus-ofx-plugin/src/clip.rs`
-- `crates/quercus-ofx-plugin/src/suites/gl_render.rs`
-- `crates/quercus-ofx-plugin/src/node_factory.rs`
-- `crates/quercus-core/src/backend.rs`（cfg 扩展）
+- `../../../crates/quercus-ofx-plugin/src/render_driver.rs`
+- `../../../crates/quercus-ofx-plugin/src/clip.rs`
+- `../../../crates/quercus-ofx-plugin/src/suites/gl_render.rs`
+- `../../../crates/quercus-ofx-plugin/src/node_factory.rs`
+- `../../../crates/quercus-core/src/backend.rs`（cfg 扩展）
 
 改动：
 
@@ -342,18 +342,18 @@ Linux/FreeBSD 注册），因此引擎会自己创建 Vulkan 设备，正好符�
 
 | 文件 | 改动 |
 |---|---|
-| `crates/quercus-core/src/backend.rs` | Windows 请求 Win32 external memory feature；`wait_idle` 已有 |
-| `crates/quercus-core/src/backend/external.rs` | Windows `ExternalTexture`/`GlMemoryExport`/`create_exportable_texture` |
-| `crates/quercus-core/Cargo.toml` | Windows `windows-sys` 最小依赖 |
-| `crates/quercus-ofx-plugin/src/gl_bridge.rs` | WGL 上下文 + `GL_EXT_memory_object_win32` |
-| `crates/quercus-ofx-plugin/src/clip.rs` | `input_gl_texture` cfg 扩展 |
-| `crates/quercus-ofx-plugin/src/render_driver.rs` | 零拷贝分支 cfg 扩展 |
-| `crates/quercus-ofx-plugin/src/suites/gl_render.rs` | 零拷贝输入 props（已有） |
-| `crates/quercus-ofx-plugin/src/node_factory.rs` | `supports_gl_zerocopy` Windows |
-| `crates/quercus-ofx-plugin/build.rs` | Windows 测试插件 DLL/链接 opengl32 |
-| `crates/quercus-ofx-plugin/cbits/quercus_test_plugin.c` | Windows GL include/清理 |
-| `crates/quercus-ofx-plugin/tests/gl_render_test.rs` | Windows 端到端零拷贝测试 |
-| `docs/engine-capabilities.md` | 平台矩阵更新 |
+| `../../../crates/quercus-core/src/backend.rs` | Windows 请求 Win32 external memory feature；`wait_idle` 已有 |
+| `../../../crates/quercus-core/src/backend/external.rs` | Windows `ExternalTexture`/`GlMemoryExport`/`create_exportable_texture` |
+| `../../../crates/quercus-core/Cargo.toml` | Windows `windows-sys` 最小依赖 |
+| `../../../crates/quercus-ofx-plugin/src/gl_bridge.rs` | WGL 上下文 + `GL_EXT_memory_object_win32` |
+| `../../../crates/quercus-ofx-plugin/src/clip.rs` | `input_gl_texture` cfg 扩展 |
+| `../../../crates/quercus-ofx-plugin/src/render_driver.rs` | 零拷贝分支 cfg 扩展 |
+| `../../../crates/quercus-ofx-plugin/src/suites/gl_render.rs` | 零拷贝输入 props（已有） |
+| `../../../crates/quercus-ofx-plugin/src/node_factory.rs` | `supports_gl_zerocopy` Windows |
+| `../../../crates/quercus-ofx-plugin/build.rs` | Windows 测试插件 DLL/链接 opengl32 |
+| `../../../crates/quercus-ofx-plugin/cbits/quercus_test_plugin.c` | Windows GL include/清理 |
+| `../../../crates/quercus-ofx-plugin/tests/gl_render_test.rs` | Windows 端到端零拷贝测试 |
+| `../engine-capabilities.md` | 平台矩阵更新 |
 
 ## 6. 验收标准
 

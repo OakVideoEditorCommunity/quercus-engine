@@ -18,7 +18,7 @@
 
 ## 2. 测试包
 
-现场使用 `dist/windows-zero-copy-test-kit/`：
+现场使用 `../../../dist/windows-zero-copy-test-kit`：
 
 | 文件 | 用途 |
 |---|---|

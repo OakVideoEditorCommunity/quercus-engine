@@ -50,7 +50,7 @@
   `quercus-task/src/render.rs` 也直接写 `effects: Vec::new()`，注释为
   “Audio clips carry no effect stack”。因此 Volume/Pan 节点在导出/渲染音频里
   **不生效**，只有每片段恒定 gain=1.0。
-- **没有字幕块**：`crates/quercus-node/src/nodes/` 下没有 subtitle/字幕节点；
+- **没有字幕块**：`../../crates/quercus-node/src/nodes` 下没有 subtitle/字幕节点；
   只有 `SubtitleParams` 元数据、字幕轨类型和 SRT 容器/导出开关。没有“放字幕片段/
   导入 SRT/烧录字幕”的实现。
 - **没有二级校色/示波器**：`nodes/` 中没有 curves/HSL/hue 节点；引擎里也没有
