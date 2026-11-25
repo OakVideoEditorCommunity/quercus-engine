@@ -148,6 +148,10 @@ pub struct EncodingParams {
 	pub color_trc: i32,
 	/// AVColorSpace (SDR 709 = 1, HDR BT.2020 = 9).
 	pub color_space: i32,
+	/// Video rate-control mode (`0` = Bitrate, `1` = CRF, `2` = CQP).
+	pub video_rate_control: i32,
+	/// Video quality value for CRF/CQP modes (lower = higher quality).
+	pub video_quality: i32,
 }
 
 impl ExportTask {
@@ -208,6 +212,8 @@ impl ExportTask {
 		params.export_length_num = self.encoding_params.export_length_num;
 		params.export_length_den = self.encoding_params.export_length_den;
 		params.video_bit_rate = self.encoding_params.video_bit_rate;
+		params.video_rate_control = self.encoding_params.video_rate_control;
+		params.video_quality = self.encoding_params.video_quality;
 		params.audio_bit_rate = self.encoding_params.audio_bit_rate;
 		// 10-bit delivery: ask the codec for a 10-bit pixel format when the
 		// export dialog requested a 10/16-bit delivery format. HEVC's

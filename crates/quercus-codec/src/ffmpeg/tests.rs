@@ -1596,3 +1596,385 @@ fn conform_audio_rate_conversion_flushes_the_tail() {
 	let _ = std::fs::remove_file(&path);
 	let _ = std::fs::remove_file(&out);
 }
+
+#[test]
+fn video_rate_control_plan_covers_software_hardware_and_fallback() {
+	// Bitrate mode always applies bitrate and sets no quality options.
+	for enc in [
+		"libx264",
+		"libx265",
+		"libsvtav1",
+		"h264_nvenc",
+		"h264_qsv",
+		"h264_amf",
+		"h264_videotoolbox",
+		"prores_ks",
+	] {
+		let plan = video_rate_control_plan(enc, VideoRateControl::Bitrate, 23);
+		assert!(plan.apply_bitrate, "{enc} bitrate mode");
+		assert!(plan.opts.is_empty(), "{enc} bitrate opts");
+		assert_eq!(plan.qscale_quality, None, "{enc} bitrate qscale");
+	}
+
+	// Software x264 / x264rgb / x265 (0..=51 clamp).
+	assert_eq!(
+		video_rate_control_plan("libx264", VideoRateControl::Crf, 18),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("crf", "18".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("libx264rgb", VideoRateControl::Cqp, -5),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("qp", "0".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("libx265", VideoRateControl::Crf, 99),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("crf", "51".into())],
+			qscale_quality: None,
+		}
+	);
+
+	// Software SVT-AV1 / libaom-av1 (0..=63 clamp).
+	assert_eq!(
+		video_rate_control_plan("libsvtav1", VideoRateControl::Crf, 30),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("crf", "30".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("libsvtav1", VideoRateControl::Cqp, 80),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("qp", "63".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("libaom-av1", VideoRateControl::Crf, 32),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("crf", "32".into())],
+			qscale_quality: None,
+		}
+	);
+
+	// NVENC: rc=vbr + cq (1..=max_q) for CRF, rc=constqp + qp for CQP
+	// (av1_nvenc qp maps 0..=63 onto AV1's 0..=255 qindex scale).
+	assert_eq!(
+		video_rate_control_plan("h264_nvenc", VideoRateControl::Crf, 0),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("rc", "vbr".into()), ("cq", "1".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("h264_nvenc", VideoRateControl::Crf, 23),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("rc", "vbr".into()), ("cq", "23".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("av1_nvenc", VideoRateControl::Cqp, 63),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("rc", "constqp".into()), ("qp", "255".into())],
+			qscale_quality: None,
+		}
+	);
+
+	// QSV: global_quality (1..=51) for CRF, qscale for CQP.
+	assert_eq!(
+		video_rate_control_plan("hevc_qsv", VideoRateControl::Crf, 0),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![("global_quality", "1".into())],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("h264_qsv", VideoRateControl::Cqp, 22),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: Vec::new(),
+			qscale_quality: Some(22),
+		}
+	);
+
+	// AMF: h264_amf and av1_amf include qp_b, hevc_amf omits qp_b;
+	// av1_amf maps 0..=63 onto AV1's 0..=255 qindex scale.
+	assert_eq!(
+		video_rate_control_plan("h264_amf", VideoRateControl::Crf, 24),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![
+				("rc", "cqp".into()),
+				("qp_i", "24".into()),
+				("qp_p", "24".into()),
+				("qp_b", "24".into()),
+			],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("hevc_amf", VideoRateControl::Cqp, 26),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![
+				("rc", "cqp".into()),
+				("qp_i", "26".into()),
+				("qp_p", "26".into()),
+			],
+			qscale_quality: None,
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("av1_amf", VideoRateControl::Crf, 63),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: vec![
+				("rc", "cqp".into()),
+				("qp_i", "255".into()),
+				("qp_p", "255".into()),
+				("qp_b", "255".into()),
+			],
+			qscale_quality: None,
+		}
+	);
+
+	// VideoToolbox: inverted 1..=100 qscale (0 -> 100, 51 -> 1).
+	assert_eq!(
+		video_rate_control_plan("h264_videotoolbox", VideoRateControl::Crf, 0),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: Vec::new(),
+			qscale_quality: Some(100),
+		}
+	);
+	assert_eq!(
+		video_rate_control_plan("hevc_videotoolbox", VideoRateControl::Crf, 51),
+		VideoRateControlPlan {
+			apply_bitrate: false,
+			opts: Vec::new(),
+			qscale_quality: Some(1),
+		}
+	);
+
+	// Unsupported codecs safely fall back to bitrate mode.
+	for enc in ["prores", "prores_ks", "dnxhd", "cfhd", "mpeg2video"] {
+		let plan = video_rate_control_plan(enc, VideoRateControl::Crf, 18);
+		assert!(plan.apply_bitrate, "{enc} must fall back to bitrate");
+		assert!(plan.opts.is_empty(), "{enc} must not emit crf/qp opts");
+		assert_eq!(plan.qscale_quality, None);
+	}
+}
+
+/// Encodes a short synthetic H.264 clip with the given rate control and
+/// quality, returning the output file size in bytes.
+fn encode_video_with_rate_control(
+	tag: &str,
+	format: i32,
+	ext: &str,
+	video_codec: i32,
+	rate_control: VideoRateControl,
+	quality: i32,
+	frame_count: usize,
+) -> u64 {
+	let path = temp_file(tag, ext);
+	let mut filename = [0u8; 1024];
+	let path_str = path.to_string_lossy();
+	filename[..path_str.len()].copy_from_slice(path_str.as_bytes());
+	let p = EncodingParams {
+		filename,
+		format,
+		video_enabled: 1,
+		video_codec,
+		video_width: 256,
+		video_height: 256,
+		video_time_base_num: 1,
+		video_time_base_den: 24,
+		video_pixel_aspect_num: 1,
+		video_pixel_aspect_den: 1,
+		video_bit_rate: 500_000, // Must be ignored in CRF/CQP mode.
+		video_rate_control: rate_control.into(),
+		video_quality: quality,
+		..Default::default()
+	};
+
+	let enc = FFmpegEncoder::with_params(p);
+	enc.open().expect("open video encoder");
+
+	let vp = quercus_core::videoparams::VideoParams {
+		width: 256,
+		height: 256,
+		time_base: (1, 24),
+		format: quercus_core::ocioutils::PixelFormat::U8,
+		channel_count: 4,
+		..Default::default()
+	};
+	let mut frame = Frame::with_params(vp);
+	frame.allocate().expect("allocate frame");
+	let stride = frame.linesize_bytes() as usize;
+	for f in 0..frame_count {
+		frame.timestamp = Rational::new(f as i64, 24);
+		{
+			let buf = frame.data_mut().expect("allocated frame buffer");
+			for y in 0..256usize {
+				let row = &mut buf[y * stride..y * stride + 256 * 4];
+				for x in 0..256usize {
+					// High-frequency moving pattern so quality changes
+					// materially affect encoded bitrate/file size.
+					let v = ((x.wrapping_mul(17) ^ y.wrapping_mul(31)).wrapping_add(f * 29)) as u8;
+					row[x * 4] = v;
+					row[x * 4 + 1] = v.wrapping_mul(3);
+					row[x * 4 + 2] = v.wrapping_add((x as u8) ^ (y as u8));
+					row[x * 4 + 3] = 255;
+				}
+			}
+		}
+		enc.write_video(&frame).expect("write video frame");
+	}
+	enc.flush().expect("flush");
+	enc.close().expect("close");
+
+	let len = std::fs::metadata(&path).expect("output exists").len();
+	assert!(len > 0, "encoded file must be non-empty");
+	let _ = std::fs::remove_file(&path);
+	len
+}
+
+#[test]
+fn h264_crf_and_cqp_quality_controls_file_size() {
+	let _guard = crate::lock_tests();
+
+	// Hardware-preferred H.264 path (video_codec = 1).
+	let crf_high =
+		encode_video_with_rate_control("crf_18", 2, "mp4", 1, VideoRateControl::Crf, 18, 15);
+	let crf_low =
+		encode_video_with_rate_control("crf_42", 2, "mp4", 1, VideoRateControl::Crf, 42, 15);
+	assert!(
+		crf_high > crf_low,
+		"H.264 CRF 18 ({crf_high} B) must be larger than CRF 42 ({crf_low} B)"
+	);
+
+	let cqp_high =
+		encode_video_with_rate_control("cqp_20", 2, "mp4", 1, VideoRateControl::Cqp, 20, 15);
+	let cqp_low =
+		encode_video_with_rate_control("cqp_45", 2, "mp4", 1, VideoRateControl::Cqp, 45, 15);
+	assert!(
+		cqp_high > cqp_low,
+		"H.264 CQP 20 ({cqp_high} B) must be larger than CQP 45 ({cqp_low} B)"
+	);
+
+	// Software-only H.264 RGB path (video_codec = 2 -> libx264, no HW candidates).
+	let sw_crf_high =
+		encode_video_with_rate_control("sw_crf_18", 2, "mp4", 2, VideoRateControl::Crf, 18, 15);
+	let sw_crf_low =
+		encode_video_with_rate_control("sw_crf_42", 2, "mp4", 2, VideoRateControl::Crf, 42, 15);
+	assert!(
+		sw_crf_high > sw_crf_low,
+		"Software libx264 CRF 18 ({sw_crf_high} B) must be larger than CRF 42 ({sw_crf_low} B)"
+	);
+
+	let sw_cqp_high =
+		encode_video_with_rate_control("sw_cqp_20", 2, "mp4", 2, VideoRateControl::Cqp, 20, 15);
+	let sw_cqp_low =
+		encode_video_with_rate_control("sw_cqp_45", 2, "mp4", 2, VideoRateControl::Cqp, 45, 15);
+	assert!(
+		sw_cqp_high > sw_cqp_low,
+		"Software libx264 CQP 20 ({sw_cqp_high} B) must be larger than CQP 45 ({sw_cqp_low} B)"
+	);
+
+	// HEVC (video_codec = 3 -> hardware or libx265 software fallback).
+	let hevc_crf_high =
+		encode_video_with_rate_control("hevc_crf_18", 2, "mp4", 3, VideoRateControl::Crf, 18, 15);
+	let hevc_crf_low =
+		encode_video_with_rate_control("hevc_crf_42", 2, "mp4", 3, VideoRateControl::Crf, 42, 15);
+	assert!(
+		hevc_crf_high > hevc_crf_low,
+		"HEVC CRF 18 ({hevc_crf_high} B) must be larger than CRF 42 ({hevc_crf_low} B)"
+	);
+	let hevc_cqp_high =
+		encode_video_with_rate_control("hevc_cqp_20", 2, "mp4", 3, VideoRateControl::Cqp, 20, 15);
+	let hevc_cqp_low =
+		encode_video_with_rate_control("hevc_cqp_45", 2, "mp4", 3, VideoRateControl::Cqp, 45, 15);
+	assert!(
+		hevc_cqp_high > hevc_cqp_low,
+		"HEVC CQP 20 ({hevc_cqp_high} B) must be larger than CQP 45 ({hevc_cqp_low} B)"
+	);
+
+	// AV1 (video_codec = 18 -> hardware or libaom-av1/libsvtav1 software fallback).
+	// Some FFmpeg builds (e.g. macOS CI's minimal build) omit AV1 encoders.
+	let _ = ffmpeg_init();
+	if !video_encoder_candidates(18, ffmpeg::codec::Id::AV1).is_empty() {
+		let av1_crf_high = encode_video_with_rate_control(
+			"av1_crf_20",
+			2,
+			"mp4",
+			18,
+			VideoRateControl::Crf,
+			20,
+			4,
+		);
+		let av1_crf_low = encode_video_with_rate_control(
+			"av1_crf_55",
+			2,
+			"mp4",
+			18,
+			VideoRateControl::Crf,
+			55,
+			4,
+		);
+		assert!(
+			av1_crf_high > av1_crf_low,
+			"AV1 CRF 20 ({av1_crf_high} B) must be larger than CRF 55 ({av1_crf_low} B)"
+		);
+		let av1_cqp_high = encode_video_with_rate_control(
+			"av1_cqp_20",
+			2,
+			"mp4",
+			18,
+			VideoRateControl::Cqp,
+			20,
+			4,
+		);
+		let av1_cqp_low = encode_video_with_rate_control(
+			"av1_cqp_55",
+			2,
+			"mp4",
+			18,
+			VideoRateControl::Cqp,
+			55,
+			4,
+		);
+		assert!(
+			av1_cqp_high > av1_cqp_low,
+			"AV1 CQP 20 ({av1_cqp_high} B) must be larger than CQP 55 ({av1_cqp_low} B)"
+		);
+	}
+
+	// Unsupported codec (ProRes, video_codec = 6 in QuickTime format = 4)
+	// must safely ignore CRF and still encode without error.
+	let prores_len = encode_video_with_rate_control(
+		"prores_fallback",
+		4,
+		"mov",
+		6,
+		VideoRateControl::Crf,
+		18,
+		15,
+	);
+	assert!(prores_len > 0);
+}

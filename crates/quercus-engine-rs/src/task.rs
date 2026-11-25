@@ -107,6 +107,38 @@ unsafe extern "C" {
 	fn quercus_task_take_video(id: u64) -> *const c_void;
 }
 
+/// Video rate-control mode for [`EncodingParams::video_rate_control`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum VideoRateControl {
+	/// Target average bitrate (`video_bit_rate`, 0 = codec default).
+	#[default]
+	Bitrate = 0,
+	/// Constant Rate Factor (perceptual quality; lower = higher quality).
+	Crf = 1,
+	/// Constant Quantization Parameter (fixed quantizer; lower = higher quality).
+	Cqp = 2,
+}
+
+impl From<i32> for VideoRateControl {
+	/// Decodes a raw `i32` discriminant, falling back to [`Self::Bitrate`]
+	/// for unknown values.
+	fn from(value: i32) -> Self {
+		match value {
+			1 => Self::Crf,
+			2 => Self::Cqp,
+			_ => Self::Bitrate,
+		}
+	}
+}
+
+impl From<VideoRateControl> for i32 {
+	/// Returns the C-ABI `i32` discriminant.
+	fn from(value: VideoRateControl) -> Self {
+		value as i32
+	}
+}
+
 /// `repr(C)` mirror of the engine's encoding parameters for
 /// [`export`]. Zeroed fields are disabled/defaults.
 #[repr(C)]
@@ -165,6 +197,11 @@ pub struct EncodingParams {
 	pub color_trc: i32,
 	/// AVColorSpace (SDR 709 = 1, HDR BT.2020 = 9).
 	pub color_space: i32,
+	/// Video rate-control mode ([`VideoRateControl`]: `0` = Bitrate,
+	/// `1` = CRF, `2` = CQP).
+	pub video_rate_control: i32,
+	/// Quality value for CRF/CQP modes (lower = higher quality).
+	pub video_quality: i32,
 }
 
 /// A task's state.

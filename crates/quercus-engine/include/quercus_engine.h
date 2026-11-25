@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-/* 60 POD structs, 14 enums, 744 functions. */
+/* 60 POD structs, 15 enums, 744 functions. */
 
 /* 3x3 color matrix returned by the colormath helpers. */
 typedef struct QuercusMat3 { float v[3][3]; } QuercusMat3;
@@ -208,6 +208,11 @@ typedef enum GpuBackend {
     QUERCUS_GPUBACKEND_GL = 3,
     QUERCUS_GPUBACKEND_CPU = 4
 } GpuBackend;
+typedef enum VideoRateControl {
+    QUERCUS_VIDEORATECONTROL_BITRATE = 0,
+    QUERCUS_VIDEORATECONTROL_CRF = 1,
+    QUERCUS_VIDEORATECONTROL_CQP = 2
+} VideoRateControl;
 typedef enum PixelFormat {
     QUERCUS_PIXELFORMAT_INVALID = -1,
     QUERCUS_PIXELFORMAT_U8 = 0,
@@ -358,6 +363,8 @@ struct EncodingParams {
     int32_t color_primaries;
     int32_t color_trc;
     int32_t color_space;
+    int32_t video_rate_control;
+    int32_t video_quality;
 };
 struct GraphEdgeRaw {
     uint64_t from;
@@ -507,6 +514,8 @@ struct QuercusCodecEncodingParams {
     int32_t color_trc;
     int32_t color_space;
     int32_t color_range;
+    int32_t video_rate_control;
+    int32_t video_quality;
 };
 struct QuercusCodecProxyResult {
     int32_t state;

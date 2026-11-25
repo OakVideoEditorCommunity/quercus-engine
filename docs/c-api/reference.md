@@ -5,13 +5,13 @@
 | Property | Value |
 | --- | --- |
 | Source header | `crates/quercus-engine/include/quercus_engine.h` |
-| Header SHA-256 | `a413e89ed3c7bb0d581268749dbd271b8ea27117f9c88a20867aa55f9298f3c4` |
-| Header lines | 1568 |
+| Header SHA-256 | `9584286b75fba23e956c4ec512a2f22de8312124011915041982374de1616678` |
+| Header lines | 1577 |
 | Functions | 744 |
 | Modules | 26 |
 | Named POD structs | 60 |
 | Additional inline structs | 1 (`QuercusMat3`) |
-| Enums | 14 |
+| Enums | 15 |
 | Callback typedefs | 10 |
 | Type aliases | 3 |
 
@@ -67,7 +67,7 @@ python3 tooling/gen_c_header.py --check     # verify the source header
 | [`video`](#module-video) | 5 |
 | **Total** | **744** |
 
-## Enums (14)
+## Enums (15)
 
 The header declares enums in two forms: C `typedef enum` definitions and integer typedefs whose values are macros (`QuercusEditOp`). Enumerator order and values are reproduced verbatim from the header.
 
@@ -398,6 +398,20 @@ typedef enum VideoPixelFormat {
 } VideoPixelFormat;
 ```
 
+### `VideoRateControl`
+
+Video rate-control mode for `EncodingParams::video_rate_control`.
+
+C `enum` (storage type is chosen by the compiler).
+
+```c
+typedef enum VideoRateControl {
+    QUERCUS_VIDEORATECONTROL_BITRATE = 0,
+    QUERCUS_VIDEORATECONTROL_CRF = 1,
+    QUERCUS_VIDEORATECONTROL_CQP = 2
+} VideoRateControl;
+```
+
 ## Structs (60 named POD structs)
 
 All structs are plain data (`#[repr(C)]` in Rust). Field declarations are reproduced verbatim from the header. The header also type-checks the layout of `Rational` (16 bytes), `TimeRange` (32 bytes), `NodeValue` (56 bytes), and `StorageProjectHandle` (32 bytes) with static assertions.
@@ -528,6 +542,8 @@ struct EncodingParams {
     int32_t color_primaries;
     int32_t color_trc;
     int32_t color_space;
+    int32_t video_rate_control;
+    int32_t video_quality;
 };
 ```
 
@@ -773,6 +789,8 @@ struct QuercusCodecEncodingParams {
     int32_t color_trc;
     int32_t color_space;
     int32_t color_range;
+    int32_t video_rate_control;
+    int32_t video_quality;
 };
 ```
 
@@ -4506,4 +4524,4 @@ Summaries are harvested from contiguous `///` blocks in the Rust SDK by matching
 | --- | ---: | ---: |
 | Functions (Rust SDK summary) | 677 | 744 |
 | Functions (neutral fallback) | 67 | 744 |
-| Types and callbacks (Rust SDK summary) | 65 | 85 |
+| Types and callbacks (Rust SDK summary) | 66 | 86 |

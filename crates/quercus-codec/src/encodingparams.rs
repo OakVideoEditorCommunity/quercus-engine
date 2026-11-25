@@ -37,6 +37,38 @@ pub enum VideoScalingMethod {
 	Crop = 2,
 }
 
+/// Video rate-control mode for [`EncodingParams::video_rate_control`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum VideoRateControl {
+	/// Target average bitrate (`video_bit_rate`, 0 = codec default).
+	#[default]
+	Bitrate = 0,
+	/// Constant Rate Factor (perceptual quality; lower = higher quality).
+	Crf = 1,
+	/// Constant Quantization Parameter (fixed quantizer; lower = higher quality).
+	Cqp = 2,
+}
+
+impl From<i32> for VideoRateControl {
+	/// Decodes a raw `i32` discriminant, falling back to [`Self::Bitrate`]
+	/// for unknown values so invalid FFI inputs never cause undefined behavior.
+	fn from(value: i32) -> Self {
+		match value {
+			1 => Self::Crf,
+			2 => Self::Cqp,
+			_ => Self::Bitrate,
+		}
+	}
+}
+
+impl From<VideoRateControl> for i32 {
+	/// Returns the C-ABI `i32` discriminant.
+	fn from(value: VideoRateControl) -> Self {
+		value as i32
+	}
+}
+
 /// `olive::EncodingParams` — flattened mirror of `quercuscodec_encoding_params`.
 #[derive(Clone, Debug)]
 #[repr(C)]
@@ -137,6 +169,14 @@ pub struct EncodingParams {
 	pub color_space: i32,
 	/// Delivery color range (`AVCOL_RANGE_*`: 1 = limited, 2 = full).
 	pub color_range: i32,
+
+	/// Video rate-control mode ([`VideoRateControl`]: `0` = Bitrate,
+	/// `1` = CRF, `2` = CQP). Stored as `i32` for FFI safety across the C ABI.
+	pub video_rate_control: i32,
+	/// Quality value for CRF/CQP rate-control modes (e.g. 0..=51 for
+	/// H.264/H.265, 0..=63 for AV1; lower = higher quality). Ignored in
+	/// Bitrate mode.
+	pub video_quality: i32,
 }
 
 impl Default for EncodingParams {
@@ -191,6 +231,9 @@ impl Default for EncodingParams {
 			color_trc: 0,
 			color_space: 0,
 			color_range: 0,
+
+			video_rate_control: VideoRateControl::Bitrate.into(),
+			video_quality: 0,
 		}
 	}
 }
@@ -372,6 +415,12 @@ impl EncodingParams {
 			if let Some(e) = child(e, "vscale") {
 				self.video_scaling_method = scaling_from_i32(parse_i32(&text(e)));
 			}
+			if let Some(e) = child(e, "ratecontrol") {
+				self.video_rate_control = VideoRateControl::from(parse_i32(&text(e))).into();
+			}
+			if let Some(e) = child(e, "quality") {
+				self.video_quality = parse_i32(&text(e));
+			}
 		}
 
 		if let Some(e) = child(&root, "audio") {
@@ -479,6 +528,11 @@ impl EncodingParams {
 				"<vscale>{}</vscale>",
 				self.video_scaling_method as i32
 			));
+			s.push_str(&format!(
+				"<ratecontrol>{}</ratecontrol>",
+				self.video_rate_control
+			));
+			s.push_str(&format!("<quality>{}</quality>", self.video_quality));
 		}
 		s.push_str("</video>");
 

@@ -41,7 +41,7 @@ OUTPUT = ROOT / "docs" / "c-api" / "reference.md"
 # is wrong; fail loudly instead of publishing an incomplete reference.
 EXPECTED_FUNCTIONS = 744
 EXPECTED_NAMED_STRUCTS = 60
-EXPECTED_ENUMS = 14
+EXPECTED_ENUMS = 15
 EXPECTED_CALLBACKS = 10
 EXPECTED_ALIASES = 3
 

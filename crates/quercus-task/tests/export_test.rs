@@ -178,6 +178,8 @@ fn export_writes_a_real_playable_mp4() {
 		color_primaries: 0,
 		color_trc: 0,
 		color_space: 0,
+		video_rate_control: 0,
+		video_quality: 0,
 	};
 	let inner = export::ExportTask::new((project.clone(), seq), encoding);
 	let mut driver = task::Task::new("Exporting...", None);

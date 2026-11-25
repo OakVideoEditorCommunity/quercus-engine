@@ -81,7 +81,7 @@ use crate::decoder::{
 	CodecStream, Decoder, QuercusRenderTexture, RetrieveAudioStatus, RetrieveVideoParams,
 };
 use crate::encoder::Encoder;
-use crate::encodingparams::EncodingParams;
+use crate::encodingparams::{EncodingParams, VideoRateControl};
 use crate::footagedescription::{FootageDescription, StreamEntry};
 use crate::frame::Frame;
 use crate::hwdecode::{HwFormatKey, HwStreamHealth};
@@ -3252,6 +3252,159 @@ fn pixel_format_for_video_encoder(
 	}
 }
 
+/// Encoder-specific rate-control configuration derived from
+/// [`VideoRateControl`] and `video_quality`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VideoRateControlPlan {
+	/// Whether `encoder.set_bit_rate` should be called when `video_bit_rate > 0`.
+	apply_bitrate: bool,
+	/// Encoder-private `AVDictionary` options passed to `encoder.open_with`.
+	opts: Vec<(&'static str, String)>,
+	/// Optional qscale value for encoders driven by `AV_CODEC_FLAG_QSCALE`
+	/// and `global_quality = qscale * FF_QP2LAMBDA` (VideoToolbox, QSV CQP).
+	qscale_quality: Option<i32>,
+}
+
+/// Maps `(encoder_name, rate_control, quality)` into the encoder-specific
+/// FFmpeg options. Encoders that do not support CRF/CQP (ProRes, DNxHD,
+/// CineForm, MPEG-2, unknown codecs) fall back cleanly to bitrate mode so
+/// opening never fails with an unsupported option.
+fn video_rate_control_plan(
+	encoder_name: &str,
+	rate_control: VideoRateControl,
+	quality: i32,
+) -> VideoRateControlPlan {
+	if rate_control == VideoRateControl::Bitrate {
+		return VideoRateControlPlan {
+			apply_bitrate: true,
+			opts: Vec::new(),
+			qscale_quality: None,
+		};
+	}
+
+	match encoder_name {
+		// Software H.264 / H.265: CRF/QP 0..=51 (lower = higher quality).
+		"libx264" | "libx264rgb" | "libx265" => {
+			let q = quality.clamp(0, 51).to_string();
+			let key = match rate_control {
+				VideoRateControl::Crf => "crf",
+				VideoRateControl::Cqp => "qp",
+				VideoRateControl::Bitrate => unreachable!(),
+			};
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts: vec![(key, q)],
+				qscale_quality: None,
+			}
+		}
+		// Software SVT-AV1: CRF/QP 0..=63.
+		"libsvtav1" => {
+			let q = quality.clamp(0, 63).to_string();
+			let key = match rate_control {
+				VideoRateControl::Crf => "crf",
+				VideoRateControl::Cqp => "qp",
+				VideoRateControl::Bitrate => unreachable!(),
+			};
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts: vec![(key, q)],
+				qscale_quality: None,
+			}
+		}
+		// Software libaom-av1: CRF 0..=63 with b:v 0 (apply_bitrate = false).
+		"libaom-av1" => {
+			let q = quality.clamp(0, 63).to_string();
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts: vec![("crf", q)],
+				qscale_quality: None,
+			}
+		}
+		// NVIDIA NVENC: VBR + cq (1..=max_q; cq=0 means automatic) for CRF,
+		// constqp + qp for CQP (av1_nvenc qp uses 0..=255 AV1 qindex scale).
+		"h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
+			let is_av1 = encoder_name == "av1_nvenc";
+			let max_q = if is_av1 { 63 } else { 51 };
+			let opts = match rate_control {
+				VideoRateControl::Crf => {
+					let cq = quality.clamp(1, max_q).to_string();
+					vec![("rc", "vbr".to_string()), ("cq", cq)]
+				}
+				VideoRateControl::Cqp => {
+					let qp = if is_av1 {
+						((quality.clamp(0, 63) * 255 + 31) / 63).to_string()
+					} else {
+						quality.clamp(0, 51).to_string()
+					};
+					vec![("rc", "constqp".to_string()), ("qp", qp)]
+				}
+				VideoRateControl::Bitrate => unreachable!(),
+			};
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts,
+				qscale_quality: None,
+			}
+		}
+		// Intel QSV: ICQ via global_quality (1..=51) for CRF, qscale for CQP.
+		"h264_qsv" | "hevc_qsv" | "av1_qsv" => match rate_control {
+			VideoRateControl::Crf => {
+				let q = quality.clamp(1, 51).to_string();
+				VideoRateControlPlan {
+					apply_bitrate: false,
+					opts: vec![("global_quality", q)],
+					qscale_quality: None,
+				}
+			}
+			VideoRateControl::Cqp => VideoRateControlPlan {
+				apply_bitrate: false,
+				opts: Vec::new(),
+				qscale_quality: Some(quality.clamp(1, 51)),
+			},
+			VideoRateControl::Bitrate => unreachable!(),
+		},
+		// AMD AMF: CQP via rc=cqp + qp_i/qp_p (plus qp_b for H.264 and AV1;
+		// hevc_amf does not expose qp_b; av1_amf qp uses 0..=255 AV1 qindex).
+		"h264_amf" | "hevc_amf" | "av1_amf" => {
+			let q = if encoder_name == "av1_amf" {
+				((quality.clamp(0, 63) * 255 + 31) / 63).to_string()
+			} else {
+				quality.clamp(0, 51).to_string()
+			};
+			let mut opts = vec![
+				("rc", "cqp".to_string()),
+				("qp_i", q.clone()),
+				("qp_p", q.clone()),
+			];
+			if encoder_name != "hevc_amf" {
+				opts.push(("qp_b", q));
+			}
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts,
+				qscale_quality: None,
+			}
+		}
+		// Apple VideoToolbox: inverted 1..=100 qscale (100 = highest quality).
+		"h264_videotoolbox" | "hevc_videotoolbox" => {
+			let clamped = quality.clamp(0, 51);
+			let vt_q = (100 - (clamped * 99 / 51)).clamp(1, 100);
+			VideoRateControlPlan {
+				apply_bitrate: false,
+				opts: Vec::new(),
+				qscale_quality: Some(vt_q),
+			}
+		}
+		// Unsupported codecs (ProRes, DNxHD, CineForm, MPEG-2, etc.) safely
+		// fall back to bitrate mode.
+		_ => VideoRateControlPlan {
+			apply_bitrate: true,
+			opts: Vec::new(),
+			qscale_quality: None,
+		},
+	}
+}
+
 impl EncoderState {
 	/// Open the output file and its streams, then write the container
 	/// header.
@@ -3333,11 +3486,28 @@ impl EncoderState {
 					time_base
 				};
 				encoder.set_time_base(tick);
-				if params.video_bit_rate > 0 {
-					encoder.set_bit_rate(params.video_bit_rate as usize);
+				let rate_control = VideoRateControl::from(params.video_rate_control);
+				let rc_plan =
+					video_rate_control_plan(codec.name(), rate_control, params.video_quality);
+				if rc_plan.apply_bitrate {
+					if params.video_bit_rate > 0 {
+						encoder.set_bit_rate(params.video_bit_rate as usize);
+					}
+				} else {
+					// Clear FFmpeg's default 200 kbps avctx->bit_rate so CRF/CQ
+					// encoders (libaom-av1, NVENC VBR+CQ, QSV, VideoToolbox) run
+					// in unconstrained quality mode rather than capped VBR/CQ.
+					encoder.set_bit_rate(0);
 				}
 				if params.video_max_bit_rate > 0 {
 					encoder.set_max_bit_rate(params.video_max_bit_rate as usize);
+				}
+				if let Some(qscale) = rc_plan.qscale_quality {
+					unsafe {
+						let ctx = encoder.as_mut_ptr();
+						(*ctx).flags |= sys::AV_CODEC_FLAG_QSCALE as i32;
+						(*ctx).global_quality = qscale * sys::FF_QP2LAMBDA as i32;
+					}
 				}
 				encoder.set_format(pix_fmt);
 				set_encoder_color_metadata(&mut encoder, params);
@@ -3351,6 +3521,9 @@ impl EncoderState {
 				};
 				let mut open_opts = Dictionary::new();
 				open_opts.set("threads", &threads);
+				for (key, value) in &rc_plan.opts {
+					open_opts.set(key, value);
+				}
 
 				if env::var_os("OAK_DEBUG_HW").is_some() {
 					eprintln!("[encode] trying {}", codec.name());

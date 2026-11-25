@@ -76,6 +76,8 @@ pub struct QuercusTaskEncodingParams {
 	pub color_primaries: i32,
 	pub color_trc: i32,
 	pub color_space: i32,
+	pub video_rate_control: i32,
+	pub video_quality: i32,
 }
 
 impl QuercusTaskEncodingParams {
@@ -111,6 +113,8 @@ impl QuercusTaskEncodingParams {
 			color_primaries: self.color_primaries,
 			color_trc: self.color_trc,
 			color_space: self.color_space,
+			video_rate_control: self.video_rate_control,
+			video_quality: self.video_quality,
 		}
 	}
 }
