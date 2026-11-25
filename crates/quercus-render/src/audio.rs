@@ -43,6 +43,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::ticket::MontageAudioEffect;
 
+/// Sample a scalar audio envelope at absolute sequence time.
+pub fn audio_envelope_at(
+	track: Option<&quercus_node::keyframe::KeyframeTrack>,
+	fallback: f64,
+	time: quercus_core::Rational,
+) -> f64 {
+	match track.and_then(|track| track.value_at(time)) {
+		Some(NodeValue::Float(value)) => value,
+		_ => fallback,
+	}
+}
+
 /// Project-settings key holding the per-sequence master-bus chains.
 ///
 /// The value is a JSON object `{"<sequence identity>": [effect, ...]}`.
@@ -462,5 +474,47 @@ mod tests {
 		store_bus_effects(&mut settings, 42, &[]).expect("clear");
 		assert!(!settings.contains_key(AUDIO_BUS_EFFECTS_SETTING));
 		assert!(load_bus_effects(&settings, 42).is_empty());
+	}
+}
+
+#[cfg(test)]
+mod envelope_tests {
+	use super::audio_envelope_at;
+	use quercus_core::Rational;
+	use quercus_node::keyframe::{Interpolation, Keyframe, KeyframeTrack};
+	use quercus_node::value::NodeValue;
+
+	#[test]
+	fn samples_audio_envelope_in_sequence_time() {
+		let sample = |t| Rational::new(t, 1);
+		let fallback = 2.0;
+		assert_eq!(audio_envelope_at(None, fallback, sample(3)), fallback);
+		assert_eq!(
+			audio_envelope_at(Some(&KeyframeTrack::default()), fallback, sample(3)),
+			fallback
+		);
+		for mode in [
+			Interpolation::Hold,
+			Interpolation::Linear,
+			Interpolation::Bezier,
+		] {
+			let mut track = KeyframeTrack::default();
+			for (t, value) in [(2, 1.0), (4, 0.0)] {
+				track.set_key(Keyframe {
+					time: sample(t),
+					value: NodeValue::Float(value),
+					interpolation: mode,
+					bezier_in: (-0.2, 0.1),
+					bezier_out: (0.3, 0.1),
+				});
+			}
+			let at = |t| audio_envelope_at(Some(&track), fallback, sample(t));
+			assert_eq!(at(1), 1.0);
+			assert_eq!(at(5), 0.0);
+			assert_eq!(at(3), track.value_at(sample(3)).unwrap().to_double());
+			if mode == Interpolation::Linear {
+				assert_eq!(at(3), 0.5);
+			}
+		}
 	}
 }
