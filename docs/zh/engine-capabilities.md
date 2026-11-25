@@ -28,13 +28,13 @@
 | 调色（一级） | ✅ | Color Correct（sat/contrast/gamma/gain/offset）、Grade、Three-Way、White Balance、Saturation、Gamma、OCIO LUT/Grading、Display Transform |
 | 调色（二级/分析） | ◐ | 没有 Curves、HSL qualifier、Hue-vs-Sat 等二级校色；没有视频直方图/矢量图/波形示波器；没有 LUT 资产/输入色彩空间自动识别 |
 | 文字/标题 | ✅ | Text/Text3 支持字体、大小、颜色、对齐、描边、发光；系统字体 341 个；另有 Shape/Stroke/Drop Shadow |
-| 字幕 | ❌ | 只有字幕轨类型、`SubtitleParams` 元数据、SRT 容器和导出开关；**没有字幕片段/渲染/SRT 导入的实现** |
+| 字幕 | ◐ | SRT 可导入为 Text3 片段并导出，预览/烧录、撤销和 `.ove` 持久化复用文字路径；缺独立字幕块、完整样式、安全区、容器字幕流和 OTIO/FCPXML 映射 |
 | 键控 | ◐ | Chroma Key（上下容差、garbage/core matte、阴影/高光）、Color Difference Key、Despill；缺 Luma Key 和更高级的 keyer |
 | 合成 | ◐ | Merge 只有 alpha-over，没有 multiply/screen/overlay 等混合模式；有 Group/Mask/Premult |
 | 变换/变形 | ✅ | Transform、Position、Corner Pin、Crop、Flip、Mirror、Swirl、Ripple、Wave、Tile、Mask（feather/invert） |
 | 生成器 | ✅ | Solid、Ramp、Checkerboard、Color Bars、Noise、Text、Shape、Polygon |
 | 基础滤镜 | ◐ | Blur、Directional Blur、Sharpen、Mosaic、Edge Detect、Dilate/Erode、Drop Shadow、Stroke、Opacity；缺 Glow、Vignette、Grain、Lens Flare、Chromatic Aberration |
-| 音频后期 | ❌ | 只有 Volume/Pan 两个音频节点；混音器**不应用效果链**（见第 3 节），没有 EQ、压缩、限制、ducking、淡入淡出自动化；导出只有固定 gain |
+| 音频后期 | ◐ | 片段 gain/pan/fade、静态效果链、EQ/Compressor/Limiter/Gate/Ducking、mute、主总线效果和 LUFS/峰值测量已接入混音；缺参数自动化、solo、归一化、轨道级效果和路由 |
 | 跟踪/稳定/降噪 | ❌ | 没有 tracker、stabilizer、降噪节点 |
 | OFX | ✅ | 有 OFX host（scan/register/instance），可以补风格化/高级滤镜 |
 
@@ -44,15 +44,15 @@
   `TYPE_NAMES = ["Cross Dissolve", "Fade", "Wipe", "Slide"]`，输入为 `type_in`；
   `transitionfx.rs` 额外有 `color_in`、`direction_in`。能力在引擎，SDK 的
   `AddTransitionAtSeam` 没有 type 参数。
-- **音频效果未接入混音**：`quercus-render/src/ticket.rs` 的 `MontageClip` 有
-  `gain` 和 `effects` 字段；但 `eval.rs:2657` 的 `mix_audio_montage` 只用
-  `buf[i] * clip.gain`，从不读取 `clip.effects`。导出侧
-  `quercus-task/src/render.rs` 也直接写 `effects: Vec::new()`，注释为
-  “Audio clips carry no effect stack”。因此 Volume/Pan 节点在导出/渲染音频里
-  **不生效**，只有每片段恒定 gain=1.0。
-- **没有字幕块**：`../../crates/quercus-node/src/nodes` 下没有 subtitle/字幕节点；
-  只有 `SubtitleParams` 元数据、字幕轨类型和 SRT 容器/导出开关。没有“放字幕片段/
-  导入 SRT/烧录字幕”的实现。
+- **音频混音已接入**：`crates/quercus-render/src/ticket.rs` 的 `MontageClip`
+  携带 gain/pan/fade 和 `audio_effects`；`crates/quercus-render/src/eval/audio.rs`
+  统一处理片段包络、效果链、ducking 和主总线。预览、导出和 worker 均传递这些字段。
+  当前参数是静态值，尚无关键帧包络；轨道只有 mute，没有 solo。
+- **字幕采用 Text3 工作流**：`crates/quercus-codec/src/subtitles.rs` 提供 SRT
+  解析/写出，`crates/quercus-engine/src/editor_commands/subtitles.rs` 把 cue 导入为
+  视频轨 Text3 片段并导出。它不是独立字幕块模型；`margin_h/margin_v/line_spacing`
+  暂未生效，`align` 目前映射到 Text3 垂直对齐。导出任务的 `encode_subtitle`
+  仍是未接入的 0/0 时间占位钩子。
 - **没有二级校色/示波器**：`nodes/` 中没有 curves/HSL/hue 节点；引擎里也没有
   视频 histogram/vectorscope/waveform（只有音频 waveform）。
 - **Merge 无混合模式**：`merge.rs` 的 shader 是 alpha-over，没有 multiply/screen 等。
@@ -67,8 +67,8 @@
 | 一级调色（对比/饱和/色温/三通道） | ✅ 节点齐全，可近似；没有示波器，只能靠模型看帧对比 |
 | Log→709 输入变换 | ✅ OCIO LUT / Display Transform 可做；但没有自动识别/LUT 资产管理 |
 | 二级校色（局部肤色/天空） | ◐ 缺 HSL qualifier/Curves，只能靠 Mask + 一级调色近似 |
-| 烧录中文字幕 | ❌ 没有字幕渲染；只能用 Text 片段手工做，无 SRT 工作流 |
-| 音乐/旁白/ducking | ❌ 能导入/放置，但没有混音效果，也没有 ducking/自动化 |
+| 烧录中文字幕 | ✅ SRT 可导入为 Text3 片段并随预览/导出烧录；复杂字幕样式与独立字幕轨仍受限 |
+| 音乐/旁白/ducking | ◐ 静态 gain/pan/fade、效果链和 ducking 可用；自动化、显式 sidechain 与 solo 未完成 |
 | 标题/角标 | ✅ Text + Shape + Stroke/Drop Shadow |
 | 转场 | ✅ 4 种基础类型足够（原片以硬切为主） |
 | 风格化滤镜（辉光/暗角/颗粒） | ◐ 缺，需 OFX 补 |
@@ -76,25 +76,30 @@
 ## 5. 建议的引擎补全优先级
 
 **P0**
-1. 音频后期：把 Volume/Pan 接入混音效果链；补 EQ、压缩、限制、ducking、
-   淡入淡出自动化（关键帧）；每片段 gain/pan 生效。
-2. 字幕：字幕块 + SRT 导入/导出 + 渲染/烧录路径；导出 `subtitles_enabled` 真正生效。
+1. 音频收尾：参数关键帧/包络、solo 与 solo/mute 规则，以及预览/离线/导出一致的
+   端到端验收（含采样率、声道转换和 WAV/M4A）。
+2. 字幕收尾：补齐烧录验收和完整样式；明确 sidecar/container 导出模式，移除
+   `encode_subtitle` 的 0/0 时间占位路径。
 
 **P1**
-3. 调色：Curves、HSL qualifier/二级校色；视频示波器（histogram/waveform/vectorscope）
+3. 音频后期：高级效果节点化、显式 sidechain、响度归一化、轨道级效果；
+   字幕独立块、OTIO/FCPXML 映射与容器字幕流。
+4. 调色：Curves、HSL qualifier/二级校色；视频示波器（histogram/waveform/vectorscope）
    或至少直方图/饱和度统计 API；LUT 资产/输入色彩空间识别。
-4. 合成：Merge 混合模式（multiply/screen/overlay 等）；Luma Key。
-5. 转场：把已存在的 `type_in` 暴露到 SDK 命令（Cross Dissolve/Fade/Wipe/Slide）。
+5. 合成：Merge 混合模式（multiply/screen/overlay 等）；Luma Key。
+6. 转场：把已存在的 `type_in` 暴露到 SDK 命令（Cross Dissolve/Fade/Wipe/Slide）。
 
 **P2**
-6. 跟踪/稳定/降噪节点。
-7. 风格化滤镜（Glow/Vignette/Grain/Lens）——也可以继续靠 OFX。
+7. 音频子混音/路由、环绕声和音频 OFX。
+8. 跟踪/稳定/降噪节点。
+9. 风格化滤镜（Glow/Vignette/Grain/Lens）——也可以继续靠 OFX。
 
 ## 6. 结论
 
 - 68 个内置效果覆盖了 **剪辑、一级调色、变换、键控、生成器、文字、基础滤镜**，
   对一个纪录片式短片（原片主要靠硬切 + 一级调色 + 字幕 + 音乐）来说，
   **调色和标题够用**。
-- 真正缺的是 **音频后期** 和 **字幕工作流**；另外 **二级校色/示波器**、
-  **跟踪/降噪**、**混合模式** 属于专业能力缺口。
-- 风格化/高级滤镜可以走 OFX；但 OFX 补不了音频混音和字幕工作流。
+- 基础音频后期和 SRT 烧录工作流已经可用；剩余关键是 **音频自动化/solo**、
+  **完整字幕样式与交付模式**。另外 **二级校色/示波器**、**跟踪/降噪**、
+  **混合模式** 属于专业能力缺口。
+- 风格化/高级视频滤镜可以走 OFX；音频 OFX 与复杂路由仍是后续工作。

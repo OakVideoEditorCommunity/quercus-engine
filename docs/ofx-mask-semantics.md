@@ -35,7 +35,7 @@ Plugins are responsible for implementing those behaviors according to their own 
 ## 5. CPU vs. OpenGL Paths
 
 - **CPU path (default)**: Input textures are passed as CPU image buffers via `set_input_texture` and fetched through `ClipInstance::fetch_image`.
-- **OpenGL path (opt-in)**: Zero-copy GL texture support is gated behind `QUERCUS_OFX_GL=1` (see [OFX_GPU_HANDOFF.md](./OFX_GPU_HANDOFF.md)). Its pixel tests are gated, so GL mask behavior is documented as gated rather than guaranteed.
+- **OpenGL path (opt-in)**: Zero-copy GL texture support is gated behind `QUERCUS_OFX_GL=1` (see the [GPU zero-copy implementation plan](./zh/plan/complete/ofx-gpu-zero-copy-plan.md)). Its pixel tests are gated, so GL mask behavior is documented as gated rather than guaranteed.
 
 ## 6. Known Gaps
 

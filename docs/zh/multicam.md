@@ -39,7 +39,7 @@ let result = session.execute(EditCommand::CreateMulticamSequence {
 ```
 
 - 源序列放在项目根目录；host 序列不变。
-- 每个角度一 条视频 track；有音频的角度各一条音频 track。
+- 每个角度一条视频 track；有音频的角度各一条音频 track。
 - host 上没有 clip 时，会在 playhead 放一个角度 0 的 clip 作为 host；
   有 clip 时直接改造该 clip（playhead 覆盖的/第一个）。
 - 音频：当前源角度（初始 0）的音频会作为 AFV 音频放到 host 音频轨，
@@ -84,7 +84,7 @@ session.execute(EditCommand::SwitchMulticam {
 SDK：
 
 ```rust
-let state = session.multicam_state(host_clip)?;      // sequence/multicam/source_count/current
+let state = session.multicam_state(host_clip)?;      // sequence/multicam/source_count/current_source
 let sources = session.multicam_sources(state.multicam);
 for source in &sources {
     // source.index / source.track / source.name / source.current
@@ -97,7 +97,7 @@ C ABI（`quercus_engine.h`）：
 
 ```c
 bool quercus_editor_multicam_state(const void* session, uint64_t clip,
-                                   QuercusEditorMulticamState* out);
+                                   RawMulticamState* out);
 int32_t quercus_editor_multicam_source_count(const void* session, uint64_t multicam);
 int32_t quercus_editor_multicam_current_source(const void* session, uint64_t multicam);
 int32_t quercus_editor_multicam_source_name(const void* session, uint64_t multicam,
@@ -112,6 +112,7 @@ int32_t quercus_editor_multicam_source_at(int32_t source_count, double x, double
   不是 footage 文件名。
 - `source_at` 与 C++ `MulticamDisplay::DisplayClicked` 一致：
   `multi = max(rows, cols)`、`col/row = floor(x/y * multi)`；空白格返回 -1。
+  Rust SDK 将有效角度返回为 `Some(index)`，空白格或越界坐标返回 `None`。
 - 网格布局：从 1x1 开始增长较小边，直到 `rows*cols >= source_count`。
 
 ## 渲染
@@ -135,10 +136,10 @@ int32_t quercus_editor_multicam_source_at(int32_t source_count, double x, double
 
 ## 验证
 
-| 检查 | 结果 |
+| 检查 | 当前覆盖 |
 |---|---|
-| `cargo test -p quercus-engine --lib -- --test-threads=1` | 312 passed |
-| `cargo test -p quercus-engine-rs --lib` | 125 passed（含 5 个 multicam 测试） |
-| `cargo test -p quercus-timeline --lib multicam` | 10 passed |
-| `cargo test -p quercus-engine --lib editor_commands::tests::multicam` | 2 passed（时基 + 幂等） |
-| `gen_c_header.py --check` + C11/C++17 smoke | 通过（54 structs / 14 enums / 715 functions） |
+| `cargo test -p quercus-engine-rs --lib editor::multicam::tests` | 5 个测试：启用/切换/split/AFV/undo、wizard 与重载、网格、命中、角度查询 |
+| `cargo test -p quercus-timeline --lib multicam` | 10 个测试：查找、启停、切换、split、链接和独立图复制 |
+| `cargo test -p quercus-engine --lib editor_commands::tests::multicam` | 9 个测试：wizard、时基、幂等、片段音频参数和撤销 |
+| `cargo test -p quercus-engine --lib editor::multicam::tests` | 2 个测试：空值/无效输入和无效图路径 |
+| `gen_c_header.py --check` / `gen_c_api_docs.py --check` | 当前通过；60 structs / 14 enums / 744 functions |

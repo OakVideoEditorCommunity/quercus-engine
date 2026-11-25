@@ -3,8 +3,8 @@
 > 用途：对外介绍 / 宣传材料的能力底稿。只列 **公开 SDK（`quercus-engine-rs`）与稳定 C ABI**
 > 暴露的能力，不包含内部实现 crate。
 >
-> 版本基线：crates.io `quercus-engine-rs 0.5.7`、`quercus-engine 0.5.3`、内部 crate 0.5.2；
-> 主线 HEAD 已合并、但可能尚未发布的能力单独标注「主线」。
+> 版本基线：当前 workspace `0.7.2`。crates.io 的实际发布版本以 registry 为准；
+> 本文描述当前源码的公开能力，并单独标注「主线」。
 
 ## 1. Quercus 是什么
 
@@ -18,7 +18,7 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
 | 指标 | 数值 |
 |---|---:|
 | 公开 Rust SDK 模块 | 26 |
-| C ABI 导出符号（`quercus_engine.h`） | 718 |
+| C ABI 导出符号（`quercus_engine.h`） | 744 |
 | 语义编辑命令（`EditCommand`） | 74 |
 | 内置效果节点 | 68 |
 | 转场类型 | 4（Cross Dissolve / Fade / Wipe / Slide） |
@@ -53,8 +53,8 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
 | 剪辑 | 片段属性 | `SetBlocksEnabled`、`SetClipsSpeed`、`RenameBlocks`、`DuplicateClips`、`CopyClips`、`PasteClips(Insert)`、`NestClips` | 含剪贴板/嵌套 |
 | 剪辑 | 链接 | `SetClipsLinked`、`SplitClipsPreservingLinks` | A/V 同步编辑 |
 | 剪辑 | 转场 | `AddTransitionAtSeam/AtEdge`、`AddDefaultTransition`、`SetTransitionLength` | 4 种类型，引擎节点已支持 |
-| 剪辑 | 片段增益（主线） | `EditorSession::set_clip_gain` | 0..=4，一次 undo |
-| 剪辑 | SRT 字幕工作流（主线） | `EditorSession::{import_subtitles,export_subtitles}`、`set_subtitle_style` | 以 Text3 片段实现；样式支持字体/字号/颜色/描边/对齐 |
+| 剪辑 | 片段音频参数 | `EditorSession::{set_clip_gain,set_clip_pan,set_clip_fade,clip_audio}` | gain 0..=4、pan -1..=1、线性淡入淡出；一次 undo |
+| 剪辑 | SRT 字幕工作流 | `EditorSession::{import_subtitles,import_subtitles_styled,export_subtitles}`、`set_subtitle_style` | 以 Text3 片段实现；样式支持字体/字号/颜色/描边/对齐 |
 | 媒体 | 导入 / 替换 / 重探 | `ImportFootage`、`ReplaceFootage`、`ReprobeUnprobedFootage`、`CreateSequenceFromFootage` | 支持视频/音频/图片/字幕流探测 |
 | 媒体 | 工程箱与文件夹 | `CreateFolder`、`DeleteEntry`、`EnsureSequencesMounted`、`Project::folder_*` | 层级浏览 |
 | 媒体 | 代理（Proxy） | `EditorSession::{generate_proxy,complete_proxy,proxy_status,proxy_path,delete_proxy,set_proxy_enabled}`、`SetFootageProxyParams/ClearFootageProxyParams` | 4K 剪辑加速 |
@@ -77,8 +77,10 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
 | 音频 | 设备输出 | `audio::{create_instance,destroy_instance,output_device_names,set_output_device,output_levels,seconds,push_to_output,...}` | 电平/时钟/缓冲/underflow |
 | 音频 | 音频渲染 | `task::render_audio`、`AudioBlock`、`LevelStats` | 48k/立体声等 |
 | 音频 | 波形分析 | `extract_waveform`、`Waveform::{peaks,point}`、`audio_analysis::{place_by_source_time,place_by_waveform_offset,estimate_envelope_offset,estimate_stretch_offset}` | 对齐/包络/拉伸估计 |
-| 音频 | 音量/声像 | `Volume`、`Pan` 节点 | 混音效果链为主线推进项 |
-| 音频 | 片段增益（主线） | `EditorSession::set_clip_gain` | 0..=4 |
+| 音频 | 音量/声像 | `Volume`、`Pan` 节点与混音内核 | 已接入预览、离线和 worker 混音 |
+| 音频 | 片段效果链 | `add_clip_audio_effect`、`remove_clip_audio_effect`、`set_clip_audio_effect_{enabled,param}` | Volume/Pan/EQ/Compressor/Limiter/Gate/Ducking；静态参数、有序执行、可撤销 |
+| 音频 | 主总线效果 | `audio_bus_effects`、`add_audio_bus_effect`、`remove_audio_bus_effect`、`set_audio_bus_effect_{enabled,param}` | 总线 Volume/Pan/EQ/Compressor/Limiter/Gate；随工程设置保存 |
+| 音频 | 响度测量 | `EditorSession::measure_loudness` | 近似 EBU R128 integrated LUFS 与 4x 插值峰值；不包含自动归一化 |
 | 音频 | 音频导出 | `EncodingParams`（AAC/PCM/MP3/FLAC/Opus/Vorbis 等） | 随容器而定 |
 | 预览 | 实时预览 | `PreviewSession::{source,program}`、`seek/play/pause`、`invalidate`、`start/stop_audio_output`、`audio_output_levels` | Source / Program 两种 |
 | 预览 | 预览帧/音频请求 | `request_frame`、`request_audio`、`PreviewFrameRequest/PreviewAudioRequest`、`generation` | 异步、可丢弃过期结果 |
@@ -92,7 +94,7 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
 | 导出 | 任务系统 | `Task::{state,progress,title,error,wait,cancel,cancellation}`、`take_{project,video,audio,thumbnail,waveform}` | 可取消、可轮询 |
 | 导出 | 交换格式导出 | `task::{save_otio,load_otio}`、`export_subtitles`（主线） | OTIO/FCPXML/SRT |
 | 导出 | 代理任务并发 | `task::proxy_max_concurrent` | 由宿主控制队列 |
-| 平台 | 稳定 C ABI | `quercus_engine.h`（1452 行，718 个 `quercus_*` 符号） | C/C++ 可直接调用 |
+| 平台 | 稳定 C ABI | `quercus_engine.h`（1568 行，744 个 `quercus_*` 符号） | C/C++ 可直接调用 |
 | 平台 | Rust SDK | 26 个模块、edition 2024、Rust 1.85+ | safe wrapper |
 | 平台 | 渲染 worker | `worker::{parse_backend,run,ofx_host_main,main}` | 进程隔离渲染 |
 | 平台 | 依赖与许可 | 由 `FFMPEG_DIR` 提供 FFmpeg 开发库（默认动态链接）、OpenColorIO 2.x；GPL-3.0-or-later | 与 Oak 一致 |
@@ -103,7 +105,9 @@ Oak 是参考实现，其他前端可以用同一套引擎构建自己的编辑�
   Text3 片段；`export_subtitles(path)` 把当前序列的 Text 片段导出为 SRT；
   `set_subtitle_style` 支持字体、字号、填充色、描边色/宽度、对齐。
   说明：目前基于 Text 片段实现；`margin_h/margin_v/line_spacing` 接口保留但 text3 暂未使用。
-- **片段增益**：`set_clip_gain`（0..=4，1 = 原始），一条 undo。
+- **片段音频与后期**：`set_clip_gain` / `set_clip_pan` / `set_clip_fade`，以及可撤销的
+  片段音频效果链；Volume、Pan、EQ、Compressor、Limiter、Gate、Ducking 已进入
+  预览、导出和 worker 混音。主总线效果与 LUFS/峰值测量也已提供。
 - **导出链路修复**：视频内嵌音轨、静音轨、关键帧、短视频补帧等已在主线修复。
 
 ## 5. 典型接入（Rust SDK）
@@ -149,12 +153,13 @@ export.wait();
 - `Merge` 目前是 alpha-over，没有 multiply/screen 等混合模式。
 - 调色缺 **Curves / HSL 二级校色 / qualifier**；一级调色与 OCIO/LUT 完整。
 - 字幕目前以 **Text3 片段**实现，不是独立字幕块；样式部分字段受限。
-- 音频效果链/混音自动化仍在主线推进；已有 per-clip gain、Volume/Pan 节点与音频渲染。
+- 音频效果参数目前为静态值；音量/效果关键帧包络、轨道 solo、响度归一化、轨道级效果、
+  子混音/路由、环绕声和音频 OFX 尚未提供。EQ 等高级效果是混音内核，尚未注册为独立节点。
 - `render_frame_f32` 返回工作色彩空间像素，调用方需做显示变换（`utils::working_to_display_target`）。
 - 撤销栈是进程级全局的。
 
 ## 8. 版本与许可
 
-- 发布版：`quercus-engine-rs 0.5.7`（crates.io）、`quercus-engine 0.5.3`。
-- 主线 HEAD：字幕/音频增益/导出修复等，发布前请以对应版本的 API 文档为准。
+- 当前 workspace：`quercus-engine-rs` / `quercus-engine` `0.7.2`。
+- crates.io 发布版与主线可能不同，集成前请以目标版本的 API 文档为准。
 - 许可：GPL-3.0-or-later，与 Oak Video Editor 一致。

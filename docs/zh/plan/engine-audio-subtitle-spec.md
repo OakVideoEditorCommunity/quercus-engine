@@ -1,7 +1,22 @@
 # 引擎补全规格：音频后期 + 字幕
 
-面向 `~/Projects/quercus-engine`（published: `quercus-task`/`quercus-node` 0.5.2、
-`quercus-engine` 0.5.3）。只列能力和实现方案，不重复正在修的导出 bug。
+原始版本面向 `quercus-task` / `quercus-node` 0.5.2、`quercus-engine` 0.5.3。
+只列能力和实现方案，不重复当时正在修的导出 bug。
+
+> **实施状态（2026-11-25，workspace 0.7.2）**
+>
+> - 音频已完成：片段 gain/pan/fade、可撤销的静态效果链、Volume/Pan 接入混音、
+>   EQ/Compressor/Limiter/Gate/Ducking 内核、mute、主总线效果、LUFS/峰值测量、
+>   `.ove` 序列化及 Wire/worker 传递。
+> - 音频未完成：参数关键帧/包络、solo、响度归一化、轨道级效果、子混音/路由、
+>   环绕声、音频 OFX，以及完整的端到端验收。EQ 等高级效果尚未注册为独立节点。
+> - 字幕已采用替代路线落地：SRT 导入为视频轨 Text3 片段，因此预览/烧录、撤销和
+>   `.ove` 持久化复用现有文字路径；支持 SRT 导出和部分样式。
+> - 字幕未完成：独立字幕块/字幕轨语义、完整样式（边距/行距/水平对齐）、安全区、
+>   容器字幕流、导出任务的 sidecar/container 模式、OTIO/FCPXML 字幕映射。
+>
+> 下文的“现状（证据）”与“缺口”保留为原始审计记录，不代表当前 HEAD。
+> 当前代码均位于 `crates/` 下；部分实现选择了文中路线的等价替代方案。
 
 ---
 
