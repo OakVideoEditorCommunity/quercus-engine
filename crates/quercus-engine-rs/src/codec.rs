@@ -1619,6 +1619,10 @@ pub struct QuercusCodecEncodingParams {
 	pub color_space: i32,
 	/// The `color_range` field.
 	pub color_range: i32,
+	/// Video rate-control mode (`0` = Bitrate, `1` = CRF, `2` = CQP).
+	pub video_rate_control: i32,
+	/// Video quality value for CRF/CQP modes (lower = higher quality).
+	pub video_quality: i32,
 }
 
 impl Default for QuercusCodecEncodingParams {

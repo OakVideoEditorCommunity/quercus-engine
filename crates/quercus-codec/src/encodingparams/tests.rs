@@ -167,6 +167,8 @@ fn save_load_roundtrip() {
 	p.video_pix_fmt[..pix.len()].copy_from_slice(pix);
 	p.video_is_image_sequence = 1;
 	p.video_scaling_method = VideoScalingMethod::Crop;
+	p.video_rate_control = VideoRateControl::Crf.into();
+	p.video_quality = 20;
 
 	p.audio_enabled = 1;
 	p.audio_codec = 1;
@@ -206,6 +208,8 @@ fn save_load_roundtrip() {
 	assert_eq!(q.video_pix_fmt[..pix.len()], pix[..]);
 	assert_eq!(q.video_is_image_sequence, 1);
 	assert_eq!(q.video_scaling_method, VideoScalingMethod::Crop);
+	assert_eq!(q.video_rate_control, i32::from(VideoRateControl::Crf));
+	assert_eq!(q.video_quality, 20);
 
 	assert_eq!(q.audio_enabled, 1);
 	assert_eq!(q.audio_codec, 1);
@@ -300,7 +304,7 @@ fn identity() -> [f64; 16] {
 fn encoding_params_c_abi_layout() {
 	use std::mem::{offset_of, size_of};
 
-	assert_eq!(size_of::<EncodingParams>(), 1552);
+	assert_eq!(size_of::<EncodingParams>(), 1560);
 	assert_eq!(offset_of!(EncodingParams, filename), 0);
 	assert_eq!(offset_of!(EncodingParams, format), 1024);
 	assert_eq!(offset_of!(EncodingParams, video_enabled), 1028);
@@ -319,4 +323,37 @@ fn encoding_params_c_abi_layout() {
 	assert_eq!(offset_of!(EncodingParams, color_trc), 1540);
 	assert_eq!(offset_of!(EncodingParams, color_space), 1544);
 	assert_eq!(offset_of!(EncodingParams, color_range), 1548);
+	// Appended video rate-control mode and quality parameter.
+	assert_eq!(offset_of!(EncodingParams, video_rate_control), 1552);
+	assert_eq!(offset_of!(EncodingParams, video_quality), 1556);
+}
+
+#[test]
+fn video_rate_control_discriminants_and_xml_compat() {
+	assert_eq!(VideoRateControl::from(0), VideoRateControl::Bitrate);
+	assert_eq!(VideoRateControl::from(1), VideoRateControl::Crf);
+	assert_eq!(VideoRateControl::from(2), VideoRateControl::Cqp);
+	assert_eq!(VideoRateControl::from(-1), VideoRateControl::Bitrate);
+	assert_eq!(VideoRateControl::from(99), VideoRateControl::Bitrate);
+	assert_eq!(i32::from(VideoRateControl::Bitrate), 0);
+	assert_eq!(i32::from(VideoRateControl::Crf), 1);
+	assert_eq!(i32::from(VideoRateControl::Cqp), 2);
+
+	// Legacy XML without <ratecontrol>/<quality> keeps default Bitrate / 0.
+	let mut p = EncodingParams::default();
+	p.load(
+		r#"<export><video enabled="1"><codec>1</codec><bitrate>5000000</bitrate></video></export>"#,
+	)
+	.unwrap();
+	assert_eq!(p.video_rate_control, i32::from(VideoRateControl::Bitrate));
+	assert_eq!(p.video_quality, 0);
+
+	// Unknown <ratecontrol> in XML safely falls back to Bitrate.
+	let mut q = EncodingParams::default();
+	q.load(
+		r#"<export><video enabled="1"><ratecontrol>42</ratecontrol><quality>18</quality></video></export>"#,
+	)
+	.unwrap();
+	assert_eq!(q.video_rate_control, i32::from(VideoRateControl::Bitrate));
+	assert_eq!(q.video_quality, 18);
 }
