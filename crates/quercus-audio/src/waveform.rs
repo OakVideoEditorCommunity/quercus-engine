@@ -80,7 +80,8 @@ pub type Sample = Vec<SamplePerChannel>;
 pub struct AudioVisualWaveform {
 	/// Timeline time the stored data starts at (shifts on trim_in).
 	virtual_start: Rational,
-	channels: i32,
+	/// Number of interleaved channels used to index stored samples.
+	pub channels: i32,
 	length: Rational,
 	// Channel-interleaved min/max samples, keyed by the mipmap sample rate.
 	mipmapped_data: BTreeMap<Rational, Sample>,
@@ -119,27 +120,6 @@ impl AudioVisualWaveform {
 			rate = rate * Rational::new(2, 1);
 		}
 		w
-	}
-
-	/// The number of interleaved channels the stored samples are indexed by.
-	///
-	/// `0` means unset (a fresh [`AudioVisualWaveform`]) and makes
-	/// [`AudioVisualWaveform::overwrite_samples`] a no-op; readers such as
-	/// [`AudioVisualWaveform::get_summary_from_time`] clamp negative counts to
-	/// 0. Set with [`AudioVisualWaveform::set_channel_count`].
-	pub fn channel_count(&self) -> i32 {
-		self.channels
-	}
-
-	/// Replace the waveform's channel count without touching stored samples.
-	///
-	/// `channels` is the new interleaved channel count; `0` means unset (the
-	/// fresh state after [`AudioVisualWaveform::new`]) and makes
-	/// [`AudioVisualWaveform::overwrite_samples`] a no-op. Existing data is
-	/// still indexed with the old count, so callers change this only before a
-	/// full rewrite (e.g. when reusing a cache entry for different media).
-	pub fn set_channel_count(&mut self, channels: i32) {
-		self.channels = channels;
 	}
 
 	/// Length of the waveform in seconds.
@@ -369,8 +349,8 @@ impl AudioVisualWaveform {
 			);
 
 			// Get our source sample, indexing with the SOURCE's channel count
-			let their_start_index = (offset.to_f64() * rate_dbl).floor() as usize
-				* sums.channel_count().max(0) as usize;
+			let their_start_index =
+				(offset.to_f64() * rate_dbl).floor() as usize * sums.channels.max(0) as usize;
 			if their_start_index >= their_arr.len() {
 				continue;
 			}
@@ -575,7 +555,7 @@ impl AudioVisualWaveform {
 		}
 
 		// Return null samples
-		vec![SamplePerChannel::default(); self.channel_count().max(0) as usize]
+		vec![SamplePerChannel::default(); self.channels.max(0) as usize]
 	}
 
 	/// Reduce planar samples into min/max pairs.

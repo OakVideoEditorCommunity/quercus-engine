@@ -164,7 +164,7 @@ pub unsafe extern "C" fn quercus_codec_frame_timestamp(this: *const Frame) -> Qu
 	if this.is_null() {
 		return QuercusRational { num: 0, den: 0 };
 	}
-	QuercusRational::from_native(&unsafe { &*this }.timestamp())
+	QuercusRational::from_native(&unsafe { &*this }.timestamp)
 }
 
 /// Sets the frame's timestamp.
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn quercus_codec_frame_set_timestamp(this: *mut Frame, ts:
 	if this.is_null() {
 		return;
 	}
-	unsafe { &mut *this }.set_timestamp(ts.to_native());
+	unsafe { &mut *this }.timestamp = ts.to_native();
 }
 
 /// Copies the frame's params into `out`.
@@ -204,7 +204,7 @@ pub unsafe extern "C" fn quercus_codec_frame_get_params(
 	if this.is_null() || out.is_null() {
 		return false;
 	}
-	match unsafe { &*this }.params() {
+	match unsafe { &*this }.params.as_ref() {
 		Some(params) => {
 			unsafe { *out = QuercusVideoParams::from_native(params) };
 			true

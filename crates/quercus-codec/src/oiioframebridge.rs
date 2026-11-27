@@ -149,11 +149,11 @@ pub fn oiio_frame_to_buffer(frame: &Frame) -> error::Result<Vec<u8>> {
 	let height = frame.height();
 	let format = frame.format() as i32;
 	let linesize_bytes = frame.linesize_bytes();
-	let timestamp = frame.timestamp();
+	let timestamp = frame.timestamp;
 
-	let (time_base_num, time_base_den) = match frame.params() {
+	let (time_base_num, time_base_den) = match frame.params.as_ref() {
 		Some(p) => {
-			let (num, den) = p.time_base();
+			let (num, den) = p.time_base;
 			(i64::from(num), i64::from(den))
 		}
 		None => (0, 0),
@@ -220,9 +220,9 @@ pub fn oiio_buffer_to_frame(buffer: &[u8]) -> error::Result<Frame> {
 		0,
 		1,
 	);
-	params.set_format(QuercusPixelFormat::from_code(header.format));
+	params.format = QuercusPixelFormat::from_code(header.format);
 	let mut frame = Frame::with_params(params);
-	frame.set_timestamp(Rational::new(header.timestamp_num, header.timestamp_den));
+	frame.timestamp = Rational::new(header.timestamp_num, header.timestamp_den);
 	frame.allocate()?;
 
 	match frame.data_mut() {
@@ -351,9 +351,9 @@ mod tests {
 			0,
 			1,
 		);
-		params.set_format(QuercusPixelFormat::from_code(0)); // U8
+		params.format = QuercusPixelFormat::from_code(0); // U8
 		let mut frame = Frame::with_params(params);
-		frame.set_timestamp(Rational::new(5, 2));
+		frame.timestamp = Rational::new(5, 2);
 		frame.allocate().unwrap();
 		frame
 	}
@@ -397,8 +397,8 @@ mod tests {
 		assert_eq!(out.height(), 50);
 		assert_eq!(out.format() as i32, 0);
 		assert_eq!(out.allocated_size(), expected_len);
-		assert_eq!(out.timestamp().numerator(), 5);
-		assert_eq!(out.timestamp().denominator(), 2);
+		assert_eq!(out.timestamp.numerator(), 5);
+		assert_eq!(out.timestamp.denominator(), 2);
 		assert_eq!(out.data().unwrap(), frame.data().unwrap());
 	}
 

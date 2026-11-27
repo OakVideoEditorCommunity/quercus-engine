@@ -260,7 +260,7 @@ project_string_getter! {
 
 /// Whether the project has unsaved changes (its dirty flag).
 ///
-/// The flag is set by the writing helpers that call `Project::set_modified` (for
+/// The flag is set by the writing helpers through `Project::modified` (for
 /// example `quercus_project_set_setting`, `quercus_project_set_cache_location` and
 /// `quercus_project_unset_setting`) and cleared by a successful
 /// `quercus_project_save`.
@@ -1306,7 +1306,7 @@ pub unsafe extern "C" fn quercus_project_unset_setting(
 	with_project_mut(project, |g| {
 		let removed = g.settings.remove(key).is_some();
 		if removed {
-			g.set_modified(true);
+			g.modified = true;
 		}
 		removed
 	})
@@ -3644,7 +3644,7 @@ pub unsafe extern "C" fn quercus_project_set_setting(
 	}
 	with_project_mut(project, |guard| {
 		guard.settings.insert(key.to_string(), value.to_string());
-		guard.set_modified(true);
+		guard.modified = true;
 	})
 	.is_some()
 }
@@ -3716,7 +3716,7 @@ pub unsafe extern "C" fn quercus_project_set_cache_location(
 		} else {
 			String::new()
 		};
-		guard.set_modified(true);
+		guard.modified = true;
 	})
 	.is_some()
 }

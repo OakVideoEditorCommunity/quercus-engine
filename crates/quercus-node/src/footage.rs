@@ -149,7 +149,7 @@ impl FootageBehavior {
 		self.timestamp = timestamp;
 		self.has_source_start_time = desc.has_source_start_time();
 		self.source_start_time = if self.has_source_start_time {
-			desc.source_start_time()
+			desc.source_start_time
 		} else {
 			quercus_core::Rational::new(0, 1)
 		};
@@ -732,20 +732,20 @@ fn streams_from_description(
 		let Some(vp) = desc.get_video_stream(i) else {
 			continue;
 		};
-		let (num, den) = vp.frame_rate();
+		let (num, den) = vp.frame_rate;
 		streams.push(StreamInfo {
-			index: vp.stream_index(),
+			index: vp.stream_index,
 			is_video: true,
 			video: Some(VideoParams {
-				width: vp.width(),
-				height: vp.height(),
+				width: vp.width,
+				height: vp.height,
 				frame_rate: quercus_core::Rational::new(num as i64, den as i64),
-				pixel_format: vp.format().code(),
-				channels: vp.channel_count(),
+				pixel_format: vp.format.code(),
+				channels: vp.channel_count,
 				interlaced: false,
 			}),
 			audio: None,
-			duration: stream_duration_seconds(vp.duration(), vp.time_base()),
+			duration: stream_duration_seconds(vp.duration, vp.time_base),
 		});
 	}
 	for i in 0..desc.audio_stream_count() {
@@ -817,10 +817,10 @@ mod tests {
 			0,
 			1,
 		);
-		vp.set_stream_index(stream_index);
+		vp.stream_index = stream_index;
 		vp.set_frame_rate(30000, 1001);
 		vp.set_time_base(1, 30000);
-		vp.set_duration(duration);
+		vp.duration = duration;
 		StreamEntry::Video(vp)
 	}
 

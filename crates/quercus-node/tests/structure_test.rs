@@ -70,7 +70,7 @@ fn project_lifecycle() {
 
 	// Fresh project: new, unmodified, no root.
 	assert!(p.is_new());
-	assert!(!p.is_modified());
+	assert!(!p.modified);
 	assert!(!p.root.valid());
 
 	// initialize() creates the root folder; second call is E_STATE.
@@ -82,11 +82,11 @@ fn project_lifecycle() {
 	let a = add_test_node(&mut p.graph);
 	let b = add_test_node(&mut p.graph);
 	assert!(p.graph.connect(a, b, "val_in", -1).is_ok());
-	p.set_modified(true);
-	assert!(p.is_modified());
+	p.modified = true;
+	assert!(p.modified);
 	assert!(!p.is_new());
-	p.set_modified(false);
-	assert!(!p.is_modified());
+	p.modified = false;
+	assert!(!p.modified);
 
 	// clear() empties the graph and resets the root.
 	assert!(p.clear().is_ok());
@@ -121,8 +121,8 @@ fn project_deep_copy_isolation() {
 			.unwrap()
 			.core
 			.set_standard_value("val_in", -1, NodeValue::Float(42.0));
-		p.set_filename("/tmp/demo.ove");
-		p.set_modified(true);
+		p.filename = ("/tmp/demo.ove").to_string();
+		p.modified = true;
 	}
 
 	let copy = project.lock().unwrap().deep_copy().unwrap();

@@ -411,7 +411,7 @@ impl ExportTask {
 			1,
 		);
 		let mut out = quercus_codec::frame::Frame::with_params(params);
-		out.set_timestamp(frame.timestamp);
+		out.timestamp = frame.timestamp;
 		out.allocate()
 			.map_err(|e| Error::Failed(format!("Failed to allocate encoder frame: {e:?}")))?;
 		let dst_stride = out.linesize_bytes() as usize;
@@ -443,18 +443,18 @@ impl ExportTask {
 impl TaskBehavior for ExportTask {
 	fn run(&mut self, task: &mut Task) -> Result<()> {
 		// Share the caller's cancellation atom with the inner render base.
-		self.render.base.set_cancel_atom(task.get_cancel_atom());
+		self.render.base.cancel_atom = task.cancel_atom.clone();
 
 		let codec_params = self.build_codec_params();
 		let Some(encoder) = create_from_params(&codec_params) else {
-			task.set_error("Failed to create encoder");
+			task.error = Some(("Failed to create encoder").to_string());
 			return Err(Error::Failed("Failed to create encoder".to_string()));
 		};
 		self.encoder = Some(encoder.clone());
 
 		if let Err(e) = encoder.open() {
 			let err = encoder.get_error();
-			task.set_error(&format!("Failed to open file: {err}"));
+			task.error = Some((&format!("Failed to open file: {err}")).to_string());
 			let _ = e;
 			return Err(Error::Failed("Failed to open file".to_string()));
 		}
@@ -508,7 +508,7 @@ impl TaskBehavior for ExportTask {
 		}
 		let err = encoder.get_error();
 		if !err.is_empty() {
-			task.set_error(&err);
+			task.error = Some((&err).to_string());
 			return Err(Error::Failed("Encoder flush failed".to_string()));
 		}
 
@@ -586,7 +586,7 @@ impl RenderTaskBehavior for ExportTask {
 			} else {
 				format!("Failed to write frame: {detail}")
 			};
-			task.set_error(&message);
+			task.error = Some((&message).to_string());
 			return Err(Error::Failed(message));
 		}
 		// Progress is reported by the render loop itself (native signalling).
@@ -611,7 +611,7 @@ impl RenderTaskBehavior for ExportTask {
 			.is_err()
 		{
 			let err = encoder.get_error();
-			task.set_error(&err);
+			task.error = Some((&err).to_string());
 			return Err(Error::Failed("Failed to write audio".to_string()));
 		}
 		Ok(())
@@ -628,7 +628,7 @@ impl RenderTaskBehavior for ExportTask {
 		// times; write with 0.0/0.0 (the encoder default interval).
 		if encoder.write_subtitle(text, 0.0, 0.0).is_err() {
 			let err = encoder.get_error();
-			task.set_error(&err);
+			task.error = Some((&err).to_string());
 			return Err(Error::Failed("Failed to write subtitle".to_string()));
 		}
 		Ok(())

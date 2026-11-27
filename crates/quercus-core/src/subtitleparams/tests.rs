@@ -2,8 +2,8 @@ use super::*;
 
 fn sample_params() -> SubtitleParams {
 	let mut sp = SubtitleParams::new();
-	sp.set_stream_index(2);
-	sp.set_enabled(false);
+	sp.stream_index = 2;
+	sp.enabled = false;
 	sp.add_subtitle(0, 1, 25, 1, "hello").unwrap();
 	sp.add_subtitle(25, 1, 50, 1, "world").unwrap();
 	sp
@@ -12,8 +12,8 @@ fn sample_params() -> SubtitleParams {
 #[test]
 fn defaults() {
 	let sp = SubtitleParams::new();
-	assert_eq!(sp.stream_index(), 0);
-	assert!(sp.enabled());
+	assert_eq!(sp.stream_index, 0);
+	assert!(sp.enabled);
 	assert!(!sp.is_valid());
 	assert_eq!(sp.count(), 0);
 	assert_eq!(sp.duration(), (0, 1));
@@ -22,12 +22,12 @@ fn defaults() {
 #[test]
 fn getters_setters() {
 	let mut sp = SubtitleParams::new();
-	sp.set_stream_index(7);
-	assert_eq!(sp.stream_index(), 7);
-	sp.set_enabled(false);
-	assert!(!sp.enabled());
-	sp.set_enabled(true);
-	assert!(sp.enabled());
+	sp.stream_index = 7;
+	assert_eq!(sp.stream_index, 7);
+	sp.enabled = false;
+	assert!(!sp.enabled);
+	sp.enabled = true;
+	assert!(sp.enabled);
 }
 
 #[test]
@@ -134,8 +134,8 @@ fn load_xml_round_trip() {
 
 	let mut loaded = SubtitleParams::new();
 	loaded.load_xml(&xml).unwrap();
-	assert_eq!(loaded.stream_index(), 2);
-	assert!(!loaded.enabled());
+	assert_eq!(loaded.stream_index, 2);
+	assert!(!loaded.enabled);
 	assert_eq!(loaded.count(), 2);
 	assert_eq!(loaded.get_subtitle(0).unwrap(), ((0, 1), (25, 1)));
 	assert_eq!(loaded.get_subtitle_text(0).unwrap(), "hello");
@@ -148,8 +148,8 @@ fn load_xml_empty() {
 	let mut sp = SubtitleParams::new();
 	sp.load_xml("<subtitleparams><streamindex>3</streamindex><enabled>1</enabled><subtitles/></subtitleparams>")
 			.unwrap();
-	assert_eq!(sp.stream_index(), 3);
-	assert!(sp.enabled());
+	assert_eq!(sp.stream_index, 3);
+	assert!(sp.enabled);
 	assert_eq!(sp.count(), 0);
 }
 
@@ -177,7 +177,7 @@ fn load_xml_skips_unknown_elements() {
 			 </subtitleparams>",
 	)
 	.unwrap();
-	assert_eq!(sp.stream_index(), 9);
+	assert_eq!(sp.stream_index, 9);
 	assert_eq!(sp.count(), 1);
 	assert_eq!(sp.get_subtitle_text(0).unwrap(), "ok");
 }
@@ -190,8 +190,8 @@ fn load_xml_resets_existing_content() {
 		)
 		.unwrap();
 	assert_eq!(sp.count(), 0);
-	assert_eq!(sp.stream_index(), 1);
-	assert!(sp.enabled());
+	assert_eq!(sp.stream_index, 1);
+	assert!(sp.enabled);
 }
 
 #[test]
@@ -221,8 +221,8 @@ fn load_xml_whitespace_round_trip() {
 			 </subtitleparams>\n",
 	)
 	.unwrap();
-	assert_eq!(sp.stream_index(), 4);
-	assert!(sp.enabled());
+	assert_eq!(sp.stream_index, 4);
+	assert!(sp.enabled);
 	assert_eq!(sp.count(), 1);
 	// CPP-PARITY: whitespace immediately following a start element is
 	// character data at depth 1, so it is included in the text — the same
@@ -303,8 +303,8 @@ fn load_xml_enabled_variants() {
 	let mut sp = SubtitleParams::new();
 	sp.load_xml("<subtitleparams><enabled>2</enabled><subtitles/></subtitleparams>")
 		.unwrap();
-	assert!(sp.enabled()); // any nonzero is true (C++ bool conversion)
-						// std::stoi throws on junk -> E_FAILED.
+	assert!(sp.enabled); // any nonzero is true (C++ bool conversion)
+						 // std::stoi throws on junk -> E_FAILED.
 	assert!(sp
 		.load_xml("<subtitleparams><enabled>abc</enabled><subtitles/></subtitleparams>")
 		.is_err());
@@ -342,7 +342,7 @@ fn load_xml_declaration_comment_doctype_skipped() {
 			 </subtitles></subtitleparams>",
 	)
 	.unwrap();
-	assert_eq!(sp.stream_index(), 6);
+	assert_eq!(sp.stream_index, 6);
 	assert_eq!(sp.count(), 1);
 }
 

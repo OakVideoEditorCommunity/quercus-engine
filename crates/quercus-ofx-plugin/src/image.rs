@@ -227,7 +227,7 @@ pub struct Image {
 	/// unique identifier).
 	pub props: PropertySet,
 	/// Pixel buffer (length = row_bytes * height).
-	data: Vec<u8>,
+	pub data: Vec<u8>,
 	/// Bit depth.
 	depth: BitDepth,
 	/// Components.
@@ -340,17 +340,6 @@ impl Image {
 		img
 	}
 
-	/// Mutable pixel slice (for writing plugin output). The length is
-	/// consistent with the format by type construction.
-	pub fn pixels_mut(&mut self) -> &mut [u8] {
-		&mut self.data
-	}
-
-	/// Read-only pixel slice.
-	pub fn pixels(&self) -> &[u8] {
-		&self.data
-	}
-
 	/// Pixel bounds (canonical coordinates; the Image keeps bounds and
 	/// ROD unified).
 	pub fn bounds(&self) -> OfxRectD {
@@ -460,14 +449,15 @@ mod tests {
 			},
 		);
 		for (i, v) in values.iter().enumerate() {
-			img.pixels_mut()[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+			img.data.as_mut_slice()[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
 		}
 		img
 	}
 
 	fn samples(img: &Image) -> Vec<f32> {
 		let f = img.convert_depth(BitDepth::Float);
-		f.pixels()
+		f.data
+			.as_slice()
 			.chunks_exact(4)
 			.map(|c| f32::from_le_bytes(c.try_into().unwrap()))
 			.collect()
@@ -482,7 +472,7 @@ mod tests {
 
 		let u8img = src.convert_depth(BitDepth::Byte);
 		assert_eq!(u8img.depth(), BitDepth::Byte);
-		assert_eq!(u8img.pixels(), &[0, 64, 128, 255]);
+		assert_eq!(u8img.data.as_slice(), &[0, 64, 128, 255]);
 		let back = samples(&u8img);
 		for (a, b) in back.iter().zip([0.0, 0.25, 0.5, 1.0]) {
 			assert!((a - b).abs() < 0.003, "u8 roundtrip: {a} vs {b}");
@@ -504,8 +494,11 @@ mod tests {
 
 		// Same depth = reallocate + copy (the props' data pointer must point into a new buffer).
 		let same = src.convert_depth(BitDepth::Float);
-		assert_eq!(same.pixels(), src.pixels());
-		assert!(!std::ptr::eq(same.pixels().as_ptr(), src.pixels().as_ptr()));
+		assert_eq!(same.data.as_slice(), src.data.as_slice());
+		assert!(!std::ptr::eq(
+			same.data.as_slice().as_ptr(),
+			src.data.as_slice().as_ptr()
+		));
 	}
 
 	/// f16 conversion edges: zero/subnormal/Inf/NaN.

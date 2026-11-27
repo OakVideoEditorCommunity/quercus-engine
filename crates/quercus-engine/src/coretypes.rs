@@ -406,82 +406,84 @@ impl crate::handle::NativeMirror for QuercusVideoParams {
 	type Native = VideoParams;
 
 	fn from_native(v: &VideoParams) -> Self {
-		let (time_base_num, time_base_den) = v.time_base();
-		let (frame_rate_num, frame_rate_den) = v.frame_rate();
-		let (pixel_aspect_num, pixel_aspect_den) = v.pixel_aspect_ratio();
+		let (time_base_num, time_base_den) = v.time_base;
+		let (frame_rate_num, frame_rate_den) = v.frame_rate;
+		let (pixel_aspect_num, pixel_aspect_den) = v.pixel_aspect_ratio;
 		let mut colorspace = [0u8; 64];
-		let name = v.colorspace().as_bytes();
+		let name = v.colorspace.as_bytes();
 		let n = name.len().min(63);
 		colorspace[..n].copy_from_slice(&name[..n]);
 		Self {
-			width: v.width(),
-			height: v.height(),
-			depth: v.depth(),
+			width: v.width,
+			height: v.height,
+			depth: v.depth,
 			time_base_num,
 			time_base_den,
 			frame_rate_num,
 			frame_rate_den,
 			pixel_aspect_num,
 			pixel_aspect_den,
-			format: v.format().code(),
-			channel_count: v.channel_count(),
-			interlacing: v.interlacing() as i32,
-			divider: v.divider(),
-			enabled: v.enabled() as i32,
-			x: v.x(),
-			y: v.y(),
-			stream_index: v.stream_index(),
-			video_type: v.video_type() as i32,
-			start_time: v.start_time(),
-			duration: v.duration(),
-			premultiplied_alpha: v.premultiplied_alpha() as i32,
-			color_range: v.color_range() as i32,
-			color_primaries: v.color_primaries(),
-			color_transfer: v.color_transfer(),
+			format: v.format.code(),
+			channel_count: v.channel_count,
+			interlacing: v.interlacing as i32,
+			divider: v.divider,
+			enabled: v.enabled as i32,
+			x: v.x,
+			y: v.y,
+			stream_index: v.stream_index,
+			video_type: v.video_type as i32,
+			start_time: v.start_time,
+			duration: v.duration,
+			premultiplied_alpha: v.premultiplied_alpha as i32,
+			color_range: v.color_range as i32,
+			color_primaries: v.color_primaries,
+			color_transfer: v.color_transfer,
 			colorspace,
 		}
 	}
 
 	fn to_native(&self) -> VideoParams {
 		let mut v = VideoParams::new();
-		v.set_width(self.width);
-		v.set_height(self.height);
-		v.set_depth(self.depth);
+		v.width = self.width;
+		v.height = self.height;
+		v.depth = self.depth;
 		v.set_time_base(self.time_base_num, self.time_base_den);
 		v.set_frame_rate(self.frame_rate_num, self.frame_rate_den);
 		v.set_pixel_aspect_ratio(self.pixel_aspect_num, self.pixel_aspect_den);
-		v.set_format(VideoPixelFormat::from_code(self.format));
-		v.set_channel_count(self.channel_count);
-		v.set_interlacing(match self.interlacing {
+		v.format = VideoPixelFormat::from_code(self.format);
+		v.channel_count = self.channel_count;
+		v.interlacing = match self.interlacing {
 			1 => Interlacing::TopFirst,
 			2 => Interlacing::BottomFirst,
 			_ => Interlacing::None,
-		});
-		v.set_divider(self.divider);
-		v.set_enabled(self.enabled != 0);
-		v.set_x(self.x);
-		v.set_y(self.y);
-		v.set_stream_index(self.stream_index);
-		v.set_video_type(match self.video_type {
+		};
+		v.divider = self.divider;
+		v.enabled = self.enabled != 0;
+		v.x = self.x;
+		v.y = self.y;
+		v.stream_index = self.stream_index;
+		v.video_type = match self.video_type {
 			1 => VideoType::Still,
 			2 => VideoType::ImageSequence,
 			_ => VideoType::Video,
-		});
-		v.set_start_time(self.start_time);
-		v.set_duration(self.duration);
-		v.set_premultiplied_alpha(self.premultiplied_alpha != 0);
-		v.set_color_range(match self.color_range {
+		};
+		v.start_time = self.start_time;
+		v.duration = self.duration;
+		v.premultiplied_alpha = self.premultiplied_alpha != 0;
+		v.color_range = match self.color_range {
 			1 => ColorRange::Full,
 			_ => ColorRange::Limited,
-		});
-		v.set_color_primaries(self.color_primaries);
-		v.set_color_transfer(self.color_transfer);
+		};
+		v.color_primaries = self.color_primaries;
+		v.color_transfer = self.color_transfer;
 		let end = self
 			.colorspace
 			.iter()
 			.position(|&b| b == 0)
 			.unwrap_or(self.colorspace.len());
-		v.set_colorspace(str::from_utf8(&self.colorspace[..end]).unwrap_or(""));
+		v.colorspace = str::from_utf8(&self.colorspace[..end])
+			.unwrap_or("")
+			.to_string();
 		v
 	}
 }

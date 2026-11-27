@@ -134,10 +134,10 @@ fn sync_auxiliary_to_settings(session: &EditorSessionHandle) {
 		for index in 0..list.size() {
 			if let Some(marker) = list.at(index) {
 				out.push(serde_json::json!({
-					"in": rational_json(marker.time().in_()),
-					"out": rational_json(marker.time().out()),
-					"name": marker.name(),
-					"color": marker.color(),
+					"in": rational_json(marker.time.in_()),
+					"out": rational_json(marker.time.out()),
+					"name": marker.name.as_str(),
+					"color": marker.color,
 				}));
 			}
 		}
@@ -146,7 +146,7 @@ fn sync_auxiliary_to_settings(session: &EditorSessionHandle) {
 	let workarea = {
 		let area = workarea.lock().unwrap_or_else(|e| e.into_inner());
 		serde_json::json!({
-			"enabled": area.enabled(),
+			"enabled": area.enabled,
 			"in": rational_json(area.in_()),
 			"out": rational_json(area.out()),
 		})
@@ -219,8 +219,8 @@ fn restore_auxiliary_from_settings(session: &EditorSessionHandle) {
 				.and_then(|v| v.as_bool())
 				.unwrap_or(false);
 			let mut area = workarea.lock().unwrap_or_else(|e| e.into_inner());
-			area.set_enabled(enabled);
-			area.set_range(TimeRange::new(in_, out));
+			area.enabled = enabled;
+			area.range = TimeRange::new(in_, out);
 		}
 	}
 }
@@ -378,8 +378,8 @@ pub unsafe extern "C" fn quercus_editor_open(
 		if let Some(path) = unsafe { str_arg(uri, uri_len) } {
 			let project = unsafe { &*session }.project();
 			let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
-			guard.set_filename(path);
-			guard.set_modified(false);
+			guard.filename = (path).to_string();
+			guard.modified = false;
 		}
 	}
 	session
@@ -405,10 +405,7 @@ fn open_library_row_uri(uri: &StorageUri, error: *mut i32) -> *mut EditorSession
 	}
 	{
 		let inner = unsafe { &*project }.project().clone();
-		inner
-			.lock()
-			.unwrap_or_else(|e| e.into_inner())
-			.set_modified(false);
+		inner.lock().unwrap_or_else(|e| e.into_inner()).modified = false;
 	}
 	if !error.is_null() {
 		unsafe { *error = error::QUERCUSSTORAGE_OK };
@@ -693,8 +690,8 @@ pub unsafe extern "C" fn quercus_editor_save(
 	if code == error::QUERCUSSTORAGE_OK {
 		let project = unsafe { &*session }.project();
 		let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
-		guard.set_filename(path);
-		guard.set_modified(false);
+		guard.filename = (path).to_string();
+		guard.modified = false;
 	}
 	code
 }

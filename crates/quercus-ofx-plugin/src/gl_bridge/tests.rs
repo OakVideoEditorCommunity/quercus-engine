@@ -108,7 +108,7 @@ fn fbo_clear_readback_f32() {
 	assert_eq!(img.depth(), BitDepth::Float);
 	assert_eq!(img.bounds().x2, w as f64);
 	assert_eq!(img.bounds().y2, h as f64);
-	let px = &img.pixels()[0..16];
+	let px = &img.data.as_slice()[0..16];
 	let px_f: Vec<f32> = px
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
@@ -118,7 +118,7 @@ fn fbo_clear_readback_f32() {
 	assert!((px_f[2] - 0.3).abs() < 1e-6, "B={}", px_f[2]);
 	assert!((px_f[3] - 1.0).abs() < 1e-6, "A={}", px_f[3]);
 	// The whole frame has the same color (clear covers the entire FBO).
-	let all: Vec<f32> = img.pixels()[..]
+	let all: Vec<f32> = img.data.as_slice()[..]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
@@ -147,7 +147,7 @@ fn fbo_clear_readback_u8() {
 	let img = read_pixels_to_image(w, h, &params).expect("U8 readback should succeed");
 	delete_fbo(fbo);
 	delete_gl_texture(tex);
-	let px_f: Vec<f32> = img.pixels()[0..16]
+	let px_f: Vec<f32> = img.data.as_slice()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
@@ -180,7 +180,7 @@ fn input_texture_upload_roundtrip() {
 	let img = read_pixels_to_image(w, h, &params).expect("readback should succeed");
 	delete_fbo(fbo);
 	delete_gl_texture(tex);
-	let got: Vec<f32> = img.pixels()[0..w as usize * h as usize * 16]
+	let got: Vec<f32> = img.data.as_slice()[0..w as usize * h as usize * 16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
@@ -244,7 +244,7 @@ fn import_opaque_fd_texture_roundtrip() {
 	gl_clear();
 	gl_finish();
 	let img = read_pixels_to_image(w, h, &params).expect("readback");
-	let px: Vec<f32> = img.pixels()[0..16]
+	let px: Vec<f32> = img.data.as_slice()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
@@ -312,7 +312,7 @@ fn import_opaque_fd_reads_wgpu_content() {
 	gl_memory_barrier();
 	gl_finish();
 	let img = read_pixels_to_image(w, h, &params).expect("readback");
-	let px: Vec<f32> = img.pixels()[0..16]
+	let px: Vec<f32> = img.data.as_slice()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();

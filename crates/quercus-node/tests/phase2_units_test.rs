@@ -658,7 +658,7 @@ fn group_behavior_edges() {
 			"A group of nodes that is represented as a single node."
 		);
 		assert!(gb.categories().is_empty());
-		assert_eq!(gb.output_passthrough(), None);
+		assert_eq!(gb.output_passthrough, None);
 		assert!(gb.passthroughs().is_empty());
 		assert!(!gb.contains_input_passthrough(&InnerInput {
 			node: inner_id,
@@ -807,7 +807,7 @@ fn group_behavior_edges() {
 			.unwrap()
 			.downcast_mut::<NodeGroup>()
 			.unwrap()
-			.set_output_passthrough(Some(inner_id));
+			.output_passthrough = Some(inner_id);
 		let entry = p.graph.get(group_id).unwrap();
 		let gb = entry
 			.behavior
@@ -815,10 +815,10 @@ fn group_behavior_edges() {
 			.unwrap()
 			.downcast_ref::<NodeGroup>()
 			.unwrap();
-		assert_eq!(gb.output_passthrough(), Some(inner_id));
+		assert_eq!(gb.output_passthrough, Some(inner_id));
 		let dup = gb.duplicate(&entry.core).unwrap();
 		let d = dup.as_any().unwrap().downcast_ref::<NodeGroup>().unwrap();
-		assert_eq!(d.output_passthrough(), Some(inner_id));
+		assert_eq!(d.output_passthrough, Some(inner_id));
 		assert_eq!(d.passthroughs().len(), 3);
 	}
 

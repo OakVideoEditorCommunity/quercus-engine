@@ -68,7 +68,7 @@ pub struct UndoCommand {
 	/// The operation (closure-backed or composite).
 	inner: Box<dyn Command>,
 	/// Whether the command has been executed (`done_`).
-	done: bool,
+	pub done: bool,
 	/// Project-dirty flag snapshot recorded at the last redo.
 	///
 	/// Reserved for the future modified-state callbacks; with no C ABI
@@ -213,22 +213,6 @@ impl UndoCommand {
 	/// done flag.
 	pub fn set_prepared(&mut self) {
 		self.prepared = true;
-	}
-
-	/// Marks the command as already executed without running it.
-	///
-	/// Use when the effect has been applied by other means: the command then
-	/// behaves as applied, so [`UndoCommand::undo_now`] will run the undo side and
-	/// [`UndoCommand::redo_now`] will skip its redo. `done == false` makes it look
-	/// unapplied again. Does not run any command code. See
-	/// [`UndoCommand::is_done`].
-	pub fn set_done(&mut self, done: bool) {
-		self.done = done;
-	}
-
-	/// Whether the command is currently done (executed, not undone).
-	pub fn is_done(&self) -> bool {
-		self.done
 	}
 
 	/// Whether this is the invariant bottom-of-stack command.

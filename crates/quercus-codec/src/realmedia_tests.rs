@@ -116,9 +116,9 @@ fn h264_params(out: &path::Path) -> encodingparams::EncodingParams {
 /// Panics when [`Frame::allocate`] fails.
 fn pattern_frame(i: i32) -> Frame {
 	let mut vp = VideoParams::new_basic(64, 64, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
-	vp.set_format(QuercusPixelFormat::from_code(PixelFormat::F32 as i32));
+	vp.format = QuercusPixelFormat::from_code(PixelFormat::F32 as i32);
 	let mut f = Frame::with_params(vp);
-	f.set_timestamp(Rational::new(i as i64, 10));
+	f.timestamp = Rational::new(i as i64, 10);
 	f.allocate().unwrap();
 
 	let linesize = f.linesize_bytes() as usize;
@@ -146,16 +146,16 @@ fn probe_reports_streams_and_duration() {
 		.expect("demo.mp4 should probe");
 	assert_eq!(desc.decoder(), "ffmpeg");
 	// video + audio + data (timecode) stream.
-	assert_eq!(desc.total_stream_count(), 3);
+	assert_eq!(desc.total_stream_count, 3);
 	assert_eq!(desc.video_stream_count(), 1);
 	assert_eq!(desc.audio_stream_count(), 1);
 
 	// Video stream: 1920x1080, 25fps, 17s at 1/12800 time base.
 	let vp = desc.get_video_stream(0).expect("video stream");
-	assert_eq!(vp.width(), 1920);
-	assert_eq!(vp.height(), 1080);
-	assert_eq!(vp.duration(), 17 * 12800);
-	assert_eq!(vp.frame_rate(), (25, 1));
+	assert_eq!(vp.width, 1920);
+	assert_eq!(vp.height, 1080);
+	assert_eq!(vp.duration, 17 * 12800);
+	assert_eq!(vp.frame_rate, (25, 1));
 }
 
 #[test]
@@ -416,8 +416,8 @@ fn encode_h264_roundtrip_to_tmp() {
 	let desc = d.probe(&out_str, None).expect("probe round-trip output");
 	assert_eq!(desc.video_stream_count(), 1);
 	let vp = desc.get_video_stream(0).expect("video stream");
-	assert_eq!(vp.width(), 64);
-	assert_eq!(vp.height(), 64);
+	assert_eq!(vp.width, 64);
+	assert_eq!(vp.height, 64);
 
 	// Decode the first frame of the result.
 	let s = CodecStream::with_block(out_str.clone(), 0, None);
@@ -496,12 +496,12 @@ fn testmedia_clip_probe_roundtrip() {
 	// ignored, the whole clip was crammed into ~1ms and this failed.
 	let desc = d.probe(&out.to_string_lossy(), None).expect("probe");
 	let vp = desc.get_video_stream(0).expect("video stream");
-	let (tb_num, tb_den) = vp.time_base();
-	let duration_secs = vp.duration() as f64 * tb_num as f64 / tb_den as f64;
+	let (tb_num, tb_den) = vp.time_base;
+	let duration_secs = vp.duration as f64 * tb_num as f64 / tb_den as f64;
 	assert!(
 		(0.8..=1.2).contains(&duration_secs),
 		"container duration {duration_secs}s is not ~1s (tb {tb_num}/{tb_den}, {} ticks)",
-		vp.duration()
+		vp.duration
 	);
 
 	// Every frame must decode to its own content: the pattern's red/blue

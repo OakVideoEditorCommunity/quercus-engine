@@ -20,7 +20,7 @@ fn claim_all(s: &mut PreviewScheduler<u64>) -> Vec<(usize, i64)> {
 	let mut out = Vec::new();
 	loop {
 		let mut progress = false;
-		for w in 0..s.workers() {
+		for w in 0..s.workers {
 			while let Some(batch) = s.claim_batch(w, 1024, usize::MAX) {
 				for f in &batch.frames {
 					out.push((w, f.key.frame));
@@ -313,7 +313,7 @@ fn default_batch_size_is_120_over_workers() {
 	let s: PreviewScheduler<u64> = PreviewScheduler::new(4, 0);
 	assert_eq!(s.batch_size(), 30);
 	let s: PreviewScheduler<u64> = PreviewScheduler::new(0, 0);
-	assert_eq!(s.workers(), 1);
+	assert_eq!(s.workers, 1);
 	assert_eq!(s.batch_size(), 120);
 }
 

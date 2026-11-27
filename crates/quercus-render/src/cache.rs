@@ -237,10 +237,10 @@ pub struct PlaybackCache {
 	passthroughs: Vec<(TimeRange, String)>,
 	/// When false, `validate`/`invalidate` skip the disk write (tests
 	/// and transient caches).
-	saving_enabled: bool,
+	pub saving_enabled: bool,
 	/// Root disk cache directory (defaults to the process-wide default;
 	/// project-owned caches re-point it through the node bridge later).
-	disk_dir: String,
+	pub disk_dir: String,
 	/// mtime (ms) of the state file at the last load; unchanged files
 	/// are not re-read.
 	last_loaded_state: i64,
@@ -256,7 +256,7 @@ impl PlaybackCache {
 	/// `owner` is the owning node's identity, or a synthetic value from
 	/// [`next_owner_identity`] — it is only compared, never dereferenced. The cache
 	/// gets a fresh random v4 UUID text, no timebase (call
-	/// [`PlaybackCache::set_timebase`] for frame-hash kinds), empty
+	/// [`PlaybackCache::timebase`] for frame-hash kinds), empty
 	/// validated/requested/passthrough sets, saving enabled and the process-wide
 	/// default disk cache root. Nothing is written to disk until a range is
 	/// validated or a save runs.
@@ -277,11 +277,6 @@ impl PlaybackCache {
 		}
 	}
 
-	/// The cache UUID text.
-	pub fn uuid(&self) -> &str {
-		&self.uuid
-	}
-
 	/// Replaces the cache UUID and reloads the on-disk state that belongs to it.
 	///
 	/// `uuid` is canonical "{8-4-4-4-12}" text stored as given (not validated) and
@@ -294,29 +289,9 @@ impl PlaybackCache {
 		let _ = self.load_state(path::Path::new(&dir));
 	}
 
-	/// Set the frame timebase (frame-hash flavors; C++ `set_timebase`).
-	pub fn set_timebase(&mut self, tb: Rational) {
-		self.timebase = Some(tb);
-	}
-
 	/// The frame timebase (null when unset).
 	pub fn timebase(&self) -> Rational {
 		self.timebase.unwrap_or(Rational::NULL)
-	}
-
-	/// Root disk cache directory.
-	pub fn disk_dir(&self) -> &str {
-		&self.disk_dir
-	}
-
-	/// Re-points the root disk cache directory used for state and frame files.
-	///
-	/// `dir` is stored verbatim — no validation, no directory creation; the UUID
-	/// subdirectory is appended later by [`PlaybackCache::cache_directory`].
-	/// Project-owned caches use this to keep their files under the project. State is
-	/// not reloaded and existing links are not rewritten.
-	pub fn set_disk_dir(&mut self, dir: &str) {
-		self.disk_dir = dir.to_string();
 	}
 
 	/// Marks `range` as invalid, forcing it to be rendered again.
@@ -479,22 +454,6 @@ impl PlaybackCache {
 	/// they overlap an invalidated range.
 	pub fn passthroughs(&self) -> &[(TimeRange, String)] {
 		&self.passthroughs
-	}
-
-	/// Enables or disables persisting the range bookkeeping to disk.
-	///
-	/// With `enabled == false`, [`PlaybackCache::invalidate`],
-	/// [`PlaybackCache::validate`] and [`PlaybackCache::set_passthrough`] skip their
-	/// `save_state` call (transient caches and tests); the in-memory ranges still
-	/// update. Defaults to `true`. Pairs with
-	/// [`PlaybackCache::saving_enabled`].
-	pub fn set_saving_enabled(&mut self, enabled: bool) {
-		self.saving_enabled = enabled;
-	}
-
-	/// The persist toggle.
-	pub fn saving_enabled(&self) -> bool {
-		self.saving_enabled
 	}
 
 	/// Returns `<cache_dir>/<uuid>`, the directory holding this cache's state file

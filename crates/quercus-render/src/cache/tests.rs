@@ -2,8 +2,8 @@ use super::*;
 
 fn tb_cache() -> PlaybackCache {
 	let mut c = PlaybackCache::new(CacheKind::VideoFrame, 1);
-	c.set_timebase(Rational::new(1, 30));
-	c.set_saving_enabled(false);
+	c.timebase = Some(Rational::new(1, 30));
+	c.saving_enabled = false;
 	c
 }
 
@@ -72,8 +72,8 @@ fn invalidated_ranges_clamps_below_zero() {
 fn passthrough_excludes_ranges() {
 	let mut a = tb_cache();
 	let mut b = PlaybackCache::new(CacheKind::VideoFrame, 2);
-	b.set_timebase(Rational::new(1, 30));
-	b.set_saving_enabled(false);
+	b.timebase = Some(Rational::new(1, 30));
+	b.saving_enabled = false;
 	b.validate(TimeRange::new(Rational::new(0, 1), Rational::new(5, 1)));
 
 	a.set_passthrough(&b);
@@ -96,7 +96,7 @@ fn frame_filename_parity_scheme() {
 	let time = Rational::new(1, 2); // 0.5 s at 30fps → frame 15
 	c.validate(TimeRange::new(time, time + Rational::new(1, 30)));
 	let dir = std::env::temp_dir();
-	c.set_disk_dir(&dir.to_string_lossy());
+	c.disk_dir = (&dir.to_string_lossy()).to_string();
 	let name = c.frame_filename(time).unwrap();
 	assert_eq!(
 		name,
@@ -139,7 +139,7 @@ fn audio_cache_disk_state_uses_base_format() {
 	));
 	std::fs::create_dir_all(&dir).unwrap();
 	let mut c = PlaybackCache::new(CacheKind::AudioPlayback, 1);
-	c.set_saving_enabled(false);
+	c.saving_enabled = false;
 	c.validate(TimeRange::new(Rational::new(0, 1), Rational::new(2, 1)));
 	c.save_state(&dir).unwrap();
 	// Base format: no timebase block (audio has no frame-hash event).
@@ -171,8 +171,8 @@ fn disk_state_roundtrip_binary_parity() {
 	std::fs::create_dir_all(&dir).unwrap();
 
 	let mut c = tb_cache();
-	c.set_timebase(Rational::new(1, 30));
-	c.set_saving_enabled(true);
+	c.timebase = Some(Rational::new(1, 30));
+	c.saving_enabled = true;
 	c.validate(TimeRange::new(Rational::new(0, 1), Rational::new(10, 1)));
 	c.validate(TimeRange::new(Rational::new(20, 1), Rational::new(30, 1)));
 	c.save_state(&dir).unwrap();
@@ -196,8 +196,8 @@ fn disk_state_roundtrip_binary_parity() {
 
 	let mut c2 = PlaybackCache::new(CacheKind::VideoFrame, 99);
 	c2.set_uuid(&c.uuid.clone());
-	c2.set_timebase(Rational::new(1, 30));
-	c2.set_saving_enabled(false);
+	c2.timebase = Some(Rational::new(1, 30));
+	c2.saving_enabled = false;
 	c2.load_state(&dir).unwrap();
 	assert_eq!(c2.validated.ranges().len(), 2);
 	assert_eq!(
@@ -210,7 +210,7 @@ fn disk_state_roundtrip_binary_parity() {
 	);
 
 	// Re-save from the loaded cache → identical bytes.
-	c2.set_saving_enabled(true);
+	c2.saving_enabled = true;
 	c2.save_state(&dir).unwrap();
 	let bytes2 = std::fs::read(dir.join(&c2.uuid).join("state")).unwrap();
 	assert_eq!(bytes, bytes2);
@@ -223,8 +223,8 @@ fn save_state_removes_file_when_empty() {
 	let dir = std::env::temp_dir().join(format!("quercusrender-test-{}", next_owner_identity()));
 	std::fs::create_dir_all(&dir).unwrap();
 	let mut c = tb_cache();
-	c.set_saving_enabled(true);
-	c.set_disk_dir(&dir.to_string_lossy());
+	c.saving_enabled = true;
+	c.disk_dir = (&dir.to_string_lossy()).to_string();
 	c.validate(TimeRange::new(Rational::new(0, 1), Rational::new(1, 1)));
 	c.save_state(&dir).unwrap();
 	assert!(dir.join(&c.uuid).join("state").exists());
@@ -247,27 +247,27 @@ fn work_dir(tag: &str) -> std::path::PathBuf {
 #[test]
 fn accessors_and_null_timebase_defaults() {
 	let mut c = PlaybackCache::new(CacheKind::AudioPlayback, 42);
-	assert_eq!(c.uuid().len(), 38);
+	assert_eq!(c.uuid.as_str().len(), 38);
 	assert_eq!(c.timebase(), Rational::NULL);
-	assert!(c.saving_enabled());
-	assert!(!c.disk_dir().is_empty());
+	assert!(c.saving_enabled);
+	assert!(!c.disk_dir.as_str().is_empty());
 	assert!(c.requested_ranges().is_empty());
 	assert!(c.passthroughs().is_empty());
 
-	c.set_timebase(Rational::new(1, 25));
+	c.timebase = Some(Rational::new(1, 25));
 	assert_eq!(c.timebase(), Rational::new(1, 25));
-	c.set_saving_enabled(false);
-	assert!(!c.saving_enabled());
-	c.set_disk_dir("/tmp/quercus-cache-test");
-	assert_eq!(c.disk_dir(), "/tmp/quercus-cache-test");
+	c.saving_enabled = false;
+	assert!(!c.saving_enabled);
+	c.disk_dir = ("/tmp/quercus-cache-test").to_string();
+	assert_eq!(c.disk_dir.as_str(), "/tmp/quercus-cache-test");
 	c.set_uuid("{00000000-0000-4000-8000-000000000000}");
-	assert_eq!(c.uuid(), "{00000000-0000-4000-8000-000000000000}");
+	assert_eq!(c.uuid.as_str(), "{00000000-0000-4000-8000-000000000000}");
 }
 
 #[test]
 fn request_and_clear_ranges() {
 	let mut c = PlaybackCache::new(CacheKind::VideoFrame, 1);
-	c.set_saving_enabled(false);
+	c.saving_enabled = false;
 	let range = TimeRange::new(Rational::new(1, 1), Rational::new(2, 1));
 	c.request(range);
 	assert_eq!(c.requested_ranges().ranges(), &[range]);
@@ -325,15 +325,15 @@ fn modification_time_is_zero_for_missing_paths() {
 fn set_uuid_reloads_the_disk_state() {
 	let dir = work_dir("uuid-reload");
 	let mut source = tb_cache();
-	source.set_saving_enabled(true);
-	source.set_disk_dir(&dir.to_string_lossy());
+	source.saving_enabled = true;
+	source.disk_dir = (&dir.to_string_lossy()).to_string();
 	let uuid = source.uuid.clone();
 	source.validate(TimeRange::new(Rational::new(3, 1), Rational::new(9, 1)));
 	source.save_state(&dir).unwrap();
 
 	let mut target = PlaybackCache::new(CacheKind::VideoFrame, 2);
-	target.set_saving_enabled(false);
-	target.set_disk_dir(&dir.to_string_lossy());
+	target.saving_enabled = false;
+	target.disk_dir = (&dir.to_string_lossy()).to_string();
 	target.set_uuid(&uuid);
 	assert_eq!(
 		target.validated_ranges().ranges(),
@@ -354,8 +354,8 @@ fn load_state_loads_a_clean_cache_and_skips_unchanged_files() {
 	// One validated range persisted as `<dir>/<uuid>/state` by a
 	// separate producer instance.
 	let mut source = tb_cache();
-	source.set_saving_enabled(true);
-	source.set_disk_dir(&dir.to_string_lossy());
+	source.saving_enabled = true;
+	source.disk_dir = (&dir.to_string_lossy()).to_string();
 	let loaded = TimeRange::new(Rational::new(3, 1), Rational::new(9, 1));
 	source.validate(loaded);
 	source.save_state(&dir).unwrap();
@@ -366,8 +366,8 @@ fn load_state_loads_a_clean_cache_and_skips_unchanged_files() {
 	// what made the old construction isomorphic. A no-op load or an
 	// inverted mtime guard now leaves the assertions below failing.
 	let mut target = PlaybackCache::new(CacheKind::VideoFrame, 2);
-	target.set_saving_enabled(false);
-	target.set_disk_dir(&dir.to_string_lossy());
+	target.saving_enabled = false;
+	target.disk_dir = (&dir.to_string_lossy()).to_string();
 	target.uuid = source.uuid.clone();
 	assert!(
 		target.validated_ranges().is_empty(),
@@ -418,8 +418,8 @@ fn save_state_reports_directory_creation_errors() {
 	let blocker = dir.join("not-a-dir");
 	std::fs::write(&blocker, b"file").unwrap();
 	let mut c = tb_cache();
-	c.set_saving_enabled(false);
-	c.set_disk_dir(&blocker.to_string_lossy());
+	c.saving_enabled = false;
+	c.disk_dir = (&blocker.to_string_lossy()).to_string();
 	c.validate(TimeRange::new(Rational::new(0, 1), Rational::new(1, 1)));
 	let err = c.save_state(&blocker).unwrap_err();
 	assert!(format!("{err}").contains("create cache dir"), "{err}");
@@ -429,8 +429,8 @@ fn save_state_reports_directory_creation_errors() {
 #[test]
 fn passthrough_snapshot_links_ranges_without_aliasing() {
 	let mut source = PlaybackCache::new(CacheKind::VideoFrame, 3);
-	source.set_saving_enabled(false);
-	source.set_timebase(Rational::new(1, 24));
+	source.saving_enabled = false;
+	source.timebase = Some(Rational::new(1, 24));
 	source.validate(TimeRange::new(Rational::new(2, 1), Rational::new(3, 1)));
 	let snapshot = PassthroughSnapshot {
 		validated: source.validated.clone(),
@@ -443,7 +443,7 @@ fn passthrough_snapshot_links_ranges_without_aliasing() {
 	};
 
 	let mut target = PlaybackCache::new(CacheKind::VideoFrame, 4);
-	target.set_saving_enabled(false);
+	target.saving_enabled = false;
 	target.set_passthrough_snapshot(snapshot.clone());
 	assert_eq!(target.timebase(), Rational::new(1, 24));
 	assert_eq!(
@@ -461,7 +461,7 @@ fn passthrough_snapshot_links_ranges_without_aliasing() {
 
 	// Audio caches keep their own timebase (frame-hash-only adoption).
 	let mut audio = PlaybackCache::new(CacheKind::AudioPlayback, 5);
-	audio.set_saving_enabled(false);
+	audio.saving_enabled = false;
 	audio.set_passthrough_snapshot(snapshot);
 	assert_eq!(audio.timebase(), Rational::NULL);
 }
@@ -470,11 +470,11 @@ fn passthrough_snapshot_links_ranges_without_aliasing() {
 fn passthrough_with_saving_enabled_persists_the_state() {
 	let dir = work_dir("passthrough-save");
 	let mut source = PlaybackCache::new(CacheKind::VideoFrame, 6);
-	source.set_saving_enabled(false);
+	source.saving_enabled = false;
 	source.validate(TimeRange::new(Rational::new(0, 1), Rational::new(2, 1)));
 
 	let mut target = PlaybackCache::new(CacheKind::VideoFrame, 7);
-	target.set_disk_dir(&dir.to_string_lossy());
+	target.disk_dir = (&dir.to_string_lossy()).to_string();
 	target.set_passthrough(&source);
 	let state = dir.join(&target.uuid).join("state");
 	assert!(state.exists(), "set_passthrough persists when saving is on");
@@ -528,7 +528,7 @@ fn frame_paths_use_the_timebase_or_whole_seconds() {
 
 	// No timebase: whole seconds (round-half-away-from-zero).
 	let mut c = PlaybackCache::new(CacheKind::VideoFrame, 8);
-	c.set_saving_enabled(false);
+	c.saving_enabled = false;
 	c.validate(TimeRange::new(Rational::new(0, 1), Rational::new(4, 1)));
 	let name = c.frame_filename(Rational::new(1, 2)).expect("cached");
 	assert_eq!(
@@ -538,7 +538,7 @@ fn frame_paths_use_the_timebase_or_whole_seconds() {
 		Some("1"),
 		"{name}"
 	);
-	assert!(name.contains(c.uuid()), "{name}");
+	assert!(name.contains(c.uuid.as_str()), "{name}");
 }
 
 #[test]

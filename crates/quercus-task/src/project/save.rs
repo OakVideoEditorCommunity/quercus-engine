@@ -53,7 +53,7 @@ impl ProjectSaveTask {
 	/// Set the output filename used instead of the project's stored filename.
 	///
 	/// `filename` is copied into the task's override slot; the next `run` writes
-	/// there instead of `Project::filename()`. An empty string still counts as an
+	/// there instead of `Project::filename`. An empty string still counts as an
 	/// override, so the save then fails with "Project has no filename to save to."
 	/// A new value replaces the previous override; the public field can also be set to `None` to restore the project's own filename.
 	pub fn set_override_filename(&mut self, filename: &str) {
@@ -71,12 +71,13 @@ impl TaskBehavior for ProjectSaveTask {
 				.project
 				.lock()
 				.unwrap_or_else(|e| e.into_inner())
-				.filename()
+				.filename
+				.as_str()
 				.to_string(),
 		};
 
 		if using_filename.is_empty() {
-			task.set_error("Project has no filename to save to.");
+			task.error = Some(("Project has no filename to save to.").to_string());
 			return Err(Error::Failed(
 				"Project has no filename to save to.".to_string(),
 			));
@@ -86,13 +87,13 @@ impl TaskBehavior for ProjectSaveTask {
 			Ok(xml) => xml,
 			Err(e) => {
 				let _ = e;
-				task.set_error("Failed to write XML data.");
+				task.error = Some(("Failed to write XML data.").to_string());
 				return Err(Error::Failed("Failed to save project".to_string()));
 			}
 		};
 
 		if let Err(e) = fs::write(&using_filename, xml) {
-			task.set_error(&format!("Failed to open file for writing: {e}"));
+			task.error = Some((&format!("Failed to open file for writing: {e}")).to_string());
 			return Err(Error::Failed("Failed to save project".to_string()));
 		}
 

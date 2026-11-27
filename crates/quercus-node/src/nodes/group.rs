@@ -63,7 +63,7 @@ pub struct NodeGroup {
 	input_passthroughs: Vec<InputPassthrough>,
 	/// Inner node whose output this group forwards
 	/// (C++ `output_passthrough_`).
-	output_passthrough: Option<NodeId>,
+	pub output_passthrough: Option<NodeId>,
 }
 
 impl NodeGroup {
@@ -128,22 +128,6 @@ impl NodeGroup {
 			let id = self.input_passthroughs.remove(i).0;
 			core.remove_input(&id);
 		}
-	}
-
-	/// The inner output node (C++ `get_output_passthrough()`).
-	///
-	/// This is the node the group's output reads. `None` until
-	/// [`Self::set_output_passthrough`] sets it - the constructor leaves
-	/// it unset.
-	pub fn output_passthrough(&self) -> Option<NodeId> {
-		self.output_passthrough
-	}
-
-	/// Set the inner output node (C++ `set_output_passthrough()`); the
-	/// C++ asserts the node belongs to the group's context (debug-only,
-	/// not enforced here).
-	pub fn set_output_passthrough(&mut self, node: Option<NodeId>) {
-		self.output_passthrough = node;
 	}
 
 	/// Whether an inner input is already passed through (C++

@@ -339,7 +339,7 @@ pub(crate) fn load_ove_resolves_relative_paths() {
 		let g = lock(&loaded);
 		assert_eq!(sequence_ids(&g).len(), 1);
 		assert!(
-			Path::new(g.filename()).is_absolute(),
+			Path::new(g.filename.as_str()).is_absolute(),
 			"the filename is normalized to an absolute path"
 		);
 	}

@@ -325,14 +325,6 @@ impl Project {
 		}
 	}
 
-	/// The project's full filename.
-	///
-	/// Returns the stored path, or `""` when the project has never been saved. Use
-	/// [`Project::pretty_filename`] for a title-safe display name.
-	pub fn filename(&self) -> &str {
-		&self.filename
-	}
-
 	/// The name to show in the window title.
 	///
 	/// Returns the full stored filename, or `"(untitled)"` when the project has no
@@ -344,30 +336,6 @@ impl Project {
 		} else {
 			&self.filename
 		}
-	}
-
-	/// Set the project's filename.
-	///
-	/// `filename` is stored as given (no canonicalization or existence check) and
-	/// becomes what [`Project::filename`] returns and what relative save/load paths
-	/// resolve against. Does not clear the modified flag; pair with
-	/// [`Project::set_modified`].
-	pub fn set_filename(&mut self, filename: &str) {
-		self.filename = filename.to_string();
-	}
-
-	/// 1 when the project has unsaved changes (C++ `is_modified()`).
-	pub fn is_modified(&self) -> bool {
-		self.modified
-	}
-
-	/// Set the project's unsaved-changes flag.
-	///
-	/// `modified` is stored as-is and reported by [`Project::is_modified`]; saving
-	/// a project clears it by passing `false`. Does not touch the filename, so an
-	/// untitled unmodified project stays "new" (see [`Project::is_new`]).
-	pub fn set_modified(&mut self, modified: bool) {
-		self.modified = modified;
 	}
 
 	/// 1 when the project is new (untitled and unmodified; C++

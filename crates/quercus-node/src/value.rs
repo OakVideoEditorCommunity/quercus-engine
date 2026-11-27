@@ -621,7 +621,8 @@ pub type NodeValueRow = std::collections::BTreeMap<String, NodeValue>;
 /// optional source tags; `get` returns the last push of a type.
 #[derive(Default, Debug)]
 pub struct NodeValueTable {
-	rows: Vec<(ValueType, NodeValue, Option<String>)>,
+	/// All rows `(type, value, tag)` in push order.
+	pub rows: Vec<(ValueType, NodeValue, Option<String>)>,
 }
 
 impl NodeValueTable {
@@ -666,17 +667,6 @@ impl NodeValueTable {
 	/// [`NodeValueTable::count`] for the inverse query.
 	pub fn clear(&mut self) {
 		self.rows.clear();
-	}
-
-	/// All rows `(type, value, tag)` in push order.
-	pub fn rows(&self) -> &[(ValueType, NodeValue, Option<String>)] {
-		&self.rows
-	}
-
-	/// Mutable row access (the render seam resolves job payloads into
-	/// finished textures in place).
-	pub fn rows_mut(&mut self) -> &mut Vec<(ValueType, NodeValue, Option<String>)> {
-		&mut self.rows
 	}
 }
 

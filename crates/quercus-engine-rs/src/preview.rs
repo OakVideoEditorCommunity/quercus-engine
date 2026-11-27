@@ -140,7 +140,8 @@ pub struct PreviewSession {
 	size: (u32, u32),
 	time: Rational,
 	playing: bool,
-	rate: f64,
+	/// Current playback-rate multiplier.
+	pub rate: f64,
 	generation: u64,
 	/// `(preview time, device seconds)` captured when audio output was anchored.
 	audio_anchor: Option<(Rational, f64)>,
@@ -268,11 +269,6 @@ impl PreviewSession {
 	/// Whether transport is playing.
 	pub fn is_playing(&self) -> bool {
 		self.playing
-	}
-
-	/// Current playback-rate multiplier.
-	pub fn rate(&self) -> f64 {
-		self.rate
 	}
 
 	/// Current content/cache generation.

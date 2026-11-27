@@ -382,11 +382,11 @@ fn common_from_node_video(v: value::VideoParams) -> CommonVideoParams {
 /// `start_time`/`duration` and color fields have no quercusnode counterpart).
 fn node_video_from_common(v: &CommonVideoParams) -> value::VideoParams {
 	value::VideoParams {
-		width: v.width(),
-		height: v.height(),
-		frame_rate: Rational::new(v.frame_rate().0 as i64, v.frame_rate().1 as i64),
-		pixel_format: v.format().code(),
-		channels: v.channel_count(),
+		width: v.width,
+		height: v.height,
+		frame_rate: Rational::new(v.frame_rate.0 as i64, v.frame_rate.1 as i64),
+		pixel_format: v.format.code(),
+		channels: v.channel_count,
 		interlaced: false,
 	}
 }

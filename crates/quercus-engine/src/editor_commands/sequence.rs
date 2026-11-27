@@ -434,7 +434,7 @@ pub fn footage_duration_seconds(g: &Graph, id: NodeId) -> Option<f64> {
 pub fn reprobe_unprobed_footage(project: &ProjectRef) {
 	let dir = {
 		let guard = lock(project);
-		std::path::Path::new(guard.filename())
+		std::path::Path::new(guard.filename.as_str())
 			.parent()
 			.map(|p| p.to_path_buf())
 	};

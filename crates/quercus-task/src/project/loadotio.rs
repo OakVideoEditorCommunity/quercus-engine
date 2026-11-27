@@ -98,7 +98,7 @@ impl TaskBehavior for LoadOTIOTask {
 			Ok(f) => f,
 			Err(e) => {
 				if let Error::Failed(msg) = &e {
-					task.set_error(msg);
+					task.error = Some((msg).to_string());
 				}
 				return Err(e);
 			}
@@ -113,10 +113,10 @@ impl TaskBehavior for LoadOTIOTask {
 			let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
 			if let Err(e) = guard.initialize() {
 				let _ = e;
-				task.set_error("Failed to create project");
+				task.error = Some(("Failed to create project").to_string());
 				return Err(Error::Failed("Failed to create project".to_string()));
 			}
-			guard.set_modified(true);
+			guard.modified = true;
 		}
 
 		// Keep track of imported footage
@@ -135,8 +135,8 @@ impl TaskBehavior for LoadOTIOTask {
 				continue;
 			};
 
-			let label = if !timeline.name().is_empty() {
-				timeline.name().to_string()
+			let label = if !timeline.name.as_str().is_empty() {
+				timeline.name.as_str().to_string()
 			} else {
 				// If the otio timeline does not provide a name, create a
 				// default one here.
@@ -146,7 +146,7 @@ impl TaskBehavior for LoadOTIOTask {
 			nodeops::set_node_label(&project, sequence, &label);
 
 			// Get number of clips for loading bar
-			for track in timeline.tracks().children() {
+			for track in timeline.tracks.children() {
 				if let Some(otio_track) = track.as_track() {
 					number_of_clips += otio_track.children().len() as f64;
 				}
@@ -196,7 +196,7 @@ impl TaskBehavior for LoadOTIOTask {
 			// Create a folder for this sequence's footage
 			let sequence_footage = nodeops::folder_create(&project);
 			if let Some(folder_id) = sequence_footage {
-				nodeops::set_node_label(&project, folder_id, timeline.name());
+				nodeops::set_node_label(&project, folder_id, timeline.name.as_str());
 				let mut add_folder = nodeops::folder_add_child_command(
 					(project.clone(), root_folder),
 					(project.clone(), folder_id),
@@ -205,7 +205,7 @@ impl TaskBehavior for LoadOTIOTask {
 			}
 
 			// Iterate through tracks
-			for track_composable in timeline.tracks().children() {
+			for track_composable in timeline.tracks.children() {
 				let Some(otio_track) = track_composable.as_track() else {
 					continue;
 				};
@@ -312,8 +312,8 @@ impl TaskBehavior for LoadOTIOTask {
 					if let Some(otio_transition) = otio_block.as_transition() {
 						// Set how far the transition eats into the previous
 						// clip.
-						let in_offset = otio_transition.in_offset().to_rational();
-						let out_offset = otio_transition.out_offset().to_rational();
+						let in_offset = otio_transition.in_offset.clone().to_rational();
+						let out_offset = otio_transition.out_offset.clone().to_rational();
 						nodeops::transition_set_offsets_and_length(
 							&project,
 							block_node,
@@ -492,10 +492,13 @@ fn parse_timelines(
 	match format {
 		InterchangeFormat::OtioJson => {
 			let root = quercus_otio::from_json_file(filename).map_err(|e| {
-				task.set_error(&format!(
+				task.error = Some(
+					(&format!(
 					"Failed to load OpenTimelineIO from file \"{}\" \n\nOpenTimelineIO Error:\n\n{}",
 					filename, e
-				));
+				))
+						.to_string(),
+				);
 				Error::Failed("Failed to load OpenTimelineIO".to_string())
 			})?;
 			match &root {
@@ -506,7 +509,7 @@ fn parse_timelines(
 					.collect()),
 				Serializable::Timeline(timeline) => Ok(vec![timeline.clone()]),
 				_ => {
-					task.set_error("Unknown OpenTimelineIO root element");
+					task.error = Some(("Unknown OpenTimelineIO root element").to_string());
 					Err(Error::Failed(
 						"Unknown OpenTimelineIO root element".to_string(),
 					))
@@ -514,10 +517,13 @@ fn parse_timelines(
 			}
 		}
 		InterchangeFormat::Fcpxml => quercus_otio::from_fcpxml_file(filename).map_err(|e| {
-			task.set_error(&format!(
-				"Failed to load FCPXML from file \"{}\" \n\nFCPXML Error:\n\n{}",
-				filename, e
-			));
+			task.error = Some(
+				(&format!(
+					"Failed to load FCPXML from file \"{}\" \n\nFCPXML Error:\n\n{}",
+					filename, e
+				))
+					.to_string(),
+			);
 			Error::Failed("Failed to load FCPXML".to_string())
 		}),
 	}

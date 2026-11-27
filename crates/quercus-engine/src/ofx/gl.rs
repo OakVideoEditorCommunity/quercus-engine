@@ -233,7 +233,7 @@ pub unsafe extern "C" fn quercus_ofx_gl_read_pixels_f32(
 	};
 	let needed = width as usize * height as usize * 4;
 	if !out.is_null() {
-		let src = image.pixels();
+		let src = image.data.as_slice();
 		let floats = needed.min(out_capacity).min(src.len() / 4);
 		let src = unsafe { slice::from_raw_parts(src.as_ptr() as *const f32, floats) };
 		unsafe { ptr::copy_nonoverlapping(src.as_ptr(), out, floats) };

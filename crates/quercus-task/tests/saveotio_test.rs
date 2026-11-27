@@ -211,7 +211,7 @@ fn save(project: &Arc<Mutex<Project>>, filename: String) {
 	if let Err(e) = driver.start() {
 		panic!(
 			"save to {filename} failed: {e:?} / {}",
-			driver.error().unwrap_or("unknown error")
+			driver.error.as_deref().unwrap_or("unknown error")
 		);
 	}
 }
@@ -232,11 +232,11 @@ fn otio_export_is_importable() {
 	let Serializable::Timeline(timeline) = doc else {
 		panic!("one edited sequence must export as a bare Timeline root, not a collection");
 	};
-	assert_eq!(timeline.name(), "Edited");
+	assert_eq!(timeline.name.as_str(), "Edited");
 
 	let mut clips = 0;
 	let mut gaps = 0;
-	for child in timeline.tracks().children() {
+	for child in timeline.tracks.children() {
 		let track = child.as_track().expect("track");
 		for block in track.children() {
 			if let Some(clip) = block.as_clip() {

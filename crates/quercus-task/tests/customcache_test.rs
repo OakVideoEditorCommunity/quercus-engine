@@ -34,8 +34,8 @@ fn spawn_parked(
 	Arc<quercus_task::customcache::CustomCacheState>,
 ) {
 	let state = cc.state();
-	let atom = cc.base.get_cancel_atom();
-	let title = cc.base.title().to_string();
+	let atom = cc.base.cancel_atom.clone();
+	let title = cc.base.title.as_str().to_string();
 	let mut outer = Task::new(&title, Some(atom));
 	outer.set_behavior(Box::new(cc));
 	let handle = thread::spawn(move || outer.start());
@@ -49,7 +49,10 @@ fn spawn_parked(
 #[test]
 fn finish_completes_parked_task() {
 	let cc = CustomCacheTask::new("my-sequence");
-	assert_eq!(cc.base.title(), "Caching custom range for \"my-sequence\"");
+	assert_eq!(
+		cc.base.title.as_str(),
+		"Caching custom range for \"my-sequence\""
+	);
 	let (handle, state) = spawn_parked(cc);
 
 	state.finish();

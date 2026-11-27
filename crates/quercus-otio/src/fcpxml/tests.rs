@@ -71,14 +71,14 @@ fn format_names() {
 #[test]
 fn block_durations() {
 	let mut clip = Clip::new("c");
-	clip.set_source_range(TimeRange::new(
+	clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(48.0, 24.0),
 	));
 	assert_eq!(block_duration(&Composable::Clip(clip)), Rational::new(2, 1));
 	let mut t = Transition::new("t");
-	t.set_in_offset(RationalTime::new(12.0, 24.0));
-	t.set_out_offset(RationalTime::new(12.0, 24.0));
+	t.in_offset = RationalTime::new(12.0, 24.0);
+	t.out_offset = RationalTime::new(12.0, 24.0);
 	assert_eq!(
 		block_duration(&Composable::Transition(t)),
 		Rational::new(1, 1)
@@ -126,7 +126,7 @@ fn resource_error_branches_are_lenient() {
 </fcpxml>"#;
 	let timelines = from_fcpxml_string(doc).expect("broken resources are skipped");
 	assert_eq!(timelines.len(), 1);
-	assert_eq!(timelines[0].name(), "p");
+	assert_eq!(timelines[0].name.as_str(), "p");
 }
 
 #[test]
@@ -157,13 +157,13 @@ fn unknown_asset_format_falls_back_to_sequence_rate() {
 	</project></event></library>
 </fcpxml>"#;
 	let timelines = from_fcpxml_string(doc).expect("falls back to the sequence rate");
-	let clip = timelines[0].tracks().children()[0]
+	let clip = timelines[0].tracks.children()[0]
 		.as_track()
 		.unwrap()
 		.children()[0]
 		.as_clip()
 		.unwrap();
-	let range = clip.source_range().unwrap();
+	let range = clip.source_range.clone().unwrap();
 	assert_eq!(range.duration().rate(), 30.0);
 	// The asset reference still resolves (src is kept).
 	let external = clip
@@ -179,7 +179,7 @@ fn nested_track_block_and_unknown_kind_are_skipped() {
 	let mut timeline = Timeline::new("nested");
 	let mut track = Track::new("Video");
 	track.append_child(Composable::Track(Track::new("Video")));
-	timeline.tracks_mut().append_child(Composable::Track(track));
+	timeline.tracks.append_child(Composable::Track(track));
 	let xml = to_fcpxml_string(&[timeline]).expect("nested track block is skipped");
 	assert!(xml.contains("<spine>"), "{xml}");
 	assert!(xml.contains("</spine>"), "{xml}");
@@ -187,9 +187,7 @@ fn nested_track_block_and_unknown_kind_are_skipped() {
 	let mut timeline = Timeline::new("kinds");
 	let mut subtitles = Track::new("Subtitles");
 	subtitles.append_child(Composable::Clip(Clip::new("c")));
-	timeline
-		.tracks_mut()
-		.append_child(Composable::Track(subtitles));
+	timeline.tracks.append_child(Composable::Track(subtitles));
 	let xml = to_fcpxml_string(&[timeline]).expect("unknown track kind is skipped");
 	assert!(!xml.contains("<spine>"), "{xml}");
 	assert!(xml.contains("<sequence"), "{xml}");
@@ -200,12 +198,12 @@ fn clip_without_media_reference_writes_without_ref() {
 	let mut timeline = Timeline::new("t");
 	let mut track = Track::new("Video");
 	let mut clip = Clip::new("orphan");
-	clip.set_source_range(TimeRange::new(
+	clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(24.0, 24.0),
 	));
 	track.append_child(Composable::Clip(clip));
-	timeline.tracks_mut().append_child(Composable::Track(track));
+	timeline.tracks.append_child(Composable::Track(track));
 	let xml = to_fcpxml_string(&[timeline]).expect("export");
 	assert!(
 		xml.contains("<asset-clip name=\"orphan\" offset=\"0s\" duration=\"1s\" start=\"0s\"/>"),

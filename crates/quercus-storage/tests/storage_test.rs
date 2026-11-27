@@ -734,9 +734,9 @@ fn build_timeline_project() -> Arc<Mutex<Project>> {
 fn assert_otio_model(timelines: &[quercus_otio::Timeline]) {
 	assert_eq!(timelines.len(), 1);
 	let timeline = &timelines[0];
-	assert_eq!(timeline.name(), "My Seq");
+	assert_eq!(timeline.name.as_str(), "My Seq");
 	let tracks: Vec<&quercus_otio::Track> = timeline
-		.tracks()
+		.tracks
 		.children()
 		.iter()
 		.filter_map(|c| c.as_track())
@@ -761,7 +761,7 @@ fn assert_otio_model(timelines: &[quercus_otio::Timeline]) {
 			.target_url(),
 		"file:///a/b.mp4"
 	);
-	let r0 = clips[0].source_range().unwrap();
+	let r0 = clips[0].source_range.clone().unwrap();
 	assert_close(r0.duration().to_seconds(), 4.0);
 	assert_close(r0.start_time().to_seconds(), 0.0);
 
@@ -775,7 +775,7 @@ fn assert_otio_model(timelines: &[quercus_otio::Timeline]) {
 			.target_url(),
 		"file:///a/c.mp4"
 	);
-	let r1 = clips[1].source_range().unwrap();
+	let r1 = clips[1].source_range.clone().unwrap();
 	assert_close(r1.duration().to_seconds(), 2.0);
 	assert_close(r1.start_time().to_seconds(), 0.4);
 }

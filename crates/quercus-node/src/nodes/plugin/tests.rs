@@ -42,7 +42,8 @@ fn value_tags_non_texture_inputs() {
 	// Both values pushed, tagged with their input ids, plus the
 	// plugin job texture (no texture input in the row -> no job).
 	let tagged: Vec<(&str, &NodeValue)> = table
-		.rows()
+		.rows
+		.as_slice()
 		.iter()
 		.filter(|(_, _, t)| t.is_some())
 		.map(|(_, v, t)| (t.as_deref().unwrap(), v))

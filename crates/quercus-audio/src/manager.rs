@@ -52,9 +52,9 @@ static DESTROYED: AtomicBool = AtomicBool::new(false);
 /// directly through [`instance`] instead of crossing the old C ABI.
 pub struct ManagerInner {
 	/// Current output device index.
-	output_device: i32,
+	pub output_device: i32,
 	/// Current input device index.
-	input_device: i32,
+	pub input_device: i32,
 	/// Output params the buffer is configured for.
 	output_params: Option<AudioParams>,
 	/// Queued output samples feeding the playback clock (shared with the
@@ -262,11 +262,6 @@ impl ManagerInner {
 		Ok(())
 	}
 
-	/// Current output device index (`paNoDevice` = -1) or a negative error code.
-	pub fn get_output_device(&self) -> Result<i32> {
-		Ok(self.output_device)
-	}
-
 	/// Set the output device index.
 	///
 	/// Records `device` (`-1` = `paNoDevice`), stops the output, clears the
@@ -287,22 +282,6 @@ impl ManagerInner {
 		// the format changed.
 		self.output_params = None;
 		self.output_device_stream.close();
-		Ok(())
-	}
-
-	/// Current input device index or a negative error code.
-	pub fn get_input_device(&self) -> Result<i32> {
-		Ok(self.input_device)
-	}
-
-	/// Set the input device index.
-	///
-	/// `-1` is PortAudio's `paNoDevice` sentinel (no device), which makes
-	/// [`start_recording`](Self::start_recording) fail; the index is only
-	/// recorded, with no validation and no PortAudio call. Always returns
-	/// `Ok`.
-	pub fn set_input_device(&mut self, device: i32) -> Result<()> {
-		self.input_device = device;
 		Ok(())
 	}
 

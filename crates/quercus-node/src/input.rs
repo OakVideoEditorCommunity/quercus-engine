@@ -75,11 +75,6 @@ impl Input {
 		}
 	}
 
-	/// Convenience accessor for the flag bits.
-	pub fn flags(&self) -> u32 {
-		self.flags
-	}
-
 	/// True when this is an array input (elements addressable).
 	pub fn is_array(&self) -> bool {
 		self.flags & flags::ARRAY != 0

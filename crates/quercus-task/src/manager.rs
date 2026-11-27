@@ -51,7 +51,7 @@ pub struct TaskManager {
 	/// submitter (`crate::codecbridge::register_codec_task_submitter`).
 	/// Pure bookkeeping on the manager: [`TaskManager::init`] never
 	/// registers anything itself, so a fresh singleton reads `false`.
-	codec_submitter_registered: bool,
+	pub codec_submitter_registered: bool,
 }
 
 /// Boxable shim so tasks of heterogeneous concrete types can be stored in
@@ -103,7 +103,7 @@ impl TaskManager {
 	///
 	/// Consequently a fresh manager reports
 	/// [`TaskManager::codec_submitter_registered`] as `false`; the
-	/// application flips it via [`TaskManager::set_codec_submitter_registered`]
+	/// application flips that public field directly
 	/// when it performs the registration itself.
 	pub fn init() -> Result<()> {
 		let mut guard = INSTANCE.lock().unwrap();
@@ -297,23 +297,6 @@ impl TaskManager {
 			}
 		}
 		out
-	}
-
-	/// Whether this manager's bookkeeping flag says the embedding
-	/// application registered the codec submitter. Never set by
-	/// [`TaskManager::init`] (which registers nothing); see
-	/// [`TaskManager::set_codec_submitter_registered`].
-	pub fn codec_submitter_registered(&self) -> bool {
-		self.codec_submitter_registered
-	}
-
-	/// Record whether the embedding application registered the codec
-	/// submitter. This is pure bookkeeping: it neither installs nor
-	/// removes the quercuscodec callback (that is
-	/// `crate::codecbridge::register_codec_task_submitter` /
-	/// `unregister_codec_task_submitter`).
-	pub fn set_codec_submitter_registered(&mut self, registered: bool) {
-		self.codec_submitter_registered = registered;
 	}
 }
 

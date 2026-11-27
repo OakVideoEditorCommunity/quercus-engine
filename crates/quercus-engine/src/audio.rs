@@ -171,7 +171,8 @@ pub extern "C" fn quercus_audio_manager_set_input_device(device: i32) -> bool {
 	let Some(mut inst) = instance() else {
 		return false;
 	};
-	inst.set_input_device(device).is_ok()
+	inst.input_device = device;
+	true
 }
 
 /// Reads per-channel peak levels of the buffered, not-yet-consumed output.

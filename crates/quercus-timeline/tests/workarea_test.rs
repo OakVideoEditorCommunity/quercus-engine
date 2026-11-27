@@ -58,7 +58,7 @@ fn reset_out_is_zero() {
 #[test]
 fn workarea_default_is_disabled_null_range() {
 	let wa = TimelineWorkArea::new();
-	assert!(!wa.enabled());
+	assert!(!wa.enabled);
 	assert_eq!(wa.in_(), reset_in());
 	assert_eq!(wa.out(), reset_out());
 }
@@ -67,11 +67,11 @@ fn workarea_default_is_disabled_null_range() {
 #[test]
 fn workarea_enabled_toggle() {
 	let mut wa = TimelineWorkArea::new();
-	assert!(!wa.enabled());
-	wa.set_enabled(true);
-	assert!(wa.enabled());
-	wa.set_enabled(false);
-	assert!(!wa.enabled());
+	assert!(!wa.enabled);
+	wa.enabled = true;
+	assert!(wa.enabled);
+	wa.enabled = false;
+	assert!(!wa.enabled);
 }
 
 /// `set_range` stores a range and `range`/`in_`/`out`/`length` expose
@@ -80,8 +80,8 @@ fn workarea_enabled_toggle() {
 fn workarea_set_range_exposes_parts() {
 	let mut wa = TimelineWorkArea::new();
 	let r = TimeRange::new(Rational::new(10, 1), Rational::new(20, 1));
-	wa.set_range(r);
-	assert_eq!(*wa.range(), r);
+	wa.range = r;
+	assert_eq!(wa.range, r);
 	assert_eq!(wa.in_(), Rational::new(10, 1));
 	assert_eq!(wa.out(), Rational::new(20, 1));
 	assert_eq!(wa.length(), Rational::new(10, 1));
@@ -95,11 +95,11 @@ fn workarea_set_range_exposes_parts() {
 fn workarea_zero_out_resets_range() {
 	let mut wa = TimelineWorkArea::new();
 	let r = TimeRange::new(Rational::new(5, 1), Rational::new(0, 1));
-	wa.set_range(r);
+	wa.range = r;
 	// `TimeRange::new` swapped 0 < 5 before the value was stored.
 	assert_eq!(wa.in_(), Rational::new(0, 1));
 	assert_eq!(wa.out(), Rational::new(5, 1));
-	assert_eq!(*wa.range(), r);
+	assert_eq!(wa.range, r);
 }
 
 /// `WorkareaSetEnabledCommand` redo enables / undo restores the prior
@@ -109,9 +109,9 @@ fn workarea_set_enabled_command_redo_undo() {
 	let wa_h = make_owned(TimelineWorkArea::new());
 	let mut cmd = WorkareaSetEnabledCommand::new(wa_h, true);
 	cmd.redo();
-	assert!(wa_of(&wa_h).enabled());
+	assert!(wa_of(&wa_h).enabled);
 	cmd.undo();
-	assert!(!wa_of(&wa_h).enabled());
+	assert!(!wa_of(&wa_h).enabled);
 }
 
 /// `WorkareaSetRangeCommand` redo stores the new range and undo
@@ -122,7 +122,7 @@ fn workarea_set_range_command_redo_undo() {
 	let new_range = TimeRange::new(Rational::new(10, 1), Rational::new(20, 1));
 	let mut cmd = WorkareaSetRangeCommand::new(wa_h, new_range);
 	cmd.redo();
-	assert_eq!(*wa_of(&wa_h).range(), new_range);
+	assert_eq!(wa_of(&wa_h).range, new_range);
 	cmd.undo();
 	// Undo restores the range captured at construction (the reset range).
 	assert_eq!(wa_of(&wa_h).in_(), reset_in());
@@ -137,9 +137,9 @@ fn workarea_commands_box_to_undo_command() {
 	let wa_h = make_owned(TimelineWorkArea::new());
 	let mut enabled_cmd = WorkareaSetEnabledCommand::new(wa_h, true).to_command();
 	enabled_cmd.redo_now();
-	assert!(wa_of(&wa_h).enabled());
+	assert!(wa_of(&wa_h).enabled);
 	enabled_cmd.undo_now();
-	assert!(!wa_of(&wa_h).enabled());
+	assert!(!wa_of(&wa_h).enabled);
 
 	let mut range_cmd = WorkareaSetRangeCommand::new(
 		wa_h,
@@ -160,9 +160,9 @@ fn workarea_commands_trait_dispatch() {
 
 	let mut e = WorkareaSetEnabledCommand::new(wa_h, true);
 	Command::redo(&mut e);
-	assert!(wa_of(&wa_h).enabled());
+	assert!(wa_of(&wa_h).enabled);
 	Command::undo(&mut e);
-	assert!(!wa_of(&wa_h).enabled());
+	assert!(!wa_of(&wa_h).enabled);
 
 	let mut r = WorkareaSetRangeCommand::new(
 		wa_h,

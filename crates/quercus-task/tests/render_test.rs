@@ -685,7 +685,7 @@ fn native_progress_signalling_can_be_disabled() {
 		progress.lock().unwrap().is_empty(),
 		"the loop emits no progress of its own"
 	);
-	assert!(driver.error().is_none());
+	assert!(driver.error.as_deref().is_none());
 
 	let _ = fs::remove_file(&media);
 }

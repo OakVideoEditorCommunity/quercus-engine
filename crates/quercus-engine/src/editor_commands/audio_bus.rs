@@ -48,7 +48,7 @@ fn set_bus_setting(project: &ProjectRef, value: Option<String>) {
 			guard.settings.remove(AUDIO_BUS_EFFECTS_SETTING);
 		}
 	}
-	guard.set_modified(true);
+	guard.modified = true;
 }
 
 /// Read the sequence's current master-bus effect chain.

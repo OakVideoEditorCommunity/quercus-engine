@@ -415,10 +415,10 @@ pub struct Clip {
 	otio_schema: String,
 	metadata: Map,
 	name: String,
-	source_range: Option<TimeRange>,
+	pub source_range: Option<TimeRange>,
 	effects: Vec<Value>,
 	markers: Vec<Value>,
-	enabled: bool,
+	pub enabled: bool,
 	media_references: BTreeMap<String, MediaReference>,
 	active_media_reference_key: Option<String>,
 	#[serde(flatten)]
@@ -452,12 +452,6 @@ impl Clip {
 		&self.name
 	}
 
-	/// The range of the source media used by this clip, if set
-	/// (C++ `source_range`; null on disk when unset).
-	pub fn source_range(&self) -> Option<TimeRange> {
-		self.source_range.clone()
-	}
-
 	/// The active media reference, resolved by `active_media_reference_key`
 	/// (falling back to "DEFAULT_MEDIA", the C++ behavior).
 	pub fn media_reference(&self) -> Option<&MediaReference> {
@@ -478,38 +472,12 @@ impl Clip {
 		&self.media_references
 	}
 
-	/// Set the portion of the source media the clip uses.
-	///
-	/// `range` carries a start time and a duration in the media's own rate; it
-	/// is stored verbatim and replaces any previous range (and clears the
-	/// "unset" `None` state produced by parsing a clip without one). Read back
-	/// with [`Clip::source_range`] and [`Clip::media_reference`].
-	pub fn set_source_range(&mut self, range: TimeRange) {
-		self.source_range = Some(range);
-	}
-
 	/// Attach a media reference under "DEFAULT_MEDIA" and make it active
 	/// (C++ `set_media_reference`).
 	pub fn set_media_reference(&mut self, reference: MediaReference) {
 		self.media_references
 			.insert("DEFAULT_MEDIA".to_string(), reference);
 		self.active_media_reference_key = Some("DEFAULT_MEDIA".to_string());
-	}
-
-	/// Whether the clip is enabled (C++ `enabled`; used by the FCPXML
-	/// layer for `asset-clip enabled="0"`).
-	pub fn enabled(&self) -> bool {
-		self.enabled
-	}
-
-	/// Set whether the clip contributes to the edit.
-	///
-	/// The flag is stored and serialized as `"enabled"`; the FCPXML writer emits
-	/// `enabled="0"` for a disabled clip so FCP X treats it as disabled. Clips
-	/// start enabled (`true` from [`Clip::new`]); read back with
-	/// [`Clip::enabled`].
-	pub fn set_enabled(&mut self, enabled: bool) {
-		self.enabled = enabled;
 	}
 }
 
@@ -594,8 +562,8 @@ pub struct Transition {
 	otio_schema: String,
 	metadata: Map,
 	name: String,
-	in_offset: RationalTime,
-	out_offset: RationalTime,
+	pub in_offset: RationalTime,
+	pub out_offset: RationalTime,
 	transition_type: String,
 	#[serde(flatten)]
 	unknown: Map,
@@ -624,41 +592,9 @@ impl Transition {
 		&self.name
 	}
 
-	/// How far into the previous block the transition reaches (C++
-	/// `in_offset`).
-	pub fn in_offset(&self) -> RationalTime {
-		self.in_offset.clone()
-	}
-
-	/// How far into the next block the transition reaches (C++
-	/// `out_offset`).
-	pub fn out_offset(&self) -> RationalTime {
-		self.out_offset.clone()
-	}
-
 	/// The transition type ("SMPTE_Dissolve", "SMPTE_Wipe", "" ...).
 	pub fn transition_type(&self) -> &str {
 		&self.transition_type
-	}
-
-	/// Set how far the transition reaches into the block that precedes it.
-	///
-	/// `offset` is stored as-is (no clamping or validation); it should be a
-	/// non-negative duration that fits inside the previous block. Defaults to
-	/// `RationalTime(0, 1)` from [`Transition::new`]. Counterpart:
-	/// [`Transition::set_out_offset`].
-	pub fn set_in_offset(&mut self, offset: RationalTime) {
-		self.in_offset = offset;
-	}
-
-	/// Set how far the transition reaches into the block that follows it.
-	///
-	/// `offset` is stored as-is (no clamping or validation); it should be a
-	/// non-negative duration that fits inside the next block. Defaults to
-	/// `RationalTime(0, 1)` from [`Transition::new`]. Counterpart:
-	/// [`Transition::set_in_offset`].
-	pub fn set_out_offset(&mut self, offset: RationalTime) {
-		self.out_offset = offset;
 	}
 }
 
@@ -977,10 +913,10 @@ impl<'de> Deserialize<'de> for Composable {
 pub struct Timeline {
 	#[serde(rename = "OTIO_SCHEMA", default)]
 	otio_schema: String,
-	metadata: Map,
-	name: String,
-	global_start_time: Option<RationalTime>,
-	tracks: Stack,
+	pub metadata: Map,
+	pub name: String,
+	pub global_start_time: Option<RationalTime>,
+	pub tracks: Stack,
 	#[serde(flatten)]
 	unknown: Map,
 }
@@ -999,66 +935,6 @@ impl Timeline {
 			tracks,
 			unknown: Map::new(),
 		}
-	}
-
-	/// The timeline's name as stored in the document ("" when unset).
-	///
-	/// Set by [`Timeline::new`] or [`Timeline::set_name`]; the FCPXML writer
-	/// emits it as the sequence name.
-	pub fn name(&self) -> &str {
-		&self.name
-	}
-
-	/// Replace the timeline's name.
-	///
-	/// `name` accepts anything convertible into `String` (including `&str`) and
-	/// is stored verbatim; any previous name is dropped. The FCPXML writer uses
-	/// it as the sequence name and as the default project name (metadata
-	/// "project" overrides it). Read back with [`Timeline::name`].
-	pub fn set_name(&mut self, name: impl Into<String>) {
-		self.name = name.into();
-	}
-
-	/// The timeline's top-level track container.
-	///
-	/// A [`Stack`] (named "tracks" when built by [`Timeline::new`]; a document
-	/// may carry a different or empty name) whose children are the timeline's
-	/// tracks in document order: [`Track`] values, interleaved video and audio as
-	/// written, or `Raw` for an unrecognized schema. Use
-	/// [`Timeline::tracks_mut`] to append tracks.
-	pub fn tracks(&self) -> &Stack {
-		&self.tracks
-	}
-
-	/// Mutable access to the tracks stack, for appending tracks.
-	pub fn tracks_mut(&mut self) -> &mut Stack {
-		&mut self.tracks
-	}
-
-	/// The global start time, if set (null on disk when unset).
-	pub fn global_start_time(&self) -> Option<RationalTime> {
-		self.global_start_time.clone()
-	}
-
-	/// Set the timeline's global start time, replacing any previous value.
-	///
-	/// `start` is a time in its own rate and is stored verbatim; it becomes the
-	/// document's first frame. The FCPXML writer converts it to the sequence
-	/// `tcStart` (0 when unset). Read back with [`Timeline::global_start_time`].
-	pub fn set_global_start_time(&mut self, start: RationalTime) {
-		self.global_start_time = Some(start);
-	}
-
-	/// The timeline metadata map (C++ `metadata`). The FCPXML layer stores
-	/// interchange hints (source version, tcFormat, ...) under the nested
-	/// "fcpxml" key.
-	pub fn metadata(&self) -> &Map {
-		&self.metadata
-	}
-
-	/// Mutable access to the timeline metadata map.
-	pub fn metadata_mut(&mut self) -> &mut Map {
-		&mut self.metadata
 	}
 
 	/// Serialize to the opentimelineio JSON string format.

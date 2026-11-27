@@ -207,7 +207,7 @@ fn save(project: &Arc<Mutex<Project>>, filename: &path::Path) {
 		panic!(
 			"save to {} failed: {e:?} / {}",
 			filename.display(),
-			driver.error().unwrap_or("unknown error")
+			driver.error.as_deref().unwrap_or("unknown error")
 		);
 	}
 }
@@ -221,7 +221,7 @@ fn load_otio(filename: &path::Path) -> (Option<String>, Option<Arc<Mutex<Project
 	));
 	let result = loader.run(&mut task);
 	let error = if result.is_err() {
-		Some(task.error().unwrap_or("unknown error").to_string())
+		Some(task.error.as_deref().unwrap_or("unknown error").to_string())
 	} else {
 		None
 	};
@@ -412,7 +412,8 @@ fn xml_loader_rejects_missing_and_corrupt_documents() {
 	};
 	assert!(load.run(&mut task).is_err());
 	assert!(task
-		.error()
+		.error
+		.as_deref()
 		.is_some_and(|e| e.contains("Failed to read file")));
 
 	let path = work_path("corrupt", "quercusproj");
@@ -426,7 +427,8 @@ fn xml_loader_rejects_missing_and_corrupt_documents() {
 	};
 	assert!(load.run(&mut task).is_err());
 	assert!(task
-		.error()
+		.error
+		.as_deref()
 		.is_some_and(|e| e.contains("Failed to read XML document")));
 	let _ = fs::remove_file(&path);
 }
@@ -449,12 +451,16 @@ fn xml_loader_round_trips_a_saved_project() {
 			path.to_string_lossy().into_owned(),
 		),
 	};
-	assert!(load.run(&mut task).is_ok(), "error: {:?}", task.error());
+	assert!(
+		load.run(&mut task).is_ok(),
+		"error: {:?}",
+		task.error.as_deref()
+	);
 	let loaded = load.base.take_project().expect("loaded project");
 	assert_eq!(sequence_labels(&loaded), vec!["Edited".to_string()]);
 	{
 		let guard = loaded.lock().unwrap();
-		assert_eq!(guard.filename(), path.to_string_lossy());
+		assert_eq!(guard.filename.as_str(), path.to_string_lossy());
 	}
 
 	let _ = fs::remove_file(&path);

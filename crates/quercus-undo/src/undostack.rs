@@ -102,7 +102,7 @@ impl UndoStack {
 	///
 	/// Use this when the caller has already applied the action and only needs
 	/// the history bookkeeping: unlike [`Self::push`], the redo body is not
-	/// invoked and the command is marked done via `set_done(true)`. `name` is
+	/// invoked and the command is marked done through its public `done` field. `name` is
 	/// the user-visible label kept for the history UI. Any pending redo tail is
 	/// dropped, and once the history exceeds [`K_MAX_UNDO_COMMANDS`] the oldest
 	/// row is evicted. An empty multi command (one with no children) is ignored
@@ -115,7 +115,7 @@ impl UndoStack {
 			self.undone.clear();
 		}
 		let mut command = command;
-		command.set_done(true);
+		command.done = true;
 		self.commands.push_back(CommandEntry {
 			command,
 			name: name.to_string(),

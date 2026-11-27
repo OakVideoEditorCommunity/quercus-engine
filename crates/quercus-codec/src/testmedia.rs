@@ -154,7 +154,7 @@ fn video_params(out: &Path, width: i32, height: i32, fps: i32) -> Result<Encodin
 /// [`pattern_frame`] frame 0, so the buffer is allocated in the same format.
 fn solid_frame(i: i32, width: i32, height: i32, fps: i32, rgba: [f32; 4]) -> Frame {
 	let mut f = pattern_frame(0, width, height, fps);
-	f.set_timestamp(Rational::new(i as i64, fps as i64));
+	f.timestamp = Rational::new(i as i64, fps as i64);
 	let linesize = f.linesize_bytes() as usize;
 	let data = f.data_mut().expect("test frame buffer");
 	let [r, g, b, a] = rgba;
@@ -188,9 +188,9 @@ fn pattern_frame(i: i32, width: i32, height: i32, fps: i32) -> Frame {
 		0,
 		1,
 	);
-	vp.set_format(QuercusPixelFormat::from_code(PixelFormat::F32 as i32));
+	vp.format = QuercusPixelFormat::from_code(PixelFormat::F32 as i32);
 	let mut f = Frame::with_params(vp);
-	f.set_timestamp(Rational::new(i as i64, fps as i64));
+	f.timestamp = Rational::new(i as i64, fps as i64);
 	f.allocate().expect("test frame allocation");
 
 	let linesize = f.linesize_bytes() as usize;

@@ -192,8 +192,8 @@ pub struct SubtitleMetadata {
 impl SubtitleMetadata {
 	fn from_params(params: &quercus_core::subtitleparams::SubtitleParams) -> Self {
 		Self {
-			stream_index: params.stream_index(),
-			enabled: params.enabled(),
+			stream_index: params.stream_index,
+			enabled: params.enabled,
 			entry_count: params.count(),
 		}
 	}
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn quercus_codec_footage_total_stream_count(
 	if fd.is_null() {
 		return 0;
 	}
-	unsafe { &*fd }.total_stream_count() as i32
+	unsafe { &*fd }.total_stream_count as i32
 }
 
 /// Reports the media kind of the `index`-th stream in probe order: 0 = video,
@@ -538,7 +538,7 @@ pub unsafe extern "C" fn quercus_codec_footage_source_start_time(
 	if fd.is_null() {
 		return QuercusRational { num: 0, den: 0 };
 	}
-	QuercusRational::from_native(&unsafe { &*fd }.source_start_time())
+	QuercusRational::from_native(&unsafe { &*fd }.source_start_time)
 }
 
 /// Writes the media's total duration as a half-open `[in, out)` time range.

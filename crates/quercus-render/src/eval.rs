@@ -390,7 +390,7 @@ impl quercus_node::traverser::RenderHooks for RenderEvalHooks {
 		// job that produces no value leaves its box, so a later row
 		// probing the same box still sees the unresolved request.
 		let mut in_flight = HashSet::new();
-		for (_, value, _) in table.rows_mut() {
+		for (_, value, _) in &mut table.rows {
 			self.resolve_value(value, 0, &mut in_flight);
 		}
 	}
@@ -1216,10 +1216,10 @@ fn convert_decoded_to_working(dst: &mut Frame, decoded: &quercus_codec::frame::F
 	// Frames without colorimetry metadata get the generic fallback (sRGB
 	// primaries, sRGB transfer) instead of passing through unconverted;
 	// the missing tag is warned once per process.
-	let (primaries, transfer) = match decoded.params() {
+	let (primaries, transfer) = match decoded.params.as_ref() {
 		Some(params) => (
-			source_primaries_from_av(params.color_primaries()),
-			source_transfer_from_av(params.color_transfer()),
+			source_primaries_from_av(params.color_primaries),
+			source_transfer_from_av(params.color_transfer),
 		),
 		None => {
 			warn_missing_colorimetry_once();

@@ -96,14 +96,15 @@ fn assert_time(rt: RationalTime, value: f64, rate: f64) {
 fn parse_synthetic_document() {
 	let timeline = parse_synthetic();
 
-	assert_eq!(timeline.name(), "My Project");
+	assert_eq!(timeline.name.as_str(), "My Project");
 	let gst = timeline
-		.global_start_time()
+		.global_start_time
+		.clone()
 		.expect("tcStart maps to global start");
 	assert_time(gst, 36.0, 30.0);
 
 	// Interchange hints survive in the timeline metadata.
-	let fcpx = timeline.metadata().get("fcpxml").expect("fcpxml metadata");
+	let fcpx = timeline.metadata.get("fcpxml").expect("fcpxml metadata");
 	assert_eq!(fcpx["version"], "1.10");
 	assert_eq!(fcpx["tcFormat"], "NDF");
 	assert_eq!(fcpx["audioLayout"], "stereo");
@@ -112,7 +113,7 @@ fn parse_synthetic_document() {
 	assert_eq!(fcpx["project"], "My Project");
 
 	// One video track (spine) and one audio track.
-	let children = timeline.tracks().children();
+	let children = timeline.tracks.children();
 	assert_eq!(children.len(), 2);
 	let video = children[0].as_track().expect("first track is a Track");
 	assert_eq!(video.kind(), "Video");
@@ -125,8 +126,11 @@ fn parse_synthetic_document() {
 		.as_clip()
 		.expect("spine child 0 is a Clip");
 	assert_eq!(clip_a.name(), "Clip A");
-	assert!(clip_a.enabled());
-	let range = clip_a.source_range().expect("Clip A has a source range");
+	assert!(clip_a.enabled);
+	let range = clip_a
+		.source_range
+		.clone()
+		.expect("Clip A has a source range");
 	assert_time(range.start_time(), 24.0, 30.0);
 	assert_time(range.duration(), 12.0, 30.0);
 	assert_eq!(range.start_time().to_rational(), Rational::new(4, 5));
@@ -145,16 +149,19 @@ fn parse_synthetic_document() {
 		.as_transition()
 		.expect("spine child 1 is a Transition");
 	assert_eq!(transition.name(), "Cross Dissolve");
-	assert_time(transition.in_offset(), 0.6, 30.0);
-	assert_time(transition.out_offset(), 0.6, 30.0);
+	assert_time(transition.in_offset.clone(), 0.6, 30.0);
+	assert_time(transition.out_offset.clone(), 0.6, 30.0);
 
 	// Disabled second clip referencing the same asset.
 	let clip_b = video.children()[2]
 		.as_clip()
 		.expect("spine child 2 is a Clip");
 	assert_eq!(clip_b.name(), "Clip B");
-	assert!(!clip_b.enabled());
-	let range = clip_b.source_range().expect("Clip B has a source range");
+	assert!(!clip_b.enabled);
+	let range = clip_b
+		.source_range
+		.clone()
+		.expect("Clip B has a source range");
 	assert_time(range.start_time(), 0.0, 30.0);
 	assert_time(range.duration(), 6.0, 30.0);
 
@@ -182,7 +189,10 @@ fn parse_synthetic_document() {
 		.as_clip()
 		.expect("audio child 0 is a Clip");
 	assert_eq!(ambience.name(), "Ambience");
-	let range = ambience.source_range().expect("Ambience source range");
+	let range = ambience
+		.source_range
+		.clone()
+		.expect("Ambience source range");
 	assert_time(range.start_time(), 0.0, NTSC_RATE);
 	assert_time(range.duration(), 3.0, NTSC_RATE);
 	let external = match ambience.media_reference().unwrap() {
@@ -257,7 +267,7 @@ fn ntsc_frame_accuracy() {
 	let mut timeline = Timeline::new("NTSC");
 	let mut video = Track::new("Video");
 	let mut clip = Clip::new("ntsc");
-	clip.set_source_range(TimeRange::new(
+	clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, NTSC_RATE),
 		RationalTime::new(3.0, NTSC_RATE),
 	));
@@ -269,17 +279,17 @@ fn ntsc_frame_accuracy() {
 		)),
 	)));
 	video.append_child(Composable::Clip(clip));
-	timeline.tracks_mut().append_child(Composable::Track(video));
+	timeline.tracks.append_child(Composable::Track(video));
 
 	let xml = quercus_otio::to_fcpxml_string(&[timeline]).expect("export");
 	let reparsed = quercus_otio::from_fcpxml_string(&xml).expect("reparse");
-	let clip = reparsed[0].tracks().children()[0]
+	let clip = reparsed[0].tracks.children()[0]
 		.as_track()
 		.unwrap()
 		.children()[0]
 		.as_clip()
 		.unwrap();
-	let range = clip.source_range().unwrap();
+	let range = clip.source_range.clone().unwrap();
 	// 3 frames at 30000/1001 stay 3 frames through seconds.
 	assert_time(range.duration(), 3.0, NTSC_RATE);
 	// to_rational is the exact seconds value (3 frames = 1001/10000 s).
@@ -409,9 +419,9 @@ fn lenient_unknown_elements() {
 	let timelines = quercus_otio::from_fcpxml_string(doc).expect("lenient document parses");
 	assert_eq!(timelines.len(), 1);
 	let timeline = &timelines[0];
-	assert_eq!(timeline.name(), "P");
+	assert_eq!(timeline.name.as_str(), "P");
 
-	let track = timeline.tracks().children()[0].as_track().unwrap();
+	let track = timeline.tracks.children()[0].as_track().unwrap();
 	// sync-clip, X, G, title, NoMedia (the bogus element is skipped).
 	assert_eq!(track.children().len(), 5);
 
@@ -449,7 +459,7 @@ fn multiple_timelines_export_and_import() {
 	let mut a = Timeline::new("Sequence One");
 	let mut track_a = Track::new("Video");
 	let mut clip = Clip::new("c1");
-	clip.set_source_range(TimeRange::new(
+	clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(48.0, 24.0),
 	));
@@ -458,12 +468,12 @@ fn multiple_timelines_export_and_import() {
 		None,
 	)));
 	track_a.append_child(Composable::Clip(clip));
-	a.tracks_mut().append_child(Composable::Track(track_a));
+	a.tracks.append_child(Composable::Track(track_a));
 
 	let mut b = Timeline::new("Sequence Two");
 	let mut track_b = Track::new("Audio");
 	let mut clip2 = Clip::new("c2");
-	clip2.set_source_range(TimeRange::new(
+	clip2.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 48000.0),
 		RationalTime::new(96000.0, 48000.0),
 	));
@@ -472,7 +482,7 @@ fn multiple_timelines_export_and_import() {
 		None,
 	)));
 	track_b.append_child(Composable::Clip(clip2));
-	b.tracks_mut().append_child(Composable::Track(track_b));
+	b.tracks.append_child(Composable::Track(track_b));
 
 	let xml =
 		quercus_otio::to_fcpxml_string(&[a.clone(), b.clone()]).expect("export two timelines");
@@ -482,20 +492,20 @@ fn multiple_timelines_export_and_import() {
 
 	let reparsed = quercus_otio::from_fcpxml_string(&xml).expect("reparse");
 	assert_eq!(reparsed.len(), 2);
-	assert_eq!(reparsed[0].name(), "Sequence One");
-	assert_eq!(reparsed[1].name(), "Sequence Two");
+	assert_eq!(reparsed[0].name.as_str(), "Sequence One");
+	assert_eq!(reparsed[1].name.as_str(), "Sequence Two");
 
 	// A clip without an available_range gains one on export (the asset
 	// duration defaults to the clip length), so compare the round-trip
 	// parts the model carries.
-	let clip_rt = reparsed[0].tracks().children()[0]
+	let clip_rt = reparsed[0].tracks.children()[0]
 		.as_track()
 		.unwrap()
 		.children()[0]
 		.as_clip()
 		.unwrap();
 	assert_eq!(clip_rt.name(), "c1");
-	let range = clip_rt.source_range().unwrap();
+	let range = clip_rt.source_range.clone().unwrap();
 	assert_time(range.duration(), 48.0, 24.0);
 	let available = clip_rt
 		.media_reference()
@@ -516,7 +526,7 @@ fn file_round_trip() {
 	quercus_otio::to_fcpxml_file(&[parse_synthetic()], &path).expect("write fcpxml file");
 	let timelines = quercus_otio::from_fcpxml_file(&path).expect("read fcpxml file");
 	assert_eq!(timelines.len(), 1);
-	assert_eq!(timelines[0].name(), "My Project");
+	assert_eq!(timelines[0].name.as_str(), "My Project");
 	fs::remove_file(&path).ok();
 }
 

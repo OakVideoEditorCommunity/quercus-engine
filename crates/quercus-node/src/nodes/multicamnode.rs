@@ -57,7 +57,7 @@ pub struct MultiCamNode {
 	/// `sequence_`, a raw `Sequence *` set/cleared by the
 	/// `sequence_in` connect/disconnect events). Stored here as the
 	/// sequence node's id; `None` = no sequence connected.
-	sequence: Option<NodeId>,
+	pub sequence: Option<NodeId>,
 }
 
 /// The C++ `k_input_flag_static` mask: not-connectable +
@@ -70,16 +70,6 @@ impl MultiCamNode {
 	/// [`CURRENT_INPUT`] as int).
 	pub fn current_source(&self, core: &NodeCore) -> i32 {
 		core.standard_value(CURRENT_INPUT, -1).to_double() as i32
-	}
-
-	/// The connected sequence node (C++ `sequence_`).
-	///
-	/// `Some` while a sequence is wired to `sequence_in` (the state
-	/// [`Self::set_sequence`] maintains), `None` when no sequence is
-	/// connected or after the edge is removed. The node then takes its
-	/// sources from that sequence's track list instead of `sources_in`.
-	pub fn sequence(&self) -> Option<NodeId> {
-		self.sequence
 	}
 
 	/// Set/clear the connected-sequence state (the effects of the C++
@@ -429,13 +419,13 @@ mod branch_tests {
 			.downcast_mut::<MultiCamNode>()
 			.unwrap();
 		node.set_sequence(&mut core, Some(fake_id(11)));
-		assert_eq!(node.sequence(), Some(fake_id(11)));
+		assert_eq!(node.sequence, Some(fake_id(11)));
 		assert_eq!(
 			core.get_input(SEQUENCE_TYPE_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
 			0
 		);
 		node.set_sequence(&mut core, None);
-		assert_eq!(node.sequence(), None);
+		assert_eq!(node.sequence, None);
 		assert_ne!(
 			core.get_input(SEQUENCE_TYPE_INPUT).unwrap().flags & crate::input::flags::HIDDEN,
 			0
@@ -519,7 +509,7 @@ mod branch_tests {
 			.unwrap()
 			.downcast_ref::<MultiCamNode>()
 			.unwrap()
-			.sequence()
+			.sequence
 			.is_none());
 		behavior.input_connected(&mut core, SEQUENCE_INPUT, -1, seq);
 		assert_eq!(
@@ -528,7 +518,7 @@ mod branch_tests {
 				.unwrap()
 				.downcast_ref::<MultiCamNode>()
 				.unwrap()
-				.sequence(),
+				.sequence,
 			Some(seq)
 		);
 		behavior.input_disconnected(&mut core, "other_in", -1, seq);
@@ -537,7 +527,7 @@ mod branch_tests {
 			.unwrap()
 			.downcast_ref::<MultiCamNode>()
 			.unwrap()
-			.sequence()
+			.sequence
 			.is_some());
 		behavior.input_disconnected(&mut core, SEQUENCE_INPUT, -1, seq);
 		assert!(behavior
@@ -545,7 +535,7 @@ mod branch_tests {
 			.unwrap()
 			.downcast_ref::<MultiCamNode>()
 			.unwrap()
-			.sequence()
+			.sequence
 			.is_none());
 
 		let mut copy = behavior

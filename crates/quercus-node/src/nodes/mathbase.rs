@@ -144,10 +144,10 @@ impl PairingCalculator {
 			let idx_a = likelihood_a[most_likely as i32 as usize];
 			let idx_b = likelihood_b[most_likely as i32 as usize];
 			if idx_a >= 0 && (idx_a as usize) < table_a.count() {
-				value_a = table_a.rows()[idx_a as usize].1.clone();
+				value_a = table_a.rows.as_slice()[idx_a as usize].1.clone();
 			}
 			if idx_b >= 0 && (idx_b as usize) < table_b.count() {
-				value_b = table_b.rows()[idx_b as usize].1.clone();
+				value_b = table_b.rows.as_slice()[idx_b as usize].1.clone();
 			}
 		}
 
@@ -171,7 +171,7 @@ impl PairingCalculator {
 /// eligible. `k_pair_count` entries.
 fn get_pair_likelihood(table: &NodeValueTable) -> Vec<i64> {
 	let mut likelihood = vec![-1i64; Pairing::COUNT as usize];
-	for (i, (ty, _, _)) in table.rows().iter().enumerate() {
+	for (i, (ty, _, _)) in table.rows.as_slice().iter().enumerate() {
 		let weight = i as i64;
 		let set = |p: Pairing, likelihood: &mut Vec<i64>| {
 			likelihood[p as i32 as usize] = weight;

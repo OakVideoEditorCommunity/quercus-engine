@@ -505,8 +505,9 @@ impl TaskBehavior for ProxyTask {
 			.unwrap_or_default();
 		let ffmpeg_path = ProxyManager::find_ffmpeg(&configured);
 		if ffmpeg_path.is_empty() {
-			task.set_error(
-				"Failed to generate proxy: ffmpeg executable was not found. Set the ffmpeg path in Preferences > Disk > Proxy Settings.",
+			task.error = Some(
+				"Failed to generate proxy: ffmpeg executable was not found. Set the ffmpeg path in Preferences > Disk > Proxy Settings."
+					.to_string(),
 			);
 			return Err(Error::Failed("ffmpeg executable was not found".to_string()));
 		}
@@ -517,7 +518,7 @@ impl TaskBehavior for ProxyTask {
 				&& !parent.exists()
 				&& fs::create_dir_all(parent).is_err()
 			{
-				task.set_error("Failed to create proxy output directory");
+				task.error = Some(("Failed to create proxy output directory").to_string());
 				return Err(Error::Failed(
 					"Failed to create proxy output directory".to_string(),
 				));
@@ -563,7 +564,7 @@ impl TaskBehavior for ProxyTask {
 		let mut child = match command.spawn() {
 			Ok(child) => child,
 			Err(_) => {
-				task.set_error("Failed to start ffmpeg for proxy generation");
+				task.error = Some(("Failed to start ffmpeg for proxy generation").to_string());
 				return Err(Error::Failed("Failed to start ffmpeg".to_string()));
 			}
 		};
@@ -606,7 +607,7 @@ impl TaskBehavior for ProxyTask {
 					let _ = child.kill();
 					let _ = child.wait();
 					let _ = fs::remove_file(&working_filename);
-					task.set_error("Proxy generation was cancelled");
+					task.error = Some(("Proxy generation was cancelled").to_string());
 					return Err(Error::Cancelled);
 				}
 			}
@@ -625,19 +626,19 @@ impl TaskBehavior for ProxyTask {
 				format!("ffmpeg failed to generate proxy: {detail}")
 			};
 			eprintln!("{message}");
-			task.set_error(&message);
+			task.error = Some((&message).to_string());
 			return Err(Error::Failed(message));
 		}
 
 		if !path::Path::new(&working_filename).exists() {
-			task.set_error("ffmpeg finished but proxy file was not created");
+			task.error = Some(("ffmpeg finished but proxy file was not created").to_string());
 			return Err(Error::Failed(
 				"ffmpeg finished but proxy file was not created".to_string(),
 			));
 		}
 
 		if fs::rename(&working_filename, &self.output_filename).is_err() {
-			task.set_error("Failed to move proxy into place");
+			task.error = Some(("Failed to move proxy into place").to_string());
 			return Err(Error::Failed("Failed to move proxy into place".to_string()));
 		}
 

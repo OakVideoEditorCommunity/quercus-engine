@@ -46,13 +46,13 @@ pub struct FootageDescription {
 	/// The decoder id that produced this description.
 	decoder: String,
 	/// Total number of streams (video + audio + subtitle).
-	total_stream_count: usize,
+	pub total_stream_count: usize,
 	/// The streams, in probe order.
 	streams: Vec<StreamEntry>,
 	/// The media has a source start time.
 	has_source_start_time: bool,
 	/// Source start time (when present).
-	source_start_time: Rational,
+	pub source_start_time: Rational,
 	/// Total duration across streams (may be empty).
 	duration: Option<TimeRange>,
 }
@@ -85,16 +85,6 @@ impl FootageDescription {
 	/// decoder. Empty only for a `Default`-constructed value.
 	pub fn decoder(&self) -> &str {
 		&self.decoder
-	}
-
-	/// Total stream count.
-	///
-	/// Counts every stream the container reports, including streams the probe
-	/// could not describe (the C++ `set_stream_count` records those too), so it
-	/// may exceed the number of entries reachable through
-	/// [`Self::get_video_stream`] and the other typed getters.
-	pub fn total_stream_count(&self) -> usize {
-		self.total_stream_count
 	}
 
 	/// Number of video streams.
@@ -180,16 +170,6 @@ impl FootageDescription {
 		self.has_source_start_time
 	}
 
-	/// Source start time.
-	///
-	/// Returns the media's start offset as an owned rational. When
-	/// [`Self::has_source_start_time`] is `false` this is the default `0/0`
-	/// sentinel and must not be read as a real time; the probe sets both through
-	/// `set_source_start_time`.
-	pub fn source_start_time(&self) -> Rational {
-		self.source_start_time
-	}
-
 	/// Total duration across streams.
 	pub fn duration(&self) -> Option<TimeRange> {
 		self.duration
@@ -204,16 +184,6 @@ impl FootageDescription {
 	pub fn push_stream(&mut self, entry: StreamEntry) {
 		self.total_stream_count += 1;
 		self.streams.push(entry);
-	}
-
-	/// Set the total stream count, mirroring the C++ `set_stream_count`
-	/// (which records every stream in the container, including ones the
-	/// probe could not describe and therefore did not push).
-	///
-	/// Hidden from docs; probe/extension support only.
-	#[doc(hidden)]
-	pub fn set_stream_count(&mut self, count: usize) {
-		self.total_stream_count = count;
 	}
 
 	/// Set the source start time, mirroring the C++ `set_source_start_time`.
@@ -242,7 +212,7 @@ mod tests {
 			0,
 			1,
 		);
-		vp.set_stream_index(index);
+		vp.stream_index = index;
 		vp
 	}
 
@@ -265,7 +235,7 @@ mod tests {
 	fn new_description_is_empty() {
 		let d = FootageDescription::new("ffmpeg");
 		assert_eq!(d.decoder(), "ffmpeg");
-		assert_eq!(d.total_stream_count(), 0);
+		assert_eq!(d.total_stream_count, 0);
 		assert_eq!(d.video_stream_count(), 0);
 		assert_eq!(d.audio_stream_count(), 0);
 		assert_eq!(d.subtitle_stream_count(), 0);
@@ -281,7 +251,7 @@ mod tests {
 		d.push_stream(StreamEntry::Subtitle(subtitle_params()));
 		d.push_stream(StreamEntry::Video(video_params(1)));
 
-		assert_eq!(d.total_stream_count(), 4);
+		assert_eq!(d.total_stream_count, 4);
 		assert_eq!(d.video_stream_count(), 2);
 		assert_eq!(d.audio_stream_count(), 1);
 		assert_eq!(d.subtitle_stream_count(), 1);

@@ -138,8 +138,8 @@ pub fn load_ove(path: &Path) -> Result<ProjectRef, String> {
 			.unwrap_or_else(|_| path.to_path_buf())
 	};
 	let mut guard = lock(&project);
-	guard.set_filename(&abs.to_string_lossy());
-	guard.set_modified(false);
+	guard.filename = (&abs.to_string_lossy()).to_string();
+	guard.modified = false;
 	drop(guard);
 	Ok(project)
 }
@@ -155,8 +155,8 @@ pub fn save_ove(project: &ProjectRef, path: &Path) -> Result<(), String> {
 	std::fs::write(path, &xml)
 		.map_err(|e| format!("failed to write \"{}\": {e}", path.display()))?;
 	let mut guard = lock(project);
-	guard.set_filename(&path.to_string_lossy());
-	guard.set_modified(false);
+	guard.filename = (&path.to_string_lossy()).to_string();
+	guard.modified = false;
 	Ok(())
 }
 

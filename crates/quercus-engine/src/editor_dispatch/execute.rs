@@ -424,7 +424,7 @@ pub(crate) fn execute(
 			let list = session.markers.lock().unwrap_or_else(|e| e.into_inner());
 			let Some(index) = (0..list.size()).find(|&index| {
 				list.at(index)
-					.is_some_and(|marker| marker.time().in_() == time)
+					.is_some_and(|marker| marker.time.in_() == time)
 			}) else {
 				return Err("no marker at that time".into());
 			};
@@ -438,8 +438,8 @@ pub(crate) fn execute(
 			// Preview writes during a ruler drag are deliberately not pushed
 			// to undo history. The drag commit uses WorkareaSetUndoable below.
 			let mut workarea = session.workarea.lock().unwrap_or_else(|e| e.into_inner());
-			workarea.set_enabled(enabled);
-			workarea.set_range(range.native());
+			workarea.enabled = enabled;
+			workarea.range = range.native();
 			drop(workarea);
 			Ok(EditResult::default())
 		}

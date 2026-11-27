@@ -354,7 +354,7 @@ fn interact_draw_renders_plugin_colours() {
 		// F32 RGBA is 16 bytes per pixel (tight rows).
 		let stride = (w as usize) * 16;
 		let px = |x: usize, y: usize| -> [f32; 4] {
-			let p = &img.pixels()[y * stride + x * 16..y * stride + x * 16 + 16];
+			let p = &img.data.as_slice()[y * stride + x * 16..y * stride + x * 16 + 16];
 			[
 				f32::from_ne_bytes(p[0..4].try_into().unwrap()),
 				f32::from_ne_bytes(p[4..8].try_into().unwrap()),
