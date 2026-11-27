@@ -29,16 +29,17 @@
 //! - a successful paramSetValue fires instanceChanged (kOfxChangePluginEdited,
 //!   `paramChangedByPlugin` at HS:1982-1994), writing back to the bound node
 //!   through [`crate::param::notify_instance_changed`];
-//! - phase 1 has no animation: AtTime == the current value; keys are always 0;
-//!   derivative/integral -> kOfxStatErrMissingHostFeature; editBegin/End are
-//!   the edit transaction brackets (undo grouping: write-backs inside the
-//!   transaction are merged into one multi command, see
-//!   [`crate::instance::Instance::edit_begin`]).
+//! - phase 2 animation: ordinary animatable parameters (`Double*`, `Integer*`,
+//!   `RGB`, `RGBA`) bridge to `NodeCore::KeyframeTrack` (when bound to a node)
+//!   or `ParamInstance`'s render-time/local track snapshot; derivative/integral
+//!   queries continue to return `kOfxStatErrMissingHostFeature` (deferred to
+//!   follow-up interpolation work); `paramEditBegin`/`paramEditEnd` group
+//!   write-backs into one global undo entry.
 
 use crate::property;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::{c_char, c_double, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr, CString};
 use std::panic;
 use std::ptr;
 use std::slice;
@@ -82,9 +83,9 @@ pub struct ParameterSuiteV1 {
 	/// paramSetValueAtTime
 	pub param_set_value_at_time: unsafe extern "C" fn(*mut c_void, c_double, ...) -> c_int,
 	/// paramGetNumKeys
-	pub param_get_num_keys: unsafe extern "C" fn(*mut c_void, *mut c_int) -> c_int,
+	pub param_get_num_keys: unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int,
 	/// paramGetKeyTime
-	pub param_get_key_time: unsafe extern "C" fn(*mut c_void, c_int, *mut c_double) -> c_int,
+	pub param_get_key_time: unsafe extern "C" fn(*mut c_void, c_uint, *mut c_double) -> c_int,
 	/// paramGetKeyIndex
 	pub param_get_key_index:
 		unsafe extern "C" fn(*mut c_void, c_double, c_int, *mut c_int) -> c_int,
@@ -93,10 +94,14 @@ pub struct ParameterSuiteV1 {
 	/// paramDeleteAllKeys
 	pub param_delete_all_keys: unsafe extern "C" fn(*mut c_void) -> c_int,
 	/// paramCopy
-	pub param_copy:
-		unsafe extern "C" fn(*mut c_void, *mut c_void, c_double, c_double, *const c_void) -> c_int,
+	pub param_copy: unsafe extern "C" fn(
+		*mut c_void,
+		*mut c_void,
+		c_double,
+		*const crate::instance::OfxRangeD,
+	) -> c_int,
 	/// paramEditBegin / paramEditEnd (edit transaction brackets)
-	pub param_edit_begin: unsafe extern "C" fn(*mut c_void) -> c_int,
+	pub param_edit_begin: unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int,
 	/// paramEditEnd
 	pub param_edit_end: unsafe extern "C" fn(*mut c_void) -> c_int,
 }
@@ -408,21 +413,85 @@ pub(crate) fn unregister_params_of(instance_props: usize) {
 		.retain(|_, owner| *owner != instance_props);
 }
 
+/// Looks up the owning [`Instance`] for a parameter `props` address.
+fn owner_instance(param_props: usize) -> Option<&'static Instance> {
+	let owner = PARAM_OWNER
+		.lock()
+		.unwrap_or_else(|e| e.into_inner())
+		.get(&param_props)
+		.copied()?;
+	Some(unsafe { &*(owner as *const Instance) })
+}
+
+/// Resolves the owning [`Instance`] and bound node reference for a parameter, if bound.
+fn bound_node(param_props: usize) -> Option<(&'static Instance, crate::node::NodeRef)> {
+	let inst = owner_instance(param_props)?;
+	let node_id = inst
+		.node_identity
+		.load(std::sync::atomic::Ordering::Relaxed);
+	if node_id == 0 {
+		return None;
+	}
+	let node_ref = crate::node::node_from_identity(node_id)?;
+	Some((inst, node_ref))
+}
+
+/// Resolves the active keyframe track for an instance parameter (scoped
+/// render-time snapshot override first, then bound node, then local track).
+fn resolve_track(p: &ParamInstance) -> Option<quercus_node::keyframe::KeyframeTrack> {
+	if !p.can_animate() {
+		return None;
+	}
+	if let Some(override_track) = p.render_animation_override() {
+		return override_track;
+	}
+	let addr = &p.props as *const _ as usize;
+	if let Some((_, node_ref)) = bound_node(addr) {
+		if let Ok(track) = crate::node::read_keyframe_track(&node_ref, &p.def.name) {
+			return track;
+		}
+	}
+	p.animation_track()
+}
+
+/// Evaluates a parameter at `time` (seconds).
+fn eval_param_at_time(r: &ParamRef, time: f64) -> Result<ParamValue, c_int> {
+	let rational = crate::node::ofx_time_to_rational(time).ok_or(status::ERR_VALUE)?;
+	match r {
+		ParamRef::Def(d) => Ok(d.default.clone()),
+		ParamRef::Instance(p) => {
+			if let Some(track) = resolve_track(p) {
+				if !track.keys().is_empty() {
+					if let Some(nv) = track.value_at(rational) {
+						if let Some(pv) = p.value_from_node_value(&nv) {
+							return Ok(pv);
+						}
+					}
+				}
+			}
+			Ok(p.get())
+		}
+	}
+}
+
 /// instanceChanged trigger after a successful paramSetValue (HS:
 /// ofxhParam.cpp:1991-1994 `paramChangedByPlugin`). A no-op when the instance
 /// is not registered (the unbound-node case is already a no-op). The parametric
 /// suite's Set/Add/Delete reuse this path (pub(crate): suites/parametric.rs).
 pub(crate) fn notify_changed(param_props: usize, name: &str) {
-	let owner = PARAM_OWNER
-		.lock()
-		.unwrap_or_else(|e| e.into_inner())
-		.get(&param_props)
-		.copied();
-	if let Some(inst_addr) = owner {
-		// instance props are at offset 0 (handle convention).
-		let inst = unsafe { &*(inst_addr as *const Instance) };
+	if let Some(inst) = owner_instance(param_props) {
 		crate::param::notify_instance_changed(inst, name, ChangeReason::PluginEdited);
 	}
+}
+
+/// Fallback invoked by the C shim when `ofx_param_kind_of` returns `0`
+/// (invalid handle -> `kOfxStatErrBadHandle`, non-value/unsupported parameter
+/// type -> `kOfxStatErrUnsupported`).
+#[no_mangle]
+pub unsafe extern "C" fn ofx_param_invalid_kind_impl(param: *mut c_void) -> c_int {
+	caught(|| match resolve_param(param)? {
+		ParamRef::Instance(_) | ParamRef::Def(_) => Err(status::ERR_UNSUPPORTED),
+	})
 }
 
 /// Parameter type query (called by the C shim): unknown/invalid handle -> 0
@@ -485,6 +554,40 @@ pub unsafe extern "C" fn ofx_param_get_impl(
 		write_value(&value_of(&r), k, out)?;
 		Ok(())
 	})
+}
+
+/// Numeric parameter read at `time` (the C shim's `paramGetValueAtTime` target).
+#[no_mangle]
+pub unsafe extern "C" fn ofx_param_get_at_time_impl(
+	param: *mut c_void,
+	time: c_double,
+	kind: c_int,
+	out: *mut c_void,
+) -> c_int {
+	caught(|| {
+		if out.is_null() || !time.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		let k = ParamKind::from_i32(kind).ok_or(status::ERR_UNKNOWN)?;
+		let r = resolve_param(param)?;
+		let val = eval_param_at_time(&r, time)?;
+		write_value(&val, k, out)?;
+		Ok(())
+	})
+}
+
+/// String parameter read at `time` (strings are non-animatable and return
+/// their current/default resident string pointer).
+#[no_mangle]
+pub unsafe extern "C" fn ofx_param_get_string_at_time_impl(
+	param: *mut c_void,
+	time: c_double,
+	out: *mut *mut c_char,
+) -> c_int {
+	if !time.is_finite() {
+		return status::ERR_VALUE;
+	}
+	unsafe { ofx_param_get_string_impl(param, out) }
 }
 
 /// String get (resident pointer: points into the instance storage / the
@@ -572,6 +675,94 @@ pub unsafe extern "C" fn ofx_param_set_impl(
 		};
 		notify_changed(props_addr, &name);
 		Ok(())
+	})
+}
+
+/// Numeric parameter write at `time` (the C shim's `paramSetValueAtTime` target).
+///
+/// Writes a keyframe at `time` on animatable parameters (`can_animate()`),
+/// producing an undoable node keyframe mutation when bound to a node.
+#[no_mangle]
+pub unsafe extern "C" fn ofx_param_set_at_time_impl(
+	param: *mut c_void,
+	time: c_double,
+	kind: c_int,
+	input: *const c_void,
+) -> c_int {
+	caught(|| {
+		if input.is_null() || !time.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		let k = ParamKind::from_i32(kind).ok_or(status::ERR_UNKNOWN)?;
+		let value = read_value(k, input).ok_or(status::FAILED)?;
+		let p = match resolve_param(param)? {
+			ParamRef::Instance(p) => p,
+			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		};
+		if !p.can_animate() {
+			return Err(status::ERR_UNSUPPORTED);
+		}
+		let nv = crate::param::to_node_value(&value).ok_or(status::ERR_UNSUPPORTED)?;
+		let props_addr = &p.props as *const _ as usize;
+		let mut updated_node = false;
+		if let Some((inst, node_ref)) = bound_node(props_addr) {
+			match crate::node::upsert_keyframe_undoable(&node_ref, &p.def.name, time, &nv) {
+				Ok(cmd) => {
+					inst.submit_undo_command(cmd, &format!("Set {} keyframe", p.def.name));
+					updated_node = true;
+				}
+				Err(crate::node::NodeBridgeError::UnknownInput(_)) => {}
+				Err(crate::node::NodeBridgeError::InvalidTime(_)) => return Err(status::ERR_VALUE),
+				Err(_) => return Err(status::FAILED),
+			}
+		}
+		if !updated_node {
+			let rational = crate::node::ofx_time_to_rational(time).ok_or(status::ERR_VALUE)?;
+			let node_val = nv.to_node_value().ok_or(status::FAILED)?;
+			let mut track = p.animation_track().unwrap_or_default();
+			if let Some(idx) = crate::node::find_key_index_at(track.keys(), time) {
+				let key_time = track.keys()[idx].time;
+				track.set_key_value(key_time, node_val);
+			} else {
+				let interp = track
+					.keys()
+					.iter()
+					.rfind(|k| k.time <= rational)
+					.map(|k| k.interpolation)
+					.unwrap_or(quercus_node::keyframe::Interpolation::Linear);
+				track.set_key(quercus_node::keyframe::Keyframe {
+					time: rational,
+					value: node_val,
+					interpolation: interp,
+					bezier_in: (0.0, 0.0),
+					bezier_out: (0.0, 0.0),
+				});
+			}
+			p.set_animation_track(Some(track));
+		} else {
+			p.set_is_animating(true);
+		}
+		p.set_ofx(value);
+		Ok(())
+	})
+}
+
+/// String parameter write at `time`: strings are not animatable and return
+/// `kOfxStatErrUnsupported` after validating handle, writability, and `time`.
+#[no_mangle]
+pub unsafe extern "C" fn ofx_param_set_string_at_time_impl(
+	param: *mut c_void,
+	time: c_double,
+	input: *const c_char,
+) -> c_int {
+	caught(|| {
+		if input.is_null() || !time.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		match resolve_param(param)? {
+			ParamRef::Instance(_) => Err(status::ERR_UNSUPPORTED),
+			ParamRef::Def(_) => Err(status::ERR_BAD_HANDLE),
+		}
 	})
 }
 
@@ -829,211 +1020,326 @@ unsafe extern "C" fn param_get_property_set(
 	})
 }
 
+/// Validates a parameter handle for keyframe queries and rejects non-value /
+/// parametric parameter types with `kOfxStatErrUnsupported`.
+fn resolve_value_param(param: *mut c_void) -> Result<ParamRef<'static>, c_int> {
+	let r = resolve_param(param)?;
+	let kind = match &r {
+		ParamRef::Instance(p) => p.def.kind(),
+		ParamRef::Def(d) => d.kind(),
+	};
+	if kind.is_none() {
+		return Err(status::ERR_UNSUPPORTED);
+	}
+	Ok(r)
+}
+
+/// Resolves an edit-transaction handle (`OfxParamSetHandle` = `INSTANCE` or
+/// a parameter instance handle via `PARAM_OWNER`).
+fn resolve_edit_instance(handle: *mut c_void) -> Result<Option<&'static Instance>, c_int> {
+	if handle.is_null() {
+		return Err(status::ERR_BAD_HANDLE);
+	}
+	match tag::kind(handle) {
+		tag::INSTANCE => Ok(Some(unsafe { &*(tag::strip(handle) as *const Instance) })),
+		tag::PARAM_INSTANCE => {
+			let p = unsafe { &*(tag::strip(handle) as *const ParamInstance) };
+			Ok(owner_instance(&p.props as *const _ as usize))
+		}
+		_ => Err(status::ERR_BAD_HANDLE),
+	}
+}
+
 /// `paramGetNumKeys`: reports the number of keyframes of a parameter.
-///
-/// Phase 1 has no animation, so it always writes `*count = 0`; the param handle
-/// is still validated first (invalid -> `BadHandle`).
-///
-/// # Safety
-///
-/// `param` must be a valid param handle or a null pointer; `count` must be
-/// writable for one `c_int`.
-///
-/// # Errors
-///
-/// `count` null -> `kOfxStatErrValue`.
-unsafe extern "C" fn param_get_num_keys(param: *mut c_void, count: *mut c_int) -> c_int {
+unsafe extern "C" fn param_get_num_keys(param: *mut c_void, count: *mut c_uint) -> c_int {
 	caught(|| {
-		let _ = resolve_param(param)?;
+		let r = resolve_value_param(param)?;
 		if count.is_null() {
 			return Err(status::ERR_VALUE);
 		}
-		unsafe { *count = 0 };
+		let n = match r {
+			ParamRef::Instance(p) => resolve_track(p).map_or(0, |t| t.keys().len()),
+			ParamRef::Def(_) => 0,
+		};
+		let n_uint = c_uint::try_from(n).map_err(|_| status::ERR_VALUE)?;
+		unsafe { *count = n_uint };
 		Ok(())
 	})
 }
 
 /// `paramGetKeyTime`: reads the keyframe time by key index.
-///
-/// Phase 1 has no keyframes, so it validates the handle and then always returns
-/// `kOfxStatErrBadIndex`; `_index` is unused and `_time` is never written.
-///
-/// # Safety
-///
-/// `param` must be a valid param handle or a null pointer, and the handle must
-/// stay valid for the duration of the call.
 unsafe extern "C" fn param_get_key_time(
 	param: *mut c_void,
-	_index: c_int,
-	_time: *mut c_double,
+	index: c_uint,
+	time: *mut c_double,
 ) -> c_int {
 	caught(|| {
-		let _ = resolve_param(param)?;
-		Err(status::ERR_BAD_INDEX)
+		let r = resolve_value_param(param)?;
+		if time.is_null() {
+			return Err(status::ERR_VALUE);
+		}
+		let ParamRef::Instance(p) = r else {
+			return Err(status::ERR_BAD_INDEX);
+		};
+		let track = resolve_track(p).ok_or(status::ERR_BAD_INDEX)?;
+		let key = track
+			.keys()
+			.get(index as usize)
+			.ok_or(status::ERR_BAD_INDEX)?;
+		unsafe { *time = key.time.to_f64() };
+		Ok(())
 	})
 }
 
 /// `paramGetKeyIndex`: looks up a neighbouring keyframe index by time/direction.
 ///
-/// Phase 1 has no keyframes, so it validates the handle and then always returns
-/// `kOfxStatErrBadIndex`; `_time` and `_direction` are unused and `_index` is
-/// never written.
-///
-/// # Safety
-///
-/// `param` must be a valid param handle or a null pointer, and the handle must
-/// stay valid for the duration of the call.
+/// Writes `*index = -1` and returns `kOfxStatFailed` when no matching key is
+/// found (per `ofxParam.h`).
 unsafe extern "C" fn param_get_key_index(
 	param: *mut c_void,
-	_time: c_double,
-	_direction: c_int,
-	_index: *mut c_int,
+	time: c_double,
+	direction: c_int,
+	index: *mut c_int,
 ) -> c_int {
 	caught(|| {
-		let _ = resolve_param(param)?;
-		Err(status::ERR_BAD_INDEX)
+		let r = resolve_value_param(param)?;
+		if index.is_null() || !time.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		unsafe { *index = -1 };
+		let ParamRef::Instance(p) = r else {
+			return Err(status::FAILED);
+		};
+		let Some(track) = resolve_track(p) else {
+			return Err(status::FAILED);
+		};
+		let keys = track.keys();
+		let found = if direction == 0 {
+			crate::node::find_key_index_at(keys, time)
+		} else if direction > 0 {
+			keys.iter()
+				.position(|k| (k.time.to_f64() - time) > crate::node::KEY_TIME_EPSILON)
+		} else {
+			keys.iter()
+				.rposition(|k| (time - k.time.to_f64()) > crate::node::KEY_TIME_EPSILON)
+		};
+		match found {
+			Some(i) => {
+				unsafe { *index = i as c_int };
+				Ok(())
+			}
+			None => Err(status::FAILED),
+		}
 	})
 }
 
 /// `paramDeleteKey`: deletes the keyframe at the given time.
-///
-/// Phase 1 has no keyframes, so after validating the handle it returns
-/// `kOfxStatOK` directly (no-op); `_time` is unused (it shares the "no keyframes
-/// means no-op" semantics with [`param_delete_all_keys`]).
-///
-/// # Safety
-///
-/// `param` must be a valid param handle or a null pointer, and the handle must
-/// stay valid for the duration of the call.
-///
-/// # Errors
-///
-/// Empty/invalid handle -> `kOfxStatErrBadHandle`.
-unsafe extern "C" fn param_delete_key(param: *mut c_void, _time: c_double) -> c_int {
+unsafe extern "C" fn param_delete_key(param: *mut c_void, time: c_double) -> c_int {
 	caught(|| {
-		let _ = resolve_param(param)?;
+		let p = match resolve_value_param(param)? {
+			ParamRef::Instance(p) => p,
+			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		};
+		if !time.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		if !p.can_animate() {
+			return Err(status::ERR_BAD_INDEX);
+		}
+		let props_addr = &p.props as *const _ as usize;
+		if let Some((inst, node_ref)) = bound_node(props_addr) {
+			match crate::node::delete_keyframe_undoable(&node_ref, &p.def.name, time) {
+				Ok(Some(cmd)) => {
+					inst.submit_undo_command(cmd, &format!("Delete {} keyframe", p.def.name));
+					let still_animating = resolve_track(p).is_some_and(|t| !t.keys().is_empty());
+					p.set_is_animating(still_animating);
+					return Ok(());
+				}
+				Ok(None) => return Err(status::ERR_BAD_INDEX),
+				Err(crate::node::NodeBridgeError::UnknownInput(_)) => {}
+				Err(crate::node::NodeBridgeError::InvalidTime(_)) => return Err(status::ERR_VALUE),
+				Err(_) => return Err(status::FAILED),
+			}
+		}
+		let mut track = p.animation_track().ok_or(status::ERR_BAD_INDEX)?;
+		let idx =
+			crate::node::find_key_index_at(track.keys(), time).ok_or(status::ERR_BAD_INDEX)?;
+		let key_time = track.keys()[idx].time;
+		if !track.remove_key(key_time) {
+			return Err(status::ERR_BAD_INDEX);
+		}
+		p.set_animation_track(Some(track));
 		Ok(())
 	})
 }
 
 /// `paramDeleteAllKeys`: deletes all keyframes of a parameter.
-///
-/// Phase 1 has no keyframes, so after validating the handle it returns
-/// `kOfxStatOK` directly (no-op); pairs with [`param_delete_key`].
-///
-/// # Safety
-///
-/// `param` must be a valid param handle or a null pointer, and the handle must
-/// stay valid for the duration of the call.
-///
-/// # Errors
-///
-/// Empty/invalid handle -> `kOfxStatErrBadHandle`.
 unsafe extern "C" fn param_delete_all_keys(param: *mut c_void) -> c_int {
 	caught(|| {
-		let _ = resolve_param(param)?;
+		let p = match resolve_value_param(param)? {
+			ParamRef::Instance(p) => p,
+			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		};
+		if !p.can_animate() {
+			return Ok(());
+		}
+		let props_addr = &p.props as *const _ as usize;
+		if let Some((inst, node_ref)) = bound_node(props_addr) {
+			match crate::node::delete_all_keyframes_undoable(&node_ref, &p.def.name) {
+				Ok(Some(cmd)) => {
+					inst.submit_undo_command(cmd, &format!("Clear {} keyframes", p.def.name));
+					p.set_is_animating(false);
+					return Ok(());
+				}
+				Ok(None) => {
+					p.set_is_animating(false);
+					return Ok(());
+				}
+				Err(crate::node::NodeBridgeError::UnknownInput(_)) => {}
+				Err(_) => return Err(status::FAILED),
+			}
+		}
+		p.set_animation_track(None);
 		Ok(())
 	})
 }
 
-/// `paramCopy`: copies the keyframes of the `src` parameter to `dst`.
-///
-/// Phase 1 has no keyframes to copy: after validating both handles it returns
-/// `kOfxStatOK` directly (no-op); `_dst_time`, `_src_time` and `_key_range` are
-/// unused.
-///
-/// # Safety
-///
-/// `dst` and `src` must be valid param handles or null pointers, and both must
-/// stay valid for the duration of the call (passing the same handle twice is also
-/// allowed).
-///
-/// # Errors
-///
-/// Either handle null or with a mismatched tag -> `kOfxStatErrBadHandle`.
+/// `paramCopy`: copies the value and keyframes of `src` to `dst` with optional
+/// `dst_offset` and `frame_range` filter (per `ofxParam.h`).
 unsafe extern "C" fn param_copy(
 	dst: *mut c_void,
 	src: *mut c_void,
-	_dst_time: c_double,
-	_src_time: c_double,
-	_key_range: *const c_void,
+	dst_offset: c_double,
+	frame_range: *const crate::instance::OfxRangeD,
 ) -> c_int {
 	caught(|| {
-		let _ = resolve_param(dst)?;
-		let _ = resolve_param(src)?;
+		let dst_p = match resolve_value_param(dst)? {
+			ParamRef::Instance(p) => p,
+			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		};
+		let src_p = match resolve_value_param(src)? {
+			ParamRef::Instance(p) => p,
+			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		};
+		if !dst_offset.is_finite() {
+			return Err(status::ERR_VALUE);
+		}
+		if dst_p.def.ofx_type != src_p.def.ofx_type {
+			return Err(status::ERR_VALUE);
+		}
+		let range = if frame_range.is_null() {
+			None
+		} else {
+			let r = unsafe { *frame_range };
+			if !r.min.is_finite() || !r.max.is_finite() || r.min > r.max {
+				return Err(status::ERR_VALUE);
+			}
+			// ofxParam.h: [0, 0] selects all animation in paramFrom.
+			if r.min == 0.0 && r.max == 0.0 {
+				None
+			} else {
+				Some(r)
+			}
+		};
+
+		let src_addr = &src_p.props as *const _ as usize;
+		let src_val = bound_node(src_addr)
+			.and_then(|(_, node_ref)| {
+				let guard = node_ref.project.lock().unwrap_or_else(|e| e.into_inner());
+				let entry = guard.graph.get(node_ref.id)?;
+				entry.core.input_data_type(&src_p.def.name)?;
+				src_p.value_from_node_value(&entry.core.standard_value(&src_p.def.name, -1))
+			})
+			.unwrap_or_else(|| src_p.get());
+		let src_track = resolve_track(src_p).unwrap_or_default();
+		let mut new_track = quercus_node::keyframe::KeyframeTrack::default();
+		if dst_p.can_animate() && !src_track.keys().is_empty() {
+			for key in src_track.keys() {
+				let t = key.time.to_f64();
+				if let Some(r) = range {
+					if t < r.min - crate::node::KEY_TIME_EPSILON
+						|| t > r.max + crate::node::KEY_TIME_EPSILON
+					{
+						continue;
+					}
+				}
+				let shifted = if dst_offset == 0.0 {
+					key.time
+				} else {
+					crate::node::ofx_time_to_rational(t + dst_offset).ok_or(status::ERR_VALUE)?
+				};
+				let mut cloned = key.clone();
+				cloned.time = shifted;
+				new_track.set_key(cloned);
+			}
+		}
+
+		let dst_addr = &dst_p.props as *const _ as usize;
+		let mut updated_node = false;
+		if let Some((inst, node_ref)) = bound_node(dst_addr) {
+			if let Some(pod) = crate::param::to_node_value(&src_val) {
+				if let Some(nv) = pod.to_node_value() {
+					match crate::node::copy_param_undoable(
+						&node_ref,
+						&dst_p.def.name,
+						nv,
+						new_track.clone(),
+					) {
+						Ok(cmd) => {
+							inst.submit_undo_command(cmd, &format!("Copy {}", dst_p.def.name));
+							updated_node = true;
+						}
+						Err(crate::node::NodeBridgeError::UnknownInput(_)) => {}
+						Err(_) => return Err(status::FAILED),
+					}
+				}
+			} else if let ParamValue::String(s) | ParamValue::StrChoice(s) = &src_val {
+				if let Ok(text) = s.to_str() {
+					match crate::node::set_input_string_undoable(&node_ref, &dst_p.def.name, text) {
+						Ok(cmd) => {
+							inst.submit_undo_command(cmd, &format!("Copy {}", dst_p.def.name));
+							updated_node = true;
+						}
+						Err(crate::node::NodeBridgeError::UnknownInput(_)) => {}
+						Err(_) => return Err(status::FAILED),
+					}
+				}
+			}
+		}
+
+		dst_p.set_ofx(src_val);
+		if updated_node {
+			dst_p.set_is_animating(!new_track.keys().is_empty());
+		} else {
+			dst_p.set_animation_track((!new_track.keys().is_empty()).then_some(new_track));
+		}
 		Ok(())
 	})
 }
 
 /// `paramEditBegin`: enters an edit transaction (undo grouping).
 ///
-/// After resolving the `param` handle it locates the owning instance through
-/// `PARAM_OWNER` and increments its transaction depth; when the instance is not
-/// registered this is a no-op (hand-built instances have no host registration, so
-/// the edit brackets degrade to no grouping). Pairs with [`param_edit_end`];
-/// write-backs inside the transaction start accumulating in
-/// [`crate::instance::Instance::edit_begin`].
-///
-/// # Safety
-///
-/// `param` must be a valid param handle (definition or instance) or a null
-/// pointer, and the handle must stay valid for the duration of the call.
-///
-/// # Errors
-///
-/// Empty/invalid handle or a describe-time definition handle ->
-/// `kOfxStatErrBadHandle`.
-unsafe extern "C" fn param_edit_begin(param: *mut c_void) -> c_int {
+/// Accepts either an `OfxParamSetHandle` (`INSTANCE`) per `ofxParam.h` or a
+/// `PARAM_INSTANCE` handle (resolved through `PARAM_OWNER`).
+unsafe extern "C" fn param_edit_begin(param_set: *mut c_void, name: *const c_char) -> c_int {
 	caught(|| {
-		let addr = match resolve_param(param)? {
-			ParamRef::Instance(p) => &p.props as *const _ as usize,
-			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
+		let label = if name.is_null() {
+			None
+		} else {
+			Some(unsafe { c_name(name)? })
 		};
-		if let Some(owner) = PARAM_OWNER
-			.lock()
-			.unwrap_or_else(|e| e.into_inner())
-			.get(&addr)
-			.copied()
-		{
-			let inst = unsafe { &*(owner as *const Instance) };
-			inst.edit_begin();
+		if let Some(inst) = resolve_edit_instance(param_set)? {
+			inst.edit_begin_with_label(label);
 		}
 		Ok(())
 	})
 }
 
 /// `paramEditEnd`: exits an edit transaction; the outermost end commits the
-/// commands accumulated inside it.
-///
-/// After resolving the `param` handle it locates the owning instance through
-/// `PARAM_OWNER` and decrements its transaction depth; at the outermost end the
-/// write-backs accumulated inside the transaction are merged into one multi
-/// command, redo'd into effect and released (see
-/// [`crate::instance::Instance::edit_end`]). A no-op when the instance is not
-/// registered. Pairs with [`param_edit_begin`].
-///
-/// # Safety
-///
-/// `param` must be a valid param handle (definition or instance) or a null
-/// pointer, and the handle must stay valid for the duration of the call.
-///
-/// # Errors
-///
-/// Empty/invalid handle or a describe-time definition handle ->
-/// `kOfxStatErrBadHandle`.
-unsafe extern "C" fn param_edit_end(param: *mut c_void) -> c_int {
+/// commands accumulated inside it as one undo entry.
+unsafe extern "C" fn param_edit_end(param_set: *mut c_void) -> c_int {
 	caught(|| {
-		let addr = match resolve_param(param)? {
-			ParamRef::Instance(p) => &p.props as *const _ as usize,
-			ParamRef::Def(_) => return Err(status::ERR_BAD_HANDLE),
-		};
-		if let Some(owner) = PARAM_OWNER
-			.lock()
-			.unwrap_or_else(|e| e.into_inner())
-			.get(&addr)
-			.copied()
-		{
-			let inst = unsafe { &*(owner as *const Instance) };
+		if let Some(inst) = resolve_edit_instance(param_set)? {
 			inst.edit_end();
 		}
 		Ok(())

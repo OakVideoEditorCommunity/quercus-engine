@@ -132,6 +132,7 @@ impl RenderEvalHooks {
 			effect_input_id,
 			inputs,
 			values,
+			animations: _,
 		} = spec
 		else {
 			return Err(Error::Invalid);
@@ -350,6 +351,7 @@ impl RenderEvalHooks {
 			},
 			inputs,
 			values,
+			animations: payload.animations.clone(),
 		};
 		match self.process_plugin_job(src, &spec) {
 			Ok(texture) => Some(texture_value(texture)),

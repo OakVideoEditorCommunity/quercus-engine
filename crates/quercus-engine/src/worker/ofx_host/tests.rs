@@ -552,6 +552,7 @@ fn handle_job_renders_through_the_executor_and_reports_errors() {
 				effect_input_id,
 				inputs,
 				values,
+				animations: _,
 			} => {
 				assert_eq!(*instance, 7);
 				assert_eq!(type_id, "org.quercus.test");

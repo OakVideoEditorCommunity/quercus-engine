@@ -303,9 +303,7 @@ fn render_animated_gain(
 		effect_input_id: Some("Source".into()),
 		inputs: Vec::new(),
 		values,
-		renderer: None,
-		clear_destination: false,
-		interactive: false,
+		..Default::default()
 	};
 	let (out, _) = render_driver::render_frame(inst, &job).expect("render_frame should succeed");
 	first_pixel(&out)
@@ -344,6 +342,182 @@ fn animated_gain_offsets_constant_output() {
 			render_animated_gain(&fresh.value, 0.0, None),
 			[0.5, 0.5, 0.5, 1.0]
 		);
+		node_factory::unregister_instance(id);
+		Host::global().shutdown();
+	});
+}
+
+/// Ordinary node keyframes on `animatedGain` (Linear and Bezier) drive both
+/// `Traverser::evaluate` and `render_driver::render_frame`, agree with
+/// `paramGetValueAtTime`, restore instance animation state on drop, and stay
+/// isolated from `OfxParametricParameterSuite`.
+#[test]
+fn animated_gain_node_keyframes_render_and_agree_with_param_suite() {
+	common::with_host(|| {
+		if !scan_and_register() {
+			return;
+		}
+		let (mut core, behavior) = Factory::global().create_any(PLUGIN_ID).expect("create_any");
+
+		// Linear keyframes: 0.0 -> 0.0, 1.0 -> 1.0.
+		{
+			let track = core.keyframe_track_mut("animatedGain", -1);
+			track.set_key(quercus_node::keyframe::Keyframe {
+				time: Rational::new(0, 1),
+				value: NodeValue::Float(0.0),
+				interpolation: quercus_node::keyframe::Interpolation::Linear,
+				bezier_in: (0.0, 0.0),
+				bezier_out: (0.0, 0.0),
+			});
+			track.set_key(quercus_node::keyframe::Keyframe {
+				time: Rational::new(1, 1),
+				value: NodeValue::Float(1.0),
+				interpolation: quercus_node::keyframe::Interpolation::Linear,
+				bezier_in: (0.0, 0.0),
+				bezier_out: (0.0, 0.0),
+			});
+		}
+		let linear_track = core.keyframe_track("animatedGain", -1).unwrap().clone();
+
+		let mut graph = Graph::new();
+		let src_id = graph.add_node(
+			NodeCore::new(),
+			Box::new(ConstSource {
+				rgba: [0.1, 0.2, 0.3, 1.0],
+				size: (2, 2),
+			}),
+		);
+		let plug_id = graph.add_node(core, behavior);
+		graph
+			.connect(src_id, plug_id, "Source", -1)
+			.expect("Source connection");
+
+		let mut traverser = Traverser::new();
+		let mut hooks = eval::RenderEvalHooks::new();
+		for (time, expected_gain) in [
+			(Rational::new(0, 1), 0.0_f32),
+			(Rational::new(1, 2), 0.5_f32),
+			(Rational::new(1, 1), 1.0_f32),
+			(Rational::new(2, 1), 1.0_f32),
+		] {
+			let table = traverser
+				.evaluate(&graph, &EvalRequest::new(plug_id, time), &mut hooks)
+				.expect("evaluate animated plugin");
+			let tex = rendered_texture(&table);
+			let px = first_pixel(&tex);
+			let expected = 0.5 + expected_gain;
+			assert!(
+				(px[0] - expected).abs() < 1e-5 && (px[3] - 1.0).abs() < 1e-5,
+				"time={time:?}: pixel={px:?}, expected rgb={expected}"
+			);
+		}
+
+		// Render-driver snapshot isolation + paramGetValueAtTime agreement
+		// (including Bezier curve midpoint).
+		let inst = Host::global()
+			.create_instance(PLUGIN_ID, None)
+			.expect("instance");
+		let id = node_factory::register_instance(inst.clone());
+		let mut bezier_track = quercus_node::keyframe::KeyframeTrack::default();
+		bezier_track.set_key(quercus_node::keyframe::Keyframe {
+			time: Rational::new(0, 1),
+			value: NodeValue::Float(0.0),
+			interpolation: quercus_node::keyframe::Interpolation::Bezier,
+			bezier_in: (0.0, 0.0),
+			bezier_out: (0.4, 0.8),
+		});
+		bezier_track.set_key(quercus_node::keyframe::Keyframe {
+			time: Rational::new(1, 1),
+			value: NodeValue::Float(1.0),
+			interpolation: quercus_node::keyframe::Interpolation::Bezier,
+			bezier_in: (-0.4, -0.2),
+			bezier_out: (0.0, 0.0),
+		});
+		let expected_bezier = bezier_track
+			.value_at(Rational::new(1, 2))
+			.unwrap()
+			.to_double() as f32;
+
+		let dst = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let src = eval::generate_frame(Rational::new(0, 1), (2, 2), PixelFormat::F32).unwrap();
+		let job = render_driver::RenderJob {
+			time: 0.5,
+			dst: Texture::wrap_frame(dst),
+			src: Some(Texture::wrap_frame(src)),
+			effect_input_id: Some("Source".into()),
+			inputs: Vec::new(),
+			values: Vec::new(),
+			animations: vec![("animatedGain".to_string(), bezier_track)],
+			..Default::default()
+		};
+		let (out, _) = render_driver::render_frame(&inst.value, &job).expect("render_frame");
+		let px = first_pixel(&out);
+		assert!(
+			(px[0] - (0.5 + expected_bezier)).abs() < 1e-5,
+			"bezier midpoint render mismatch: px={px:?}, expected {}",
+			0.5 + expected_bezier
+		);
+
+		// Guard restored instance state after render_frame returned (no leak).
+		assert!(matches!(
+			inst.value
+				.params
+				.find("animatedGain")
+				.unwrap()
+				.props
+				.get("OfxParamPropIsAnimating", 0),
+			Some(quercus_ofx_plugin::property::Value::Int(0))
+		));
+
+		// paramGetValueAtTime matches linear_track directly when installed.
+		let param_suite = quercus_ofx_plugin::suites::param::suite_v1();
+		let ih = quercus_ofx_plugin::suites::tag::make(
+			&inst.value.props as *const quercus_ofx_plugin::property::PropertySet,
+			quercus_ofx_plugin::suites::tag::INSTANCE,
+		);
+		let mut ph: *mut std::ffi::c_void = std::ptr::null_mut();
+		let name = std::ffi::CString::new("animatedGain").unwrap();
+		unsafe {
+			assert_eq!(
+				(param_suite.param_get_handle)(ih, name.as_ptr(), &mut ph, std::ptr::null_mut()),
+				0
+			);
+			assert_eq!((param_suite.param_set_value_at_time)(ph, 0.0, 0.0_f64), 0);
+			assert_eq!((param_suite.param_set_value_at_time)(ph, 1.0, 1.0_f64), 0);
+			let mut v_mid = -1.0_f64;
+			assert_eq!(
+				(param_suite.param_get_value_at_time)(ph, 0.5, &mut v_mid),
+				0
+			);
+			let expected_linear = linear_track
+				.value_at(Rational::new(1, 2))
+				.unwrap()
+				.to_double();
+			assert!((v_mid - expected_linear).abs() < 1e-9);
+			// Ordinary keyframes are distinct from OfxParametricParameterSuite.
+			let par_suite = quercus_ofx_plugin::suites::parametric::suite_v1();
+			let mut n_ctrl = -1;
+			assert_eq!(
+				(par_suite.parametric_param_get_n_control_points)(ph, 0, 0.5, &mut n_ctrl),
+				quercus_ofx_plugin::suites::status::ERR_BAD_HANDLE
+			);
+		}
+
+		// Static `job.values` override must shadow any prior local track during render_frame,
+		// then restore the local track once render_frame completes.
+		assert_eq!(
+			render_animated_gain(&inst.value, 0.5, Some(0.1)),
+			[0.6, 0.6, 0.6, 1.0]
+		);
+		unsafe {
+			let mut v_mid = -1.0_f64;
+			assert_eq!(
+				(param_suite.param_get_value_at_time)(ph, 0.5, &mut v_mid),
+				0
+			);
+			assert!((v_mid - 0.5).abs() < 1e-9);
+		}
+
 		node_factory::unregister_instance(id);
 		Host::global().shutdown();
 	});
@@ -426,9 +600,7 @@ fn param_overrides_reach_instance() {
 			effect_input_id: Some("Source".into()),
 			inputs: Vec::new(),
 			values: pod,
-			renderer: None,
-			clear_destination: false,
-			interactive: false,
+			..Default::default()
 		};
 		render_driver::render_frame(&inst.value, &job).expect("render_frame should succeed");
 		let gain = inst.value.params.find("gain").unwrap().get();
@@ -448,9 +620,7 @@ fn param_overrides_reach_instance() {
 			effect_input_id: Some("Source".into()),
 			inputs: Vec::new(),
 			values: pod_nan,
-			renderer: None,
-			clear_destination: false,
-			interactive: false,
+			..Default::default()
 		};
 		render_driver::render_frame(&inst.value, &job).expect("NaN override should not fail");
 		assert_eq!(

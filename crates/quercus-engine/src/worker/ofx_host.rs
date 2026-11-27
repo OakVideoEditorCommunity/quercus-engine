@@ -437,6 +437,11 @@ fn handle_job(msg: serde_json::Value, pools: &HostPools) -> serde_json::Value {
 			.iter()
 			.map(|param| (param.input.clone(), param.value.to_node_value()))
 			.collect(),
+		animations: job
+			.animations
+			.iter()
+			.map(crate::worker::ipc::WireEffectAnimation::to_track)
+			.collect(),
 	};
 	match executor(&PluginJobRequest { spec: &spec, src }) {
 		Ok(texture) => match texture.to_frame() {

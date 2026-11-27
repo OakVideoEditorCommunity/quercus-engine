@@ -216,6 +216,7 @@ fn render_real_plugin_smoke(identifier: &str) {
 		effect_input_id: Some("Source".to_string()),
 		inputs: Vec::new(),
 		values: Vec::new(),
+		animations: Vec::new(),
 	};
 	let out = execute_plugin_job(&quercus_render::eval::PluginJobRequest {
 		spec: &spec,
@@ -1319,6 +1320,7 @@ fn execute_plugin_job_spec_and_source_branches() {
 			effect_input_id: Some(SOURCE_CLIP.to_string()),
 			inputs: Vec::new(),
 			values,
+			animations: Vec::new(),
 		}
 	}
 

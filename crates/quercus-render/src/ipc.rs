@@ -375,6 +375,89 @@ pub struct WireEffectParam {
 	pub value: WireNodeValue,
 }
 
+/// One keyframe on the wire (`OfxJobMsg` animation snapshot).
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct WireKeyframe {
+	/// Rational time numerator.
+	pub time_num: i64,
+	/// Rational time denominator.
+	pub time_den: i64,
+	/// Keyframe value.
+	pub value: WireNodeValue,
+	/// Interpolation mode (`0 = Hold`, `1 = Linear`, `2 = Bezier`).
+	pub interpolation: u8,
+	/// Bezier in handle `(x, y)`.
+	pub bezier_in: [f64; 2],
+	/// Bezier out handle `(x, y)`.
+	pub bezier_out: [f64; 2],
+}
+
+/// One animated input's keyframe track on the wire (`OfxJobMsg` snapshot).
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct WireEffectAnimation {
+	/// Node input / OFX parameter id.
+	pub input: String,
+	/// Sorted keyframes on the primary track (`element = -1`).
+	pub keys: Vec<WireKeyframe>,
+}
+
+impl WireEffectAnimation {
+	/// Converts a node [`quercus_node::keyframe::KeyframeTrack`] into its wire form.
+	pub fn from_track(input: &str, track: &quercus_node::keyframe::KeyframeTrack) -> Self {
+		use quercus_node::keyframe::Interpolation;
+		let keys = track
+			.keys()
+			.iter()
+			.filter_map(|k| {
+				let value = WireNodeValue::from_node_value(&k.value)?;
+				let interpolation = match k.interpolation {
+					Interpolation::Hold => 0,
+					Interpolation::Linear => 1,
+					Interpolation::Bezier => 2,
+				};
+				Some(WireKeyframe {
+					time_num: k.time.numerator(),
+					time_den: k.time.denominator(),
+					value,
+					interpolation,
+					bezier_in: [k.bezier_in.0, k.bezier_in.1],
+					bezier_out: [k.bezier_out.0, k.bezier_out.1],
+				})
+			})
+			.collect();
+		Self {
+			input: input.to_string(),
+			keys,
+		}
+	}
+
+	/// Restores `(input, KeyframeTrack)` from its wire form.
+	pub fn to_track(&self) -> (String, quercus_node::keyframe::KeyframeTrack) {
+		use quercus_node::keyframe::{Interpolation, Keyframe, KeyframeTrack};
+		let mut track = KeyframeTrack::default();
+		for k in &self.keys {
+			if k.time_den == 0 {
+				continue;
+			}
+			let interpolation = match k.interpolation {
+				0 => Interpolation::Hold,
+				2 => Interpolation::Bezier,
+				_ => Interpolation::Linear,
+			};
+			track.set_key(Keyframe {
+				time: quercus_core::Rational::new(k.time_num, k.time_den),
+				value: k.value.to_node_value(),
+				interpolation,
+				bezier_in: (k.bezier_in[0], k.bezier_in[1]),
+				bezier_out: (k.bezier_out[0], k.bezier_out[1]),
+			});
+		}
+		(self.input.clone(), track)
+	}
+}
+
 /// One effect of a montage clip's effect stack on the wire (protocol v2
 /// additive field of [`WireMontageClip`]; source-first order).
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
@@ -853,6 +936,9 @@ pub struct OfxJobMsg {
 	pub inputs: Vec<OfxInputRef>,
 	/// Param overrides (input id -> value).
 	pub values: Vec<WireEffectParam>,
+	/// Keyframe tracks for animated inputs (empty for static jobs).
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub animations: Vec<WireEffectAnimation>,
 	/// Input-pool slot of the main source frame.
 	pub src_slot: Option<u32>,
 }
@@ -868,6 +954,7 @@ impl OfxJobMsg {
 			"effect_input_id": self.effect_input_id,
 			"inputs": self.inputs,
 			"values": self.values,
+			"animations": self.animations,
 			"src_slot": self.src_slot,
 		})
 	}

@@ -91,6 +91,7 @@ fn ofx_job_wire_roundtrip() {
 			input: "gain".into(),
 			value: WireNodeValue::Float(0.25),
 		}],
+		animations: Vec::new(),
 		src_slot: Some(3),
 	};
 	let value = job.to_json();
@@ -1139,4 +1140,49 @@ fn region_keys_are_isolation_safe() {
 	unsafe { *(owner.data() as *mut u32) = 7 };
 	// SAFETY: peer mapping live.
 	assert_eq!(unsafe { *(peer.data() as *const u32) }, 7);
+}
+
+#[test]
+fn ofx_job_msg_animation_snapshot_roundtrip() {
+	use quercus_core::Rational;
+	use quercus_node::keyframe::{Interpolation, Keyframe, KeyframeTrack};
+	use quercus_node::value::NodeValue;
+
+	let mut track = KeyframeTrack::default();
+	track.set_key(Keyframe {
+		time: Rational::new(0, 1),
+		value: NodeValue::Float(0.25),
+		interpolation: Interpolation::Bezier,
+		bezier_in: (-0.1, 0.0),
+		bezier_out: (0.3, 0.5),
+	});
+	track.set_key(Keyframe {
+		time: Rational::new(3, 2),
+		value: NodeValue::Float(1.0),
+		interpolation: Interpolation::Linear,
+		bezier_in: (0.0, 0.0),
+		bezier_out: (0.0, 0.0),
+	});
+
+	let msg = OfxJobMsg {
+		job: 9,
+		type_id: "org.quercus.test-plugin".into(),
+		time: 0.75,
+		effect_input_id: "Source".into(),
+		inputs: Vec::new(),
+		values: Vec::new(),
+		animations: vec![WireEffectAnimation::from_track("animatedGain", &track)],
+		src_slot: Some(0),
+	};
+	let val = msg.to_json();
+	let round: OfxJobMsg = serde_json::from_value(val).unwrap();
+	assert_eq!(round, msg);
+	let (name, restored) = round.animations[0].to_track();
+	assert_eq!(name, "animatedGain");
+	assert_eq!(restored.keys().len(), 2);
+	assert_eq!(restored.keys()[0].time, Rational::new(0, 1));
+	assert_eq!(restored.keys()[0].interpolation, Interpolation::Bezier);
+	assert_eq!(restored.keys()[0].bezier_out, (0.3, 0.5));
+	assert_eq!(restored.keys()[1].time, Rational::new(3, 2));
+	assert_eq!(restored.keys()[1].value, NodeValue::Float(1.0));
 }

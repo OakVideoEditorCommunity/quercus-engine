@@ -131,15 +131,23 @@ pub fn group_end() -> Result<()> {
 	let multi = open.multi;
 	let name = open.name;
 	drop(g);
-	// push_pre_executed discards an empty multi command; either way the
-	// stack takes (or destroys) the command value.
+	push_pre_executed(multi, &name)
+}
+
+/// Record an already-executed `command` on the process-wide undo stack
+/// without running its redo body again, then fire command observers.
+///
+/// An empty multi command is ignored by the underlying stack and fires no
+/// observers.
+pub fn push_pre_executed(command: UndoCommand, name: &str) -> Result<()> {
+	let empty_multi = command.is_multi() && command.multi_child_count() == 0;
 	with_stack(|s| {
-		s.push_pre_executed(multi, &name);
+		s.push_pre_executed(command, name);
 		Ok(())
 	})?;
-	// The group's children were redo'd eagerly at push time; the whole
-	// group is one command (commit at group_end).
-	notify_observers();
+	if !empty_multi {
+		notify_observers();
+	}
 	Ok(())
 }
 
@@ -401,6 +409,48 @@ mod tests {
 		// Out-of-range rows error, they never panic.
 		assert!(command_name(2).is_err());
 		assert!(command_done(-1).is_err());
+
+		assert!(clear().is_ok());
+	}
+
+	#[test]
+	fn push_pre_executed_records_without_reexecuting_redo() {
+		let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+		assert!(clear().is_ok());
+
+		let state = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+		let mut multi = UndoCommand::multi();
+		let mut child = {
+			let r = state.clone();
+			let u = state.clone();
+			UndoCommand::from_closures(
+				move || {
+					r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+				},
+				move || {
+					u.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+				},
+			)
+		};
+		child.redo_now();
+		assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+		multi.multi_add_child(child);
+
+		push_pre_executed(multi, "pre-executed").unwrap();
+		// Redo body must NOT run a second time on push_pre_executed.
+		assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+		assert_eq!(count().unwrap(), 2);
+		assert_eq!(command_name(1).unwrap(), "pre-executed");
+
+		undo().unwrap();
+		assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 0);
+		redo().unwrap();
+		assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+		// Empty multi command is ignored and does not add a history row.
+		let empty = UndoCommand::multi();
+		push_pre_executed(empty, "ignored").unwrap();
+		assert_eq!(count().unwrap(), 2);
 
 		assert!(clear().is_ok());
 	}

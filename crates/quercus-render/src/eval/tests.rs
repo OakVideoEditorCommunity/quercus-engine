@@ -228,6 +228,7 @@ fn plugin_spec() -> JobSpec {
 		effect_input_id: Some("Source".into()),
 		inputs: Vec::new(),
 		values: Vec::new(),
+		animations: Vec::new(),
 	}
 }
 
@@ -372,6 +373,7 @@ fn resolve_executes_payload_box_and_keeps_plain_textures() {
 		time: Rational::new(1, 2),
 		effect_input_id: "Source".into(),
 		values,
+		animations: Vec::new(),
 	};
 
 	let mut table = NodeValueTable::default();
@@ -2081,6 +2083,7 @@ fn plugin_job_value_splits_clip_inputs_from_scalar_values() {
 		time: Rational::new(1, 2),
 		effect_input_id: String::new(),
 		values,
+		animations: Vec::new(),
 	};
 
 	let out = RenderEvalHooks::new()
