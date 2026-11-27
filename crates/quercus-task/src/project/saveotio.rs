@@ -74,7 +74,7 @@ impl SaveOTIOTask {
 		// Direct video-params value type (single-lib unification); absent
 		// params leave rate at 0.0 → the documented `None` path.
 		let (num, den) = nodeops::sequence_video_params(project, sequence, 0)
-			.map(|vp| vp.frame_rate())
+			.map(|vp| vp.frame_rate)
 			.unwrap_or((0, 1));
 		let mut rate = 0.0f64;
 		if den != 0 {
@@ -136,7 +136,7 @@ impl SaveOTIOTask {
 			};
 
 			otio_timeline
-				.tracks_mut()
+				.tracks
 				.append_child(Composable::Track(otio_track));
 		}
 
@@ -184,7 +184,7 @@ impl SaveOTIOTask {
 				nodeops::BlockKind::Clip => {
 					let mut otio_clip = Clip::new(nodeops::node_label(project, block));
 
-					otio_clip.set_source_range(TimeRange::new(
+					otio_clip.source_range = Some(TimeRange::new(
 						RationalTime::from_rational(block_in_of(project, block), sequence_rate),
 						RationalTime::from_rational(block_length_of(project, block), sequence_rate),
 					));
@@ -203,7 +203,7 @@ impl SaveOTIOTask {
 							let source_frame_rate =
 								nodeops::footage_video_params(project, media, 0)
 									.map(|vp| {
-										let (num, den) = vp.frame_rate();
+										let (num, den) = vp.frame_rate;
 										if den != 0 {
 											num as f64 / den as f64
 										} else {
@@ -221,7 +221,8 @@ impl SaveOTIOTask {
 							)
 						} else {
 							let sample_rate = nodeops::footage_audio_sample_rate(project, media)
-								.unwrap_or(48000) as f64;
+								.unwrap_or(48000)
+								as f64;
 							TimeRange::new(
 								RationalTime::new(0.0, sample_rate),
 								RationalTime::new(
@@ -255,9 +256,9 @@ impl SaveOTIOTask {
 					let mut otio_transition = Transition::new(nodeops::node_label(project, block));
 
 					let n = transition_offset_of(project, block, true);
-					otio_transition.set_in_offset(RationalTime::from_rational(n, 24.0));
+					otio_transition.in_offset = RationalTime::from_rational(n, 24.0);
 					let n = transition_offset_of(project, block, false);
-					otio_transition.set_out_offset(RationalTime::from_rational(n, 24.0));
+					otio_transition.out_offset = RationalTime::from_rational(n, 24.0);
 
 					Some(Composable::Transition(otio_transition))
 				}
@@ -327,7 +328,7 @@ impl TaskBehavior for SaveOTIOTask {
 			Ok(f) => f,
 			Err(e) => {
 				if let Error::Failed(msg) = &e {
-					task.set_error(msg);
+					task.error = Some((msg).to_string());
 				}
 				return Err(e);
 			}
@@ -341,7 +342,7 @@ impl TaskBehavior for SaveOTIOTask {
 			guard.root
 		};
 		if !root.valid() {
-			task.set_error("Project contains no sequences to export.");
+			task.error = Some(("Project contains no sequences to export.").to_string());
 			return Err(Error::Failed(
 				"Project contains no sequences to export.".to_string(),
 			));
@@ -351,7 +352,7 @@ impl TaskBehavior for SaveOTIOTask {
 		{
 			let guard = self.project.lock().unwrap_or_else(|e| e.into_inner());
 			let Some(entry) = guard.graph.get(root) else {
-				task.set_error("Project contains no sequences to export.");
+				task.error = Some(("Project contains no sequences to export.").to_string());
 				return Err(Error::Failed(
 					"Project contains no sequences to export.".to_string(),
 				));
@@ -361,7 +362,7 @@ impl TaskBehavior for SaveOTIOTask {
 				.as_any()
 				.and_then(|a| a.downcast_ref::<folder::FolderBehavior>())
 			else {
-				task.set_error("Project contains no sequences to export.");
+				task.error = Some(("Project contains no sequences to export.").to_string());
 				return Err(Error::Failed(
 					"Project contains no sequences to export.".to_string(),
 				));
@@ -376,7 +377,7 @@ impl TaskBehavior for SaveOTIOTask {
 		}
 
 		if sequences.is_empty() {
-			task.set_error("Project contains no sequences to export.");
+			task.error = Some(("Project contains no sequences to export.").to_string());
 			return Err(Error::Failed(
 				"Project contains no sequences to export.".to_string(),
 			));
@@ -387,10 +388,13 @@ impl TaskBehavior for SaveOTIOTask {
 			match Self::serialize_timeline(&self.project, *sequence) {
 				Some(timeline) => serialized.push(timeline),
 				None => {
-					task.set_error(&format!(
-						"Failed to serialize sequence \"{}\"",
-						nodeops::node_label(&self.project, *sequence)
-					));
+					task.error = Some(
+						(&format!(
+							"Failed to serialize sequence \"{}\"",
+							nodeops::node_label(&self.project, *sequence)
+						))
+							.to_string(),
+					);
 					return Err(Error::Failed("Failed to serialize sequence".to_string()));
 				}
 			}
@@ -402,14 +406,14 @@ impl TaskBehavior for SaveOTIOTask {
 		// the empty ones lets a lone edited sequence export as a bare
 		// Timeline. FCPXML benefits the same way (no empty <project>s).
 		serialized.retain(|timeline| {
-			timeline.tracks().children().iter().any(|child| {
+			timeline.tracks.children().iter().any(|child| {
 				child
 					.as_track()
 					.is_some_and(|track| track.children().iter().any(|b| b.as_clip().is_some()))
 			})
 		});
 		if serialized.is_empty() {
-			task.set_error("Project contains no edited sequences to export.");
+			task.error = Some(("Project contains no edited sequences to export.").to_string());
 			return Err(Error::Failed(
 				"Project contains no edited sequences to export.".to_string(),
 			));
@@ -451,7 +455,7 @@ impl TaskBehavior for SaveOTIOTask {
 					("Failed to save FCPXML to file", "Failed to save FCPXML")
 				}
 			};
-			task.set_error(&format!("{label} \"{}\": {e}", self.filename));
+			task.error = Some((&format!("{label} \"{}\": {e}", self.filename)).to_string());
 			Error::Failed(what.to_string())
 		})
 	}
@@ -484,7 +488,7 @@ fn track_duration(track: &Track) -> RationalTime {
 	for child in track.children() {
 		let duration = match child
 			.as_clip()
-			.and_then(|c| c.source_range())
+			.and_then(|c| c.source_range.clone())
 			.map(|r| r.duration())
 			.or_else(|| {
 				child

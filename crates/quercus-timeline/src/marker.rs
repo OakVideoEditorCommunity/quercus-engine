@@ -38,11 +38,11 @@ use crate::undocommon::{box_command, Command};
 /// (timelinemarker.h). De-Qt; `draw()` moved to the app layer.
 pub struct TimelineMarker {
 	/// Marker time range.
-	time_: TimeRange,
+	pub time: TimeRange,
 	/// Marker name (may be empty).
-	name_: String,
+	pub name: String,
 	/// Marker color index.
-	color_: i32,
+	pub color: i32,
 }
 
 impl TimelineMarker {
@@ -63,25 +63,10 @@ impl TimelineMarker {
 	/// zero, color 0 and no name.
 	pub fn with_time(color: i32, time: TimeRange, name: &str) -> Self {
 		Self {
-			time_: time,
-			name_: name.to_string(),
-			color_: color,
+			time: time,
+			name: name.to_string(),
+			color: color,
 		}
-	}
-
-	/// The marker's time range.
-	pub fn time(&self) -> &TimeRange {
-		&self.time_
-	}
-
-	/// Set the time range.
-	///
-	/// `time` replaces both bounds (in and out) as-is, with no validation of the
-	/// order or length. De-Qt: the marker has no parent pointer, so the owning
-	/// list is not re-sorted here; callers use `TimelineMarkerList::resort` /
-	/// `resort_at` when order must be restored.
-	pub fn set_time(&mut self, time: TimeRange) {
-		self.time_ = time;
 	}
 
 	/// Move the marker's in point to `time`, keeping the current range length.
@@ -91,8 +76,8 @@ impl TimelineMarker {
 	/// range is shifted rather than collapsed. Does not re-sort the owning list —
 	/// same contract as [`Self::set_time`].
 	pub fn set_time_point(&mut self, time: Rational) {
-		let length = self.time_.length();
-		self.set_time(TimeRange::new(time, time + length));
+		let length = self.time.length();
+		self.time = TimeRange::new(time, time + length);
 	}
 
 	/// Whether another marker in the same list shares `time` as its in point.
@@ -102,38 +87,6 @@ impl TimelineMarker {
 	/// `TimelineMarkerList::get_marker_at_time` instead.
 	pub fn has_sibling_at_time(&self, _t: Rational) -> bool {
 		false
-	}
-
-	/// The marker's name.
-	///
-	/// Returns an empty string when the marker was created without a name. The
-	/// value is informational and never affects sorting or lookup; see
-	/// [`Self::set_name`] for the counterpart.
-	pub fn name(&self) -> &str {
-		&self.name_
-	}
-
-	/// Set the marker's name.
-	///
-	/// `name` is copied into the marker; an empty string is allowed and means an
-	/// unnamed marker. The name is informational only — sorting and lookup use
-	/// the in point, so renaming never changes the list order.
-	pub fn set_name(&mut self, name: &str) {
-		self.name_ = name.to_string();
-	}
-
-	/// The marker's color index.
-	pub fn color(&self) -> i32 {
-		self.color_
-	}
-
-	/// Set the marker's color index.
-	///
-	/// `c` is a palette index stored as-is: it is not validated or clamped, so a
-	/// negative index is preserved even though the UI treats it as color 0. The
-	/// value is what `MarkerChangeColorCommand` captures and restores.
-	pub fn set_color(&mut self, c: i32) {
-		self.color_ = c;
 	}
 }
 
@@ -187,7 +140,7 @@ impl TimelineMarkerList {
 	/// CPP-PARITY timelinemarker.h `insert_into_list`).
 	pub fn add_marker(&mut self, marker: TimelineMarker) {
 		for i in 0..self.markers_.len() {
-			if self.markers_[i].time().in_() > marker.time().in_() {
+			if self.markers_[i].time.in_() > marker.time.in_() {
 				self.markers_.insert(i, marker);
 				return;
 			}
@@ -212,7 +165,7 @@ impl TimelineMarkerList {
 	/// earliest-inserted marker at that time. Used by `MarkerAddCommand::undo`
 	/// to find the marker it added.
 	pub fn get_marker_at_time(&self, t: Rational) -> Option<&TimelineMarker> {
-		self.markers_.iter().find(|m| m.time().in_() == t)
+		self.markers_.iter().find(|m| m.time.in_() == t)
 	}
 
 	/// Marker closest to `t` (early-exits once the diff increases;
@@ -221,7 +174,7 @@ impl TimelineMarkerList {
 		let mut closest: Option<&TimelineMarker> = None;
 		let mut closest_diff = Rational::new(0, 1);
 		for m in &self.markers_ {
-			let this_diff = rational_abs(m.time().in_() - t);
+			let this_diff = rational_abs(m.time.in_() - t);
 			if closest.is_some() && this_diff > closest_diff {
 				// Sorted by in point, so the distance is increasing from
 				// here on.
@@ -385,7 +338,7 @@ impl MarkerAddCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(index) =
-				(0..l.size()).find(|&i| l.at(i).is_some_and(|m| m.time().in_() == self.range.in_()))
+				(0..l.size()).find(|&i| l.at(i).is_some_and(|m| m.time.in_() == self.range.in_()))
 			{
 				l.remove_at(index);
 			}
@@ -517,7 +470,7 @@ impl MarkerChangeColorCommand {
 			.as_ref()
 			.and_then(|l| {
 				let l = l.lock().unwrap_or_else(|e| e.into_inner());
-				l.at(index).map(|m| m.color())
+				l.at(index).map(|m| m.color)
 			})
 			.unwrap_or(0);
 		Self {
@@ -544,7 +497,7 @@ impl MarkerChangeColorCommand {
 			.lock()
 			.unwrap_or_else(|e| e.into_inner())
 			.at(index)
-			.map(|m| m.color())
+			.map(|m| m.color)
 			.unwrap_or(0);
 		Self {
 			marker_list: Some(marker_list),
@@ -559,7 +512,7 @@ impl MarkerChangeColorCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_color(self.new_color);
+				m.color = self.new_color;
 			}
 		}
 	}
@@ -569,7 +522,7 @@ impl MarkerChangeColorCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_color(self.old_color);
+				m.color = self.old_color;
 			}
 		}
 	}
@@ -615,7 +568,7 @@ impl MarkerChangeNameCommand {
 			.as_ref()
 			.and_then(|l| {
 				let l = l.lock().unwrap_or_else(|e| e.into_inner());
-				l.at(index).map(|m| m.name().to_string())
+				l.at(index).map(|m| m.name.as_str().to_string())
 			})
 			.unwrap_or_default();
 		Self {
@@ -638,7 +591,7 @@ impl MarkerChangeNameCommand {
 			.lock()
 			.unwrap_or_else(|e| e.into_inner())
 			.at(index)
-			.map(|m| m.name().to_string())
+			.map(|m| m.name.as_str().to_string())
 			.unwrap_or_default();
 		Self {
 			marker_list: Some(marker_list),
@@ -653,7 +606,7 @@ impl MarkerChangeNameCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_name(&self.new_name);
+				m.name = (&self.new_name).to_string();
 			}
 		}
 	}
@@ -663,7 +616,7 @@ impl MarkerChangeNameCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_name(&self.old_name);
+				m.name = (&self.old_name).to_string();
 			}
 		}
 	}
@@ -710,7 +663,7 @@ impl MarkerChangeTimeCommand {
 			.as_ref()
 			.and_then(|l| {
 				let l = l.lock().unwrap_or_else(|e| e.into_inner());
-				l.at(index).map(|m| *m.time())
+				l.at(index).map(|m| m.time)
 			})
 			.unwrap_or_else(|| TimeRange::new(Rational::new(0, 1), Rational::new(0, 1)));
 		Self {
@@ -738,7 +691,7 @@ impl MarkerChangeTimeCommand {
 			.lock()
 			.unwrap_or_else(|e| e.into_inner())
 			.at(index)
-			.map(|m| *m.time())
+			.map(|m| m.time)
 			.unwrap_or_else(|| TimeRange::new(Rational::new(0, 1), Rational::new(0, 1)));
 		Self {
 			marker_list: Some(marker_list),
@@ -753,7 +706,7 @@ impl MarkerChangeTimeCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_time(self.new_time);
+				m.time = self.new_time;
 			}
 			l.resort_at(self.index);
 		}
@@ -764,7 +717,7 @@ impl MarkerChangeTimeCommand {
 		if let Some(list) = &self.marker_list {
 			let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
 			if let Some(m) = l.at_mut(self.index) {
-				m.set_time(self.old_time);
+				m.time = self.old_time;
 			}
 			l.resort_at(self.index);
 		}

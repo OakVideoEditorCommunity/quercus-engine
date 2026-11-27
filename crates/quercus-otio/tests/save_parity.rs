@@ -31,7 +31,7 @@ fn build_golden_timeline() -> Timeline {
 	let mut video = Track::new("Video");
 
 	let mut clip = Clip::new("My Sequence Clip");
-	clip.set_source_range(TimeRange::new(
+	clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(1152.0, 24.0),
 	));
@@ -50,14 +50,14 @@ fn build_golden_timeline() -> Timeline {
 	)));
 
 	let mut transition = Transition::new("My Sequence Transition");
-	transition.set_in_offset(RationalTime::new(12.0, 24.0));
-	transition.set_out_offset(RationalTime::new(12.0, 24.0));
+	transition.in_offset = RationalTime::new(12.0, 24.0);
+	transition.out_offset = RationalTime::new(12.0, 24.0);
 	video.append_child(Composable::Transition(transition));
 
 	let mut audio = Track::new("Audio");
 
 	let mut audio_clip = Clip::new("My Sequence Audio");
-	audio_clip.set_source_range(TimeRange::new(
+	audio_clip.source_range = Some(TimeRange::new(
 		RationalTime::new(0.0, 24.0),
 		RationalTime::new(1152.0, 24.0),
 	));
@@ -78,8 +78,8 @@ fn build_golden_timeline() -> Timeline {
 		"",
 	)));
 
-	timeline.tracks_mut().append_child(Composable::Track(video));
-	timeline.tracks_mut().append_child(Composable::Track(audio));
+	timeline.tracks.append_child(Composable::Track(video));
+	timeline.tracks.append_child(Composable::Track(audio));
 
 	timeline
 }
@@ -105,9 +105,9 @@ fn saved_timeline_reparses_identically() {
 	let out = built.to_json_string().unwrap();
 	let reparsed = quercus_otio::from_json_string(&out).unwrap();
 	assert_eq!(
-		reparsed.as_timeline().unwrap().name(),
+		reparsed.as_timeline().unwrap().name.as_str(),
 		"My Sequence",
 		"reparsed timeline keeps the name"
 	);
-	assert_eq!(reparsed.as_timeline().unwrap().tracks().children().len(), 2);
+	assert_eq!(reparsed.as_timeline().unwrap().tracks.children().len(), 2);
 }

@@ -35,15 +35,15 @@ fn golden_timeline() -> Timeline {
 #[test]
 fn root_timeline_fields() {
 	let tl = golden_timeline();
-	assert_eq!(tl.name(), "My Sequence");
-	assert_eq!(tl.global_start_time(), None);
-	assert_eq!(tl.tracks().children().len(), 2);
+	assert_eq!(tl.name.as_str(), "My Sequence");
+	assert_eq!(tl.global_start_time.clone(), None);
+	assert_eq!(tl.tracks.children().len(), 2);
 }
 
 #[test]
 fn video_track_contents() {
 	let tl = golden_timeline();
-	let video = &tl.tracks().children()[0];
+	let video = &tl.tracks.children()[0];
 	let track = video
 		.as_track()
 		.expect("first child of tracks stack is a Track");
@@ -55,7 +55,7 @@ fn video_track_contents() {
 		.as_clip()
 		.expect("video track child 0 is a Clip");
 	assert_eq!(clip.name(), "My Sequence Clip");
-	let range = clip.source_range().expect("clip has a source_range");
+	let range = clip.source_range.clone().expect("clip has a source_range");
 	assert_eq!(
 		(range.duration().value(), range.duration().rate()),
 		(1152.0, 24.0)
@@ -80,11 +80,17 @@ fn video_track_contents() {
 		.expect("video track child 2 is a Transition");
 	assert_eq!(trans.name(), "My Sequence Transition");
 	assert_eq!(
-		(trans.in_offset().value(), trans.in_offset().rate()),
+		(
+			trans.in_offset.clone().value(),
+			trans.in_offset.clone().rate()
+		),
 		(12.0, 24.0)
 	);
 	assert_eq!(
-		(trans.out_offset().value(), trans.out_offset().rate()),
+		(
+			trans.out_offset.clone().value(),
+			trans.out_offset.clone().rate()
+		),
 		(12.0, 24.0)
 	);
 	assert_eq!(trans.transition_type(), "");
@@ -93,7 +99,7 @@ fn video_track_contents() {
 #[test]
 fn video_clip_media_reference() {
 	let tl = golden_timeline();
-	let clip = &tl.tracks().children()[0].as_track().unwrap().children()[0];
+	let clip = &tl.tracks.children()[0].as_track().unwrap().children()[0];
 	let clip = clip.as_clip().unwrap();
 
 	let reference = clip
@@ -101,7 +107,7 @@ fn video_clip_media_reference() {
 		.expect("clip resolves a media reference");
 	assert_eq!(reference.schema_name(), "ExternalReference");
 	let external: &ExternalReference = match reference {
-		MediaReference::ExternalReference(e) => e,
+		MediaReference::ExternalReference(e) => &e,
 		other => panic!("expected ExternalReference, got {}", other.schema_name()),
 	};
 	assert_eq!(external.target_url(), "file:///tmp/My Sequence.mp4");
@@ -122,7 +128,7 @@ fn video_clip_media_reference() {
 #[test]
 fn audio_track_contents() {
 	let tl = golden_timeline();
-	let audio = &tl.tracks().children()[1];
+	let audio = &tl.tracks.children()[1];
 	let track = audio
 		.as_track()
 		.expect("second child of tracks stack is a Track");
@@ -134,7 +140,7 @@ fn audio_track_contents() {
 		.expect("audio track child 0 is a Clip");
 	assert_eq!(clip.name(), "My Sequence Audio");
 	let external: &ExternalReference = match clip.media_reference().unwrap() {
-		MediaReference::ExternalReference(e) => e,
+		MediaReference::ExternalReference(e) => &e,
 		other => panic!("expected ExternalReference, got {}", other.schema_name()),
 	};
 	assert_eq!(external.target_url(), "file:///tmp/My Sequence.wav");

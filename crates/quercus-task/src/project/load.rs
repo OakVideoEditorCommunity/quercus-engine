@@ -88,10 +88,10 @@ impl TaskBehavior for ProjectLoadBaseTask {
 		let xml = match fs::read_to_string(&self.filename) {
 			Ok(xml) => xml,
 			Err(e) => {
-				task.set_error(&format!(
-					"Failed to read file \"{}\" for reading.",
-					self.filename
-				));
+				task.error = Some(
+					(&format!("Failed to read file \"{}\" for reading.", self.filename))
+						.to_string(),
+				);
 				let _ = e;
 				return Err(Error::Failed("Failed to load project".to_string()));
 			}
@@ -100,16 +100,17 @@ impl TaskBehavior for ProjectLoadBaseTask {
 		let project = match serializer::load(&xml) {
 			Ok(project) => project,
 			Err(e) => {
-				task.set_error(&format!(
-					"Failed to read XML document. File may be corrupt. Error was: {e}"
-				));
+				task.error = Some(
+					(&format!("Failed to read XML document. File may be corrupt. Error was: {e}"))
+						.to_string(),
+				);
 				return Err(Error::Failed("Failed to load project".to_string()));
 			}
 		};
 
 		{
 			let mut guard = project.lock().unwrap_or_else(|e| e.into_inner());
-			guard.set_filename(&self.filename);
+			guard.filename = (&self.filename).to_string();
 		}
 
 		self.store_project(project);

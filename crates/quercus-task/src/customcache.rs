@@ -101,7 +101,7 @@ impl CustomCacheTask {
 			cancelled_through_finish: Mutex::new(false),
 			wait: Condvar::new(),
 			cancelled_callback: Mutex::new(None),
-			atom: base.get_cancel_atom(),
+			atom: base.cancel_atom.clone(),
 		});
 		let mut task = CustomCacheTask {
 			base,

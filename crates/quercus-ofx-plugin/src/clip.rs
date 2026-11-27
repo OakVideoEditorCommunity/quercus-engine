@@ -323,7 +323,7 @@ impl ClipInstance {
 		let row = frame.linesize_bytes();
 		let row = if row > 0 { row } else { tight_src };
 		let src_bytes = unsafe { std::slice::from_raw_parts(src, row * h as usize) };
-		let dst = image.pixels_mut();
+		let dst = image.data.as_mut_slice();
 		let mut scrubbed = false;
 		for y in 0..h as usize {
 			let s = y * row;
@@ -430,7 +430,7 @@ impl ClipInstance {
 		let (w, h) = (params.width as usize, params.height as usize);
 		// Image and frame must match in size (F32 end-to-end; validate width/height/row width/total length).
 		let tight = w * image.components().channel_count() * 4;
-		if tight != image.row_bytes() || tight * h != image.pixels().len() {
+		if tight != image.row_bytes() || tight * h != image.data.as_slice().len() {
 			return Err(Error::Failed(
 				"image size does not match the output frame".into(),
 			));
@@ -444,7 +444,7 @@ impl ClipInstance {
 		let row = frame.linesize_bytes();
 		let row = if row > 0 { row } else { tight };
 		let dst_bytes = unsafe { std::slice::from_raw_parts_mut(dst, row * h) };
-		let pixels = image.pixels();
+		let pixels = image.data.as_slice();
 		for y in 0..h {
 			let d = y * row;
 			let s = y * tight;

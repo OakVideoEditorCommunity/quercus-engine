@@ -111,7 +111,7 @@ mod tests {
 		);
 		assert_eq!(table.get(ValueType::Float), Some(&NodeValue::Float(7.5)));
 		// The pushed row carries the "time" tag (C++ push tag).
-		let (_, _, tag) = &table.rows()[0];
+		let (_, _, tag) = &table.rows.as_slice()[0];
 		assert_eq!(tag.as_deref(), Some("time"));
 	}
 

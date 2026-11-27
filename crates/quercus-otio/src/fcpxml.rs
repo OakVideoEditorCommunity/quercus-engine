@@ -558,12 +558,12 @@ fn parse_block(
 			let clip_rate = clip_rate_of(node, formats, assets, seq_rate);
 
 			let mut clip = Clip::new(node.attr("name").unwrap_or(""));
-			clip.set_source_range(TimeRange::new(
+			clip.source_range = Some(TimeRange::new(
 				time_at_rate(start, clip_rate),
 				time_at_rate(duration, clip_rate),
 			));
 			if let Some(enabled) = node.attr("enabled") {
-				clip.set_enabled(enabled != "0");
+				clip.enabled = enabled != "0";
 			}
 
 			let reference = match node.attr("ref") {
@@ -627,8 +627,8 @@ fn parse_block(
 			// == duration / 2.
 			let half = Rational::new(duration.numerator(), duration.denominator() * 2);
 			let mut transition = Transition::new(node.attr("name").unwrap_or(""));
-			transition.set_in_offset(time_at_rate(half, seq_rate));
-			transition.set_out_offset(time_at_rate(half, seq_rate));
+			transition.in_offset = time_at_rate(half, seq_rate);
+			transition.out_offset = time_at_rate(half, seq_rate);
 			*pos = offset + duration;
 			Ok(Some(Composable::Transition(transition)))
 		}
@@ -718,7 +718,7 @@ fn set_fcpxml_metadata(
 		fcpx.insert("project".into(), Value::String(p.into()));
 	}
 	timeline
-		.metadata_mut()
+		.metadata
 		.insert("fcpxml".into(), Value::Object(fcpx));
 }
 
@@ -771,7 +771,7 @@ fn parse_sequence(
 
 	if let Some(tc_start) = node.attr("tcStart") {
 		let seconds = parse_time(tc_start)?;
-		timeline.set_global_start_time(time_at_rate(seconds, rate));
+		timeline.global_start_time = Some(time_at_rate(seconds, rate));
 	}
 
 	set_fcpxml_metadata(&mut timeline, node, event, project, version);
@@ -786,7 +786,7 @@ fn parse_sequence(
 		}
 	}
 	for track in tracks {
-		timeline.tracks_mut().append_child(Composable::Track(track));
+		timeline.tracks.append_child(Composable::Track(track));
 	}
 	Ok(timeline)
 }
@@ -969,7 +969,7 @@ impl ResourceSet {
 	fn collect_from(&mut self, timeline: &Timeline) {
 		let seq_rate = sequence_rate_of(timeline);
 		self.format_id_for(frame_duration_of(seq_rate));
-		for child in timeline.tracks().children() {
+		for child in timeline.tracks.children() {
 			let Some(track) = child.as_track() else {
 				continue;
 			};
@@ -977,7 +977,7 @@ impl ResourceSet {
 				let Some(clip) = block.as_clip() else {
 					continue;
 				};
-				if let Some(range) = clip.source_range() {
+				if let Some(range) = clip.source_range.clone() {
 					self.format_id_for(frame_duration_of(Rational::from_double(
 						range.duration().rate(),
 					)));
@@ -995,7 +995,7 @@ impl ResourceSet {
 			}
 		}
 
-		for child in timeline.tracks().children() {
+		for child in timeline.tracks.children() {
 			let Some(track) = child.as_track() else {
 				continue;
 			};
@@ -1006,7 +1006,8 @@ impl ResourceSet {
 					continue;
 				};
 				let clip_rate = clip
-					.source_range()
+					.source_range
+					.clone()
 					.map(|r| Rational::from_double(r.duration().rate()))
 					.unwrap_or(seq_rate);
 				let clip_format_id = self.format_id_for(frame_duration_of(clip_rate));
@@ -1039,7 +1040,8 @@ impl ResourceSet {
 					}
 					None => {
 						let duration = clip
-							.source_range()
+							.source_range
+							.clone()
 							.map(|r| seconds_of(r.duration()))
 							.unwrap_or(Rational::new(0, 1));
 						(clip_format_id, duration)
@@ -1070,7 +1072,7 @@ fn format_name(frame_duration: Rational) -> String {
 /// The timeline rate: the rate of the first block carrying a source
 /// range, else 24 fps.
 fn sequence_rate_of(timeline: &Timeline) -> Rational {
-	for child in timeline.tracks().children() {
+	for child in timeline.tracks.children() {
 		if let Some(track) = child.as_track() {
 			for block in track.children() {
 				if let Some(range) = block.source_range() {
@@ -1087,14 +1089,17 @@ fn sequence_rate_of(timeline: &Timeline) -> Rational {
 fn block_duration(block: &Composable) -> Rational {
 	match block {
 		Composable::Clip(c) => c
-			.source_range()
+			.source_range
+			.clone()
 			.map(|r| seconds_of(r.duration()))
 			.unwrap_or(Rational::new(0, 1)),
 		Composable::Gap(g) => g
 			.source_range()
 			.map(|r| seconds_of(r.duration()))
 			.unwrap_or(Rational::new(0, 1)),
-		Composable::Transition(t) => seconds_of(t.in_offset()) + seconds_of(t.out_offset()),
+		Composable::Transition(t) => {
+			seconds_of(t.in_offset.clone()) + seconds_of(t.out_offset.clone())
+		}
 		_ => Rational::new(0, 1),
 	}
 }
@@ -1107,7 +1112,7 @@ fn track_end(track: &Track) -> Rational {
 	let mut pos = Rational::new(0, 1);
 	for block in track.children() {
 		match &**block {
-			Composable::Transition(t) => pos = pos + seconds_of(t.out_offset()),
+			Composable::Transition(t) => pos = pos + seconds_of(t.out_offset.clone()),
 			other => pos = pos + block_duration(other),
 		}
 	}
@@ -1118,7 +1123,7 @@ fn track_end(track: &Track) -> Rational {
 /// `duration`).
 fn timeline_duration(timeline: &Timeline) -> Rational {
 	let mut max_end = Rational::new(0, 1);
-	for child in timeline.tracks().children() {
+	for child in timeline.tracks.children() {
 		if let Some(track) = child.as_track() {
 			let end = track_end(track);
 			if end > max_end {
@@ -1197,7 +1202,7 @@ fn write_resources(writer: &mut Writer<Vec<u8>>, resources: &ResourceSet) -> Res
 /// "project") so a later export can reproduce them.
 fn metadata_string(timeline: &Timeline, key: &str) -> Option<String> {
 	timeline
-		.metadata()
+		.metadata
 		.get("fcpxml")
 		.and_then(|m| m.get(key))
 		.and_then(|v| v.as_str())
@@ -1229,7 +1234,7 @@ fn write_blocks(
 	for block in track.children() {
 		match &**block {
 			Composable::Clip(clip) => {
-				let (start, duration, clip_rate) = match clip.source_range() {
+				let (start, duration, clip_rate) = match clip.source_range.clone() {
 					Some(range) => (
 						seconds_of(range.start_time()),
 						seconds_of(range.duration()),
@@ -1262,7 +1267,7 @@ fn write_blocks(
 					let format_id = resources.format_id_for(frame_duration_of(clip_rate));
 					push_attr(&mut el, "format", &format_id);
 				}
-				if !clip.enabled() {
+				if !clip.enabled {
 					push_attr(&mut el, "enabled", "0");
 				}
 				write_event(writer, Event::Empty(el))?;
@@ -1281,8 +1286,8 @@ fn write_blocks(
 				*pos = *pos + duration;
 			}
 			Composable::Transition(transition) => {
-				let in_s = seconds_of(transition.in_offset());
-				let out_s = seconds_of(transition.out_offset());
+				let in_s = seconds_of(transition.in_offset.clone());
+				let out_s = seconds_of(transition.out_offset.clone());
 				let duration = in_s + out_s;
 				// The transition starts in_offset before the end of the
 				// previous block (FCP X's centered transition layout).
@@ -1323,7 +1328,7 @@ fn write_sequence(
 ) -> Result<()> {
 	let mut video_tracks = Vec::new();
 	let mut audio_tracks = Vec::new();
-	for child in timeline.tracks().children() {
+	for child in timeline.tracks.children() {
 		if let Some(track) = child.as_track() {
 			match track.kind() {
 				"Video" => video_tracks.push(track),
@@ -1344,7 +1349,7 @@ fn write_sequence(
 
 	let seq_rate = sequence_rate_of(timeline);
 	let duration = timeline_duration(timeline);
-	let tc_start = match timeline.global_start_time() {
+	let tc_start = match timeline.global_start_time.clone() {
 		Some(rt) => seconds_of(rt),
 		None => Rational::new(0, 1),
 	};
@@ -1362,7 +1367,7 @@ fn write_sequence(
 	if let Some(rate) = metadata_string(timeline, "audioRate") {
 		push_attr(&mut seq, "audioRate", &rate);
 	}
-	push_attr(&mut seq, "name", timeline.name());
+	push_attr(&mut seq, "name", timeline.name.as_str());
 	write_event(writer, Event::Start(seq))?;
 
 	if let Some(spine_track) = spine {
@@ -1409,7 +1414,7 @@ fn write_project(
 	let event_name = metadata_string(timeline, "event").unwrap_or_else(|| "Event".to_string());
 	let project_name = metadata_string(timeline, "project")
 		.filter(|s| !s.is_empty())
-		.unwrap_or_else(|| timeline.name().to_string());
+		.unwrap_or_else(|| timeline.name.as_str().to_string());
 
 	let mut event_el = BytesStart::new("event");
 	push_attr(&mut event_el, "name", &event_name);

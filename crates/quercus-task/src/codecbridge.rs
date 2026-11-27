@@ -106,8 +106,8 @@ fn submit_codec_task(
 	match req.kind {
 		TaskKind::Conform => {
 			let task = ConformTask::new(req);
-			let atom = task.base.get_cancel_atom();
-			let title = task.base.title().to_string();
+			let atom = task.base.cancel_atom.clone();
+			let title = task.base.title.as_str().to_string();
 			let mut outer = Task::new(&title, Some(atom));
 			outer.set_behavior(Box::new(task));
 			outer
@@ -118,8 +118,8 @@ fn submit_codec_task(
 			let codec_params = ProxyManager::proxy_params_from_config();
 			let params = proxy_params_from_codec(&codec_params);
 			let task = ProxyTask::new(req, params);
-			let atom = task.base.get_cancel_atom();
-			let title = task.base.title().to_string();
+			let atom = task.base.cancel_atom.clone();
+			let title = task.base.title.as_str().to_string();
 			let mut outer = Task::new(&title, Some(atom));
 			outer.set_behavior(Box::new(task));
 			outer

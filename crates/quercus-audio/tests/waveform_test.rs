@@ -33,7 +33,7 @@ fn fill_ramp(w: &mut AudioVisualWaveform) {
 	let ch0: Vec<f32> = (0..100).map(|i| i as f32 * 0.01).collect();
 	let ch1: Vec<f32> = (0..100).map(|i| -(i as f32) * 0.01).collect();
 	let planes = [ch0.as_slice(), ch1.as_slice()];
-	w.set_channel_count(2);
+	w.channels = 2;
 	w.overwrite_samples(&planes, 100, Rational::new(0, 1));
 }
 
@@ -68,7 +68,7 @@ fn overwrite_sums_range_copy() {
 	fill_ramp(&mut src);
 
 	let mut dst = AudioVisualWaveform::new();
-	dst.set_channel_count(2);
+	dst.channels = 2;
 	dst.overwrite_sums(
 		&src,
 		Rational::new(0, 1),
@@ -211,8 +211,8 @@ fn no_channel_count_is_noop() {
 	let planes = [data.as_slice()];
 	w.overwrite_samples(&planes, 48000, Rational::new(0, 1));
 	assert!(w.length().is_null());
-	assert_eq!(w.channel_count(), 0);
+	assert_eq!(w.channels, 0);
 
-	w.set_channel_count(2);
-	assert_eq!(w.channel_count(), 2);
+	w.channels = 2;
+	assert_eq!(w.channels, 2);
 }

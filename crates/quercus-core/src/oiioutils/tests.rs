@@ -27,7 +27,7 @@ fn base_type_from_format_mapping() {
 		u.get_oiio_base_type_from_format(PixelFormat::F32).unwrap(),
 		11
 	); // FLOAT
-	// Invalid / count fall through to UNKNOWN.
+	   // Invalid / count fall through to UNKNOWN.
 	assert_eq!(
 		u.get_oiio_base_type_from_format(PixelFormat::Invalid)
 			.unwrap(),
@@ -242,7 +242,6 @@ fn image_f32_write_read_round_trip() {
 	assert_eq!(img.pixels.len(), (w * h * c) as usize);
 	assert_eq!(img.len(), img.pixels.len());
 	assert!(!img.is_empty());
-	assert_eq!(img.as_slice(), img.pixels.as_slice());
 
 	for (i, (a, b)) in img.pixels.iter().zip(pixels.iter()).enumerate() {
 		let diff = (a - b).abs();

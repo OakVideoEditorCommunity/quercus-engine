@@ -315,7 +315,7 @@ impl RenderTask {
 		let (width, height) = self.force_size().or_else(|| {
 			self.video_params
 				.as_ref()
-				.map(|params| (params.width(), params.height()))
+				.map(|params| (params.width, params.height))
 		})?;
 		if width <= 0 || height <= 0 {
 			return None;
@@ -1283,7 +1283,8 @@ impl RenderTask {
 				.finished
 				.lock()
 				.unwrap_or_else(|e| e.into_inner())
-				.is_empty() && dispatch_ref.running.load(Ordering::SeqCst) == 0
+				.is_empty()
+				&& dispatch_ref.running.load(Ordering::SeqCst) == 0
 			{
 				// Every ticket finished and its queue copy was consumed.
 				break;

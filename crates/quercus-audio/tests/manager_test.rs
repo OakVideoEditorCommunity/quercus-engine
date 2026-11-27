@@ -118,13 +118,13 @@ fn device_selection_roundtrip() {
 	let mut m = instance().unwrap();
 
 	m.set_output_device(42).unwrap();
-	assert_eq!(m.get_output_device().unwrap(), 42);
-	m.set_input_device(7).unwrap();
-	assert_eq!(m.get_input_device().unwrap(), 7);
+	assert_eq!(m.output_device, 42);
+	m.input_device = 7;
+	assert_eq!(m.input_device, 7);
 
 	m.hard_reset().unwrap();
-	assert_eq!(m.get_output_device().unwrap(), 42);
-	assert_eq!(m.get_input_device().unwrap(), 7);
+	assert_eq!(m.output_device, 42);
+	assert_eq!(m.input_device, 7);
 
 	// The stream stopped, so the clock is back at -1.
 	let mut secs = 0.0f64;
@@ -174,12 +174,12 @@ fn recording_start_stop() {
 	let mut m = instance().unwrap();
 
 	// No input device -> explainable failure, no crash.
-	m.set_input_device(-1).unwrap();
+	m.input_device = -1;
 	assert!(m
 		.start_recording(&wav_params("unused.wav"), &mut [0u8; 64])
 		.is_err());
 
-	m.set_input_device(0).unwrap();
+	m.input_device = 0;
 	let path = std::env::temp_dir().join(format!("quercusaudio_rec_{}.wav", std::process::id()));
 	let filename = path.to_str().unwrap();
 	let mut err = vec![0u8; 256];

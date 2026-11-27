@@ -66,7 +66,7 @@ fn conform_directly(
 	let mut inner = ConformTask::new(&req);
 	let mut driver = Task::new("conform", None);
 	let result = inner.run(&mut driver);
-	(result, driver.error().map(str::to_string))
+	(result, driver.error.as_deref().map(str::to_string))
 }
 
 /// Run a proxy request directly through [`ProxyTask`] (missing sources fail
@@ -86,7 +86,7 @@ fn proxy_directly(input: &str, output: &str) -> Option<String> {
 	let mut inner = ProxyTask::new(&req, params);
 	let mut driver = Task::new("proxy", None);
 	let _ = inner.run(&mut driver);
-	driver.error().map(str::to_string)
+	driver.error.as_deref().map(str::to_string)
 }
 
 /// Assert the bridge rejected a submission with the expected `Failed`

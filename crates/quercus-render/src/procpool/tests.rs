@@ -438,7 +438,7 @@ fn slot_bytes_for_format_matrix() {
 	assert_eq!(slot_bytes_for(2, 2, 3), 32); // F16
 	assert_eq!(slot_bytes_for(2, 2, 4), 64); // F32
 	assert_eq!(slot_bytes_for(2, 2, 9), 64); // unknown -> F32
-										  // Negative dimensions clamp to zero pixels.
+											 // Negative dimensions clamp to zero pixels.
 	assert_eq!(slot_bytes_for(-3, 5, 0), 0);
 	assert_eq!(slot_bytes_for(3, -5, 0), 0);
 }

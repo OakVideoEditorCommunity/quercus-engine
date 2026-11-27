@@ -59,7 +59,7 @@ fn resolved_texture(table: &NodeValueTable) -> Texture {
 		panic!("no texture in the table");
 	};
 	assert!(!handle.ctx.is_null(), "null texture box");
-	(unsafe { quercus_node::handle::get_checked::<Texture>(handle) })
+	(unsafe { quercus_node::handle::get_checked::<Texture>(&handle) })
 		.cloned()
 		.expect("value is still a job box (unresolved)")
 }
@@ -393,7 +393,7 @@ fn resolve_executes_payload_box_and_keeps_plain_textures() {
 	else {
 		unreachable!()
 	};
-	let rendered = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	let rendered = unsafe { quercus_node::handle::get_checked::<Texture>(&handle) }
 		.expect("payload box must be replaced by the rendered texture");
 	assert_eq!(first_pixel(rendered), [0.25, 0.5, 0.75, 1.0]);
 	set_plugin_executor(None);
@@ -873,11 +873,11 @@ fn resolve_footage_jobs_decodes_payload_box() {
 		"both rows stay, only the payload is replaced"
 	);
 
-	let rows = table.rows();
+	let rows = table.rows.as_slice();
 	let NodeValue::Texture(decoded_handle) = &rows[0].1 else {
 		unreachable!()
 	};
-	let decoded = unsafe { quercus_node::handle::get_checked::<Texture>(decoded_handle) }
+	let decoded = unsafe { quercus_node::handle::get_checked::<Texture>(&decoded_handle) }
 		.expect("payload box replaced by the decoded texture");
 	let Texture::Cpu(frame) = decoded else {
 		unreachable!()
@@ -891,7 +891,7 @@ fn resolve_footage_jobs_decodes_payload_box() {
 	let NodeValue::Texture(genuine_handle) = &rows[1].1 else {
 		unreachable!()
 	};
-	let genuine = unsafe { quercus_node::handle::get_checked::<Texture>(genuine_handle) }
+	let genuine = unsafe { quercus_node::handle::get_checked::<Texture>(&genuine_handle) }
 		.expect("genuine texture box stays untouched");
 	assert_eq!(genuine.size(), (4, 4));
 
@@ -953,11 +953,11 @@ fn resolve_color_transform_job_applies_lut_on_cpu() {
 		&mut table,
 	);
 
-	let rows = table.rows();
+	let rows = table.rows.as_slice();
 	let NodeValue::Texture(handle) = &rows[0].1 else {
 		unreachable!()
 	};
-	let out = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	let out = unsafe { quercus_node::handle::get_checked::<Texture>(&handle) }
 		.expect("the job box is replaced by the converted texture");
 	let px = first_pixel(out);
 	assert!(
@@ -1028,11 +1028,11 @@ fn resolve_color_transform_job_applies_lut_on_gpu() {
 		&mut table,
 	);
 
-	let rows = table.rows();
+	let rows = table.rows.as_slice();
 	let NodeValue::Texture(handle) = &rows[0].1 else {
 		unreachable!()
 	};
-	let out = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	let out = unsafe { quercus_node::handle::get_checked::<Texture>(&handle) }
 		.expect("the job box is replaced by the converted texture");
 	assert!(
 		matches!(out, Texture::Gpu { .. }),
@@ -1080,11 +1080,11 @@ fn resolve_color_transform_job_passes_through_when_processor_invalid() {
 		&mut table,
 	);
 
-	let rows = table.rows();
+	let rows = table.rows.as_slice();
 	let NodeValue::Texture(handle) = &rows[0].1 else {
 		unreachable!()
 	};
-	let out = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	let out = unsafe { quercus_node::handle::get_checked::<Texture>(&handle) }
 		.expect("the job box is replaced by the input texture");
 	assert_eq!(first_pixel(out), [0.4, 0.3, 0.2, 1.0], "untouched");
 }
@@ -1257,7 +1257,7 @@ fn eval_node_row(type_id: &str, inputs: NodeValueRow, frame_size: Option<(i32, i
 	if handle.ctx.is_null() {
 		panic!("{type_id}: null texture produced");
 	}
-	let tex = (unsafe { quercus_node::handle::get_checked::<Texture>(handle) })
+	let tex = (unsafe { quercus_node::handle::get_checked::<Texture>(&handle) })
 		.expect("resolved texture");
 	assert!(
 		matches!(tex, Texture::Gpu { .. }),
@@ -2089,7 +2089,7 @@ fn plugin_job_value_splits_clip_inputs_from_scalar_values() {
 	let NodeValue::Texture(handle) = &out else {
 		panic!("expected a texture value, got {out:?}");
 	};
-	let texture = unsafe { quercus_node::handle::get_checked::<Texture>(handle) }
+	let texture = unsafe { quercus_node::handle::get_checked::<Texture>(&handle) }
 		.cloned()
 		.expect("resolved texture");
 	assert_eq!(first_pixel(&texture), [0.5, 0.25, 0.125, 1.0]);

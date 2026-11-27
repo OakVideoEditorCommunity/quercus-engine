@@ -137,7 +137,8 @@ pub enum SubmitOutcome<P> {
 
 /// The scheduler state machine (single-threaded by contract).
 pub struct PreviewScheduler<P> {
-	workers: usize,
+	/// Configured worker count.
+	pub workers: usize,
 	batch_size: usize,
 	pending: Vec<PendingEntry<P>>,
 	claimed: HashMap<FrameKey, Claim<P>>,
@@ -164,11 +165,6 @@ impl<P: Clone> PreviewScheduler<P> {
 			next_batch_id: 1,
 			crash_requeued: 0,
 		}
-	}
-
-	/// The configured worker count.
-	pub fn workers(&self) -> usize {
-		self.workers
 	}
 
 	/// Change the worker count at run time (dynamic pool resize driven by

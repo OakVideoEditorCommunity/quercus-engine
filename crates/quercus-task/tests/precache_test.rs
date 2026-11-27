@@ -111,7 +111,7 @@ fn new_labels_with_the_footage_filename_and_index() {
 
 	let task = PreCacheTask::new((project.clone(), footage), 3, (project.clone(), sequence));
 	assert_eq!(
-		task.render.base.title(),
+		task.render.base.title.as_str(),
 		format!("Pre-caching {}:3", media.to_string_lossy())
 	);
 	assert_eq!(task.index, 3);
@@ -133,7 +133,7 @@ fn new_accepts_unprobed_and_missing_media() {
 		nodeops::footage_create(&project, Some("/definitely/not/here.mp4")).expect("footage node");
 	let mut task = PreCacheTask::new((project.clone(), footage), 0, (project.clone(), sequence));
 	assert_eq!(
-		task.render.base.title(),
+		task.render.base.title.as_str(),
 		"Pre-caching /definitely/not/here.mp4:0"
 	);
 	assert_eq!(
@@ -147,7 +147,7 @@ fn new_accepts_unprobed_and_missing_media() {
 	let mut driver = Task::new("precache", None);
 	assert!(task.run(&mut driver).is_ok());
 	assert_eq!(task.render.total_frames(), 0);
-	assert!(driver.error().is_none());
+	assert!(driver.error.as_deref().is_none());
 }
 
 /// A project with no footage; only the sequence is exercised here.
@@ -174,14 +174,14 @@ fn run_renders_the_footage_frame() {
 	let _guard = render_serial();
 	let mut driver = Task::new("precache", None);
 	let result = task.run(&mut driver);
-	assert!(result.is_ok(), "run failed: {:?}", driver.error());
+	assert!(result.is_ok(), "run failed: {:?}", driver.error.as_deref());
 	assert_eq!(
 		task.render.total_frames(),
 		1,
 		"the 1 s range at 1 fps holds one frame"
 	);
 	assert!(!driver.is_cancelled());
-	assert!(driver.error().is_none());
+	assert!(driver.error.as_deref().is_none());
 
 	let _ = fs::remove_file(&media);
 }
@@ -253,7 +253,7 @@ fn download_hooks_are_no_ops() {
 	};
 	assert!(task.audio_downloaded(&mut driver, &audio).is_ok());
 	assert!(task.encode_subtitle(&mut driver, "a subtitle").is_ok());
-	assert!(driver.error().is_none());
+	assert!(driver.error.as_deref().is_none());
 }
 
 /// `run` plans the render over the full footage length and honors the
@@ -279,7 +279,7 @@ fn render_plan_covers_the_whole_footage() {
 		}
 	}));
 	let result = task.run(&mut driver);
-	assert!(result.is_ok(), "run failed: {:?}", driver.error());
+	assert!(result.is_ok(), "run failed: {:?}", driver.error.as_deref());
 
 	// The 10-frame / 10 fps test clip is 1 s long, i.e. one frame at the
 	// sequence's 1 fps timebase; the one-ticket window still delivers it.

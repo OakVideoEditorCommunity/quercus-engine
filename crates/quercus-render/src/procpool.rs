@@ -1186,7 +1186,7 @@ impl ProcessDispatcher {
 				return Err(Error::State);
 			}
 			inner.started = true;
-			let count = inner.scheduler.workers();
+			let count = inner.scheduler.workers;
 			for i in 0..count {
 				self.spawn_worker(&mut inner, i)?;
 			}
@@ -1243,7 +1243,7 @@ impl ProcessDispatcher {
 		// reporting the configured pool keeps the window building instead
 		// of stalling at the 1-frame floor.
 		let workers = if alive == 0 {
-			inner.scheduler.workers()
+			inner.scheduler.workers
 		} else {
 			alive
 		};
@@ -1259,7 +1259,7 @@ impl ProcessDispatcher {
 	/// while a shrink drains, the vector can still be longer than the returned
 	/// value, and it can be shorter during startup.
 	pub fn worker_count(&self) -> usize {
-		lock(&self.inner).scheduler.workers()
+		lock(&self.inner).scheduler.workers
 	}
 
 	/// Per-worker slot count (the segment geometry the workers run).
@@ -2488,7 +2488,7 @@ impl JobDispatch for ProcessDispatcher {
 					key.frame,
 					key.version,
 					request.priority,
-					key.frame.rem_euclid(inner.scheduler.workers() as i64),
+					key.frame.rem_euclid(inner.scheduler.workers as i64),
 					pools.join(" | ")
 				);
 			}

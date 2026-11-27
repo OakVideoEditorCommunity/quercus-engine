@@ -89,7 +89,7 @@ fn waveform_mipmap_scale_parity() {
 	let planes = [ch0.as_slice(), ch1.as_slice()];
 
 	let mut w = AudioVisualWaveform::new();
-	w.set_channel_count(2);
+	w.channels = 2;
 	w.overwrite_samples(&planes, 48000, Rational::new(0, 1));
 
 	// One summary point is produced for any queried window; a 1/1024 s

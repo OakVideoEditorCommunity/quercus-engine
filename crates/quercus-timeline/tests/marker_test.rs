@@ -46,10 +46,10 @@ fn list_of(h: &CHandle) -> MutexGuard<'_, TimelineMarkerList> {
 #[test]
 fn marker_default_is_null_time() {
 	let m = TimelineMarker::new();
-	assert_eq!(m.color(), 0);
-	assert_eq!(m.time().in_(), Rational::new(0, 1));
-	assert_eq!(m.time().out(), Rational::new(0, 1));
-	assert_eq!(m.name(), "");
+	assert_eq!(m.color, 0);
+	assert_eq!(m.time.in_(), Rational::new(0, 1));
+	assert_eq!(m.time.out(), Rational::new(0, 1));
+	assert_eq!(m.name.as_str(), "");
 }
 
 /// `TimelineMarker::with_time` stores color, time range and name as
@@ -61,10 +61,10 @@ fn marker_with_time_stores_fields() {
 		TimeRange::new(Rational::new(10, 1), Rational::new(20, 1)),
 		"hello",
 	);
-	assert_eq!(m.color(), 3);
-	assert_eq!(m.time().in_(), Rational::new(10, 1));
-	assert_eq!(m.time().out(), Rational::new(20, 1));
-	assert_eq!(m.name(), "hello");
+	assert_eq!(m.color, 3);
+	assert_eq!(m.time.in_(), Rational::new(10, 1));
+	assert_eq!(m.time.out(), Rational::new(20, 1));
+	assert_eq!(m.name.as_str(), "hello");
 }
 
 /// `set_time_point` moves a range marker to a single point, preserving
@@ -79,11 +79,11 @@ fn marker_set_time_point_preserves_name_color() {
 	let t = Rational::new(30, 1);
 	m.set_time_point(t);
 	// Color and name survive the move.
-	assert_eq!(m.color(), 5);
-	assert_eq!(m.name(), "tag");
+	assert_eq!(m.color, 5);
+	assert_eq!(m.name.as_str(), "tag");
 	// The original length (10) is preserved.
-	assert_eq!(m.time().in_(), t);
-	assert_eq!(m.time().out(), Rational::new(40, 1));
+	assert_eq!(m.time.in_(), t);
+	assert_eq!(m.time.out(), Rational::new(40, 1));
 }
 
 /// Sibling detection goes through the owning list: two markers sharing
@@ -95,10 +95,10 @@ fn marker_sibling_detection() {
 	let mut list = TimelineMarkerList::new();
 	let mut a = TimelineMarker::new();
 	a.set_time_point(Rational::new(42, 1));
-	a.set_name("a");
+	a.name = ("a").to_string();
 	let mut b = TimelineMarker::new();
 	b.set_time_point(Rational::new(42, 1));
-	b.set_name("b");
+	b.name = ("b").to_string();
 	let mut other = TimelineMarker::new();
 	other.set_time_point(Rational::new(7, 1));
 	list.add_marker(a);
@@ -106,7 +106,7 @@ fn marker_sibling_detection() {
 	list.add_marker(other);
 	assert_eq!(
 		list.get_marker_at_time(Rational::new(42, 1))
-			.map(|m| m.name()),
+			.map(|m| m.name.as_str()),
 		Some("a")
 	);
 	assert!(list.get_marker_at_time(Rational::new(7, 1)).is_some());
@@ -135,8 +135,8 @@ fn marker_list_grows_with_adds() {
 	assert_eq!(list.size(), 2);
 	assert!(!list.empty());
 	// Sorted by in point: b (5) before a (10).
-	assert_eq!(list.front().unwrap().name(), "b");
-	assert_eq!(list.back().unwrap().name(), "a");
+	assert_eq!(list.front().unwrap().name.as_str(), "b");
+	assert_eq!(list.back().unwrap().name.as_str(), "a");
 }
 
 /// `at`/`back`/`front` expose the stored markers; `at` returns `None`
@@ -154,7 +154,7 @@ fn marker_list_indexing() {
 		"one",
 	));
 	assert!(list.at(0).is_some());
-	assert_eq!(list.at(0).unwrap().name(), "one");
+	assert_eq!(list.at(0).unwrap().name.as_str(), "one");
 	assert!(list.at(1).is_none());
 	assert!(list.front().is_some());
 	assert!(list.back().is_some());
@@ -177,7 +177,7 @@ fn marker_list_remove() {
 	let mptr = m as *const TimelineMarker;
 	let removed = list.remove_marker(unsafe { &*mptr });
 	assert!(removed.is_some());
-	assert_eq!(removed.unwrap().name(), "one");
+	assert_eq!(removed.unwrap().name.as_str(), "one");
 	assert_eq!(list.size(), 0);
 
 	// Removing a marker not present returns None.
@@ -199,7 +199,7 @@ fn marker_list_find_at_time() {
 
 	let found = list.get_marker_at_time(Rational::new(7, 1));
 	assert!(found.is_some());
-	assert_eq!(found.unwrap().name(), "x");
+	assert_eq!(found.unwrap().name.as_str(), "x");
 	assert!(list.get_marker_at_time(Rational::new(9, 1)).is_none());
 }
 
@@ -234,21 +234,24 @@ fn marker_list_closest_to_time() {
 	assert_eq!(
 		list.get_closest_marker_to_time(Rational::new(5, 1))
 			.unwrap()
-			.name(),
+			.name
+			.as_str(),
 		"a"
 	);
 	// Query after all markers (negative differences).
 	assert_eq!(
 		list.get_closest_marker_to_time(Rational::new(100, 1))
 			.unwrap()
-			.name(),
+			.name
+			.as_str(),
 		"c"
 	);
 	// Query before all markers (positive differences).
 	assert_eq!(
 		list.get_closest_marker_to_time(Rational::new(1, 1))
 			.unwrap()
-			.name(),
+			.name
+			.as_str(),
 		"a"
 	);
 }
@@ -312,15 +315,15 @@ fn marker_commands_trait_dispatch() {
 
 	let mut color = MarkerChangeColorCommand::new(list_h, 0, 7);
 	Command::redo(&mut color);
-	assert_eq!(list_of(&list_h).at(0).unwrap().color(), 7);
+	assert_eq!(list_of(&list_h).at(0).unwrap().color, 7);
 	Command::undo(&mut color);
-	assert_eq!(list_of(&list_h).at(0).unwrap().color(), 1);
+	assert_eq!(list_of(&list_h).at(0).unwrap().color, 1);
 
 	let mut name = MarkerChangeNameCommand::new(list_h, 0, "z");
 	Command::redo(&mut name);
-	assert_eq!(list_of(&list_h).at(0).unwrap().name(), "z");
+	assert_eq!(list_of(&list_h).at(0).unwrap().name.as_str(), "z");
 	Command::undo(&mut name);
-	assert_eq!(list_of(&list_h).at(0).unwrap().name(), "m");
+	assert_eq!(list_of(&list_h).at(0).unwrap().name.as_str(), "m");
 
 	let mut time = MarkerChangeTimeCommand::new(
 		list_h,
@@ -329,12 +332,12 @@ fn marker_commands_trait_dispatch() {
 	);
 	Command::redo(&mut time);
 	assert_eq!(
-		list_of(&list_h).at(0).unwrap().time().in_(),
+		list_of(&list_h).at(0).unwrap().time.in_(),
 		Rational::new(50, 1)
 	);
 	Command::undo(&mut time);
 	assert_eq!(
-		list_of(&list_h).at(0).unwrap().time().in_(),
+		list_of(&list_h).at(0).unwrap().time.in_(),
 		Rational::new(1, 1)
 	);
 }
@@ -357,18 +360,18 @@ fn marker_list_resort_after_time_change() {
 		"b",
 	));
 	// Order: b (5), a (10).
-	assert_eq!(list.at(0).unwrap().name(), "b");
+	assert_eq!(list.at(0).unwrap().name.as_str(), "b");
 
 	// Detach `a`, move it to time 3, re-insert.
 	let mptr = list.at(1).unwrap() as *const TimelineMarker;
 	let a = list.remove_marker(unsafe { &*mptr }).unwrap();
 	let mut moved = a;
-	moved.set_time(TimeRange::new(Rational::new(3, 1), Rational::new(4, 1)));
+	moved.time = TimeRange::new(Rational::new(3, 1), Rational::new(4, 1));
 	list.add_marker(moved);
 
 	assert_eq!(list.size(), 2);
-	assert_eq!(list.front().unwrap().name(), "a");
-	assert_eq!(list.back().unwrap().name(), "b");
+	assert_eq!(list.front().unwrap().name.as_str(), "a");
+	assert_eq!(list.back().unwrap().name.as_str(), "b");
 }
 
 /// A `MarkerAddCommand` redo appends the marker; undo removes it
@@ -386,8 +389,8 @@ fn marker_add_command_redo_undo() {
 	cmd.redo();
 	let list = list_of(&list_h);
 	assert_eq!(list.size(), 1);
-	assert_eq!(list.at(0).unwrap().name(), "m");
-	assert_eq!(list.at(0).unwrap().color(), 4);
+	assert_eq!(list.at(0).unwrap().name.as_str(), "m");
+	assert_eq!(list.at(0).unwrap().color, 4);
 	drop(list);
 
 	// Redo is idempotent.
@@ -416,7 +419,7 @@ fn marker_remove_command_redo_undo() {
 	cmd.undo();
 	let list = list_of(&list_h);
 	assert_eq!(list.size(), 1);
-	assert_eq!(list.at(0).unwrap().name(), "m");
+	assert_eq!(list.at(0).unwrap().name.as_str(), "m");
 }
 
 /// `MarkerChangeColorCommand` redo changes the color and undo restores
@@ -432,9 +435,9 @@ fn marker_change_color_command_redo_undo() {
 
 	let mut cmd = MarkerChangeColorCommand::new(list_h, 0, 9);
 	cmd.redo();
-	assert_eq!(list_of(&list_h).at(0).unwrap().color(), 9);
+	assert_eq!(list_of(&list_h).at(0).unwrap().color, 9);
 	cmd.undo();
-	assert_eq!(list_of(&list_h).at(0).unwrap().color(), 1);
+	assert_eq!(list_of(&list_h).at(0).unwrap().color, 1);
 }
 
 /// `MarkerChangeNameCommand` redo changes the name and undo restores
@@ -450,9 +453,9 @@ fn marker_change_name_command_redo_undo() {
 
 	let mut cmd = MarkerChangeNameCommand::new(list_h, 0, "renamed");
 	cmd.redo();
-	assert_eq!(list_of(&list_h).at(0).unwrap().name(), "renamed");
+	assert_eq!(list_of(&list_h).at(0).unwrap().name.as_str(), "renamed");
 	cmd.undo();
-	assert_eq!(list_of(&list_h).at(0).unwrap().name(), "m");
+	assert_eq!(list_of(&list_h).at(0).unwrap().name.as_str(), "m");
 }
 
 /// `MarkerChangeTimeCommand` redo moves the marker and undo restores
@@ -470,12 +473,12 @@ fn marker_change_time_command_redo_undo() {
 	let mut cmd = MarkerChangeTimeCommand::new(list_h, 0, new_t);
 	cmd.redo();
 	assert_eq!(
-		list_of(&list_h).at(0).unwrap().time().in_(),
+		list_of(&list_h).at(0).unwrap().time.in_(),
 		Rational::new(50, 1)
 	);
 	cmd.undo();
 	assert_eq!(
-		list_of(&list_h).at(0).unwrap().time().in_(),
+		list_of(&list_h).at(0).unwrap().time.in_(),
 		Rational::new(1, 1)
 	);
 }

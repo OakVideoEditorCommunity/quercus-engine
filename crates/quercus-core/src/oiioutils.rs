@@ -198,11 +198,6 @@ impl F32Image {
 	pub fn is_empty(&self) -> bool {
 		self.pixels.is_empty()
 	}
-
-	/// Access to the interleaved pixel data.
-	pub fn as_slice(&self) -> &[f32] {
-		&self.pixels
-	}
 }
 
 /// Reads a TIFF image as 32-bit float.

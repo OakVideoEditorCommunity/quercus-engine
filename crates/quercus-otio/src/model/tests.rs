@@ -177,9 +177,9 @@ fn unknown_root_and_composable_stay_raw() {
 #[test]
 fn timeline_new_builds_named_tracks_stack() {
 	let t = Timeline::new("My Sequence");
-	assert_eq!(t.name(), "My Sequence");
-	assert_eq!(t.tracks().children().len(), 0);
-	assert!(t.global_start_time().is_none());
+	assert_eq!(t.name.as_str(), "My Sequence");
+	assert_eq!(t.tracks.children().len(), 0);
+	assert!(t.global_start_time.clone().is_none());
 	let out = to_json_string(&t).unwrap();
 	assert!(out.contains("\"name\": \"tracks\""), "{out}");
 }

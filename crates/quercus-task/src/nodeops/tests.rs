@@ -191,8 +191,8 @@ fn sequence_params_default_and_read_back() {
 	let seq = sequence_create(&p).expect("sequence");
 	// The domain constructor applies the default parameters.
 	let default = sequence_video_params(&p, seq, 0).expect("default video params");
-	assert_eq!((default.width(), default.height()), (1920, 1080));
-	assert_eq!(default.channel_count(), 4);
+	assert_eq!((default.width, default.height), (1920, 1080));
+	assert_eq!(default.channel_count, 4);
 	assert_eq!(sequence_audio_params(&p, seq), (48000, 0x3));
 	assert!(sequence_video_params(&p, seq, 1).is_none(), "out of range");
 	assert_eq!(sequence_audio_params(&p, NodeId::INVALID), (48000, 0x3));
@@ -223,9 +223,9 @@ fn sequence_params_default_and_read_back() {
 		}];
 	}
 	let v = sequence_video_params(&p, seq, 0).expect("video params");
-	assert_eq!((v.width(), v.height()), (1280, 720));
-	assert_eq!(v.frame_rate(), (24, 1));
-	assert_eq!(v.channel_count(), 4);
+	assert_eq!((v.width, v.height), (1280, 720));
+	assert_eq!(v.frame_rate, (24, 1));
+	assert_eq!(v.channel_count, 4);
 	assert_eq!(sequence_audio_params(&p, seq), (44100, 0x3));
 }
 
@@ -269,7 +269,7 @@ fn footage_probe_round_trip_with_real_media() {
 	assert_eq!(footage_filename(&p, footage), path.to_string_lossy());
 	assert!(footage_total_stream_count(&p, footage) >= 1);
 	let video = footage_video_params(&p, footage, 0).expect("video params");
-	assert_eq!((video.width(), video.height()), (64, 64));
+	assert_eq!((video.width, video.height), (64, 64));
 	assert!(footage_audio_sample_rate(&p, footage).is_some());
 	assert!(node_length(&p, footage) > Rational::new(0, 1));
 
@@ -290,8 +290,8 @@ fn footage_probe_round_trip_with_real_media() {
 	params.set_frame_rate(30, 1);
 	footage_set_video_params(&p, footage, 0, &params);
 	let back = footage_video_params(&p, footage, 0).expect("overwritten params");
-	assert_eq!((back.width(), back.height()), (32, 32));
-	assert_eq!(back.frame_rate(), (30, 1));
+	assert_eq!((back.width, back.height), (32, 32));
+	assert_eq!(back.frame_rate, (30, 1));
 	// A wrong node type is a no-op.
 	footage_set_video_params(&p, NodeId::INVALID, 0, &params);
 

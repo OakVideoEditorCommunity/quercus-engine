@@ -185,7 +185,7 @@ fn export_writes_a_real_playable_mp4() {
 	if let Err(e) = driver.start() {
 		panic!(
 			"export failed: {e:?} / {}",
-			driver.error().unwrap_or("unknown error")
+			driver.error.as_deref().unwrap_or("unknown error")
 		);
 	}
 

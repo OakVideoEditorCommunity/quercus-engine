@@ -302,7 +302,7 @@ pub fn markers_of(list: &CHandle) -> Vec<(Rational, String, i32)> {
 	let l = l.lock().unwrap_or_else(|e| e.into_inner());
 	(0..l.size())
 		.filter_map(|i| l.at(i))
-		.map(|m| (m.time().in_(), m.name().to_string(), m.color()))
+		.map(|m| (m.time.in_(), m.name.as_str().to_string(), m.color))
 		.collect()
 }
 
@@ -322,7 +322,7 @@ pub fn marker_index_at(list: &CHandle, time: Rational) -> Option<usize> {
 		>(list)
 	}?;
 	let l = l.lock().unwrap_or_else(|e| e.into_inner());
-	(0..l.size()).find(|&i| l.at(i).map(|m| m.time().in_()) == Some(time))
+	(0..l.size()).find(|&i| l.at(i).map(|m| m.time.in_()) == Some(time))
 }
 
 /// Read the workarea's `(enabled, range)` pair.
@@ -341,7 +341,7 @@ pub fn workarea_state(wa: &CHandle) -> Option<(bool, TimeRange)> {
 		>(wa)
 	}?;
 	let w = w.lock().unwrap_or_else(|e| e.into_inner());
-	Some((w.enabled(), *w.range()))
+	Some((w.enabled, w.range))
 }
 
 /// Overwrite the workarea state in place: enable flag and range.
@@ -361,8 +361,8 @@ pub fn workarea_set(wa: &CHandle, enabled: bool, range: TimeRange) {
 		>(wa)
 	} {
 		let mut w = w.lock().unwrap_or_else(|e| e.into_inner());
-		w.set_enabled(enabled);
-		w.set_range(range);
+		w.enabled = enabled;
+		w.range = range;
 	}
 }
 
@@ -507,7 +507,7 @@ pub fn library_open(uuid: &str) -> Result<ProjectRef, String> {
 	}
 	let project = unsafe { &*handle }.project().clone();
 	unsafe { crate::node::quercus_project_release(handle) };
-	lock(&project).set_modified(false);
+	lock(&project).modified = false;
 	Ok(project)
 }
 

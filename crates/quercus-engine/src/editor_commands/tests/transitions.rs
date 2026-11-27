@@ -425,16 +425,13 @@ pub(crate) fn project_lifecycle_round_trip_and_errors() {
 		project_name(&lock(&project)),
 		"quercus_graphops_gap_round_trip"
 	);
-	assert!(
-		!lock(&project).is_modified(),
-		"save clears the modified flag"
-	);
+	assert!(!lock(&project).modified, "save clears the modified flag");
 
 	let loaded = load_ove(&path).expect("load");
 	{
 		let g = lock(&loaded);
 		assert_eq!(project_name(&g), "quercus_graphops_gap_round_trip");
-		assert!(!g.is_modified(), "a loaded project starts unmodified");
+		assert!(!g.modified, "a loaded project starts unmodified");
 		let seqs = sequence_ids(&g);
 		assert_eq!(seqs.len(), 1, "the sequence survives the round trip");
 		assert_eq!(node_label(&g.graph, seqs[0]), "Round Trip");

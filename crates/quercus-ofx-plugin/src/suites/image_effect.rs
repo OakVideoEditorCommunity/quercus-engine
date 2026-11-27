@@ -393,7 +393,7 @@ unsafe extern "C" fn clip_get_image(
 			.fetch_image(time, scale, region)
 			.map_err(|_| status::FAILED)?;
 		if env::var_os("QUERCUS_OFX_TRACE").is_some() {
-			let p = image.pixels();
+			let p = image.data.as_slice();
 			let dump: Vec<f32> = p
 				.chunks_exact(4)
 				.take(4)

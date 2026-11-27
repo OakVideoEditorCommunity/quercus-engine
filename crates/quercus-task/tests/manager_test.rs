@@ -146,8 +146,8 @@ fn init_is_a_singleton_and_shutdown_is_idempotent() {
 	assert_eq!(TaskManager::with_manager(|m| m.get_task_count()), Some(0));
 	assert_eq!(
 		TaskManager::with_manager_mut(|m| {
-			m.set_codec_submitter_registered(true);
-			m.codec_submitter_registered()
+			m.codec_submitter_registered = true;
+			m.codec_submitter_registered
 		}),
 		Some(true)
 	);
@@ -174,23 +174,23 @@ fn init_does_not_register_the_codec_submitter() {
 		"init() must not install the codec submitter"
 	);
 	assert_eq!(
-		TaskManager::with_manager(|m| m.codec_submitter_registered()),
+		TaskManager::with_manager(|m| m.codec_submitter_registered),
 		Some(false),
 		"a fresh manager has not registered anything"
 	);
 
-	TaskManager::with_manager_mut(|m| m.set_codec_submitter_registered(true)).unwrap();
+	TaskManager::with_manager_mut(|m| m.codec_submitter_registered = true).unwrap();
 	assert!(
 		!codecbridge::is_codec_task_submitter_registered(),
 		"the bookkeeping flag never installs the quercuscodec callback"
 	);
 	assert_eq!(
-		TaskManager::with_manager(|m| m.codec_submitter_registered()),
+		TaskManager::with_manager(|m| m.codec_submitter_registered),
 		Some(true)
 	);
-	TaskManager::with_manager_mut(|m| m.set_codec_submitter_registered(false)).unwrap();
+	TaskManager::with_manager_mut(|m| m.codec_submitter_registered = false).unwrap();
 	assert_eq!(
-		TaskManager::with_manager(|m| m.codec_submitter_registered()),
+		TaskManager::with_manager(|m| m.codec_submitter_registered),
 		Some(false)
 	);
 }

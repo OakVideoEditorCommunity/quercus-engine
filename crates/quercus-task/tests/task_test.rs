@@ -46,7 +46,7 @@ struct Fail;
 
 impl TaskBehavior for Fail {
 	fn run(&mut self, task: &mut Task) -> Result<()> {
-		task.set_error("disk full");
+		task.error = Some(("disk full").to_string());
 		Err(Error::Failed("disk full".to_string()))
 	}
 }
@@ -102,18 +102,18 @@ fn task_with(behavior: impl TaskBehavior + Send + 'static) -> Task {
 #[test]
 fn start_without_a_behavior_succeeds() {
 	let mut task = Task::new("unit", None);
-	assert_eq!(task.title(), "unit");
+	assert_eq!(task.title.as_str(), "unit");
 	assert!(!task.is_finished());
 	assert!(!task.succeeded());
 	assert!(!task.is_cancelled());
-	assert!(task.error().is_none());
+	assert!(task.error.as_deref().is_none());
 	assert!(task.elapsed().is_none(), "not started yet");
 
 	assert!(task.start().is_ok());
 	assert!(task.is_finished());
 	assert!(task.succeeded());
 	assert!(task.elapsed().is_some());
-	assert!(task.error().is_none());
+	assert!(task.error.as_deref().is_none());
 }
 
 /// Given a failing behavior, `start` returns the same error, the task is
@@ -125,7 +125,7 @@ fn failing_behavior_marks_failed_and_records_the_error() {
 	assert!(result.is_err());
 	assert!(task.is_finished());
 	assert!(!task.succeeded());
-	assert_eq!(task.error(), Some("disk full"));
+	assert_eq!(task.error.as_deref(), Some("disk full"));
 }
 
 /// Given a cancel before `start`, the behavior observes it and the task
@@ -200,12 +200,12 @@ fn events_are_ordered_clamped_and_one_shot() {
 fn reset_clears_state_and_allows_a_second_run() {
 	let mut task = task_with(Fail);
 	assert!(task.start().is_err());
-	assert!(task.error().is_some());
+	assert!(task.error.as_deref().is_some());
 
 	task.reset();
 	assert!(!task.is_finished());
 	assert!(!task.succeeded());
-	assert!(task.error().is_none());
+	assert!(task.error.as_deref().is_none());
 	assert!(task.elapsed().is_none());
 
 	task.set_behavior(Box::new(Noop));
@@ -255,8 +255,8 @@ fn subscriber_state_tracks_start_time_and_result() {
 fn shared_cancel_atom_links_inner_and_outer_tasks() {
 	let atom = Arc::new(CancelAtom::new());
 	let mut outer = Task::new("outer", Some(atom.clone()));
-	assert!(Arc::ptr_eq(&outer.get_cancel_atom(), &atom));
-	outer.set_cancel_atom(atom.clone());
+	assert!(Arc::ptr_eq(&outer.cancel_atom.clone(), &atom));
+	outer.cancel_atom = atom.clone();
 
 	let mut inner = Task::new("inner", Some(atom));
 	inner.cancel();
@@ -267,11 +267,11 @@ fn shared_cancel_atom_links_inner_and_outer_tasks() {
 #[test]
 fn title_and_error_are_settable() {
 	let mut task = Task::new("old", None);
-	task.set_title("new");
-	assert_eq!(task.title(), "new");
-	assert!(task.error().is_none());
-	task.set_error("boom");
-	assert_eq!(task.error(), Some("boom"));
+	task.title = ("new").to_string();
+	assert_eq!(task.title.as_str(), "new");
+	assert!(task.error.as_deref().is_none());
+	task.error = Some(("boom").to_string());
+	assert_eq!(task.error.as_deref(), Some("boom"));
 }
 
 /// The module helpers: `cancelled()` is the cancellation error and

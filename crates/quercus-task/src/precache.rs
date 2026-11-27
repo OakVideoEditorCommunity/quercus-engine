@@ -97,7 +97,7 @@ impl PreCacheTask {
 impl TaskBehavior for PreCacheTask {
 	fn run(&mut self, task: &mut Task) -> Result<()> {
 		// Share the caller's cancellation atom with the inner render base.
-		self.render.base.set_cancel_atom(task.get_cancel_atom());
+		self.render.base.cancel_atom = task.cancel_atom.clone();
 
 		// The full footage length is the cache range (simplified: no
 		// work-area intersection). The deleted `quercusnode_footage_get_video_length`

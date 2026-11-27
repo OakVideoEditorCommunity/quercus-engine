@@ -28,8 +28,8 @@ pub struct MarkerMetadata {
 impl MarkerMetadata {
 	fn from_marker(marker: &marker::TimelineMarker) -> Self {
 		Self {
-			time: *marker.time(),
-			color: marker.color(),
+			time: marker.time,
+			color: marker.color,
 		}
 	}
 }
@@ -125,7 +125,7 @@ pub unsafe extern "C" fn quercus_editor_marker_name_at(
 		.clone();
 	let markers = markers.lock().unwrap_or_else(|e| e.into_inner());
 	match markers.at(index as usize) {
-		Some(marker) => copy_str_out(marker.name(), buf, buf_len),
+		Some(marker) => copy_str_out(marker.name.as_str(), buf, buf_len),
 		None => -1,
 	}
 }
@@ -150,8 +150,8 @@ pub unsafe extern "C" fn quercus_editor_workarea(
 		.workarea
 		.clone();
 	let workarea = workarea.lock().unwrap_or_else(|e| e.into_inner());
-	unsafe { *out = QuercusTimeRange::from_native(workarea.range()) };
-	workarea.enabled()
+	unsafe { *out = QuercusTimeRange::from_native(&workarea.range) };
+	workarea.enabled
 }
 
 #[cfg(test)]

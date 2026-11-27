@@ -1374,7 +1374,7 @@ fn multicam_clip_round_trip_preserves_wiring() {
 		.as_any()
 		.and_then(|a| a.downcast_ref::<quercus_node::nodes::multicamnode::MultiCamNode>())
 		.expect("loaded node is a MultiCamNode");
-	assert_eq!(mc_node.sequence(), Some(seq_src));
+	assert_eq!(mc_node.sequence, Some(seq_src));
 }
 
 /// The virtual endpoint pair round-trips: the saved file names both

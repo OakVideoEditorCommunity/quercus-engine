@@ -51,7 +51,7 @@ fn f32_image(w: i32, h: i32, fill: f32) -> Image {
 			y2: h as f64,
 		},
 	);
-	for c in img.pixels_mut().as_chunks_mut::<4>().0 {
+	for c in img.data.as_mut_slice().as_chunks_mut::<4>().0 {
 		c.copy_from_slice(&fill.to_le_bytes());
 	}
 	img
@@ -694,7 +694,7 @@ fn write_output_frame_validation_and_writeback() {
 	let mut cpudst = f32_texture(2, 2, 0.0);
 	write_output_frame(&mut cpudst, &image).unwrap();
 	let frame = render::texture_get_frame(&cpudst).unwrap();
-	assert_eq!(frame.data.as_slice(), image.pixels());
+	assert_eq!(frame.data.as_slice(), image.data.as_slice());
 
 	// GPU: the downloaded frame passes the size check, then is written back via upload.
 	let ctx = std::sync::Arc::new(FakeUpload {
@@ -707,7 +707,7 @@ fn write_output_frame_validation_and_writeback() {
 		let uploads = ctx.uploads.lock().unwrap();
 		assert_eq!(uploads.len(), 1);
 		assert_eq!(uploads[0].0, 11);
-		assert_eq!(uploads[0].1.data.as_slice(), image.pixels());
+		assert_eq!(uploads[0].1.data.as_slice(), image.data.as_slice());
 	}
 
 	// Upload failure → Failed.

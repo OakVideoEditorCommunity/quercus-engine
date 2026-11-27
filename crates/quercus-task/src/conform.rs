@@ -124,13 +124,13 @@ impl TaskBehavior for ConformTask {
 		let channel_count = self.channel_layout.count_ones() as usize;
 		let (final_names, working_names) =
 			Self::derive_filenames(&self.output_filename, channel_count).map_err(|_| {
-				task.set_error("Invalid conform output filename");
+				task.error = Some(("Invalid conform output filename").to_string());
 				Error::Failed("Invalid conform output filename".to_string())
 			})?;
 		self.final_names = final_names;
 		self.working_names = working_names;
 
-		let atom = task.get_cancel_atom();
+		let atom = task.cancel_atom.clone();
 
 		// Pick the first registered decoder that can probe the file (the
 		// C++ picks the decoder the footage was created with; probing in
@@ -139,7 +139,7 @@ impl TaskBehavior for ConformTask {
 			.into_iter()
 			.find(|d| d.probe(&self.input_filename, Some(&atom)).is_some());
 		let Some(decoder) = decoder else {
-			task.set_error("Failed to create decoder");
+			task.error = Some(("Failed to create decoder").to_string());
 			return Err(Error::Failed("Failed to create decoder".to_string()));
 		};
 
@@ -147,7 +147,8 @@ impl TaskBehavior for ConformTask {
 			let stream =
 				CodecStream::with_block(self.input_filename.clone(), self.stream_index, None);
 			if let Err(e) = decoder.open(&stream) {
-				task.set_error(&format!("Failed to open decoder for audio conform: {e}"));
+				task.error =
+					Some((&format!("Failed to open decoder for audio conform: {e}")).to_string());
 				return false;
 			}
 
@@ -166,7 +167,8 @@ impl TaskBehavior for ConformTask {
 					// the rest (mirroring the C++ loop).
 					for i in 0..self.working_names.len() {
 						if fs::rename(&self.working_names[i], &self.final_names[i]).is_err() {
-							task.set_error("Failed to move conformed audio into place");
+							task.error =
+								Some(("Failed to move conformed audio into place").to_string());
 							return false;
 						}
 					}
@@ -178,9 +180,9 @@ impl TaskBehavior for ConformTask {
 						let _ = fs::remove_file(name);
 					}
 					if atom.is_cancelled() {
-						task.set_error("Audio conform was cancelled");
+						task.error = Some(("Audio conform was cancelled").to_string());
 					} else {
-						task.set_error("Audio conform failed");
+						task.error = Some(("Audio conform failed").to_string());
 					}
 					false
 				}

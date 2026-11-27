@@ -67,12 +67,12 @@ fn command_redo_undo_lifecycle() {
 	let trace = new_trace();
 	let mut cmd = trace_cmd("a", &trace);
 
-	assert!(!cmd.is_done());
+	assert!(!cmd.done);
 	assert!(cmd.has_prepared());
 	assert_eq!(events(&trace), Vec::<String>::new());
 
 	cmd.redo_now();
-	assert!(cmd.is_done());
+	assert!(cmd.done);
 	assert_eq!(events(&trace), vec!["redo:a"]);
 
 	// Idempotent: a second redo does nothing.
@@ -80,7 +80,7 @@ fn command_redo_undo_lifecycle() {
 	assert_eq!(events(&trace), vec!["redo:a"]);
 
 	cmd.undo_now();
-	assert!(!cmd.is_done());
+	assert!(!cmd.done);
 	assert_eq!(events(&trace), vec!["redo:a", "undo:a"]);
 
 	// Idempotent undo.
@@ -92,10 +92,10 @@ fn command_redo_undo_lifecycle() {
 	cmd.undo_and_set_modified();
 	assert_eq!(events(&trace), vec!["redo:a", "undo:a", "redo:a", "undo:a"]);
 
-	// set_done marks executed without running anything.
+	// The public done field marks executed without running anything.
 	let mut cmd2 = trace_cmd("x", &trace);
-	cmd2.set_done(true);
-	assert!(cmd2.is_done());
+	cmd2.done = true;
+	assert!(cmd2.done);
 	cmd2.redo_now(); // no-op (already done)
 	assert_eq!(events(&trace), vec!["redo:a", "undo:a", "redo:a", "undo:a"]);
 }
@@ -131,9 +131,9 @@ fn empty_command_is_noop() {
 	let mut cmd = EmptyCommand::new();
 	assert!(cmd.has_prepared());
 	cmd.redo_now();
-	assert!(cmd.is_done());
+	assert!(cmd.done);
 	cmd.undo_now();
-	assert!(!cmd.is_done());
+	assert!(!cmd.done);
 	// No panics, no side effects.
 }
 
@@ -147,13 +147,13 @@ fn multi_redo_undo_ordering() {
 
 	assert_eq!(multi.multi_child_count(), 3);
 	// Children are reachable and named.
-	assert!(!multi.multi_child(0).unwrap().is_done());
-	assert!(!multi.multi_child(2).unwrap().is_done());
+	assert!(!multi.multi_child(0).unwrap().done);
+	assert!(!multi.multi_child(2).unwrap().done);
 	assert!(matches!(multi.multi_child(3), Err(Error::NotFound)));
 
 	// Redo in insertion order; undo in reverse.
 	multi.redo_now();
-	assert!(multi.is_done());
+	assert!(multi.done);
 	assert_eq!(events(&trace), vec!["redo:a", "redo:b", "redo:c"]);
 
 	multi.undo_now();

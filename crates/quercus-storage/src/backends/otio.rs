@@ -256,7 +256,7 @@ fn project_to_timelines(project: &Project) -> Vec<Timeline> {
 					None => continue,
 				};
 				timeline
-					.tracks_mut()
+					.tracks
 					.append_child(export_track(graph, track, fps));
 			}
 		}
@@ -304,7 +304,7 @@ fn export_track(graph: &quercus_node::graph::Graph, track: &TrackBehavior, fps: 
 					.map(|fname| media_ref::external(&fname))
 					.unwrap_or_else(media_ref::missing);
 				clip.set_media_reference(reference);
-				clip.set_source_range(TimeRange::new(to_rt(media_in, fps), to_rt(length, fps)));
+				clip.source_range = Some(TimeRange::new(to_rt(media_in, fps), to_rt(length, fps)));
 				out.append_child(Composable::Clip(clip));
 			}
 			BlockKind::Gap => {
@@ -320,8 +320,8 @@ fn export_track(graph: &quercus_node::graph::Graph, track: &TrackBehavior, fps: 
 					.and_then(|a| a.downcast_ref::<TransitionBlockBehavior>())
 				{
 					let mut t = Transition::new("Transition");
-					t.set_in_offset(to_rt(tb.in_offset, fps));
-					t.set_out_offset(to_rt(tb.out_offset, fps));
+					t.in_offset = to_rt(tb.in_offset, fps);
+					t.out_offset = to_rt(tb.out_offset, fps);
 					out.append_child(Composable::Transition(t));
 				}
 			}
@@ -603,15 +603,15 @@ mod media_ref {
 /// factory invariant, not reachable from timeline contents).
 fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 	let (seq_id, lists) = node::create_sequence(&mut project.graph);
-	if !timeline.name().is_empty() {
+	if !timeline.name.as_str().is_empty() {
 		if let Some(entry) = project.graph.get_mut(seq_id) {
-			entry.core.label = timeline.name().to_string();
+			entry.core.label = timeline.name.as_str().to_string();
 		}
 	}
 
 	let mut track_count_by_list = [0i32, 0, 0];
 
-	for composable in timeline.tracks().children() {
+	for composable in timeline.tracks.children() {
 		let otio_track = match composable.as_track() {
 			Some(t) => t,
 			None => continue,
@@ -640,12 +640,14 @@ fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 			match child.as_ref() {
 				Composable::Clip(c) => {
 					let len = c
-						.source_range()
+						.source_range
+						.clone()
 						.map(|r| r.duration().to_rational())
 						.filter(|r| !r.is_null())
 						.unwrap_or(Rational::new(1, 1));
 					let media_in = c
-						.source_range()
+						.source_range
+						.clone()
 						.map(|r| r.start_time().to_rational())
 						.unwrap_or(Rational::new(0, 1));
 					let filename = c
@@ -710,8 +712,8 @@ fn import_timeline(project: &mut Project, timeline: &Timeline) -> Result<()> {
 							.as_any_mut()
 							.and_then(|a| a.downcast_mut::<TransitionBlockBehavior>())
 							.expect("transition_create returns a transition block");
-						tr.in_offset = t.in_offset().to_rational();
-						tr.out_offset = t.out_offset().to_rational();
+						tr.in_offset = t.in_offset.clone().to_rational();
+						tr.out_offset = t.out_offset.clone().to_rational();
 						tr.core.range =
 							quercus_core::TimeRange::new(pos, pos + Rational::new(1, 1));
 						tr.core.track = Some(track_id);

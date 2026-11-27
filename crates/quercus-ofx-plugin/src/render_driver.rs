@@ -370,7 +370,7 @@ pub fn render_frame(
 		)?;
 		if std::env::var_os("QUERCUS_OFX_TRACE").is_some() && depth == crate::image::BitDepth::Float
 		{
-			let p = output.pixels();
+			let p = output.data.as_slice();
 			let dump: Vec<f32> = p
 				.chunks_exact(4)
 				.take(4)
@@ -928,7 +928,7 @@ pub(crate) fn write_output_frame(dst: &mut Texture, image: &Image) -> crate::err
 	}
 	let (w, h) = (params.width as usize, params.height as usize);
 	let tight = w * image.components().channel_count() * 4;
-	if tight != image.row_bytes() || tight * h != image.pixels().len() {
+	if tight != image.row_bytes() || tight * h != image.data.as_slice().len() {
 		return Err(Error::Failed(
 			"image size does not match the output frame".into(),
 		));
@@ -940,7 +940,7 @@ pub(crate) fn write_output_frame(dst: &mut Texture, image: &Image) -> crate::err
 	let row = frame.linesize_bytes();
 	let row = if row > 0 { row } else { tight };
 	let dst_bytes = unsafe { std::slice::from_raw_parts_mut(dst_ptr, row * h) };
-	let pixels = image.pixels();
+	let pixels = image.data.as_slice();
 	for y in 0..h {
 		let d = y * row;
 		let s = y * tight;

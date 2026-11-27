@@ -635,7 +635,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_name(
 	if timeline.is_null() {
 		return -1;
 	}
-	let name = lock(&unsafe { &*timeline }.inner).name().to_string();
+	let name = lock(&unsafe { &*timeline }.inner).name.as_str().to_string();
 	copy_str_out(&name, buf, buf_len)
 }
 
@@ -665,7 +665,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_name(
 	if timeline.is_null() {
 		return false;
 	}
-	lock(&unsafe { &*timeline }.inner).set_name(name);
+	lock(&unsafe { &*timeline }.inner).name = (name).into();
 	true
 }
 
@@ -692,7 +692,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_global_start_time(
 		return false;
 	}
 	let tl = lock(&unsafe { &*timeline }.inner);
-	let Some(start) = tl.global_start_time() else {
+	let Some(start) = tl.global_start_time.clone() else {
 		return false;
 	};
 	unsafe { *out = QuercusOtioRationalTime::from_native(&start) };
@@ -720,7 +720,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_global_start_time(
 	if timeline.is_null() {
 		return false;
 	}
-	lock(&unsafe { &*timeline }.inner).set_global_start_time(start.to_native());
+	lock(&unsafe { &*timeline }.inner).global_start_time = Some(start.to_native());
 	true
 }
 
@@ -778,7 +778,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_count(
 	if timeline.is_null() {
 		return -1;
 	}
-	lock(&unsafe { &*timeline }.inner).tracks().children().len() as i32
+	lock(&unsafe { &*timeline }.inner).tracks.children().len() as i32
 }
 
 /// Clones the track at `index` out of the timeline's tracks stack.
@@ -805,7 +805,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_track_at(
 	}
 	let tl = lock(&unsafe { &*timeline }.inner);
 	let track = tl
-		.tracks()
+		.tracks
 		.children()
 		.get(index as usize)
 		.and_then(|c| c.as_track())
@@ -847,7 +847,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_set_track(
 	}
 	let track = lock(&unsafe { &*track }.inner).clone();
 	lock(&unsafe { &*timeline }.inner)
-		.tracks_mut()
+		.tracks
 		.set_child(index as usize, Composable::Track(track))
 }
 
@@ -874,7 +874,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_append_track(
 	}
 	let track = lock(&unsafe { &*track }.inner).clone();
 	lock(&unsafe { &*timeline }.inner)
-		.tracks_mut()
+		.tracks
 		.append_child(Composable::Track(track));
 	true
 }
@@ -900,7 +900,7 @@ pub unsafe extern "C" fn quercus_otio_timeline_remove_track(
 		return false;
 	}
 	lock(&unsafe { &*timeline }.inner)
-		.tracks_mut()
+		.tracks
 		.remove_child(index as usize)
 }
 
@@ -1217,7 +1217,7 @@ pub unsafe extern "C" fn quercus_otio_clip_new(
 		)));
 	}
 	if !source_range.is_null() {
-		clip.set_source_range(unsafe { &*source_range }.to_native());
+		clip.source_range = Some(unsafe { &*source_range }.to_native());
 	}
 	crate::handle::into_ffi(QuercusOtioComposable {
 		inner: Mutex::new(Composable::Clip(clip)),
@@ -1285,8 +1285,8 @@ pub unsafe extern "C" fn quercus_otio_transition_new(
 		return ptr::null_mut();
 	};
 	let mut transition = Transition::new(name);
-	transition.set_in_offset(in_offset.to_native());
-	transition.set_out_offset(out_offset.to_native());
+	transition.in_offset = in_offset.to_native();
+	transition.out_offset = out_offset.to_native();
 	crate::handle::into_ffi(QuercusOtioComposable {
 		inner: Mutex::new(Composable::Transition(transition)),
 	}) as *mut QuercusOtioComposable
@@ -1316,7 +1316,7 @@ pub unsafe extern "C" fn quercus_otio_clip_set_source_range(
 	}
 	match &mut *lock(&unsafe { &*c }.inner) {
 		Composable::Clip(clip) => {
-			clip.set_source_range(range.to_native());
+			clip.source_range = Some(range.to_native());
 			true
 		}
 		_ => false,
@@ -1422,7 +1422,7 @@ pub unsafe extern "C" fn quercus_otio_clip_enabled(c: *const QuercusOtioComposab
 		return -1;
 	}
 	match &*lock(&unsafe { &*c }.inner) {
-		Composable::Clip(clip) => clip.enabled() as i32,
+		Composable::Clip(clip) => clip.enabled as i32,
 		_ => -1,
 	}
 }
@@ -1450,7 +1450,7 @@ pub unsafe extern "C" fn quercus_otio_clip_set_enabled(
 	}
 	match &mut *lock(&unsafe { &*c }.inner) {
 		Composable::Clip(clip) => {
-			clip.set_enabled(enabled);
+			clip.enabled = enabled;
 			true
 		}
 		_ => false,
@@ -1522,7 +1522,11 @@ pub unsafe extern "C" fn quercus_otio_transition_offset(
 	let Composable::Transition(t) = &*c else {
 		return false;
 	};
-	let offset = if is_in { t.in_offset() } else { t.out_offset() };
+	let offset = if is_in {
+		t.in_offset.clone()
+	} else {
+		t.out_offset.clone()
+	};
 	unsafe { *out = QuercusOtioRationalTime::from_native(&offset) };
 	true
 }
@@ -1553,9 +1557,9 @@ pub unsafe extern "C" fn quercus_otio_transition_set_offset(
 	match &mut *lock(&unsafe { &*c }.inner) {
 		Composable::Transition(t) => {
 			if is_in {
-				t.set_in_offset(offset.to_native());
+				t.in_offset = offset.to_native();
 			} else {
-				t.set_out_offset(offset.to_native());
+				t.out_offset = offset.to_native();
 			}
 			true
 		}

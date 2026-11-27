@@ -165,7 +165,7 @@ impl ProjectImportTask {
 		counter: &mut usize,
 		parent_command: &mut UndoCommand,
 	) {
-		let atom = task.get_cancel_atom();
+		let atom = task.cancel_atom.clone();
 		let mut i = 0;
 		while i < entries.len() {
 			if task.is_cancelled() {
@@ -307,8 +307,8 @@ impl ProjectImportTask {
 			return;
 		};
 
-		let width = video_stream.width();
-		let height = video_stream.height();
+		let width = video_stream.width;
+		let height = video_stream.height;
 
 		// Direct quercuscodec call (single-lib unification).
 		let seq_index = decoder::get_image_sequence_index(&filename);
@@ -359,7 +359,7 @@ impl ProjectImportTask {
 			}
 
 			if is_sequence {
-				video_stream.set_video_type(VideoType::ImageSequence);
+				video_stream.video_type = VideoType::ImageSequence;
 
 				// Direct config read (single-lib unification).
 				if let Ok(rate) = ConfigStore::instance().get(None, "DefaultSequenceFrameRate") {
@@ -371,8 +371,8 @@ impl ProjectImportTask {
 					}
 				}
 
-				video_stream.set_start_time(start_index);
-				video_stream.set_duration(end_index - start_index + 1);
+				video_stream.start_time = start_index;
+				video_stream.duration = end_index - start_index + 1;
 				nodeops::footage_set_video_params(&footage.0, footage.1, 0, &video_stream);
 			}
 		}
@@ -407,7 +407,7 @@ impl ProjectImportTask {
 			return false;
 		};
 
-		vp.is_valid() && vp.video_type() == VideoType::Video
+		vp.is_valid() && vp.video_type == VideoType::Video
 	}
 
 	/// Reports whether `footage` is still-image footage whose first video stream is
@@ -425,7 +425,7 @@ impl ProjectImportTask {
 			return false;
 		};
 
-		stream.width() == width && stream.height() == height
+		stream.width == width && stream.height == height
 	}
 }
 

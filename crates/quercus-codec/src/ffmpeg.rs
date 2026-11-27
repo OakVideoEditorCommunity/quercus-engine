@@ -441,13 +441,13 @@ impl Decoder for FFmpegDecoder {
 		// Carry the source colorimetry on the frame params: the render
 		// layer maps it to its input transform (source → working space).
 		if let Some(params) = frame.params.as_mut() {
-			params.set_color_primaries(color_meta.color_primaries);
-			params.set_color_transfer(color_meta.color_trc);
-			params.set_color_range(if color_meta.full_range {
+			params.color_primaries = color_meta.color_primaries;
+			params.color_transfer = color_meta.color_trc;
+			params.color_range = if color_meta.full_range {
 				quercus_core::videoparams::ColorRange::Full
 			} else {
 				quercus_core::videoparams::ColorRange::Limited
-			});
+			};
 		}
 		Ok(Arc::new(frame))
 	}
@@ -2733,10 +2733,10 @@ fn copy_rgba_f32_to_frame(
 		0,
 		1,
 	);
-	params.set_format(QuercusPixelFormat::from_code(PixelFormat::F32 as i32));
-	params.set_channel_count(VIDEO_CHANNELS);
+	params.format = QuercusPixelFormat::from_code(PixelFormat::F32 as i32);
+	params.channel_count = VIDEO_CHANNELS;
 	let mut frame = Frame::with_params(params);
-	frame.set_timestamp(timestamp);
+	frame.timestamp = timestamp;
 	frame.allocate()?;
 
 	let row_bytes = (width as usize) * PIXEL_F32_BYTES;
@@ -2820,33 +2820,33 @@ fn probe_file(filename: &str, cancelled: Option<&CancelAtom>) -> Option<FootageD
 
 				let mut vp =
 					VideoParams::new_basic(1, 1, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
-				vp.set_stream_index(i as i32);
+				vp.stream_index = i as i32;
 				// SAFETY: `raw` points at the live stream's parameters (from
 				// `params.as_ptr()` above), valid for the duration of `probe_file`.
 				unsafe {
-					vp.set_width((*raw).width);
-					vp.set_height((*raw).height);
+					vp.width = (*raw).width;
+					vp.height = (*raw).height;
 				}
-				vp.set_video_type(VideoType::Video);
-				vp.set_format(QuercusPixelFormat::from_code(native as i32));
-				vp.set_channel_count(VIDEO_CHANNELS);
-				vp.set_interlacing(Interlacing::None);
+				vp.video_type = VideoType::Video;
+				vp.format = QuercusPixelFormat::from_code(native as i32);
+				vp.channel_count = VIDEO_CHANNELS;
+				vp.interlacing = Interlacing::None;
 				vp.set_pixel_aspect_ratio(1, 1);
 				vp.set_frame_rate(frame_rate.0, frame_rate.1);
-				vp.set_start_time(stream.start_time());
+				vp.start_time = stream.start_time();
 				vp.set_time_base(tb.0, tb.1);
-				vp.set_duration(stream.duration());
-				vp.set_premultiplied_alpha(false);
+				vp.duration = stream.duration();
+				vp.premultiplied_alpha = false;
 				// Stream colorimetry (drives the input→working transform
 				// and lets the UI show what the footage is).
 				unsafe {
-					vp.set_color_primaries((*raw).color_primaries as i32);
-					vp.set_color_transfer((*raw).color_trc as i32);
-					vp.set_color_range(if (*raw).color_range as i32 == AVCOL_RANGE_JPEG {
+					vp.color_primaries = (*raw).color_primaries as i32;
+					vp.color_transfer = (*raw).color_trc as i32;
+					vp.color_range = if (*raw).color_range as i32 == AVCOL_RANGE_JPEG {
 						quercus_core::videoparams::ColorRange::Full
 					} else {
 						quercus_core::videoparams::ColorRange::Limited
-					});
+					};
 				}
 				desc.push_stream(StreamEntry::Video(vp));
 			}
@@ -2889,7 +2889,7 @@ fn probe_file(filename: &str, cancelled: Option<&CancelAtom>) -> Option<FootageD
 		}
 	}
 
-	desc.set_stream_count(stream_count as usize);
+	desc.total_stream_count = stream_count as usize;
 	if source_start_time.valid {
 		desc.set_source_start_time(source_start_time.time, 0);
 	}
@@ -3645,7 +3645,7 @@ impl EncoderState {
 		// (captured at open) — the encoder validates them against its own
 		// rate — and the packets it emits are rescaled into the stream's
 		// post-`write_header` time base when written (`drain_video_packets`).
-		let secs = frame.timestamp().to_f64();
+		let secs = frame.timestamp.to_f64();
 		let tb = video.time_base;
 		let pts = (secs * tb.1 as f64 / tb.0 as f64).round() as i64;
 		scaled.set_pts(Some(pts));

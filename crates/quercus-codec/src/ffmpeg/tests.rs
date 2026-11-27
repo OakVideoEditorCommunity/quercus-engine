@@ -849,13 +849,13 @@ fn decode_video_cache_seek_and_eof_fallback() {
 
 	// Same request: served from the frame cache.
 	let cached = d.retrieve_video_frame(&p).expect("cached frame");
-	assert_eq!(cached.timestamp(), Rational::new(0, 1));
+	assert_eq!(cached.timestamp, Rational::new(0, 1));
 
 	// Before the first frame: the zero-seek cache flag makes the first
 	// decoded frame come back even though its PTS is after the target.
 	p.time = Rational::new(-1, 1);
 	let before = d.retrieve_video_frame(&p).expect("negative time");
-	assert_eq!(before.timestamp(), Rational::new(-1, 1));
+	assert_eq!(before.timestamp, Rational::new(-1, 1));
 
 	// A later time forces a seek/decode; the limited-range metadata path.
 	p.time = Rational::new(1, 2);
@@ -1193,11 +1193,11 @@ fn probe_reports_streams_subtitles_and_cancel() {
 
 	let desc = d.probe(&path.to_string_lossy(), None).expect("probe clip");
 	assert_eq!(desc.decoder(), "ffmpeg");
-	assert_eq!(desc.total_stream_count(), 2);
+	assert_eq!(desc.total_stream_count, 2);
 	assert_eq!(desc.video_stream_count(), 1);
 	assert_eq!(desc.audio_stream_count(), 1);
 	let video = desc.get_video_stream(0).expect("video stream");
-	assert_eq!((video.width(), video.height()), (64, 64));
+	assert_eq!((video.width, video.height), (64, 64));
 	let audio = desc.get_audio_stream(0).expect("audio stream");
 	assert_eq!(audio.sample_rate, 48000);
 
@@ -1211,7 +1211,7 @@ fn probe_reports_streams_subtitles_and_cancel() {
 	let srt = temp_file("subs", "srt");
 	std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:01,000\nhello\n").expect("write srt");
 	let desc = d.probe(&srt.to_string_lossy(), None).expect("probe srt");
-	assert_eq!(desc.total_stream_count(), 1);
+	assert_eq!(desc.total_stream_count, 1);
 	assert_eq!(desc.subtitle_stream_count(), 0);
 	assert_eq!(desc.video_stream_count(), 0);
 
@@ -1251,9 +1251,9 @@ fn f32_frame(width: i32, height: i32, timestamp: Rational) -> Frame {
 		0,
 		1,
 	);
-	vp.set_format(QuercusPixelFormat::from_code(PixelFormat::F32 as i32));
+	vp.format = QuercusPixelFormat::from_code(PixelFormat::F32 as i32);
 	let mut frame = Frame::with_params(vp);
-	frame.set_timestamp(timestamp);
+	frame.timestamp = timestamp;
 	frame.allocate().expect("frame allocation");
 	frame
 }

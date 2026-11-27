@@ -168,7 +168,7 @@ fn spawn_gc_thread_once(mgr: &'static FrameManager) {
 /// * `frame` - candidate pooled frame.
 /// * `params` - description of the frame the caller wants.
 fn frame_matches(frame: &Frame, params: &VideoParams) -> bool {
-	let Some(frame_params) = frame.params() else {
+	let Some(frame_params) = frame.params.as_ref() else {
 		return false;
 	};
 	frame_params.equals(params)

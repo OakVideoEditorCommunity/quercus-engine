@@ -44,9 +44,9 @@ pub struct Subtitle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubtitleParams {
 	/// Stream index within the source file.
-	stream_index: i32,
+	pub stream_index: i32,
 	/// Whether the subtitle stream is enabled.
-	enabled: bool,
+	pub enabled: bool,
 	/// Ordered subtitle entries.
 	subtitles: Vec<Subtitle>,
 }
@@ -63,42 +63,6 @@ impl SubtitleParams {
 			enabled: true,
 			subtitles: Vec::new(),
 		}
-	}
-
-	/// Stream index within the source file.
-	pub fn stream_index(&self) -> i32 {
-		self.stream_index
-	}
-
-	/// Selects which subtitle stream in the source file these subtitles
-	/// come from.
-	///
-	/// Only stores the value — `0` is the first subtitle stream, and no
-	/// range check is performed. Read it back with [`stream_index`].
-	///
-	/// # Arguments
-	///
-	/// * `index` - zero-based stream index in the source file.
-	pub fn set_stream_index(&mut self, index: i32) {
-		self.stream_index = index;
-	}
-
-	/// Whether the subtitle stream is enabled.
-	pub fn enabled(&self) -> bool {
-		self.enabled
-	}
-
-	/// Enables or disables the whole subtitle stream; a disabled stream is
-	/// skipped when subtitles are rendered or burned in.
-	///
-	/// Only flips the flag — entries are kept. Read it back with
-	/// [`enabled`].
-	///
-	/// # Arguments
-	///
-	/// * `enabled` - `true` to use the stream, `false` to ignore it.
-	pub fn set_enabled(&mut self, enabled: bool) {
-		self.enabled = enabled;
 	}
 
 	/// Whether the set contains at least one subtitle.
@@ -242,14 +206,14 @@ impl SubtitleParams {
 					let index: i32 = text
 						.parse()
 						.map_err(|_| Error::Failed("invalid subtitleparams streamindex".into()))?;
-					self.set_stream_index(index);
+					self.stream_index = index;
 				}
 				"enabled" => {
 					let text = reader.read_element_text();
 					let enabled: i32 = text
 						.parse()
 						.map_err(|_| Error::Failed("invalid subtitleparams enabled".into()))?;
-					self.set_enabled(enabled != 0);
+					self.enabled = enabled != 0;
 				}
 				"subtitles" => {
 					while let Some(sub) = reader.read_next_start() {

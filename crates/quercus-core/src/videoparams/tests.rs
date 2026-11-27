@@ -7,26 +7,26 @@ fn default_vp() -> VideoParams {
 #[test]
 fn default_constructor() {
 	let vp = VideoParams::new();
-	assert_eq!(vp.width(), 0);
-	assert_eq!(vp.height(), 0);
-	assert_eq!(vp.depth(), 0);
-	assert_eq!(vp.time_base(), (0, 1));
-	assert_eq!(vp.frame_rate(), (0, 1));
-	assert_eq!(vp.pixel_aspect_ratio(), (1, 1));
-	assert_eq!(vp.format(), PixelFormat::Invalid);
-	assert_eq!(vp.channel_count(), 0);
-	assert_eq!(vp.interlacing(), Interlacing::None);
-	assert_eq!(vp.divider(), 1);
-	assert!(vp.enabled());
-	assert_eq!(vp.stream_index(), 0);
-	assert_eq!(vp.video_type(), VideoType::Video);
-	assert_eq!(vp.start_time(), 0);
-	assert_eq!(vp.duration(), 0);
-	assert!(!vp.premultiplied_alpha());
-	assert_eq!(vp.color_range(), ColorRange::Limited);
-	assert_eq!(vp.color_primaries(), 0);
-	assert_eq!(vp.color_transfer(), 0);
-	assert_eq!(vp.colorspace(), "");
+	assert_eq!(vp.width, 0);
+	assert_eq!(vp.height, 0);
+	assert_eq!(vp.depth, 0);
+	assert_eq!(vp.time_base, (0, 1));
+	assert_eq!(vp.frame_rate, (0, 1));
+	assert_eq!(vp.pixel_aspect_ratio, (1, 1));
+	assert_eq!(vp.format, PixelFormat::Invalid);
+	assert_eq!(vp.channel_count, 0);
+	assert_eq!(vp.interlacing, Interlacing::None);
+	assert_eq!(vp.divider, 1);
+	assert!(vp.enabled);
+	assert_eq!(vp.stream_index, 0);
+	assert_eq!(vp.video_type, VideoType::Video);
+	assert_eq!(vp.start_time, 0);
+	assert_eq!(vp.duration, 0);
+	assert!(!vp.premultiplied_alpha);
+	assert_eq!(vp.color_range, ColorRange::Limited);
+	assert_eq!(vp.color_primaries, 0);
+	assert_eq!(vp.color_transfer, 0);
+	assert_eq!(vp.colorspace, "");
 	assert!(!vp.is_3d());
 	assert!(!vp.is_valid());
 }
@@ -34,15 +34,15 @@ fn default_constructor() {
 #[test]
 fn new_basic_fields() {
 	let vp = default_vp();
-	assert_eq!(vp.width(), 1920);
-	assert_eq!(vp.height(), 1080);
-	assert_eq!(vp.depth(), 1);
-	assert_eq!(vp.format(), PixelFormat::U8);
-	assert_eq!(vp.channel_count(), 4);
-	assert_eq!(vp.pixel_aspect_ratio(), (1, 1));
-	assert_eq!(vp.interlacing(), Interlacing::None);
-	assert_eq!(vp.divider(), 1);
-	assert_eq!(vp.time_base(), (0, 1));
+	assert_eq!(vp.width, 1920);
+	assert_eq!(vp.height, 1080);
+	assert_eq!(vp.depth, 1);
+	assert_eq!(vp.format, PixelFormat::U8);
+	assert_eq!(vp.channel_count, 4);
+	assert_eq!(vp.pixel_aspect_ratio, (1, 1));
+	assert_eq!(vp.interlacing, Interlacing::None);
+	assert_eq!(vp.divider, 1);
+	assert_eq!(vp.time_base, (0, 1));
 	assert!(vp.is_valid());
 }
 
@@ -50,73 +50,73 @@ fn new_basic_fields() {
 fn new_basic_reduces_par() {
 	// Rational(16, 15) is stored as-is; Rational(0, 1) is null -> 1/1.
 	let vp = VideoParams::new_basic(100, 100, PixelFormat::U8, 3, 16, 15, 0, 1);
-	assert_eq!(vp.pixel_aspect_ratio(), (16, 15));
+	assert_eq!(vp.pixel_aspect_ratio, (16, 15));
 	let vp = VideoParams::new_basic(100, 100, PixelFormat::U8, 3, 0, 5, 0, 1);
-	assert_eq!(vp.pixel_aspect_ratio(), (1, 1));
+	assert_eq!(vp.pixel_aspect_ratio, (1, 1));
 }
 
 #[test]
 fn new_with_time_base() {
 	let vp =
 		VideoParams::new_with_time_base(1920, 1080, 1001, 30000, PixelFormat::U8, 4, 1, 1, 0, 1);
-	assert_eq!(vp.time_base(), (1001, 30000));
+	assert_eq!(vp.time_base, (1001, 30000));
 	// frame rate is the flipped time base.
-	assert_eq!(vp.frame_rate(), (30000, 1001));
+	assert_eq!(vp.frame_rate, (30000, 1001));
 	assert_eq!(vp.frame_rate_as_time_base(), (1001, 30000));
 }
 
 #[test]
-fn setters_and_getters() {
+fn public_fields_and_normalizing_setters() {
 	let mut vp = default_vp();
-	vp.set_width(640);
-	vp.set_height(480);
-	vp.set_depth(2);
-	vp.set_format(PixelFormat::F32);
-	vp.set_channel_count(3);
-	vp.set_interlacing(Interlacing::TopFirst);
-	vp.set_divider(2);
-	vp.set_enabled(false);
-	vp.set_x(1.5);
-	vp.set_y(-2.5);
-	vp.set_stream_index(7);
-	vp.set_video_type(VideoType::Still);
-	vp.set_start_time(100);
-	vp.set_duration(50);
-	vp.set_premultiplied_alpha(true);
-	vp.set_color_range(ColorRange::Full);
-	vp.set_color_primaries(9);
-	vp.set_color_transfer(18);
-	vp.set_colorspace("sRGB");
+	vp.width = 640;
+	vp.height = 480;
+	vp.depth = 2;
+	vp.format = PixelFormat::F32;
+	vp.channel_count = 3;
+	vp.interlacing = Interlacing::TopFirst;
+	vp.divider = 2;
+	vp.enabled = false;
+	vp.x = 1.5;
+	vp.y = -2.5;
+	vp.stream_index = 7;
+	vp.video_type = VideoType::Still;
+	vp.start_time = 100;
+	vp.duration = 50;
+	vp.premultiplied_alpha = true;
+	vp.color_range = ColorRange::Full;
+	vp.color_primaries = 9;
+	vp.color_transfer = 18;
+	vp.colorspace = ("sRGB").to_string();
 
-	assert_eq!(vp.width(), 640);
-	assert_eq!(vp.height(), 480);
-	assert_eq!(vp.depth(), 2);
-	assert_eq!(vp.format(), PixelFormat::F32);
-	assert_eq!(vp.channel_count(), 3);
-	assert_eq!(vp.interlacing(), Interlacing::TopFirst);
-	assert_eq!(vp.divider(), 2);
-	assert!(!vp.enabled());
-	assert_eq!(vp.x(), 1.5);
-	assert_eq!(vp.y(), -2.5);
-	assert_eq!(vp.stream_index(), 7);
-	assert_eq!(vp.video_type(), VideoType::Still);
-	assert_eq!(vp.start_time(), 100);
-	assert_eq!(vp.duration(), 50);
-	assert!(vp.premultiplied_alpha());
-	assert_eq!(vp.color_range(), ColorRange::Full);
-	assert_eq!(vp.color_primaries(), 9);
-	assert_eq!(vp.color_transfer(), 18);
-	assert_eq!(vp.colorspace(), "sRGB");
+	assert_eq!(vp.width, 640);
+	assert_eq!(vp.height, 480);
+	assert_eq!(vp.depth, 2);
+	assert_eq!(vp.format, PixelFormat::F32);
+	assert_eq!(vp.channel_count, 3);
+	assert_eq!(vp.interlacing, Interlacing::TopFirst);
+	assert_eq!(vp.divider, 2);
+	assert!(!vp.enabled);
+	assert_eq!(vp.x, 1.5);
+	assert_eq!(vp.y, -2.5);
+	assert_eq!(vp.stream_index, 7);
+	assert_eq!(vp.video_type, VideoType::Still);
+	assert_eq!(vp.start_time, 100);
+	assert_eq!(vp.duration, 50);
+	assert!(vp.premultiplied_alpha);
+	assert_eq!(vp.color_range, ColorRange::Full);
+	assert_eq!(vp.color_primaries, 9);
+	assert_eq!(vp.color_transfer, 18);
+	assert_eq!(vp.colorspace, "sRGB");
 }
 
 #[test]
 fn is_3d_derived_from_depth() {
 	let mut vp = default_vp();
 	assert!(!vp.is_3d());
-	vp.set_depth(2);
+	vp.depth = 2;
 	assert!(vp.is_3d());
-	assert!(vp.depth() > 1);
-	vp.set_depth(1);
+	assert!(vp.depth > 1);
+	vp.depth = 1;
 	assert!(!vp.is_3d());
 }
 
@@ -140,10 +140,10 @@ fn is_valid_conditions() {
 	assert!(default_vp().is_valid());
 	assert!(!VideoParams::new().is_valid());
 	let mut vp = default_vp();
-	vp.set_channel_count(0);
+	vp.channel_count = 0;
 	assert!(!vp.is_valid());
 	let mut vp = default_vp();
-	vp.set_format(PixelFormat::Invalid);
+	vp.format = PixelFormat::Invalid;
 	assert!(!vp.is_valid());
 	let mut vp = default_vp();
 	vp.set_pixel_aspect_ratio(0, 1); // validated to 1/1, still valid
@@ -315,7 +315,7 @@ fn time_in_timebase_units() {
 	assert_eq!(vp.time_in_timebase_units(1, 1), Some(1));
 
 	vp.set_time_base(1001, 30000);
-	vp.set_start_time(5);
+	vp.start_time = 5;
 	// 1 second at 30000/1001 fps -> 30 frames, + start_time 5.
 	assert_eq!(vp.time_in_timebase_units(1, 1), Some(35));
 }
@@ -326,10 +326,10 @@ fn equals_compares_domain_fields() {
 	let b = VideoParams::new_basic(1920, 1080, PixelFormat::U8, 4, 1, 1, 0, 1);
 	assert!(a.equals(&b));
 	let mut c = a.clone();
-	c.set_width(1919);
+	c.width = 1919;
 	assert!(!a.equals(&c));
 	let mut d = a.clone();
-	d.set_start_time(999); // not part of the C++ operator==
+	d.start_time = 999; // not part of the C++ operator==
 	assert!(a.equals(&d));
 }
 
@@ -337,18 +337,18 @@ fn equals_compares_domain_fields() {
 fn xml_round_trip() {
 	let mut vp =
 		VideoParams::new_with_time_base(1920, 1080, 1001, 30000, PixelFormat::U8, 4, 16, 15, 1, 2);
-	vp.set_enabled(true);
-	vp.set_x(1.5);
-	vp.set_y(-2.5);
-	vp.set_stream_index(3);
-	vp.set_video_type(VideoType::Still);
-	vp.set_start_time(100);
-	vp.set_duration(50);
-	vp.set_premultiplied_alpha(true);
-	vp.set_color_range(ColorRange::Full);
-	vp.set_color_primaries(9);
-	vp.set_color_transfer(18);
-	vp.set_colorspace("sRGB");
+	vp.enabled = true;
+	vp.x = 1.5;
+	vp.y = -2.5;
+	vp.stream_index = 3;
+	vp.video_type = VideoType::Still;
+	vp.start_time = 100;
+	vp.duration = 50;
+	vp.premultiplied_alpha = true;
+	vp.color_range = ColorRange::Full;
+	vp.color_primaries = 9;
+	vp.color_transfer = 18;
+	vp.colorspace = ("sRGB").to_string();
 
 	let xml = vp.save_xml().unwrap();
 	assert!(xml.starts_with("<videoparams>"));
@@ -357,28 +357,28 @@ fn xml_round_trip() {
 
 	let mut loaded = VideoParams::new();
 	loaded.load_xml(&xml).unwrap();
-	assert_eq!(loaded.width(), vp.width());
-	assert_eq!(loaded.height(), vp.height());
-	assert_eq!(loaded.depth(), vp.depth());
-	assert_eq!(loaded.time_base(), vp.time_base());
-	assert_eq!(loaded.frame_rate(), vp.frame_rate());
-	assert_eq!(loaded.format(), vp.format());
-	assert_eq!(loaded.channel_count(), vp.channel_count());
-	assert_eq!(loaded.pixel_aspect_ratio(), vp.pixel_aspect_ratio());
-	assert_eq!(loaded.interlacing(), vp.interlacing());
-	assert_eq!(loaded.divider(), vp.divider());
-	assert_eq!(loaded.enabled(), vp.enabled());
-	assert_eq!(loaded.x(), vp.x());
-	assert_eq!(loaded.y(), vp.y());
-	assert_eq!(loaded.stream_index(), vp.stream_index());
-	assert_eq!(loaded.video_type(), vp.video_type());
-	assert_eq!(loaded.start_time(), vp.start_time());
-	assert_eq!(loaded.duration(), vp.duration());
-	assert_eq!(loaded.premultiplied_alpha(), vp.premultiplied_alpha());
-	assert_eq!(loaded.color_range(), vp.color_range());
-	assert_eq!(loaded.color_primaries(), vp.color_primaries());
-	assert_eq!(loaded.color_transfer(), vp.color_transfer());
-	assert_eq!(loaded.colorspace(), vp.colorspace());
+	assert_eq!(loaded.width, vp.width);
+	assert_eq!(loaded.height, vp.height);
+	assert_eq!(loaded.depth, vp.depth);
+	assert_eq!(loaded.time_base, vp.time_base);
+	assert_eq!(loaded.frame_rate, vp.frame_rate);
+	assert_eq!(loaded.format, vp.format);
+	assert_eq!(loaded.channel_count, vp.channel_count);
+	assert_eq!(loaded.pixel_aspect_ratio, vp.pixel_aspect_ratio);
+	assert_eq!(loaded.interlacing, vp.interlacing);
+	assert_eq!(loaded.divider, vp.divider);
+	assert_eq!(loaded.enabled, vp.enabled);
+	assert_eq!(loaded.x, vp.x);
+	assert_eq!(loaded.y, vp.y);
+	assert_eq!(loaded.stream_index, vp.stream_index);
+	assert_eq!(loaded.video_type, vp.video_type);
+	assert_eq!(loaded.start_time, vp.start_time);
+	assert_eq!(loaded.duration, vp.duration);
+	assert_eq!(loaded.premultiplied_alpha, vp.premultiplied_alpha);
+	assert_eq!(loaded.color_range, vp.color_range);
+	assert_eq!(loaded.color_primaries, vp.color_primaries);
+	assert_eq!(loaded.color_transfer, vp.color_transfer);
+	assert_eq!(loaded.colorspace, vp.colorspace);
 	// Re-saving after a load must be byte-identical.
 	assert_eq!(loaded.save_xml().unwrap(), xml);
 }
@@ -388,8 +388,8 @@ fn xml_skips_unknown_elements() {
 	let xml = "<videoparams><width>640</width><bogus><nested>1</nested></bogus><height>480</height></videoparams>";
 	let mut vp = VideoParams::new();
 	vp.load_xml(xml).unwrap();
-	assert_eq!(vp.width(), 640);
-	assert_eq!(vp.height(), 480);
+	assert_eq!(vp.width, 640);
+	assert_eq!(vp.height, 480);
 }
 
 #[test]
@@ -408,9 +408,9 @@ fn xml_error_paths() {
 	assert!(vp
 		.load_xml("<videoparams><width>640</width><colorspace/><depth>2</depth></videoparams>")
 		.is_ok());
-	assert_eq!(vp.width(), 640);
-	assert_eq!(vp.depth(), 2);
-	assert_eq!(vp.colorspace(), "");
+	assert_eq!(vp.width, 640);
+	assert_eq!(vp.depth, 2);
+	assert_eq!(vp.colorspace, "");
 	assert!(vp
 		.load_xml("<videoparams><width/><colorspace>a</colorspace></videoparams>")
 		.is_err());
@@ -500,9 +500,9 @@ fn effective_size_edges() {
 	assert_eq!(vp.effective_height(), 540);
 	// depth > 1 is scaled by the divider; depth == 1 is not.
 	let mut vp = VideoParams::new_basic(16, 16, PixelFormat::U8, 4, 1, 1, 0, 2);
-	vp.set_depth(4);
+	vp.depth = 4;
 	assert_eq!(vp.effective_depth(), 2);
-	vp.set_depth(1);
+	vp.depth = 1;
 	assert_eq!(vp.effective_depth(), 1);
 }
 
@@ -584,14 +584,14 @@ fn format_g_helper() {
 fn time_base_normalization() {
 	let mut vp = default_vp();
 	vp.set_time_base(2, 4);
-	assert_eq!(vp.time_base(), (1, 2));
+	assert_eq!(vp.time_base, (1, 2));
 	vp.set_time_base(1, -2);
-	assert_eq!(vp.time_base(), (-1, 2));
+	assert_eq!(vp.time_base, (-1, 2));
 	vp.set_time_base(0, 5);
-	assert_eq!(vp.time_base(), (0, 1));
+	assert_eq!(vp.time_base, (0, 1));
 	// Zero denominator -> NaN rational -> treated as "no time base".
 	vp.set_time_base(1, 0);
-	assert_eq!(vp.time_base(), (0, 0));
+	assert_eq!(vp.time_base, (0, 0));
 	assert_eq!(vp.time_in_timebase_units(1, 1), None);
 }
 
@@ -599,9 +599,9 @@ fn time_base_normalization() {
 fn pixel_aspect_ratio_sign_fix() {
 	let mut vp = default_vp();
 	vp.set_pixel_aspect_ratio(4, -3);
-	assert_eq!(vp.pixel_aspect_ratio(), (-4, 3));
+	assert_eq!(vp.pixel_aspect_ratio, (-4, 3));
 	vp.set_pixel_aspect_ratio(8, 8);
-	assert_eq!(vp.pixel_aspect_ratio(), (1, 1));
+	assert_eq!(vp.pixel_aspect_ratio, (1, 1));
 }
 
 #[test]
@@ -621,7 +621,7 @@ fn time_in_timebase_units_edges() {
 	assert_eq!(vp.time_in_timebase_units(-1, 4), Some(-1));
 	// NaN time (0/0) converts to 0 + start_time, matching
 	// Timecode::time_to_timestamp.
-	vp.set_start_time(7);
+	vp.start_time = 7;
 	assert_eq!(vp.time_in_timebase_units(0, 0), Some(7));
 }
 
@@ -629,35 +629,35 @@ fn time_in_timebase_units_edges() {
 fn equals_field_by_field() {
 	let a = default_vp();
 	let mut b = a.clone();
-	b.set_height(1079);
+	b.height = 1079;
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
-	b.set_depth(2);
+	b.depth = 2;
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
-	b.set_interlacing(Interlacing::BottomFirst);
+	b.interlacing = Interlacing::BottomFirst;
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
 	b.set_time_base(1, 25);
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
-	b.set_format(PixelFormat::U16);
+	b.format = PixelFormat::U16;
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
 	b.set_pixel_aspect_ratio(4, 3);
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
-	b.set_divider(4);
+	b.divider = 4;
 	assert!(!a.equals(&b));
 	let mut b = a.clone();
-	b.set_channel_count(3);
+	b.channel_count = 3;
 	assert!(!a.equals(&b));
 	// Fields outside C++ operator== don't participate.
 	let mut b = a.clone();
-	b.set_enabled(false);
-	b.set_colorspace("rec709");
+	b.enabled = false;
+	b.colorspace = ("rec709").to_string();
 	b.set_frame_rate(24, 1);
-	b.set_duration(10);
+	b.duration = 10;
 	assert!(a.equals(&b));
 }
 
@@ -695,8 +695,8 @@ fn load_xml_with_declaration_comments_and_cdata() {
 			<width>640</width><colorspace><![CDATA[a <b> & c]]></colorspace></videoparams>";
 	let mut vp = VideoParams::new();
 	vp.load_xml(xml).unwrap();
-	assert_eq!(vp.width(), 640);
-	assert_eq!(vp.colorspace(), "a <b> & c");
+	assert_eq!(vp.width, 640);
+	assert_eq!(vp.colorspace, "a <b> & c");
 }
 
 #[test]
@@ -705,9 +705,9 @@ fn load_xml_entities_and_boolean_coercion() {
 			<colorspace>a&amp;b</colorspace></videoparams>";
 	let mut vp = VideoParams::new();
 	vp.load_xml(xml).unwrap();
-	assert!(vp.enabled()); // std::stoi("2") -> bool true
-	assert!(vp.premultiplied_alpha()); // std::stoi("-1") -> bool true
-	assert_eq!(vp.colorspace(), "a&b");
+	assert!(vp.enabled); // std::stoi("2") -> bool true
+	assert!(vp.premultiplied_alpha); // std::stoi("-1") -> bool true
+	assert_eq!(vp.colorspace, "a&b");
 }
 
 #[test]
@@ -716,9 +716,9 @@ fn load_xml_partial_update_keeps_existing() {
 	let mut vp = default_vp();
 	vp.load_xml("<videoparams><width>320</width></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 320);
-	assert_eq!(vp.height(), 1080); // untouched
-	assert_eq!(vp.format(), PixelFormat::U8);
+	assert_eq!(vp.width, 320);
+	assert_eq!(vp.height, 1080); // untouched
+	assert_eq!(vp.format, PixelFormat::U8);
 }
 
 #[test]
@@ -727,12 +727,12 @@ fn load_xml_enum_fallbacks() {
 			<colorrange>5</colorrange><format>99</format></videoparams>";
 	let mut vp = default_vp();
 	vp.load_xml(xml).unwrap();
-	assert_eq!(vp.interlacing(), Interlacing::None);
-	assert_eq!(vp.video_type(), VideoType::Video);
-	assert_eq!(vp.color_range(), ColorRange::Limited);
+	assert_eq!(vp.interlacing, Interlacing::None);
+	assert_eq!(vp.video_type, VideoType::Video);
+	assert_eq!(vp.color_range, ColorRange::Limited);
 	// Unknown format codes can't be represented in Rust; they land on
 	// Invalid, which (like any out-of-range code) fails is_valid().
-	assert_eq!(vp.format(), PixelFormat::Invalid);
+	assert_eq!(vp.format, PixelFormat::Invalid);
 	assert!(!vp.is_valid());
 }
 
@@ -742,9 +742,9 @@ fn load_xml_numeric_prefix_parsing() {
 	// std::stoi/std::stof consume the longest valid prefix, ignore junk.
 	vp.load_xml("<videoparams><width>640abc</width><x>1.5garbage</x><y> -2.5 </y></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 640);
-	assert_eq!(vp.x(), 1.5);
-	assert_eq!(vp.y(), -2.5);
+	assert_eq!(vp.width, 640);
+	assert_eq!(vp.x, 1.5);
+	assert_eq!(vp.y, -2.5);
 }
 
 #[test]
@@ -813,7 +813,7 @@ fn rational_helpers_match_quercuscore() {
 fn time_conversion_matches_quercuscore() {
 	let mut vp =
 		VideoParams::new_with_time_base(1920, 1080, 1001, 30000, PixelFormat::U8, 4, 1, 1, 0, 1);
-	vp.set_start_time(11);
+	vp.start_time = 11;
 	let tb = crate::Rational::new(1001, 30000);
 	for (n, d) in [(1i32, 1i32), (1, 2), (24000, 1001), (-3, 1), (0, 1)] {
 		let expected = tb.time_to_timestamp(crate::Rational::new(n as i64, d as i64)) + 11;
@@ -827,17 +827,17 @@ fn time_conversion_matches_quercuscore() {
 fn new_with_time_base_null_par_defaults_to_square() {
 	// C++ validate_pixel_aspect_ratio(): a null PAR falls back to 1/1.
 	let vp = VideoParams::new_with_time_base(640, 480, 1, 25, PixelFormat::U16, 3, 0, 7, 2, 1);
-	assert_eq!(vp.pixel_aspect_ratio(), (1, 1));
+	assert_eq!(vp.pixel_aspect_ratio, (1, 1));
 	// The BottomFirst interlacing code passes through the ctor too.
-	assert_eq!(vp.interlacing(), Interlacing::BottomFirst);
-	assert_eq!(vp.time_base(), (1, 25));
+	assert_eq!(vp.interlacing, Interlacing::BottomFirst);
+	assert_eq!(vp.time_base, (1, 25));
 }
 
 #[test]
 fn square_pixel_width_with_zero_par_denominator() {
-	// A (x, 0) PAR is a NaN rational no setter can produce (setters
-	// validate); the defensive denominator check must return the raw
-	// width instead of propagating NaN.
+	// A (x, 0) PAR is a NaN rational that the normalizing setter cannot
+	// produce, but direct field assignment can. The defensive denominator
+	// check must return the raw width instead of propagating NaN.
 	let mut vp = default_vp();
 	vp.pixel_aspect_ratio = (4, 0);
 	assert_eq!(vp.square_pixel_width(), 1920);
@@ -896,7 +896,7 @@ fn enum_i32_mapping_all_arms() {
 #[test]
 fn save_xml_escapes_reserved_characters() {
 	let mut vp = default_vp();
-	vp.set_colorspace("a&b<c>d");
+	vp.colorspace = ("a&b<c>d").to_string();
 	let xml = vp.save_xml().unwrap();
 	assert!(
 		xml.contains("<colorspace>a&amp;b&lt;c&gt;d</colorspace>"),
@@ -904,7 +904,7 @@ fn save_xml_escapes_reserved_characters() {
 	);
 	let mut loaded = VideoParams::new();
 	loaded.load_xml(&xml).unwrap();
-	assert_eq!(loaded.colorspace(), "a&b<c>d");
+	assert_eq!(loaded.colorspace, "a&b<c>d");
 }
 
 #[test]
@@ -937,15 +937,15 @@ fn xml_nested_field_text_and_attributes() {
 	// Nested elements inside a known field: depth-1 text only.
 	vp.load_xml("<videoparams><width><inner>9</inner>640</width></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 640);
+	assert_eq!(vp.width, 640);
 	// Whitespace after the tag name, around '=', and single-quoted values.
 	vp.load_xml("<videoparams version = \"2.0\" xmlns:x='y' ><height>480</height></videoparams>")
 		.unwrap();
-	assert_eq!(vp.height(), 480);
+	assert_eq!(vp.height, 480);
 	// Entities (and plain runs) inside attribute values are validated.
 	vp.load_xml("<videoparams note=\"a&amp;b&#65;\" ><depth>2</depth></videoparams>")
 		.unwrap();
-	assert_eq!(vp.depth(), 2);
+	assert_eq!(vp.depth, 2);
 	// Unknown entities in an attribute value are parse errors.
 	assert!(vp
 		.load_xml("<videoparams note=\"a&nope;b\"><depth>2</depth></videoparams>")
@@ -957,18 +957,18 @@ fn xml_doctype_paths() {
 	let mut vp = VideoParams::new();
 	vp.load_xml("<!DOCTYPE videoparams><videoparams><width>1</width></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 1);
+	assert_eq!(vp.width, 1);
 	// An internal subset keeps the '>' inside the brackets from ending
 	// the declaration.
 	vp.load_xml(
 		"<!DOCTYPE videoparams [ <!ENTITY x \"y\"> ]><videoparams><width>2</width></videoparams>",
 	)
 	.unwrap();
-	assert_eq!(vp.width(), 2);
+	assert_eq!(vp.width, 2);
 	// A closing bracket with no open one saturates at zero.
 	vp.load_xml("<!DOCTYPE videoparams ]><videoparams><width>3</width></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 3);
+	assert_eq!(vp.width, 3);
 	// An unterminated declaration is a parse error.
 	assert!(vp.load_xml("<!DOCTYPE videoparams").is_err());
 }
@@ -1005,7 +1005,7 @@ fn xml_structural_malformations_fail() {
 	// Whitespace before the end tag's '>' is fine.
 	vp.load_xml("<videoparams><width>5</width ></videoparams>")
 		.unwrap();
-	assert_eq!(vp.width(), 5);
+	assert_eq!(vp.width, 5);
 }
 
 #[test]
@@ -1013,7 +1013,7 @@ fn xml_numeric_entities() {
 	let mut vp = VideoParams::new();
 	vp.load_xml("<videoparams><colorspace>&#x41;&#66;&#x1F600;</colorspace></videoparams>")
 		.unwrap();
-	assert_eq!(vp.colorspace(), "AB\u{1F600}");
+	assert_eq!(vp.colorspace, "AB\u{1F600}");
 	// Invalid hex digits / out-of-range code points are parse errors.
 	assert!(vp
 		.load_xml("<videoparams><colorspace>&#xZZ;</colorspace></videoparams>")

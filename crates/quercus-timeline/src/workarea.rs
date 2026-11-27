@@ -43,38 +43,23 @@ pub fn reset_out() -> Rational {
 /// `TimelineWorkArea` — the in/out range on a timeline (timelineworkarea.h).
 pub struct TimelineWorkArea {
 	/// Whether the work area is enabled.
-	workarea_enabled_: bool,
+	pub enabled: bool,
 	/// The in/out range.
-	workarea_range_: TimeRange,
+	pub range: TimeRange,
 }
 
 impl TimelineWorkArea {
 	/// A new, disabled work area at `k_reset_in`..`k_reset_out`.
 	pub fn new() -> Self {
 		Self {
-			workarea_enabled_: false,
-			workarea_range_: TimeRange::new(reset_in(), reset_out()),
+			enabled: false,
+			range: TimeRange::new(reset_in(), reset_out()),
 		}
-	}
-
-	/// Whether the work area is enabled.
-	pub fn enabled(&self) -> bool {
-		self.workarea_enabled_
-	}
-
-	/// Set enabled.
-	///
-	/// `e` is stored as-is: enabling does not validate or clamp the range, and
-	/// disabling keeps the current range so re-enabling restores it. Default is
-	/// `false` (see [`Self::new`]); `WorkareaSetEnabledCommand` wraps this for
-	/// undo/redo.
-	pub fn set_enabled(&mut self, e: bool) {
-		self.workarea_enabled_ = e;
 	}
 
 	/// The in point.
 	pub fn in_(&self) -> Rational {
-		self.workarea_range_.in_()
+		self.range.in_()
 	}
 
 	/// The out point.
@@ -84,7 +69,7 @@ impl TimelineWorkArea {
 	/// value as a real edit point. Owned rational; see [`Self::in_`] for the
 	/// matching bound.
 	pub fn out(&self) -> Rational {
-		self.workarea_range_.out()
+		self.range.out()
 	}
 
 	/// The range length.
@@ -93,27 +78,7 @@ impl TimelineWorkArea {
 	/// out of order; with the untouched reset sentinels it spans the whole
 	/// `k_reset_in..k_reset_out` range. Returns an owned rational.
 	pub fn length(&self) -> Rational {
-		self.workarea_range_.length()
-	}
-
-	/// The full range.
-	///
-	/// Returns the complete in/out pair, including the `k_reset_in`/`k_reset_out`
-	/// sentinels when the range was never set. The borrow is shared; use
-	/// [`Self::in_`] / [`Self::out`] for a single bound or [`Self::set_range`] to
-	/// change it.
-	pub fn range(&self) -> &TimeRange {
-		&self.workarea_range_
-	}
-
-	/// Set the range.
-	///
-	/// `range` replaces the in/out pair as-is: no ordering, length or clamp is
-	/// enforced here, and the enabled flag is untouched. This is the raw setter
-	/// used by `WorkareaSetRangeCommand`; playback consumers read the work area
-	/// only when it is enabled.
-	pub fn set_range(&mut self, range: TimeRange) {
-		self.workarea_range_ = range;
+		self.range.length()
 	}
 }
 
@@ -143,7 +108,7 @@ impl WorkareaSetEnabledCommand {
 			.as_ref()
 			.map(|w| {
 				let w = w.lock().unwrap_or_else(|e| e.into_inner());
-				w.enabled()
+				w.enabled
 			})
 			.unwrap_or(false);
 		Self {
@@ -160,7 +125,7 @@ impl WorkareaSetEnabledCommand {
 	/// current flag is read under the lock and captured as `old_enabled` for
 	/// undo. A poisoned lock is recovered rather than propagated.
 	pub fn new_arc(points: Arc<Mutex<TimelineWorkArea>>, enabled: bool) -> Self {
-		let old_enabled = points.lock().unwrap_or_else(|e| e.into_inner()).enabled();
+		let old_enabled = points.lock().unwrap_or_else(|e| e.into_inner()).enabled;
 		Self {
 			points: Some(points),
 			new_enabled: enabled,
@@ -176,7 +141,7 @@ impl WorkareaSetEnabledCommand {
 	pub fn redo(&mut self) {
 		if let Some(wa) = &self.points {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());
-			wa.set_enabled(self.new_enabled);
+			wa.enabled = self.new_enabled;
 		}
 	}
 
@@ -184,7 +149,7 @@ impl WorkareaSetEnabledCommand {
 	pub fn undo(&mut self) {
 		if let Some(wa) = &self.points {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());
-			wa.set_enabled(self.old_enabled);
+			wa.enabled = self.old_enabled;
 		}
 	}
 
@@ -233,7 +198,7 @@ impl WorkareaSetRangeCommand {
 			.as_ref()
 			.map(|w| {
 				let w = w.lock().unwrap_or_else(|e| e.into_inner());
-				*w.range()
+				w.range
 			})
 			.unwrap_or(range);
 		Self::new_with_old_opt(wa, range, old_range)
@@ -247,7 +212,7 @@ impl WorkareaSetRangeCommand {
 	/// undo. A poisoned lock is recovered (the inner value is used), so this
 	/// cannot panic.
 	pub fn new_arc(workarea: Arc<Mutex<TimelineWorkArea>>, range: TimeRange) -> Self {
-		let old_range = *workarea.lock().unwrap_or_else(|e| e.into_inner()).range();
+		let old_range = workarea.lock().unwrap_or_else(|e| e.into_inner()).range;
 		Self::new_with_old_opt(Some(workarea), range, old_range)
 	}
 
@@ -302,7 +267,7 @@ impl WorkareaSetRangeCommand {
 	pub fn redo(&mut self) {
 		if let Some(wa) = &self.workarea {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());
-			wa.set_range(self.new_range);
+			wa.range = self.new_range;
 		}
 	}
 
@@ -310,7 +275,7 @@ impl WorkareaSetRangeCommand {
 	pub fn undo(&mut self) {
 		if let Some(wa) = &self.workarea {
 			let mut wa = wa.lock().unwrap_or_else(|e| e.into_inner());
-			wa.set_range(self.old_range);
+			wa.range = self.old_range;
 		}
 	}
 

@@ -256,7 +256,13 @@ impl Traverser {
 		Ok(table
 			.get(ValueType::Texture)
 			.cloned()
-			.or_else(|| table.rows().last().map(|(_, value, _)| value.clone()))
+			.or_else(|| {
+				table
+					.rows
+					.as_slice()
+					.last()
+					.map(|(_, value, _)| value.clone())
+			})
 			.unwrap_or(NodeValue::None))
 	}
 

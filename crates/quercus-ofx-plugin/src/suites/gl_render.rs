@@ -522,15 +522,16 @@ unsafe extern "C" fn clip_load_texture(
 		// function is only reachable during GL rendering; this branch is the CPU
 		// texture fallback): still create a CPU texture, index 0.
 		let gl_tex =
-			crate::gl_bridge::create_input_texture(w as i32, h as i32, image.pixels()).ok();
+			crate::gl_bridge::create_input_texture(w as i32, h as i32, image.data.as_slice()).ok();
 		let params = crate::render::VideoParams {
 			width: w as i32,
 			height: h as i32,
 			format: crate::render::PIXEL_FORMAT_F32,
 			..Default::default()
 		};
-		let tex = crate::render::texture_create(&params, image.pixels(), image.row_bytes() as i32)
-			.map_err(|_| status::ERR_MEMORY)?;
+		let tex =
+			crate::render::texture_create(&params, image.data.as_slice(), image.row_bytes() as i32)
+				.map_err(|_| status::ERR_MEMORY)?;
 		let props = make_texture_props(
 			w,
 			h,

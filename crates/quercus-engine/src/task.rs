@@ -191,7 +191,7 @@ fn spawn_task(
 		progress: AtomicU64::new(0.0f64.to_bits()),
 		state: AtomicI32::new(QUERCUS_TASK_RUNNING),
 		error: Mutex::new(None),
-		cancel: task.get_cancel_atom(),
+		cancel: task.cancel_atom.clone(),
 		done: Condvar::new(),
 		done_mutex: Mutex::new(()),
 		project_slot,

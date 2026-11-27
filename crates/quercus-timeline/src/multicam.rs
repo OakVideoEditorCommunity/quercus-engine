@@ -901,7 +901,7 @@ mod guard_tests {
 			.unwrap()
 			.downcast_ref::<MultiCamNode>()
 			.unwrap();
-		assert_eq!(node.sequence(), Some(clip));
+		assert_eq!(node.sequence, Some(clip));
 	}
 
 	#[test]

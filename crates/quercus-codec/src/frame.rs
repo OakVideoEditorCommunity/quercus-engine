@@ -54,7 +54,7 @@ pub struct Frame {
 	/// Distance between rows in bytes (0 until params are set).
 	linesize_bytes: i32,
 	/// Timestamp, rational seconds.
-	timestamp: Rational,
+	pub timestamp: Rational,
 	/// Allocated pixel format (may differ from params while converting).
 	allocated_format: PixelFormat,
 }
@@ -119,11 +119,6 @@ impl Frame {
 		frame
 	}
 
-	/// The video parameter set, or `None` when empty.
-	pub fn params(&self) -> Option<&VideoParams> {
-		self.params.as_ref()
-	}
-
 	/// Replace the parameter set, recompute line sizes, do NOT reallocate
 	/// the buffer.
 	pub fn set_params(&mut self, params: VideoParams) {
@@ -138,8 +133,8 @@ impl Frame {
 	fn recompute_linesize(&mut self) {
 		self.linesize_bytes = match &self.params {
 			Some(p) => {
-				let fmt = pixel_format_from_i32(p.format().code());
-				Self::generate_linesize_bytes(fmt, p.width())
+				let fmt = pixel_format_from_i32(p.format.code());
+				Self::generate_linesize_bytes(fmt, p.width)
 			}
 			None => 0,
 		};
@@ -161,9 +156,9 @@ impl Frame {
 			return Ok(());
 		}
 
-		let width = params.width();
-		let height = params.height();
-		let format = pixel_format_from_i32(params.format().code());
+		let width = params.width;
+		let height = params.height;
+		let format = pixel_format_from_i32(params.format.code());
 
 		let linesize = Self::generate_linesize_bytes(format, width);
 		let size = (linesize as usize).wrapping_mul(height as usize);
@@ -226,7 +221,7 @@ impl Frame {
 	/// Frame width in pixels (0 when params are empty).
 	pub fn width(&self) -> i32 {
 		match &self.params {
-			Some(p) => p.width(),
+			Some(p) => p.width,
 			None => 0,
 		}
 	}
@@ -234,7 +229,7 @@ impl Frame {
 	/// Frame height in pixels (0 when params are empty).
 	pub fn height(&self) -> i32 {
 		match &self.params {
-			Some(p) => p.height(),
+			Some(p) => p.height,
 			None => 0,
 		}
 	}
@@ -242,7 +237,7 @@ impl Frame {
 	/// Pixel format (`QuercusPixelFormat` value).
 	pub fn format(&self) -> PixelFormat {
 		match &self.params {
-			Some(p) => pixel_format_from_i32(p.format().code()),
+			Some(p) => pixel_format_from_i32(p.format.code()),
 			None => PixelFormat::Invalid,
 		}
 	}
@@ -255,25 +250,6 @@ impl Frame {
 	/// the internal RGBA layout, so this returns [`VIDEO_CHANNELS`] (4).
 	pub fn channel_count(&self) -> i32 {
 		VIDEO_CHANNELS
-	}
-
-	/// Timestamp as a rational number of seconds.
-	pub fn timestamp(&self) -> Rational {
-		self.timestamp
-	}
-
-	/// Sets the frame timestamp.
-	///
-	/// The value is stored unchanged; it is a rational number of seconds and is
-	/// not validated or re-ordered. Encoders/decoders use it as the presentation
-	/// timestamp of the pixels.
-	///
-	/// # Arguments
-	///
-	/// * `ts` - New timestamp as seconds (`num/den`); any rational is accepted,
-	///   including negative values.
-	pub fn set_timestamp(&mut self, ts: Rational) {
-		self.timestamp = ts;
 	}
 
 	/// Distance between rows for a (format, width) pair, in bytes.
@@ -492,7 +468,7 @@ mod tests_extra {
 	#[test]
 	fn pixel_format_from_unknown_code_is_invalid() {
 		let mut p = VideoParams::new_basic(1, 1, QuercusPixelFormat::from_code(0), 4, 1, 1, 0, 1);
-		p.set_format(QuercusPixelFormat::from_code(99));
+		p.format = QuercusPixelFormat::from_code(99);
 		let f = Frame::with_params(p);
 		assert_eq!(f.format(), PixelFormat::Invalid);
 	}
@@ -500,7 +476,7 @@ mod tests_extra {
 	#[test]
 	fn default_timestamp_is_zero() {
 		let f = Frame::new();
-		let ts = f.timestamp();
+		let ts = f.timestamp;
 		assert_eq!(ts.numerator(), 0);
 		assert_eq!(ts.denominator(), 1);
 	}

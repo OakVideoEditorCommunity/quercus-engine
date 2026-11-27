@@ -16,7 +16,7 @@
 
 //! Video parameter set, mirroring `src/common/src/videoparams.h` and
 //! `include/common/videoparams.h`. A handle-wrapped value object with
-//! typed getters/setters plus a set of static (handle-free) helpers.
+//! public fields, derived-value helpers, and static (handle-free) helpers.
 //! The C++-only `_init_from_native` / `_get_native` entry points deal
 //! with `olive::VideoParams` and are served by the C++ adapter layer,
 //! not here.
@@ -60,49 +60,49 @@ pub enum ColorRange {
 #[derive(Clone, Debug)]
 pub struct VideoParams {
 	/// Frame width in pixels.
-	width: i32,
+	pub width: i32,
 	/// Frame height in pixels.
-	height: i32,
+	pub height: i32,
 	/// Bit depth per channel.
-	depth: i32,
+	pub depth: i32,
 	/// Time base (`numerator`/`denominator`).
-	time_base: (i32, i32),
+	pub time_base: (i32, i32),
 	/// Frame rate (`numerator`/`denominator`).
-	frame_rate: (i32, i32),
+	pub frame_rate: (i32, i32),
 	/// Pixel aspect ratio (`numerator`/`denominator`).
-	pixel_aspect_ratio: (i32, i32),
+	pub pixel_aspect_ratio: (i32, i32),
 	/// Pixel format.
-	format: PixelFormat,
+	pub format: PixelFormat,
 	/// Number of channels.
-	channel_count: i32,
+	pub channel_count: i32,
 	/// Interlacing mode.
-	interlacing: Interlacing,
+	pub interlacing: Interlacing,
 	/// Resolution divider.
-	divider: i32,
+	pub divider: i32,
 	/// Whether the stream is enabled.
-	enabled: bool,
+	pub enabled: bool,
 	/// X offset in the containing canvas.
-	x: f32,
+	pub x: f32,
 	/// Y offset in the containing canvas.
-	y: f32,
+	pub y: f32,
 	/// Stream index within the source file.
-	stream_index: i32,
+	pub stream_index: i32,
 	/// Stream type.
-	video_type: VideoType,
+	pub video_type: VideoType,
 	/// Stream start time (time-base units).
-	start_time: i64,
+	pub start_time: i64,
 	/// Stream duration (time-base units).
-	duration: i64,
+	pub duration: i64,
 	/// Whether alpha is premultiplied.
-	premultiplied_alpha: bool,
+	pub premultiplied_alpha: bool,
 	/// Color range.
-	color_range: ColorRange,
+	pub color_range: ColorRange,
 	/// Color primaries code.
-	color_primaries: i32,
+	pub color_primaries: i32,
 	/// Color transfer function code.
-	color_transfer: i32,
+	pub color_transfer: i32,
 	/// Colorspace name (for color-managed workflows).
-	colorspace: String,
+	pub colorspace: String,
 }
 
 impl VideoParams {
@@ -136,7 +136,15 @@ impl VideoParams {
 			colorspace: String::new(),
 		}
 	}
+}
 
+impl Default for VideoParams {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl VideoParams {
 	/// Create a parameter set without a time base.
 	///
 	/// Use this when a stream's timing is not (yet) known: `time_base` and
@@ -159,7 +167,7 @@ impl VideoParams {
 	///   1 = top field first, 2 = bottom field first; other values become
 	///   progressive.
 	/// * `divider` - Initial resolution divider (1 = full resolution); stored
-	///   without validation, so 0 would make the `effective_*` getters panic.
+	///   without validation, so 0 would make the `effective_*` methods panic.
 	#[allow(clippy::too_many_arguments)]
 	pub fn new_basic(
 		width: i32,
@@ -225,7 +233,7 @@ impl VideoParams {
 	///   1 = top field first, 2 = bottom field first; other values become
 	///   progressive.
 	/// * `divider` - Initial resolution divider (1 = full resolution); stored
-	///   without validation, so 0 would make the `effective_*` getters panic.
+	///   without validation, so 0 would make the `effective_*` methods panic.
 	#[allow(clippy::too_many_arguments)]
 	pub fn new_with_time_base(
 		width: i32,
@@ -271,72 +279,12 @@ impl VideoParams {
 		}
 	}
 
-	/// Frame width in pixels.
-	///
-	/// This is the full-resolution width; the preview-scaled value is
-	/// `effective_width`, and `square_pixel_width` applies the pixel aspect ratio
-	/// to it. `is_valid` requires it to be positive, and it participates in
-	/// `buffer_size`.
-	pub fn width(&self) -> i32 {
-		self.width
-	}
-
-	/// Set the frame width in pixels.
-	///
-	/// `width` is stored as-is and is not validated; `is_valid` simply requires
-	/// it to be positive. It is used for buffer sizing and preview scaling, and
-	/// is persisted as the `width` element. Changing it leaves the divider and
-	/// pixel aspect ratio untouched.
-	pub fn set_width(&mut self, width: i32) {
-		self.width = width;
-	}
-
-	/// Frame height in pixels.
-	///
-	/// This is the full-resolution height; the preview-scaled value is
-	/// `effective_height`. `is_valid` requires it to be positive, and it
-	/// participates in `buffer_size` and the `save_xml` round-trip.
-	pub fn height(&self) -> i32 {
-		self.height
-	}
-
-	/// Set the frame height in pixels.
-	///
-	/// `height` is stored as-is and is not validated; `is_valid` simply requires
-	/// it to be positive. It is used for buffer sizing and preview scaling, and
-	/// is persisted as the `height` element. Changing it leaves the divider and
-	/// pixel aspect ratio untouched.
-	pub fn set_height(&mut self, height: i32) {
-		self.height = height;
-	}
-
-	/// Bit depth per channel.
-	pub fn depth(&self) -> i32 {
-		self.depth
-	}
-
-	/// Set the bit depth per channel, which also doubles as the 3D layer count.
-	///
-	/// `depth` is stored unchanged and is not range-checked. Any value greater
-	/// than 1 makes `is_3d` true and is scaled by the divider in
-	/// `effective_depth`; values of 0 or 1 are treated as a single 2D layer.
-	/// `new_basic` and `new_with_time_base` initialize it to 1, `new` leaves it
-	/// at 0, and it is persisted as the `depth` element.
-	pub fn set_depth(&mut self, depth: i32) {
-		self.depth = depth;
-	}
-
 	/// Whether the frame is stereoscopic 3D.
 	pub fn is_3d(&self) -> bool {
 		// CPP-PARITY: C++ `is_3d()` is `depth_ > 1`, derived. The skeleton
 		// declared a stored `is_3d: bool` field, but C++ has none; we derive
 		// from depth so the value can never drift out of sync with `depth`.
 		self.depth > 1
-	}
-
-	/// The time base as a numerator/denominator pair.
-	pub fn time_base(&self) -> (i32, i32) {
-		self.time_base
 	}
 
 	/// Set the time base: the length of one tick of `start_time`/`duration`.
@@ -349,11 +297,6 @@ impl VideoParams {
 	/// `timebase`.
 	pub fn set_time_base(&mut self, numerator: i32, denominator: i32) {
 		self.time_base = make_rational(numerator, denominator);
-	}
-
-	/// The frame rate as a numerator/denominator pair.
-	pub fn frame_rate(&self) -> (i32, i32) {
-		self.frame_rate
 	}
 
 	/// Set the frame rate as a rational number of frames per second.
@@ -372,11 +315,6 @@ impl VideoParams {
 		rational_flipped(self.frame_rate)
 	}
 
-	/// The pixel aspect ratio as a numerator/denominator pair.
-	pub fn pixel_aspect_ratio(&self) -> (i32, i32) {
-		self.pixel_aspect_ratio
-	}
-
 	/// Set the pixel aspect ratio as a rational number.
 	///
 	/// `numerator`/`denominator` describe the shape of a single pixel: pixel
@@ -391,302 +329,6 @@ impl VideoParams {
 			r = (1, 1); // validate_pixel_aspect_ratio()
 		}
 		self.pixel_aspect_ratio = r;
-	}
-
-	/// Pixel storage format of the stream.
-	///
-	/// `U8`, `U10`, `U16`, `F16` or `F32` for real footage, and `Invalid` for an
-	/// uninitialized or unrecognized format (the `new()` default). It decides
-	/// `bytes_per_channel`/`bytes_per_pixel` and is one of the conditions
-	/// `is_valid` checks.
-	pub fn format(&self) -> PixelFormat {
-		self.format
-	}
-
-	/// Set the pixel storage format.
-	///
-	/// `pixel_format` determines how samples are stored and therefore drives
-	/// `bytes_per_channel`, `bytes_per_pixel` and `format_is_float`; it is stored
-	/// unchanged. `is_valid` rejects `Invalid` and `Count`, so a set built with
-	/// `new()` (which defaults to `Invalid`) must be given a real format before
-	/// use. Persisted as the numeric `format` code.
-	pub fn set_format(&mut self, format: PixelFormat) {
-		self.format = format;
-	}
-
-	/// Number of channels.
-	pub fn channel_count(&self) -> i32 {
-		self.channel_count
-	}
-
-	/// Set how many color channels each pixel has.
-	///
-	/// Usually 4 (RGBA) or 3 (RGB); 1 (luma only) is also meaningful. The value
-	/// must be positive for `is_valid` to pass, scales `bytes_per_pixel` and
-	/// `buffer_size`, and is persisted as `channelcount`. No upper bound is
-	/// enforced here.
-	pub fn set_channel_count(&mut self, count: i32) {
-		self.channel_count = count;
-	}
-
-	/// Interlacing mode of the stream.
-	///
-	/// `None` for progressive footage (the default in both constructors),
-	/// `TopFirst` or `BottomFirst` for interlaced sources. Values other than 1
-	/// and 2 that were loaded from XML fall back to `None`.
-	pub fn interlacing(&self) -> Interlacing {
-		self.interlacing
-	}
-
-	/// Set the interlacing mode from the `Interlacing` enum.
-	///
-	/// `None` marks progressive footage, `TopFirst`/`BottomFirst` mark
-	/// interlaced fields and which field comes first; downstream readers use it
-	/// to decide whether deinterlacing is needed. The integer-taking
-	/// constructors and `load_xml` convert codes to this enum first, mapping
-	/// unknown codes to `None`. Persisted as the 0/1/2 `interlacing` code.
-	pub fn set_interlacing(&mut self, interlacing: Interlacing) {
-		self.interlacing = interlacing;
-	}
-
-	/// Resolution divider currently applied to this stream.
-	///
-	/// 1 means full resolution and `n` means frames are processed at `1/n` size
-	/// (see `effective_width`, `effective_height`, `effective_depth`). Defaults
-	/// to 1, is persisted as `divider`, and is what
-	/// `generate_auto_divider`/`get_divider_for_target_resolution` produce
-	/// candidate values for.
-	pub fn divider(&self) -> i32 {
-		self.divider
-	}
-
-	/// Set the resolution divider used for preview-quality scaling.
-	///
-	/// 1 keeps full resolution, 2 processes at half size, 3 at one third, and so
-	/// on; `effective_width`, `effective_height` and `effective_depth` apply it
-	/// with truncating division. It is not validated here, so 0 makes those
-	/// getters panic and a negative value yields negative "sizes". Persisted as
-	/// the `divider` XML element.
-	pub fn set_divider(&mut self, divider: i32) {
-		self.divider = divider;
-	}
-
-	/// Whether the stream is enabled.
-	pub fn enabled(&self) -> bool {
-		self.enabled
-	}
-
-	/// Enable or disable this stream without removing it from the parameter set.
-	///
-	/// A disabled stream keeps all of its parameters but is skipped by rendering
-	/// and export. The default is `true` in both constructors; the flag is
-	/// persisted as `enabled` (1/0), and any non-zero integer read from XML
-	/// means enabled.
-	pub fn set_enabled(&mut self, enabled: bool) {
-		self.enabled = enabled;
-	}
-
-	/// X offset in the containing canvas.
-	pub fn x(&self) -> f32 {
-		self.x
-	}
-
-	/// Set the horizontal offset of this stream inside its containing canvas, in
-	/// pixels.
-	///
-	/// `x` is an `f32`, defaults to 0.0, and is stored without clamping or
-	/// rounding; it is carried across the C ABI by `QuercusVideoParams` and
-	/// persisted as the `x` element with 6 decimal places. It does not affect
-	/// buffer sizes or the effective width/height.
-	pub fn set_x(&mut self, x: f32) {
-		self.x = x;
-	}
-
-	/// Y offset in the containing canvas.
-	pub fn y(&self) -> f32 {
-		self.y
-	}
-
-	/// Set the vertical offset of this stream inside its containing canvas, in
-	/// pixels.
-	///
-	/// `y` is an `f32`, defaults to 0.0, and is stored without clamping or
-	/// rounding; it is carried across the C ABI by `QuercusVideoParams` and
-	/// persisted as the `y` element with 6 decimal places. It does not affect
-	/// buffer sizes or the effective width/height.
-	pub fn set_y(&mut self, y: f32) {
-		self.y = y;
-	}
-
-	/// Stream index within the source file.
-	pub fn stream_index(&self) -> i32 {
-		self.stream_index
-	}
-
-	/// Set the index of this stream within its source file.
-	///
-	/// `index` is the 0-based container stream index recorded by the probe. It
-	/// is stored unchanged with no bounds check, persisted as `streamindex`, is
-	/// used as the stream's index in the footage stream records, and is mirrored
-	/// across the C ABI by `QuercusVideoParams`.
-	pub fn set_stream_index(&mut self, index: i32) {
-		self.stream_index = index;
-	}
-
-	/// Kind of stream these parameters describe: regular `Video`, a single
-	/// `Still` image, or an `ImageSequence`.
-	///
-	/// Defaults to `Video` in both constructors. The media import path reads it
-	/// to decide whether footage should be treated as a still; the value is
-	/// also mirrored across the C ABI.
-	pub fn video_type(&self) -> VideoType {
-		self.video_type
-	}
-
-	/// Set what kind of stream this is: regular `Video`, a single `Still` image,
-	/// or an `ImageSequence`.
-	///
-	/// The distinction tells loaders/importers how to treat the source (the
-	/// import path checks `video_type() == VideoType::Video` before treating
-	/// footage as a still). Both constructors default to `Video`; persisted as
-	/// its discriminant, and unknown codes loaded from XML fall back to `Video`.
-	pub fn set_video_type(&mut self, video_type: VideoType) {
-		self.video_type = video_type;
-	}
-
-	/// Stream start time (time-base units).
-	pub fn start_time(&self) -> i64 {
-		self.start_time
-	}
-
-	/// Set the first timestamp of the stream, in time-base units.
-	///
-	/// `start_time` is an `i64` tick offset (not seconds) added to every value
-	/// produced by `time_in_timebase_units`, so a source that starts at
-	/// 00:00:05 can still be addressed from zero. Both constructors default it
-	/// to 0 and it is persisted as the `starttime` element.
-	pub fn set_start_time(&mut self, start_time: i64) {
-		self.start_time = start_time;
-	}
-
-	/// Stream duration (time-base units).
-	pub fn duration(&self) -> i64 {
-		self.duration
-	}
-
-	/// Set the duration of the stream, in time-base units.
-	///
-	/// `duration` is a tick/frame count, not seconds: divide it by the time base
-	/// to get wall-clock length. Both constructors default it to 0, and negative
-	/// values are stored unchanged (no validation). Persisted as the `duration`
-	/// element and used, for example, when computing footage length.
-	pub fn set_duration(&mut self, duration: i64) {
-		self.duration = duration;
-	}
-
-	/// Whether alpha is premultiplied into the color channels.
-	///
-	/// `true` means the stored RGB is already multiplied by alpha; the default
-	/// from both constructors is `false` (straight/unassociated alpha). Read by
-	/// blending code to decide whether to premultiply before compositing.
-	pub fn premultiplied_alpha(&self) -> bool {
-		self.premultiplied_alpha
-	}
-
-	/// Set whether the alpha channel is premultiplied into the color channels.
-	///
-	/// Premultiplied footage stores `R*a` in RGB; blending and keying code needs
-	/// to know which convention applies. `true` means premultiplied, the default
-	/// is `false` (straight/unassociated alpha) in both constructors, and the
-	/// flag is persisted as 1/0.
-	pub fn set_premultiplied_alpha(&mut self, premultiplied: bool) {
-		self.premultiplied_alpha = premultiplied;
-	}
-
-	/// Color range of the stream: `Limited` (16-235, the default) or `Full`
-	/// (0-255).
-	///
-	/// Set by the decoder from the source's color metadata, or by
-	/// `set_color_range`; it is only meaningful for integer YUV footage and is
-	/// persisted as `colorrange`.
-	pub fn color_range(&self) -> ColorRange {
-		self.color_range
-	}
-
-	/// Set whether the stream carries limited (16-235) or full (0-255) range
-	/// luma/chroma.
-	///
-	/// Takes the `ColorRange` enum; `Limited` is the default in both
-	/// constructors because most broadcast footage is limited range. The value
-	/// is stored as-is and serialized as its discriminant (0 = limited,
-	/// 1 = full); out-of-range codes loaded from XML fall back to `Limited`.
-	pub fn set_color_range(&mut self, color_range: ColorRange) {
-		self.color_range = color_range;
-	}
-
-	/// Color primaries code for this stream (an FFmpeg `AVCOL_PRI_*` value), or
-	/// 0 when unspecified.
-	///
-	/// The decoder fills it from the source's color metadata; the constructors
-	/// default it to 0. Persisted as `colorprimaries`.
-	pub fn color_primaries(&self) -> i32 {
-		self.color_primaries
-	}
-
-	/// Set the color primaries, as an FFmpeg `AVCOL_PRI_*` code.
-	///
-	/// `primaries` identifies the RGB gamut of the source (1 = BT.709,
-	/// 9 = BT.2020, ...); 0 means unspecified, which is the default from both
-	/// constructors. It is consumed alongside `color_transfer` and
-	/// `color_range` when converting into the working space. Stored and
-	/// serialized unchanged with no validation.
-	pub fn set_color_primaries(&mut self, primaries: i32) {
-		self.color_primaries = primaries;
-	}
-
-	/// Color transfer function code for this stream (an FFmpeg `AVCOL_TRC_*`
-	/// value), or 0 when unspecified.
-	///
-	/// The decoder fills it from the source's color metadata; the constructors
-	/// default it to 0. It is part of the frame colorimetry together with
-	/// `color_primaries` and `color_range`, and is persisted as
-	/// `colortransfer`.
-	pub fn color_transfer(&self) -> i32 {
-		self.color_transfer
-	}
-
-	/// Set the color transfer function, as an FFmpeg `AVCOL_TRC_*` code.
-	///
-	/// `transfer` is an opaque integer code taken from the source's color
-	/// metadata (1 = BT.709, 16 = SMPTE ST 2084/PQ, ...); 0 means unspecified,
-	/// which is the default from both constructors. The render layer uses it
-	/// with the primaries and range to build the source-to-working-space input
-	/// transform. Stored and serialized unchanged with no validation.
-	pub fn set_color_transfer(&mut self, transfer: i32) {
-		self.color_transfer = transfer;
-	}
-
-	/// Colorspace name of this stream, or `""` when color management is not
-	/// described.
-	///
-	/// Returns a borrowed view of the stored string, which is exactly what
-	/// `save_xml` writes and `load_xml` restores (so it may be any name, not
-	/// just a known one). It is a label for the color-management layer, not a
-	/// guarantee that the pixels were converted.
-	pub fn colorspace(&self) -> &str {
-		&self.colorspace
-	}
-
-	/// Set the colorspace name, e.g. `"sRGB"` or `"Rec.709"`.
-	///
-	/// The borrowed `&str` is copied into an owned `String`, replacing any
-	/// previous name; an empty string means "not color-managed". It is a label
-	/// carried through the project file rather than an enum, so arbitrary names
-	/// are preserved. Persisted as the `colorspace` XML element, and note that
-	/// the C ABI mirror `QuercusVideoParams` keeps only the first 63 bytes when
-	/// the value crosses into the host.
-	pub fn set_colorspace(&mut self, colorspace: &str) {
-		self.colorspace = colorspace.to_string();
 	}
 
 	/// Width multiplied by the pixel aspect ratio.
@@ -706,7 +348,7 @@ impl VideoParams {
 	/// The divisor is applied with truncating integer division, so odd sizes
 	/// lose up to `divider - 1` pixels, and a divider of 0 panics (see
 	/// `get_scaled_dimension`). Equivalent to
-	/// `get_scaled_dimension(self.width(), self.divider())`.
+	/// `get_scaled_dimension(self.width, self.divider)`.
 	pub fn effective_width(&self) -> i32 {
 		Self::get_scaled_dimension(self.width, self.divider)
 	}
@@ -717,7 +359,7 @@ impl VideoParams {
 	/// The divisor is applied with truncating integer division, so odd sizes
 	/// lose up to `divider - 1` pixels, and a divider of 0 panics (see
 	/// `get_scaled_dimension`). Equivalent to
-	/// `get_scaled_dimension(self.height(), self.divider())`.
+	/// `get_scaled_dimension(self.height, self.divider)`.
 	pub fn effective_height(&self) -> i32 {
 		Self::get_scaled_dimension(self.height, self.divider)
 	}
@@ -749,7 +391,7 @@ impl VideoParams {
 
 	/// Bytes per channel for this parameter set's pixel format.
 	///
-	/// Thin wrapper over `bytes_per_channel_for_format(self.format())`. Returns
+	/// Thin wrapper over `bytes_per_channel_for_format(self.format)`. Returns
 	/// 0 for the packed 10-bit format (which has no whole bytes per channel) and
 	/// for unknown formats, so use `bytes_per_pixel` for those.
 	pub fn bytes_per_channel(&self) -> i32 {
@@ -758,8 +400,8 @@ impl VideoParams {
 
 	/// Bytes per pixel for this parameter set's format and channel count.
 	///
-	/// Thin wrapper over `bytes_per_pixel_for_format(self.format(),
-	/// self.channel_count())`. Returns 0 for unknown formats and for the packed
+	/// Thin wrapper over `bytes_per_pixel_for_format(self.format,
+	/// self.channel_count)`. Returns 0 for unknown formats and for the packed
 	/// 10-bit format unless the channel count is 4.
 	pub fn bytes_per_pixel(&self) -> i32 {
 		Self::bytes_per_pixel_for_format(self.format, self.channel_count)
@@ -859,54 +501,50 @@ impl VideoParams {
 		while cur.next_start_element() {
 			let name = cur.name.clone();
 			match name.as_str() {
-				"width" => self.set_width(stoi_field(&cur.read_element_text())?),
-				"height" => self.set_height(stoi_field(&cur.read_element_text())?),
-				"depth" => self.set_depth(stoi_field(&cur.read_element_text())?),
+				"width" => self.width = stoi_field(&cur.read_element_text())?,
+				"height" => self.height = stoi_field(&cur.read_element_text())?,
+				"depth" => self.depth = stoi_field(&cur.read_element_text())?,
 				"timebase" => {
 					let (n, d) = rational_from_string(&cur.read_element_text());
 					self.set_time_base(n, d);
 				}
-				"format" => self.set_format(pf_from_code(stoi_field(&cur.read_element_text())?)),
+				"format" => self.format = pf_from_code(stoi_field(&cur.read_element_text())?),
 				"channelcount" => {
-					self.set_channel_count(stoi_field(&cur.read_element_text())?);
+					self.channel_count = stoi_field(&cur.read_element_text())?;
 				}
 				"pixelaspectratio" => {
 					let (n, d) = rational_from_string(&cur.read_element_text());
 					self.set_pixel_aspect_ratio(n, d);
 				}
 				"interlacing" => {
-					self.set_interlacing(interlacing_from_i32(stoi_field(
-						&cur.read_element_text(),
-					)?));
+					self.interlacing = interlacing_from_i32(stoi_field(&cur.read_element_text())?);
 				}
-				"divider" => self.set_divider(stoi_field(&cur.read_element_text())?),
-				"enabled" => self.set_enabled(stoi_field(&cur.read_element_text())? != 0),
-				"x" => self.set_x(parse_f32_field(&cur.read_element_text())?),
-				"y" => self.set_y(parse_f32_field(&cur.read_element_text())?),
-				"streamindex" => self.set_stream_index(stoi_field(&cur.read_element_text())?),
+				"divider" => self.divider = stoi_field(&cur.read_element_text())?,
+				"enabled" => self.enabled = stoi_field(&cur.read_element_text())? != 0,
+				"x" => self.x = parse_f32_field(&cur.read_element_text())?,
+				"y" => self.y = parse_f32_field(&cur.read_element_text())?,
+				"streamindex" => self.stream_index = stoi_field(&cur.read_element_text())?,
 				"videotype" => {
-					self.set_video_type(video_type_from_i32(stoi_field(&cur.read_element_text())?));
+					self.video_type = video_type_from_i32(stoi_field(&cur.read_element_text())?);
 				}
 				"framerate" => {
 					let (n, d) = rational_from_string(&cur.read_element_text());
 					self.set_frame_rate(n, d);
 				}
-				"starttime" => self.set_start_time(stoll_field(&cur.read_element_text())?),
-				"duration" => self.set_duration(stoll_field(&cur.read_element_text())?),
+				"starttime" => self.start_time = stoll_field(&cur.read_element_text())?,
+				"duration" => self.duration = stoll_field(&cur.read_element_text())?,
 				"premultipliedalpha" => {
-					self.set_premultiplied_alpha(stoi_field(&cur.read_element_text())? != 0);
+					self.premultiplied_alpha = stoi_field(&cur.read_element_text())? != 0;
 				}
-				"colorspace" => self.set_colorspace(&cur.read_element_text()),
+				"colorspace" => self.colorspace = cur.read_element_text(),
 				"colorrange" => {
-					self.set_color_range(color_range_from_i32(stoi_field(
-						&cur.read_element_text(),
-					)?));
+					self.color_range = color_range_from_i32(stoi_field(&cur.read_element_text())?);
 				}
 				"colorprimaries" => {
-					self.set_color_primaries(stoi_field(&cur.read_element_text())?);
+					self.color_primaries = stoi_field(&cur.read_element_text())?;
 				}
 				"colortransfer" => {
-					self.set_color_transfer(stoi_field(&cur.read_element_text())?);
+					self.color_transfer = stoi_field(&cur.read_element_text())?;
 				}
 				_ => cur.skip_current_element(),
 			}
@@ -1066,8 +704,7 @@ impl VideoParams {
 	/// / (1280 * 720))` is computed and rounded to the nearest value in the
 	/// supported set `[1, 2, 3, 4, 6, 8, 12, 16]`, clamping at both ends. Ties
 	/// round up, so a ratio of exactly 2.5 selects 3. This is a pure helper with
-	/// no in-crate caller yet; a caller would store the result through
-	/// `set_divider`.
+	/// no in-crate caller yet; a caller would store the result in `divider`.
 	///
 	/// # Arguments
 	///
@@ -1117,9 +754,9 @@ impl VideoParams {
 	///
 	/// # Panics
 	///
-	/// Panics when `divider` is 0 (integer division by zero). `set_divider`
+	/// Panics when `divider` is 0 (integer division by zero). The public field
 	/// performs no validation, so a zero divider produces a parameter set whose
-	/// effective-size getters panic.
+	/// effective-size methods panic.
 	pub fn get_scaled_dimension(dimension: i32, divider: i32) -> i32 {
 		dimension / divider
 	}
@@ -1165,7 +802,7 @@ impl VideoParams {
 	/// Human-readable label for a resolution divider: `1` is `"Full"`, any
 	/// other `n` is `"1/n"` (so `2` is `"1/2"`, `8` is `"1/8"`).
 	///
-	/// `divider` is the integer divisor stored by `set_divider`; it is not
+	/// `divider` is the integer divisor stored in the public field; it is not
 	/// validated, so `0` and negative values render literally as `"1/0"` and
 	/// `"1/-2"`. Counterpart of `generate_auto_divider` and
 	/// `get_divider_for_target_resolution`, which choose the value this labels.
