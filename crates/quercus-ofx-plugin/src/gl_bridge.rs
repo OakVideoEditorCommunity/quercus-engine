@@ -2336,7 +2336,7 @@ mod imp {
 				y2: h as f64,
 			},
 		);
-		let dst = img.pixels_mut();
+		let dst = img.data.as_mut_slice();
 		let src_row = w as usize * 4 * bpc;
 		let dst_row = w as usize * 16;
 		for y in 0..h as usize {
@@ -3371,7 +3371,7 @@ mod imp {
 				y2: h as f64,
 			},
 		);
-		let dst = img.pixels_mut();
+		let dst = img.data.as_mut_slice();
 		let src_row = w as usize * 4 * bpc;
 		let dst_row = w as usize * 16;
 		for y in 0..h as usize {

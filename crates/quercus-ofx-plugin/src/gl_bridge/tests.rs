@@ -244,7 +244,7 @@ fn import_opaque_fd_texture_roundtrip() {
 	gl_clear();
 	gl_finish();
 	let img = read_pixels_to_image(w, h, &params).expect("readback");
-	let px: Vec<f32> = img.pixels()[0..16]
+	let px: Vec<f32> = img.data.as_slice()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
@@ -312,7 +312,7 @@ fn import_opaque_fd_reads_wgpu_content() {
 	gl_memory_barrier();
 	gl_finish();
 	let img = read_pixels_to_image(w, h, &params).expect("readback");
-	let px: Vec<f32> = img.pixels()[0..16]
+	let px: Vec<f32> = img.data.as_slice()[0..16]
 		.chunks_exact(4)
 		.map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
 		.collect();
