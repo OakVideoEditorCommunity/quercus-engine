@@ -60,8 +60,8 @@ use crate::error::{Error, Result};
 use crate::eval::JobSpec;
 use crate::ipc::{
 	plugin_cancel_json, write_message, HandshakeMsg, OfxInputRef, OfxJobMsg, OfxResultMsg,
-	PluginProgressMsg, WireEffectParam, WireNodeValue, TYPE_ERROR, TYPE_OFX_RESULT,
-	TYPE_PLUGIN_PROGRESS, TYPE_SHUTDOWN,
+	PluginProgressMsg, WireEffectAnimation, WireEffectParam, WireNodeValue, TYPE_ERROR,
+	TYPE_OFX_RESULT, TYPE_PLUGIN_PROGRESS, TYPE_SHUTDOWN,
 };
 use crate::procpool::{plugin_progress_cb, ShmRegionView};
 
@@ -169,6 +169,7 @@ struct HostJobFrames {
 	/// evaluator's `src` may not correspond to any named clip).
 	src: Option<Frame>,
 	values: Vec<WireEffectParam>,
+	animations: Vec<WireEffectAnimation>,
 }
 
 impl HostJobFrames {
@@ -373,6 +374,7 @@ impl OfxHost {
 			effect_input_id: frames.effect_input_id.clone(),
 			inputs,
 			values: frames.values.clone(),
+			animations: frames.animations.clone(),
 			src_slot,
 		};
 		if let Err(err) = write_message(stdin, &msg.to_json()).and_then(|_| stdin.flush()) {
@@ -405,6 +407,7 @@ impl OfxHost {
 			effect_input_id,
 			inputs,
 			values,
+			animations,
 			..
 		} = spec
 		else {
@@ -430,6 +433,10 @@ impl OfxHost {
 				})
 			})
 			.collect();
+		let animations = animations
+			.iter()
+			.map(|(input, track)| WireEffectAnimation::from_track(input, track))
+			.collect();
 		Ok(HostJobFrames {
 			type_id: type_id.clone(),
 			time: *time,
@@ -437,6 +444,7 @@ impl OfxHost {
 			inputs: frames,
 			src,
 			values,
+			animations,
 		})
 	}
 
@@ -788,6 +796,7 @@ mod tests {
 			effect_input_id: None,
 			inputs: Vec::new(),
 			values: Vec::new(),
+			animations: Vec::new(),
 		}
 	}
 
@@ -848,6 +857,7 @@ mod tests {
 				"gain".to_string(),
 				quercus_node::value::NodeValue::Float(0.5),
 			)],
+			animations: Vec::new(),
 		};
 		let frames = OfxHost::read_job_frames(&spec, &source).unwrap();
 		assert!(frames.src.is_some(), "a real source is sent separately");

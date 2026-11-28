@@ -87,6 +87,8 @@ pub struct RenderJob {
 	pub inputs: Vec<(String, Texture)>,
 	/// Parameter overrides (parameter name → quercusnode_value POD; corresponds to NodeValueRow).
 	pub values: Vec<(String, crate::node::Value)>,
+	/// Non-empty keyframe tracks for animatable parameters (render-time snapshot).
+	pub animations: Vec<(String, quercus_node::keyframe::KeyframeTrack)>,
 	/// GL renderer (`None` → CPU path; `Some` → subject to the use_opengl decision).
 	pub renderer: Option<Renderer>,
 	/// Whether to clear the destination before rendering (informational — C++ render_plugin
@@ -106,9 +108,69 @@ impl Default for RenderJob {
 			effect_input_id: None,
 			inputs: Vec::new(),
 			values: Vec::new(),
+			animations: Vec::new(),
 			renderer: None,
 			clear_destination: false,
 			interactive: false,
+		}
+	}
+}
+
+/// Scoped guard that installs render-time keyframe track snapshots onto an
+/// instance's parameters and restores their prior state on drop (preventing
+/// cross-job leakage on shared worker instances and overriding bound nodes
+/// or stale local tracks during `render_frame`).
+struct AnimationSnapshotGuard<'a> {
+	saved: Vec<(
+		&'a crate::param::ParamInstance,
+		Option<Option<quercus_node::keyframe::KeyframeTrack>>,
+		Option<Value>,
+	)>,
+}
+
+impl<'a> AnimationSnapshotGuard<'a> {
+	fn install(
+		inst: &'a Instance,
+		animations: &[(String, quercus_node::keyframe::KeyframeTrack)],
+		values: &[(String, crate::node::Value)],
+	) -> Self {
+		let mut saved = Vec::with_capacity(animations.len() + values.len());
+		for (name, _) in values {
+			let Some(param) = inst.params.find(name) else {
+				continue;
+			};
+			if !animations.iter().any(|(anim_name, _)| anim_name == name)
+				&& param.animation_track().is_some()
+			{
+				let prev_override = param.render_animation_override();
+				let prev_anim = param.props.get(crate::param::P_IS_ANIMATING, 0);
+				param.set_render_animation_override(Some(None));
+				param.set_is_animating(false);
+				saved.push((param, prev_override, prev_anim));
+			}
+		}
+		for (name, track) in animations {
+			let Some(param) = inst.params.find(name) else {
+				continue;
+			};
+			let prev_override = param.render_animation_override();
+			let prev_anim = param.props.get(crate::param::P_IS_ANIMATING, 0);
+			let animating = !track.keys().is_empty();
+			param.set_render_animation_override(Some(Some(track.clone())));
+			param.set_is_animating(animating);
+			saved.push((param, prev_override, prev_anim));
+		}
+		Self { saved }
+	}
+}
+
+impl Drop for AnimationSnapshotGuard<'_> {
+	fn drop(&mut self) {
+		for (param, prev_override, prev_anim) in self.saved.drain(..).rev() {
+			param.set_render_animation_override(prev_override);
+			if let Some(v) = prev_anim {
+				param.props.set_one(crate::param::P_IS_ANIMATING, v);
+			}
 		}
 	}
 }
@@ -262,6 +324,10 @@ pub fn render_frame(
 			}
 		}
 	}
+
+	// Install render-time keyframe snapshots before any plugin actions
+	// (getClipPreferences, getRoI, isIdentity, render) and restore on drop.
+	let _anim_guard = AnimationSnapshotGuard::install(inst, &job.animations, &job.values);
 
 	// 4. getClipPreferences (pluginrenderer.cpp:1554-1594).
 	let prefs = inst.get_clip_preferences()?;

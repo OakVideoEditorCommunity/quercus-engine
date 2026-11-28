@@ -126,6 +126,7 @@ fn plugin_spec(src: &Texture) -> JobSpec {
 		effect_input_id: Some("Source".to_string()),
 		inputs: vec![("Source".to_string(), src.clone())],
 		values: Vec::new(),
+		animations: Vec::new(),
 	}
 }
 
@@ -237,6 +238,7 @@ fn host_cancels_an_in_flight_slow_render() {
 		effect_input_id: Some("Source".to_string()),
 		inputs: vec![("Source".to_string(), src.clone())],
 		values: Vec::new(),
+		animations: Vec::new(),
 	};
 	let submitter = client.clone();
 	let src_for_job = src.clone();

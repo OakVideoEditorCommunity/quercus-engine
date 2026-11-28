@@ -372,6 +372,41 @@ pub enum NodeBridgeError {
 	/// The input is not a string-family type (the string setter is limited to Text/StrCombo).
 	#[error("input '{0}' is not a string-family input")]
 	NotStringInput(String),
+	/// Time is non-finite (NaN or Inf).
+	#[error("non-finite time {0}")]
+	InvalidTime(f64),
+}
+
+/// Tolerance when matching OFX `f64` seconds against a rational keyframe time.
+pub const KEY_TIME_EPSILON: f64 = 1e-9;
+
+/// Converts an OFX time in seconds (`f64`) to a node [`quercus_core::Rational`].
+///
+/// Returns `None` for non-finite values or magnitudes outside `Rational`'s
+/// representable range (where `Rational::from_double` yields `Rational::NULL`).
+pub fn ofx_time_to_rational(time: f64) -> Option<quercus_core::Rational> {
+	if !time.is_finite() {
+		return None;
+	}
+	let r = quercus_core::Rational::from_double(time);
+	(!r.is_nan()).then_some(r)
+}
+
+/// Finds the index of the keyframe at `time` (exact rational match first,
+/// then nearest key within [`KEY_TIME_EPSILON`]).
+pub fn find_key_index_at(keys: &[quercus_node::keyframe::Keyframe], time: f64) -> Option<usize> {
+	let target = ofx_time_to_rational(time)?;
+	if let Some(idx) = keys.iter().position(|k| k.time == target) {
+		return Some(idx);
+	}
+	keys.iter()
+		.enumerate()
+		.filter_map(|(i, k)| {
+			let diff = (k.time.to_f64() - time).abs();
+			(diff <= KEY_TIME_EPSILON).then_some((i, diff))
+		})
+		.min_by(|a, b| a.1.total_cmp(&b.1))
+		.map(|(i, _)| i)
 }
 
 /// Take the mutex; on poisoning, adopt the inner value and keep using it (`PoisonError::into_inner`).
@@ -505,6 +540,286 @@ pub fn set_input_string_undoable(
 			let mut guard = lock_any(&project_undo);
 			if let Some(entry) = guard.graph.get_mut(id) {
 				entry.core.set_standard_value(&input_undo, -1, old.clone());
+			}
+		},
+	))
+}
+
+/// Reads the keyframe track of `input` (element `-1`) from the bound node.
+pub fn read_keyframe_track(
+	node: &NodeRef,
+	input: &str,
+) -> Result<Option<quercus_node::keyframe::KeyframeTrack>, NodeBridgeError> {
+	let guard = lock_any(&node.project);
+	let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
+	if entry.core.input_data_type(input).is_none() {
+		return Err(NodeBridgeError::UnknownInput(input.to_string()));
+	}
+	Ok(entry.core.keyframe_track(input, -1).cloned())
+}
+
+/// Evaluates `input` (element `-1`) on the bound node at `time`.
+pub fn read_value_at_time(
+	node: &NodeRef,
+	input: &str,
+	time: quercus_core::Rational,
+) -> Result<quercus_node::value::NodeValue, NodeBridgeError> {
+	let guard = lock_any(&node.project);
+	let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
+	if entry.core.input_data_type(input).is_none() {
+		return Err(NodeBridgeError::UnknownInput(input.to_string()));
+	}
+	Ok(entry.core.value_at_time(input, -1, time))
+}
+
+/// Inserts or updates a keyframe on `input` (element `-1`) at `time` undoably.
+pub fn upsert_keyframe_undoable(
+	node: &NodeRef,
+	input: &str,
+	time: f64,
+	value: &Value,
+) -> Result<UndoCommand, NodeBridgeError> {
+	use quercus_node::keyframe::{Interpolation, Keyframe};
+
+	let target_time = ofx_time_to_rational(time).ok_or(NodeBridgeError::InvalidTime(time))?;
+	let nv = value
+		.to_node_value()
+		.ok_or(NodeBridgeError::InvalidValue(value.r#type))?;
+
+	enum ExistingKey {
+		Update(Keyframe),
+		Insert(Interpolation),
+	}
+
+	let existing = {
+		let guard = lock_any(&node.project);
+		let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
+		if entry.core.input_data_type(input).is_none() {
+			return Err(NodeBridgeError::UnknownInput(input.to_string()));
+		}
+		match entry.core.keyframe_track(input, -1) {
+			Some(track) => match find_key_index_at(track.keys(), time) {
+				Some(idx) => ExistingKey::Update(track.keys()[idx].clone()),
+				None => {
+					let interp = track
+						.keys()
+						.iter()
+						.rfind(|k| k.time <= target_time)
+						.map(|k| k.interpolation)
+						.unwrap_or(Interpolation::Linear);
+					ExistingKey::Insert(interp)
+				}
+			},
+			None => ExistingKey::Insert(Interpolation::Linear),
+		}
+	};
+
+	let project_redo = node.project.clone();
+	let project_undo = node.project.clone();
+	let id = node.id;
+	let input_redo = input.to_string();
+	let input_undo = input.to_string();
+
+	match existing {
+		ExistingKey::Update(old_key) => {
+			let key_time = old_key.time;
+			let value_redo = nv;
+			Ok(command_from_closures(
+				move || {
+					let mut guard = lock_any(&project_redo);
+					if let Some(entry) = guard.graph.get_mut(id) {
+						entry
+							.core
+							.keyframe_track_mut(&input_redo, -1)
+							.set_key_value(key_time, value_redo.clone());
+					}
+				},
+				move || {
+					let mut guard = lock_any(&project_undo);
+					if let Some(entry) = guard.graph.get_mut(id) {
+						entry
+							.core
+							.keyframe_track_mut(&input_undo, -1)
+							.set_key(old_key.clone());
+					}
+				},
+			))
+		}
+		ExistingKey::Insert(interp) => {
+			let new_key = Keyframe {
+				time: target_time,
+				value: nv,
+				interpolation: interp,
+				bezier_in: (0.0, 0.0),
+				bezier_out: (0.0, 0.0),
+			};
+			Ok(command_from_closures(
+				move || {
+					let mut guard = lock_any(&project_redo);
+					if let Some(entry) = guard.graph.get_mut(id) {
+						entry
+							.core
+							.keyframe_track_mut(&input_redo, -1)
+							.set_key(new_key.clone());
+					}
+				},
+				move || {
+					let mut guard = lock_any(&project_undo);
+					if let Some(entry) = guard.graph.get_mut(id) {
+						entry
+							.core
+							.keyframe_track_mut(&input_undo, -1)
+							.remove_key(target_time);
+					}
+				},
+			))
+		}
+	}
+}
+
+/// Deletes the keyframe on `input` (element `-1`) at `time` undoably.
+///
+/// Returns `Ok(None)` when no keyframe exists at `time`.
+pub fn delete_keyframe_undoable(
+	node: &NodeRef,
+	input: &str,
+	time: f64,
+) -> Result<Option<UndoCommand>, NodeBridgeError> {
+	if !time.is_finite() {
+		return Err(NodeBridgeError::InvalidTime(time));
+	}
+	let old_key = {
+		let guard = lock_any(&node.project);
+		let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
+		if entry.core.input_data_type(input).is_none() {
+			return Err(NodeBridgeError::UnknownInput(input.to_string()));
+		}
+		let Some(track) = entry.core.keyframe_track(input, -1) else {
+			return Ok(None);
+		};
+		let Some(idx) = find_key_index_at(track.keys(), time) else {
+			return Ok(None);
+		};
+		track.keys()[idx].clone()
+	};
+
+	let key_time = old_key.time;
+	let project_redo = node.project.clone();
+	let project_undo = node.project.clone();
+	let id = node.id;
+	let input_redo = input.to_string();
+	let input_undo = input.to_string();
+	Ok(Some(command_from_closures(
+		move || {
+			let mut guard = lock_any(&project_redo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				entry
+					.core
+					.keyframe_track_mut(&input_redo, -1)
+					.remove_key(key_time);
+			}
+		},
+		move || {
+			let mut guard = lock_any(&project_undo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				entry
+					.core
+					.keyframe_track_mut(&input_undo, -1)
+					.set_key(old_key.clone());
+			}
+		},
+	)))
+}
+
+/// Deletes all keyframes on `input` (element `-1`) undoably.
+///
+/// Returns `Ok(None)` when the track is already empty.
+pub fn delete_all_keyframes_undoable(
+	node: &NodeRef,
+	input: &str,
+) -> Result<Option<UndoCommand>, NodeBridgeError> {
+	let old_track = {
+		let guard = lock_any(&node.project);
+		let entry = guard.graph.get(node.id).ok_or(NodeBridgeError::StaleNode)?;
+		if entry.core.input_data_type(input).is_none() {
+			return Err(NodeBridgeError::UnknownInput(input.to_string()));
+		}
+		let Some(track) = entry.core.keyframe_track(input, -1) else {
+			return Ok(None);
+		};
+		if track.keys().is_empty() {
+			return Ok(None);
+		}
+		track.clone()
+	};
+
+	let project_redo = node.project.clone();
+	let project_undo = node.project.clone();
+	let id = node.id;
+	let input_redo = input.to_string();
+	let input_undo = input.to_string();
+	Ok(Some(command_from_closures(
+		move || {
+			let mut guard = lock_any(&project_redo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				*entry.core.keyframe_track_mut(&input_redo, -1) =
+					quercus_node::keyframe::KeyframeTrack::default();
+			}
+		},
+		move || {
+			let mut guard = lock_any(&project_undo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				*entry.core.keyframe_track_mut(&input_undo, -1) = old_track.clone();
+			}
+		},
+	)))
+}
+
+/// Atomically replaces `dst_input`'s standard value and keyframe track undoably.
+pub fn copy_param_undoable(
+	dst: &NodeRef,
+	dst_input: &str,
+	new_standard: quercus_node::value::NodeValue,
+	new_track: quercus_node::keyframe::KeyframeTrack,
+) -> Result<UndoCommand, NodeBridgeError> {
+	let (old_standard, old_track) = {
+		let guard = lock_any(&dst.project);
+		let entry = guard.graph.get(dst.id).ok_or(NodeBridgeError::StaleNode)?;
+		if entry.core.input_data_type(dst_input).is_none() {
+			return Err(NodeBridgeError::UnknownInput(dst_input.to_string()));
+		}
+		(
+			entry.core.standard_value(dst_input, -1),
+			entry
+				.core
+				.keyframe_track(dst_input, -1)
+				.cloned()
+				.unwrap_or_default(),
+		)
+	};
+
+	let project_redo = dst.project.clone();
+	let project_undo = dst.project.clone();
+	let id = dst.id;
+	let input_redo = dst_input.to_string();
+	let input_undo = dst_input.to_string();
+	Ok(command_from_closures(
+		move || {
+			let mut guard = lock_any(&project_redo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				entry
+					.core
+					.set_standard_value(&input_redo, -1, new_standard.clone());
+				*entry.core.keyframe_track_mut(&input_redo, -1) = new_track.clone();
+			}
+		},
+		move || {
+			let mut guard = lock_any(&project_undo);
+			if let Some(entry) = guard.graph.get_mut(id) {
+				entry
+					.core
+					.set_standard_value(&input_undo, -1, old_standard.clone());
+				*entry.core.keyframe_track_mut(&input_undo, -1) = old_track.clone();
 			}
 		},
 	))

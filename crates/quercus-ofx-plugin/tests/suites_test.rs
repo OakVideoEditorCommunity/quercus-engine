@@ -45,6 +45,7 @@ use quercus_ofx_plugin::suites::timeline::suite_v1 as timeline_suite;
 
 /// Local aliases for OFX status codes (SDK ofxCore.h).
 const OK: c_int = 0;
+const FAILED: c_int = 1;
 const UNKNOWN: c_int = 3;
 const UNSUPPORTED: c_int = 5;
 const BAD_HANDLE: c_int = 9;
@@ -478,7 +479,7 @@ fn param_suite_roundtrip_and_change_action() {
 		assert_eq!((s.param_get_value)(label, &mut p), OK);
 		assert_eq!(CStr::from_ptr(p).to_bytes(), b"hello");
 
-		// AtTime == current value (no animation).
+		// AtTime writes a keyframe on animatable gain and updates current value.
 		assert_eq!((s.param_get_value_at_time)(gain, 12.0, &mut iv), OK);
 		assert_eq!(iv, 7);
 		assert_eq!((s.param_set_value_at_time)(gain, 12.0, 9), OK);
@@ -493,8 +494,8 @@ fn param_suite_roundtrip_and_change_action() {
 }
 
 /// paramGetValueAtTime/paramSetValueAtTime and the keyframe family
-/// (GetNumKeys/GetKeyTime/GetKeyIndex/DeleteKey/DeleteAllKeys): phase 1 has no
-/// animation → keys are always 0, key queries BadIndex, deletion a no-op OK.
+/// (GetNumKeys/GetKeyTime/GetKeyIndex/DeleteKey/DeleteAllKeys) on an untouched
+/// parameter: 0 keys, GetKeyTime BadIndex, GetKeyIndex Failed(-1), DeleteKey BadIndex.
 #[test]
 fn param_keyframe_family() {
 	let (_inst, ih) = make_instance();
@@ -508,11 +509,11 @@ fn param_keyframe_family() {
 		);
 	}
 
-	let mut nkeys = -1;
+	let mut nkeys = u32::MAX;
 	unsafe {
 		assert_eq!((s.param_get_num_keys)(opacity, &mut nkeys), OK);
 	}
-	assert_eq!(nkeys, 0, "no animation support: always 0 keyframes");
+	assert_eq!(nkeys, 0, "fresh parameter has 0 keyframes");
 
 	let mut kt = 0.0;
 	unsafe {
@@ -520,16 +521,16 @@ fn param_keyframe_family() {
 	}
 	let mut ki = 0;
 	unsafe {
-		assert_eq!((s.param_get_key_index)(opacity, 1.0, 0, &mut ki), BAD_INDEX);
-		// Delete and copy: no keyframes → no-op OK.
-		assert_eq!((s.param_delete_key)(opacity, 1.0), OK);
+		assert_eq!((s.param_get_key_index)(opacity, 1.0, 0, &mut ki), FAILED);
+		assert_eq!(ki, -1);
+		// Delete on empty track returns BAD_INDEX; delete_all and copy are OK.
+		assert_eq!((s.param_delete_key)(opacity, 1.0), BAD_INDEX);
 		assert_eq!((s.param_delete_all_keys)(opacity), OK);
-		assert_eq!(
-			(s.param_copy)(opacity, opacity, 1.0, 1.0, std::ptr::null()),
-			OK
-		);
-		// editBegin/End brackets.
-		assert_eq!((s.param_edit_begin)(opacity), OK);
+		assert_eq!((s.param_copy)(opacity, opacity, 1.0, std::ptr::null()), OK);
+		// editBegin/End brackets (accept both OfxParamSetHandle and param handle).
+		assert_eq!((s.param_edit_begin)(ih, std::ptr::null()), OK);
+		assert_eq!((s.param_edit_end)(ih), OK);
+		assert_eq!((s.param_edit_begin)(opacity, std::ptr::null()), OK);
 		assert_eq!((s.param_edit_end)(opacity), OK);
 	}
 }

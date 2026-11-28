@@ -263,6 +263,15 @@ fn is_numeric_type(ofx_type: &str) -> bool {
 	)
 }
 
+/// Returns `true` if `ofx_type` is an ordinary parameter type that can carry
+/// node keyframes (`Double*`, `Integer*`, `RGB`, `RGBA`).
+///
+/// `Boolean`, `Choice`, string types, value-less types, and `Parametric`
+/// (which uses `OfxParametricParameterSuite`) are excluded.
+pub(crate) fn is_animatable_type(ofx_type: &str) -> bool {
+	is_numeric_type(ofx_type)
+}
+
 /// The default ParamValue of this type (the describe-time baseline; HS keeps the property default
 /// in props' kOfxParamPropDefault, with equivalent value semantics).
 fn type_default(ofx_type: &str) -> ParamValue {
@@ -421,11 +430,8 @@ impl ParamDef {
 				Value::String(cs(V_INVALIDATE_VALUE_CHANGE)),
 			);
 			// Animability (HS ofxhParam.cpp:367-372: custom/string/boolean/choice
-			// are non-animatable by default).
-			let animates = ofx_type != TYPE_CUSTOM
-				&& ofx_type != TYPE_STRING
-				&& ofx_type != TYPE_BOOLEAN
-				&& ofx_type != TYPE_CHOICE;
+			// are non-animatable by default; strchoice is also non-animatable).
+			let animates = is_animatable_type(ofx_type);
 			props.set_one(P_ANIMATES, Value::Int(animates as i32));
 			props.define(P_DEFAULT, default_values(kind, dim));
 
@@ -593,6 +599,10 @@ pub struct ParamInstance {
 	pub def: ParamDef,
 	/// The current value (the synchronization point between the node bridge and the OFX side).
 	value: std::sync::Mutex<ParamValue>,
+	/// Optional keyframe track snapshot (render-time snapshot or unbound-instance track).
+	animation: std::sync::Mutex<Option<quercus_node::keyframe::KeyframeTrack>>,
+	/// Per-render scoped animation override (`Some(track_opt)` takes precedence over bound node/local track during `render_frame`).
+	render_animation: std::sync::Mutex<Option<Option<quercus_node::keyframe::KeyframeTrack>>>,
 }
 
 impl ParamInstance {
@@ -606,12 +616,82 @@ impl ParamInstance {
 			props,
 			def,
 			value: std::sync::Mutex::new(value),
+			animation: std::sync::Mutex::new(None),
+			render_animation: std::sync::Mutex::new(None),
 		}
 	}
 
 	/// Read the current value.
 	pub fn get(&self) -> ParamValue {
 		self.value.lock().unwrap_or_else(|e| e.into_inner()).clone()
+	}
+
+	/// Returns `true` if this parameter supports ordinary time-keyframe animation.
+	pub fn can_animate(&self) -> bool {
+		is_animatable_type(&self.def.ofx_type)
+			&& !matches!(self.props.get(P_ANIMATES, 0), Some(Value::Int(0)))
+	}
+
+	/// Updates `kOfxParamPropIsAnimating` on this parameter's property set.
+	pub(crate) fn set_is_animating(&self, animating: bool) {
+		self.props
+			.set_one(P_IS_ANIMATING, Value::Int(i32::from(animating)));
+	}
+
+	/// Returns a clone of the cached/local keyframe track, if any.
+	pub(crate) fn animation_track(&self) -> Option<quercus_node::keyframe::KeyframeTrack> {
+		self.animation
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+	}
+
+	/// Replaces the cached/local keyframe track and updates `kOfxParamPropIsAnimating`.
+	pub(crate) fn set_animation_track(&self, track: Option<quercus_node::keyframe::KeyframeTrack>) {
+		let animating = track.as_ref().is_some_and(|t| !t.keys().is_empty());
+		*self.animation.lock().unwrap_or_else(|e| e.into_inner()) = track;
+		self.set_is_animating(animating);
+	}
+
+	/// Returns the active scoped render-time override (`Some(track_opt)` when
+	/// `render_frame` has installed a job animation snapshot).
+	pub(crate) fn render_animation_override(
+		&self,
+	) -> Option<Option<quercus_node::keyframe::KeyframeTrack>> {
+		self.render_animation
+			.lock()
+			.unwrap_or_else(|e| e.into_inner())
+			.clone()
+	}
+
+	/// Installs or clears the scoped render-time animation override.
+	pub(crate) fn set_render_animation_override(
+		&self,
+		override_track: Option<Option<quercus_node::keyframe::KeyframeTrack>>,
+	) {
+		*self
+			.render_animation
+			.lock()
+			.unwrap_or_else(|e| e.into_inner()) = override_track;
+	}
+
+	/// Converts a `NodeValue` into this parameter's [`ParamValue`].
+	pub(crate) fn value_from_node_value(
+		&self,
+		nv: &quercus_node::value::NodeValue,
+	) -> Option<ParamValue> {
+		if let Some(pod) = crate::node::Value::from_node_value(nv) {
+			return param_value_from_node(&pod, &self.def.ofx_type);
+		}
+		match (nv, self.def.ofx_type.as_str()) {
+			(quercus_node::value::NodeValue::Text(s), TYPE_STRING) => {
+				CString::new(s.as_str()).ok().map(ParamValue::String)
+			}
+			(quercus_node::value::NodeValue::StrCombo(s), TYPE_STRCHOICE) => {
+				CString::new(s.as_str()).ok().map(ParamValue::StrChoice)
+			}
+			_ => None,
+		}
 	}
 
 	/// Write the current value with OFX's paramSetValue semantics: replace only the value stored on the instance,

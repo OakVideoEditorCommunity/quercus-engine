@@ -57,6 +57,7 @@ impl EditTransaction {
 }
 
 /// A time range (OFX canonical double seconds).
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OfxRangeD {
 	/// Start (inclusive).
@@ -66,6 +67,7 @@ pub struct OfxRangeD {
 }
 
 /// A rectangle (canonical coordinates, double).
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OfxRectD {
 	/// Left.
@@ -80,6 +82,7 @@ pub struct OfxRectD {
 
 /// Rendering parameters such as pixel aspect and field order (the in_args
 /// subset of the render action).
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct RenderScale {
 	/// Render scale on the x axis.
@@ -164,34 +167,48 @@ impl Instance {
 	/// paramEditBegin: enters the edit transaction (nestable; the first entry
 	/// resets the transaction state).
 	pub fn edit_begin(&self) {
+		self.edit_begin_with_label(None);
+	}
+
+	/// paramEditBegin with an optional undo-group label from the plugin.
+	pub fn edit_begin_with_label(&self, label: Option<&str>) {
 		let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
 		e.depth += 1;
 		if e.depth == 1 {
 			e.multi = None;
 			e.param_count = 0;
-			e.first_label.clear();
+			e.first_label = label
+				.filter(|s| !s.is_empty())
+				.map(str::to_string)
+				.unwrap_or_default();
 		}
 	}
 
 	/// paramEditEnd: leaves the edit transaction; when the outermost level
-	/// ends, the accumulated multi command is redone into effect and released
-	/// (this crate has no undo stack — commands are submitted on the
-	/// quercusundo side, see the fallback branch of C++
-	/// `submit_undo_command`).
+	/// ends, the accumulated multi command is pushed to the process-wide undo
+	/// stack as a single already-executed history entry.
 	pub fn edit_end(&self) {
-		let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
-		if e.depth > 0 {
-			e.depth -= 1;
-		}
-		if e.depth == 0 {
-			if let Some(mut multi) = e.multi.take() {
-				multi.redo_now();
-				// drop(multi): releases the multi and its sub-commands
-				// (commands are value-semantic).
-				drop(multi);
+		let pending = {
+			let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
+			if e.depth > 0 {
+				e.depth -= 1;
 			}
-			e.param_count = 0;
-			e.first_label.clear();
+			if e.depth == 0 {
+				let multi = e.multi.take();
+				let label = if e.first_label.is_empty() {
+					"Edit Parameters".to_string()
+				} else {
+					e.first_label.clone()
+				};
+				e.param_count = 0;
+				e.first_label.clear();
+				multi.map(|m| (m, label))
+			} else {
+				None
+			}
+		};
+		if let Some((multi, label)) = pending {
+			let _ = quercus_undo::global::push_pre_executed(multi, &label);
 		}
 	}
 
@@ -206,14 +223,14 @@ impl Instance {
 	/// oliveplugininstance.cpp:390-414 `submit_undo_command`): inside an edit
 	/// transaction the command joins the multi (the sub-command is redone
 	/// immediately, so the value is visible at once); otherwise the single
-	/// command is redone and released.
+	/// command is pushed onto the global undo stack (which executes redo once).
 	pub(crate) fn submit_undo_command(
 		&self,
 		mut cmd: quercus_undo::undocommand::UndoCommand,
 		label: &str,
 	) {
-		if self.in_edit() {
-			let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
+		let mut e = self.edit.lock().unwrap_or_else(|e| e.into_inner());
+		if e.depth > 0 {
 			if e.multi.is_none() {
 				e.multi = Some(quercus_undo::undocommand::UndoCommand::multi());
 			}
@@ -227,8 +244,8 @@ impl Instance {
 				.expect("multi initialized above")
 				.multi_add_child(cmd);
 		} else {
-			cmd.redo_now();
-			drop(cmd);
+			drop(e);
+			let _ = quercus_undo::global::push(cmd, label);
 		}
 	}
 

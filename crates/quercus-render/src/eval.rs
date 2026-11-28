@@ -165,6 +165,8 @@ pub enum JobSpec {
 		/// Param overrides: input id -> node value (the tagged values
 		/// captured at evaluation time).
 		values: Vec<(String, NodeValue)>,
+		/// Non-empty keyframe tracks for animatable inputs (`element = -1`).
+		animations: Vec<(String, quercus_node::keyframe::KeyframeTrack)>,
 	},
 }
 
@@ -3117,6 +3119,7 @@ fn apply_montage_effect(
 		effect_input_id: effect.effect_input_id.clone(),
 		inputs: Vec::new(),
 		values: effect.params.clone(),
+		animations: Vec::new(),
 	};
 	let size = src.size();
 	match RenderEvalHooks::new().process_plugin_job(src, &spec) {

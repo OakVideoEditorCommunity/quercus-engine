@@ -94,6 +94,8 @@ pub struct PluginJobPayload {
 	/// `NodeValueRow`: the tagged non-texture values become param
 	/// overrides, the texture values feed the clip inputs).
 	pub values: NodeValueRow,
+	/// Non-empty keyframe tracks for animatable node inputs (`element = -1`).
+	pub animations: Vec<(String, crate::keyframe::KeyframeTrack)>,
 }
 
 /// OFX plugin node. Wraps one plugin instance; inputs mirror the
@@ -247,12 +249,19 @@ impl NodeBehavior for PluginNode {
 			.or_else(|| inputs.values().find(|v| matches!(v, NodeValue::Texture(_))));
 
 		if tex.is_some() && !self.instance.is_null() {
+			let animations = core
+				.keyframes
+				.iter()
+				.filter(|(_, element, track)| *element == -1 && !track.keys().is_empty())
+				.map(|(id, _, track)| (id.clone(), track.clone()))
+				.collect();
 			let payload = Job::PluginJob(PluginJobPayload {
 				instance: self.instance,
 				type_id: self.type_id.clone(),
 				time,
 				effect_input_id: core.effect_input.clone(),
 				values: inputs.clone(),
+				animations,
 			});
 			table.push(
 				crate::value::ValueType::Texture,

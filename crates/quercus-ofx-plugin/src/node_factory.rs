@@ -1097,6 +1097,7 @@ fn execute_plugin_job(
 		effect_input_id,
 		inputs,
 		values,
+		animations,
 	} = req.spec
 	else {
 		return Err(Error::Invalid);
@@ -1191,6 +1192,7 @@ fn execute_plugin_job(
 		effect_input_id: effect_input_id.clone(),
 		inputs: inputs.clone(),
 		values: pod_values,
+		animations: animations.clone(),
 		// GL render path: OpenGL-only plugins (CImg suite) return
 		// kOfxStatErrMissingHostFeature directly in isIdentity on the CPU path
 		// (the purple-frame root cause). The marker context only serves

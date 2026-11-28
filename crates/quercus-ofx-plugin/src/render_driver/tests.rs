@@ -169,6 +169,7 @@ fn job(dst: Texture, src: Option<Texture>) -> RenderJob {
 		effect_input_id: Some("Source".into()),
 		inputs: Vec::new(),
 		values: Vec::new(),
+		animations: Vec::new(),
 		renderer: None,
 		clear_destination: false,
 		interactive: false,
